@@ -16,57 +16,326 @@ const CONFIG_TEMPLATE: &str = r#"# kn9t configuration — ~/.kn9t/config.toml
 #
 # ── Providers ─────────────────────────────────────────────────────────────────
 #
-# Providers are subprocess plugin binaries.
+# Providers are either OpenAI-compatible endpoints (kind = "openai") or
+# subprocess plugin binaries (kind = "plugin").
 #
-# `binary` is either a bare name — resolved next to the kn9t server executable,
-# which is how BUNDLED plugins like kn9t-anthropic are found — or an ABSOLUTE
-# PATH, which is how EXTERNAL plugins are found.
-#
-# kn9t-anthropic (direct Anthropic API) is bundled.
-# External plugins (e.g. kn9t-custom-provider for a custom provider gateway) are built separately;
-# point `binary` at the absolute path of the compiled executable.
-#
-# Uncomment and fill in ONE of the blocks below.
+# Uncomment ONE provider block below and fill in your credentials.
+# You can run multiple providers simultaneously.
 
-# -- Anthropic direct ----------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenCode Go — $10/mo subscription, open-source models (chat-completions)
+# https://opencode.ai/go
 #
-# [[provider]]
-# id      = "anthropic"
+# Limit: $12/5h · $30/week · $60/month
+# Get your key at: https://opencode.ai/auth
+# ─────────────────────────────────────────────────────────────────────────────
+
+[provider.opencode-go]
+kind     = "openai"
+base_url = "https://opencode.ai/zen/go/v1"
+api_key  = "env:OPENCODE_API_KEY"
+
+[provider.opencode-go.quirks]
+usage_in_stream = true
+
+[[model]]
+provider         = "opencode-go"
+id               = "deepseek-v4-pro"
+ctx              = 131072
+max_out          = 8192
+price_in         = 0.435
+price_out        = 0.87
+price_cache_read = 0.0036
+
+[[model]]
+provider         = "opencode-go"
+id               = "deepseek-v4-flash"
+ctx              = 131072
+max_out          = 8192
+price_in         = 0.14
+price_out        = 0.28
+price_cache_read = 0.0028
+
+[[model]]
+provider = "opencode-go"
+id       = "kimi-k3"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.60
+price_out = 1.80
+
+[[model]]
+provider = "opencode-go"
+id       = "kimi-k2.7-code"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.60
+price_out = 1.80
+
+[[model]]
+provider = "opencode-go"
+id       = "kimi-k2.6"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.60
+price_out = 1.80
+
+[[model]]
+provider = "opencode-go"
+id       = "glm-5.3-flash"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.10
+price_out = 0.40
+
+[[model]]
+provider = "opencode-go"
+id       = "glm-5.3"
+ctx      = 131072
+max_out  = 8192
+price_in = 1.00
+price_out = 2.00
+
+[[model]]
+provider = "opencode-go"
+id       = "glm-5.2"
+ctx      = 131072
+max_out  = 8192
+price_in = 1.00
+price_out = 2.00
+
+[[model]]
+provider = "opencode-go"
+id       = "mimo-v2.5"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.03
+price_out = 0.12
+
+[[model]]
+provider = "opencode-go"
+id       = "mimo-v2.5-pro"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.10
+price_out = 0.40
+
+[[model]]
+provider = "opencode-go"
+id       = "hy3"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.50
+price_out = 1.50
+
+[[model]]
+provider = "opencode-go"
+id       = "grok-4.6"
+ctx      = 131072
+max_out  = 8192
+price_in = 2.00
+price_out = 6.00
+
+[[model]]
+provider = "opencode-go"
+id       = "minimax-m3"
+ctx      = 1048576
+max_out  = 16384
+price_in = 0.15
+price_out = 0.60
+
+[[model]]
+provider = "opencode-go"
+id       = "minimax-m2.7"
+ctx      = 1048576
+max_out  = 16384
+price_in = 0.15
+price_out = 0.60
+
+[[model]]
+provider = "opencode-go"
+id       = "longcat-2.0"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.10
+price_out = 0.40
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenCode Go — Anthropic-compatible models (Qwen, MiniMax via /messages)
+# NOTE: requires a future kn9t-plugin-opencode-ant or similar to speak
+# the Anthropic Messages API through the OpenCode Go gateway.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# [provider.opencode-go-ant]
+# kind     = "openai"   # placeholder — needs Anthropic-compat provider
+# base_url = "https://opencode.ai/zen/go"
+# api_key  = "env:OPENCODE_API_KEY"
+
+# [[model]]
+# provider = "opencode-go-ant"
+# id       = "qwen3.8-max"
+# ctx      = 131072
+# max_out  = 8192
+# price_in = 2.00
+# price_out = 6.00
+
+# [[model]]
+# provider = "opencode-go-ant"
+# id       = "qwen3.7-max"
+# ctx      = 131072
+# max_out  = 8192
+# price_in = 2.00
+# price_out = 6.00
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenCode Zen — pay-as-you-go, curated models (chat-completions)
+# https://opencode.ai/zen
+#
+# Same API key as Go. Pay-per-use, auto top-up at $5.
+# Get your key at: https://opencode.ai/auth
+# ─────────────────────────────────────────────────────────────────────────────
+
+# [provider.opencode-zen]
+# kind     = "openai"
+# base_url = "https://opencode.ai/zen/v1"
+# api_key  = "env:OPENCODE_API_KEY"
+
+# [provider.opencode-zen.quirks]
+# usage_in_stream = true
+
+# [[model]]
+# provider = "opencode-zen"
+# id       = "deepseek-v4-pro"
+# ctx      = 131072
+# max_out  = 8192
+# price_in = 0.435
+# price_out = 0.87
+# price_cache_read = 0.0036
+
+# [[model]]
+# provider = "opencode-zen"
+# id       = "deepseek-v4-flash"
+# ctx      = 131072
+# max_out  = 8192
+# price_in = 0.14
+# price_out = 0.28
+# price_cache_read = 0.0028
+
+# Free models on Zen (no charge)
+# [[model]]
+# provider = "opencode-zen"
+# id       = "deepseek-v4-flash-free"
+# ctx      = 131072
+# max_out  = 8192
+
+# [[model]]
+# provider = "opencode-zen"
+# id       = "kimi-k2.5-free"
+# ctx      = 131072
+# max_out  = 8192
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenCode Zen — Anthropic-compatible models (Claude, Qwen via /messages)
+# NOTE: requires a future kn9t-plugin-opencode-ant or similar.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# [provider.opencode-zen-ant]
+# kind     = "openai"   # placeholder — needs Anthropic-compat provider
+# base_url = "https://opencode.ai/zen"
+# api_key  = "env:OPENCODE_API_KEY"
+
+# [[model]]
+# provider = "opencode-zen-ant"
+# id       = "claude-sonnet-4-5"
+# ctx      = 200000
+# max_out  = 65536
+# price_in = 3.00
+# price_out = 15.00
+# price_cache_read = 0.30
+# price_cache_write = 3.75
+
+# [[model]]
+# provider = "opencode-zen-ant"
+# id       = "claude-opus-4-6"
+# ctx      = 200000
+# max_out  = 32768
+# price_in = 5.00
+# price_out = 25.00
+# price_cache_read = 0.50
+# price_cache_write = 6.25
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenCode Zen — OpenAI Responses API models (GPT-5.x)
+# NOTE: requires a future kn9t-plugin-opencode-gpt provider.
+# These models use the /v1/responses endpoint, not /v1/chat/completions.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# [provider.opencode-zen-gpt]
+# kind     = "plugin"   # needs dedicated Responses API provider
+# binary   = "kn9t-plugin-opencode-gpt"   # future plugin
+
+# [[model]]
+# provider = "opencode-zen-gpt"
+# id       = "gpt-5.5"
+# ctx      = 1048576
+# max_out  = 65536
+# price_in = 1.25
+# price_out = 10.00
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Anthropic direct — bundled plugin
+# ─────────────────────────────────────────────────────────────────────────────
+
+# [provider.anthropic]
 # kind    = "plugin"
 # binary  = "kn9t-anthropic"
 #
 # [provider.anthropic.env]
-# ANTHROPIC_API_KEY = "sk-ant-xxxxxxxxxxxxxxxxxxxx"
+# ANTHROPIC_API_KEY = "env:ANTHROPIC_API_KEY"
 #
 # [[model]]
 # provider = "anthropic"
 # id       = "claude-opus-4-5"
-# label    = "Claude Opus 4.5"
-# default  = true
-
-# -- OpenAI-compatible gateway -------------------------------------------------
-#
-# [[provider]]
-# id      = "my-gateway"
-# kind    = "openai"
-# base_url = "https://llm-gateway.example.com/v1"
-#
-# [provider.my-gateway.headers]
-# X-User-Id = "env:GATEWAY_USER_ID"
 #
 # [[model]]
-# provider = "my-gateway"
-# id       = "claude-4-sonnet"
+# provider = "anthropic"
+# id       = "claude-sonnet-4-5"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Custom provider — external plugin for any gateway
+# ─────────────────────────────────────────────────────────────────────────────
+
+# [provider.custom]
+# kind    = "plugin"
+# binary  = "/absolute/path/to/kn9t-custom-provider"
+#
+# [provider.custom.env]
+# CUSTOM_PROVIDER_URL = "https://your-gateway.example.com"
 
 # ── Server ────────────────────────────────────────────────────────────────────
 # Optional. Defaults shown — you usually do not need to change these.
 
 # [server]
-# port            = 0   # 0 = pick a random free port at startup
-# idle_exit_secs  = 5   # seconds of grace after last client disconnects before exiting
-#                       # server stays up as long as any client is connected
-#                       # set to 0 to disable auto-exit
-# log             = "server.log"
+# idle_exit_secs  = 1800  # 30 min; set to 0 to disable auto-exit
+
+# ── Policy ────────────────────────────────────────────────────────────────────
+# Global only (~/.kn9t/config.toml). Controls bash classification and
+# approval prompting (DESIGN §10.1). Absent → ask_on_mutation with built-in
+# defaults.
+
+# [policy]
+# mode = "ask_on_mutation"   # allow_all | deny_all | readonly | ask_on_mutation
+
+# [policy.bash]
+# allow_read = ["rg","grep","find","ls","cat","head","tail","wc","file","stat", ...]
+# always_ask = ["rm","mv","cp","chmod","chown","kill","dd","curl","wget","ssh","scp","sh","bash","python","node", ...]
+# never      = ["shutdown","reboot","mkfs*","fdisk","sudo"]
+
+# Must come last — every key above belongs to [policy.bash].
+# [policy.bash.allow_read_sub]
+# git   = ["log","diff","show","status","branch","blame","describe","rev-parse","ls-files","remote","tag"]
+# cargo = ["tree","metadata","--version"]
+# npm   = ["ls","view","outdated"]
 "#;
 
 // ── UUID v4 (no deps) ─────────────────────────────────────────────────────────

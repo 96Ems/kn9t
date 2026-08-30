@@ -1365,6 +1365,98 @@ fn approve_hard_deny_no_prompt() {
     h.handle.shutdown();
 }
 
+// ── policy: config [policy] demonstrably changes behaviour ─────────────────
+
+#[test]
+fn policy_never_mytool_is_hard_deny() {
+    // Verify [policy.bash] never = ["mytool"] → HardDeny (no prompt) — Phase 1 exit criteria.
+    use kn9t_server::classify::BashPolicy;
+    use kn9t_server::config::PolicyMode;
+    use kn9t_server::state::ServerState;
+    let (store, _tmp) = temp_store();
+    let token = kn9t_server::auth::generate_token();
+    // Build a custom bash policy: never contains mytool
+    let bash = BashPolicy { never: vec!["mytool".into()], ..BashPolicy::default() };
+    let calls = Arc::new(Mutex::new(0u32));
+    let provider: Arc<dyn kn9t_core::Provider> = Arc::new(OneToolProvider { cmd: "mytool --help".into(), calls: calls.clone() });
+    let tools = dummy_bash_registry();
+    let mut state = ServerState::new(store, token, tools, Vec::new());
+    // Override policy with the custom bash policy (ask_on_mutation mode → InteractivePolicy)
+    let registry = state.approval_registry.clone();
+    let policy = ServerState::policy_from_config(&PolicyMode::AskOnMutation, bash, &registry);
+    state = state.with_policy(policy).with_default_model(model_spec()).with_provider(provider);
+    state.model_registry = vec![model_spec()];
+    let state = Arc::new(state);
+    let h = start(state.clone());
+    let id = make_session(&h);
+    let lease = acquire_lease(&h, &id);
+    let sub = state.buses.subscribe(&id, 64);
+    let lease_hdr = [("X-Lease", lease.as_str())];
+    let r = req_auth(&h, "POST", &format!("/session/{id}/prompt"), &lease_hdr, serde_json::json!({"text":"run mytool"}));
+    assert_eq!(r.status, 200);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut saw_approval = false;
+    while let Some(ev) = sub.try_recv() {
+        if matches!(ev, Event::ApprovalRequest { .. }) { saw_approval = true; }
+    }
+    assert!(!saw_approval, "HardDeny mytool must not emit ApprovalRequest");
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while kn9t_server::turn::is_turn_running(&id) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!kn9t_server::turn::is_turn_running(&id));
+    let snap = req_auth(&h, "GET", &format!("/session/{id}"), &[], serde_json::Value::Null).json();
+    let has_error = snap["transcript"].as_array().unwrap().iter().any(|m| {
+        m["content"].as_array().map(|c| c.iter().any(|b| b["is_error"].as_bool()==Some(true))).unwrap_or(false)
+    });
+    assert!(has_error, "mytool HardDeny must produce is_error tool_result");
+    h.handle.shutdown();
+}
+
+#[test]
+fn policy_mode_allow_all_allows_rm_without_prompt() {
+    use kn9t_server::classify::BashPolicy;
+    use kn9t_server::config::PolicyMode;
+    use kn9t_server::state::ServerState;
+    let (store, _tmp) = temp_store();
+    let token = kn9t_server::auth::generate_token();
+    let calls = Arc::new(Mutex::new(0u32));
+    // rm is always_ask → normally Ask (blocks). With allow_all it must be Allow.
+    let provider: Arc<dyn kn9t_core::Provider> = Arc::new(OneToolProvider { cmd: "rm -rf /tmp/x".into(), calls: calls.clone() });
+    let tools = dummy_bash_registry();
+    let mut state = ServerState::new(store, token, tools, Vec::new());
+    let registry = state.approval_registry.clone();
+    let policy = ServerState::policy_from_config(&PolicyMode::AllowAll, BashPolicy::default(), &registry);
+    state = state.with_policy(policy).with_default_model(model_spec()).with_provider(provider);
+    state.model_registry = vec![model_spec()];
+    let state = Arc::new(state);
+    let h = start(state.clone());
+    let id = make_session(&h);
+    let lease = acquire_lease(&h, &id);
+    let sub = state.buses.subscribe(&id, 64);
+    let lease_hdr = [("X-Lease", lease.as_str())];
+    let r = req_auth(&h, "POST", &format!("/session/{id}/prompt"), &lease_hdr, serde_json::json!({"text":"do rm"}));
+    assert_eq!(r.status, 200);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut saw_approval = false;
+    while let Some(ev) = sub.try_recv() {
+        if matches!(ev, Event::ApprovalRequest { .. }) { saw_approval = true; }
+    }
+    assert!(!saw_approval, "allow_all must not emit ApprovalRequest for rm");
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while kn9t_server::turn::is_turn_running(&id) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!kn9t_server::turn::is_turn_running(&id), "allow_all rm must not block");
+    // Tool should have executed (ok, not error)
+    let snap = req_auth(&h, "GET", &format!("/session/{id}"), &[], serde_json::Value::Null).json();
+    let has_ok_result = snap["transcript"].as_array().unwrap().iter().any(|m| {
+        m["content"].as_array().map(|c| c.iter().any(|b| b["type"].as_str()==Some("tool_result") && b["is_error"].as_bool()!=Some(true))).unwrap_or(false)
+    });
+    assert!(has_ok_result, "allow_all rm must produce non-error tool_result");
+    h.handle.shutdown();
+}
+
 // ── abort_then_prompt_race ────────────────────────────────────────────────────
 
 /// A provider that emits a tool call and blocks until signaled.

@@ -1,0 +1,229 @@
+# kn9t — OpenCode Go + Zen provider config
+#
+# Copy relevant sections into ~/.kn9t/config.toml
+# or use as-is if you only use OpenCode providers.
+#
+# Setup:
+#   1. Get your API key at https://opencode.ai/auth
+#   2. export OPENCODE_API_KEY=oc-xxxxxxxxxxxx
+#   3. Copy this file to ~/.kn9t/config.toml (or merge sections)
+#
+# Docs: https://opencode.ai/docs/go/  https://opencode.ai/docs/zen/
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OpenCode Go — $10/mo subscription, open-source models
+# Limits: $12/5h · $30/week · $60/month
+# ══════════════════════════════════════════════════════════════════════════════
+
+[provider.opencode-go]
+kind     = "openai"
+base_url = "https://opencode.ai/zen/go/v1"
+api_key  = "env:OPENCODE_API_KEY"
+
+[provider.opencode-go.quirks]
+usage_in_stream = true
+
+# ── DeepSeek ────────────────────────────────────────────────────────────────
+
+[[model]]
+provider         = "opencode-go"
+id               = "deepseek-v4-pro"
+ctx              = 131072
+max_out          = 8192
+price_in         = 0.435
+price_out        = 0.87
+price_cache_read = 0.0036
+
+[[model]]
+provider         = "opencode-go"
+id               = "deepseek-v4-flash"
+ctx              = 131072
+max_out          = 8192
+price_in         = 0.14
+price_out        = 0.28
+price_cache_read = 0.0028
+
+# ── Kimi (Moonshot) ────────────────────────────────────────────────────────
+
+[[model]]
+provider = "opencode-go"
+id       = "kimi-k3"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.60
+price_out = 1.80
+
+[[model]]
+provider = "opencode-go"
+id       = "kimi-k2.7-code"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.60
+price_out = 1.80
+
+[[model]]
+provider = "opencode-go"
+id       = "kimi-k2.6"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.60
+price_out = 1.80
+
+# ── GLM (Zhipu) ───────────────────────────────────────────────────────────
+
+[[model]]
+provider = "opencode-go"
+id       = "glm-5.3-flash"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.10
+price_out = 0.40
+
+[[model]]
+provider = "opencode-go"
+id       = "glm-5.3"
+ctx      = 131072
+max_out  = 8192
+price_in = 1.00
+price_out = 2.00
+
+[[model]]
+provider = "opencode-go"
+id       = "glm-5.2"
+ctx      = 131072
+max_out  = 8192
+price_in = 1.00
+price_out = 2.00
+
+# ── MiMo (Xiaomi) ─────────────────────────────────────────────────────────
+
+[[model]]
+provider = "opencode-go"
+id       = "mimo-v2.5"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.03
+price_out = 0.12
+
+[[model]]
+provider = "opencode-go"
+id       = "mimo-v2.5-pro"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.10
+price_out = 0.40
+
+# ── xAI Grok ──────────────────────────────────────────────────────────────
+
+[[model]]
+provider = "opencode-go"
+id       = "grok-4.6"
+ctx      = 131072
+max_out  = 8192
+price_in = 2.00
+price_out = 6.00
+
+# ── Hydra ──────────────────────────────────────────────────────────────────
+
+[[model]]
+provider = "opencode-go"
+id       = "hy3"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.50
+price_out = 1.50
+
+# ── MiniMax ────────────────────────────────────────────────────────────────
+
+[[model]]
+provider = "opencode-go"
+id       = "minimax-m3"
+ctx      = 1048576
+max_out  = 16384
+price_in = 0.15
+price_out = 0.60
+
+[[model]]
+provider = "opencode-go"
+id       = "minimax-m2.7"
+ctx      = 1048576
+max_out  = 16384
+price_in = 0.15
+price_out = 0.60
+
+# ── LongCat ────────────────────────────────────────────────────────────────
+
+[[model]]
+provider = "opencode-go"
+id       = "longcat-2.0"
+ctx      = 131072
+max_out  = 8192
+price_in = 0.10
+price_out = 0.40
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OpenCode Zen — pay-as-you-go, curated models
+# Same API key as Go. Auto top-up at $5 balance.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# [provider.opencode-zen]
+# kind     = "openai"
+# base_url = "https://opencode.ai/zen/v1"
+# api_key  = "env:OPENCODE_API_KEY"
+#
+# [provider.opencode-zen.quirks]
+# usage_in_stream = true
+#
+# # Chat-completions models (same IDs as Go, different gateway)
+# [[model]]
+# provider         = "opencode-zen"
+# id               = "deepseek-v4-pro"
+# ctx              = 131072
+# max_out          = 8192
+# price_in         = 0.435
+# price_out        = 0.87
+# price_cache_read = 0.0036
+#
+# # Free models on Zen (no charge)
+# [[model]]
+# provider = "opencode-zen"
+# id       = "deepseek-v4-flash-free"
+# ctx      = 131072
+# max_out  = 8192
+#
+# [[model]]
+# provider = "opencode-zen"
+# id       = "kimi-k2.5-free"
+# ctx      = 131072
+# max_out  = 8192
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Future: Anthropic-compatible models (Qwen, Claude via /messages endpoint)
+# Requires: kn9t-plugin-opencode-ant (not yet implemented)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Models below use the Anthropic Messages API format.
+# They will work once a compatible provider plugin is available.
+#
+# OpenCode Go models:
+#   qwen3.8-max, qwen3.8-flash, qwen3.7-max, qwen3.7-plus, qwen3.6-plus
+#   minimax-m3, minimax-m2.7 (also available via chat-completions)
+#
+# OpenCode Zen models:
+#   claude-sonnet-4-5, claude-opus-4-6, claude-haiku-4-5
+#   qwen3.8-max, qwen3.7-max, qwen3.7-plus
+#   minimax-m2.7
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Future: GPT-5.x models (Responses API, not Chat Completions)
+# Requires: kn9t-plugin-opencode-gpt (not yet implemented)
+#
+# Models: gpt-5.5, gpt-5.5-pro, gpt-5.4, gpt-5.4-pro, gpt-5.4-mini,
+#         gpt-5.3-codex, gpt-5.3-codex-spark, gpt-5.6-sol, gpt-5.6-luna,
+#         gpt-5.6-terra
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Server ────────────────────────────────────────────────────────────────────
+
+# [server]
+# idle_exit_secs = 1800

@@ -183,34 +183,20 @@ impl InteractivePolicy {
 
 impl Policy for InteractivePolicy {
     fn check(&self, call: &ToolCall, cwd: &Path) -> Decision {
-        eprintln!("[InteractivePolicy] check tool={} args_json={} cwd={}", call.name, call.args_json, cwd.display());
         if call.name != "bash" {
-            eprintln!("[InteractivePolicy] -> Allow (non-bash)");
             return Decision::Allow;
         }
         let cmd = match extract_cmd(&call.args_json) {
-            Some(c) => {
-                eprintln!("[InteractivePolicy] extracted cmd={:?}", c);
-                c
-            },
+            Some(c) => c,
             None => {
-                eprintln!("[InteractivePolicy] missing cmd, args_json={}", call.args_json);
                 return Decision::Deny {
                     reason: "missing command".into(),
                 }
             }
         };
-        let cls = classify(&cmd, Shell::Posix, &self.bash);
-        eprintln!("[InteractivePolicy] classify {:?} => {:?}", cmd, cls);
-        match cls {
-            Classification::AllowReadOnly => {
-                eprintln!("[InteractivePolicy] -> Allow");
-                Decision::Allow
-            },
-            Classification::HardDeny(r) => {
-                eprintln!("[InteractivePolicy] -> HardDeny {}", r);
-                Decision::HardDeny { reason: r }
-            },
+        match classify(&cmd, Shell::Posix, &self.bash) {
+            Classification::AllowReadOnly => Decision::Allow,
+            Classification::HardDeny(r) => Decision::HardDeny { reason: r },
             Classification::Ask => {
                 let id = NEXT_APPROVAL_ID.fetch_add(1, Ordering::SeqCst);
                 let slot = self.registry.create(id);
@@ -220,16 +206,13 @@ impl Policy for InteractivePolicy {
                     serde_json::from_str(&call.args_json).unwrap_or(serde_json::Value::Null);
 
                 if let Some(sink) = get_policy_sink() {
-                    eprintln!("[InteractivePolicy] emitting ApprovalRequest id={id} tool={} cwd={}", call.name, cwd.display());
                     sink.emit(Event::ApprovalRequest {
                         id: ApprovalId(id),
                         tool: call.name.clone(),
                         args: args_val,
                         cwd: cwd.to_path_buf(),
                     });
-                    eprintln!("[InteractivePolicy] emitted, blocking on registry wait id={id}");
                 } else {
-                    eprintln!("[InteractivePolicy] no sink for ApprovalRequest id={id}, denying");
                     self.registry.remove(id);
                     return Decision::Deny {
                         reason: "approval required (no sink)".into(),
@@ -238,11 +221,18 @@ impl Policy for InteractivePolicy {
 
                 // Block until POST /approve resolves via ApprovalRegistry
                 let decision = self.registry.wait(slot);
-                eprintln!("[InteractivePolicy] unblocked id={id} decision={:?}", decision);
                 self.registry.remove(id);
                 decision
             }
         }
+    }
+}
+
+/// Always-deny policy for `mode = "deny_all"` (DESIGN §10.1).
+pub struct DenyAllPolicy;
+impl Policy for DenyAllPolicy {
+    fn check(&self, _call: &ToolCall, _cwd: &Path) -> Decision {
+        Decision::Deny { reason: "denied by policy mode deny_all".into() }
     }
 }
 

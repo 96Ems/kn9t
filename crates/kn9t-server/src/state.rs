@@ -19,8 +19,9 @@ use kn9t_store::SqliteStore;
 
 use crate::bus::SessionBuses;
 use crate::classify::BashPolicy;
+use crate::config::PolicyMode;
 use crate::lease::{LeaseMap, DEFAULT_LEASE_IDLE};
-use crate::policy::{ApprovalRegistry, InteractivePolicy};
+use crate::policy::{ApprovalRegistry, ConfigPolicy, DenyAllPolicy, InteractivePolicy};
 
 /// Grace period after last client disconnects before the server exits.
 /// Short enough to feel immediate, long enough to survive a TUI restart.
@@ -193,6 +194,21 @@ impl ServerState {
     pub fn with_policy(mut self, p: Arc<dyn Policy>) -> Self {
         self.policy = p;
         self
+    }
+    /// Build a `Policy` from resolved `[policy]` config — DESIGN §10.1.
+    /// Called from `main.rs` after `config::load`. The state's
+    /// `approval_registry` is shared with `InteractivePolicy`.
+    pub fn policy_from_config(
+        mode: &PolicyMode,
+        bash: BashPolicy,
+        registry: &Arc<ApprovalRegistry>,
+    ) -> Arc<dyn Policy> {
+        match mode {
+            PolicyMode::AskOnMutation => Arc::new(InteractivePolicy::new(bash, registry.clone())),
+            PolicyMode::AllowAll => Arc::new(AllowPolicy),
+            PolicyMode::ReadOnly => Arc::new(ConfigPolicy::new(bash)),
+            PolicyMode::DenyAll => Arc::new(DenyAllPolicy),
+        }
     }
     pub fn with_providers(mut self, providers: Vec<(String, Arc<dyn Provider>)>) -> Self {
         self.providers = providers.into_iter().collect();

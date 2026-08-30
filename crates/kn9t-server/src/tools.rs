@@ -1,67 +1,13 @@
 //! R-PLUG2-110 — spawn tool plugins at server startup.
 //!
-//! The built-in tools (bash, read, edit) ship as a subprocess plugin binary
-//! (`internal-plugins/kn9t-tools`). The server spawns it at startup, performs
-//! the hello/hello handshake, and wraps each declared tool as a `RemoteTool`.
-//!
-//! User plugins from [[plugin]] config are also spawned and their tools merged.
+//! All tools come from external plugins configured via [[plugin]] in config.toml.
+//! No built-in tools — if no plugins are configured, the server runs with zero tools.
 
 use crate::config::ResolvedPlugin;
 use kn9t_core::{PluginKv, Tool, ToolRegistry};
 use kn9t_plugin::{PluginHost, RemoteTool};
-use std::env;
-use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
-
-/// Locate the `kn9t-tools` binary.
-///
-/// Resolution order:
-/// 1. `KN9T_TOOLS_BIN` env var (explicit override)
-/// 2. Sibling to current executable (production: same `target/{profile}/` dir)
-/// 3. Fallback to just "kn9t-tools" (relies on PATH)
-fn locate_tools_binary() -> PathBuf {
-    // 1. Explicit override
-    if let Ok(path) = env::var("KN9T_TOOLS_BIN") {
-        return PathBuf::from(path);
-    }
-
-    // 2. Sibling to current exe
-    if let Ok(exe) = env::current_exe() {
-        let ext = if cfg!(windows) { ".exe" } else { "" };
-        let sibling = exe.parent()
-            .map(|dir| dir.join(format!("kn9t-tools{ext}")))
-            .filter(|p| p.exists());
-        if let Some(path) = sibling {
-            return path;
-        }
-    }
-
-    // 3. Fallback to PATH
-    let ext = if cfg!(windows) { ".exe" } else { "" };
-    PathBuf::from(format!("kn9t-tools{ext}"))
-}
-
-/// Spawn the built-in `kn9t-tools` plugin.
-fn spawn_builtin_tools(kv: Arc<dyn PluginKv>) -> Result<(Arc<PluginHost>, Vec<Arc<dyn Tool>>), String> {
-    let binary = locate_tools_binary();
-    crate::log!("spawning builtin tools plugin: {}", binary.display());
-
-    let host = PluginHost::spawn(&binary, &[], kv)
-        .map_err(|e| format!("failed to spawn kn9t-tools: {e}"))?;
-
-    crate::log!("builtin tools handshake complete: {} tools declared",
-        host.declaration.tools.len());
-
-    let host = Arc::new(host);
-    let tools = extract_tools(&host);
-    
-    for t in &tools {
-        crate::log!("  registered builtin tool: {}", t.spec().name);
-    }
-
-    Ok((host, tools))
-}
 
 /// Spawn a user plugin from [[plugin]] config.
 fn spawn_user_plugin(cfg: &ResolvedPlugin, kv: Arc<dyn PluginKv>) -> Result<(Arc<PluginHost>, Vec<Arc<dyn Tool>>), String> {
@@ -179,15 +125,7 @@ fn extract_tools(host: &Arc<PluginHost>) -> Vec<Arc<dyn Tool>> {
         .collect()
 }
 
-/// Spawn the built-in tools plugin and return a ToolRegistry.
-/// User plugins are NOT loaded here — call `spawn_all_plugins` instead.
-pub fn spawn_tools_plugin(kv: Arc<dyn PluginKv>) -> Result<(Arc<PluginHost>, ToolRegistry), String> {
-    let (host, tools) = spawn_builtin_tools(kv)?;
-    let registry = ToolRegistry::from_tools(tools);
-    Ok((host, registry))
-}
-
-/// Spawn all plugins (builtin + user) and return a merged ToolRegistry.
+/// Spawn all plugins (user plugins from [[plugin]] config) and return a merged ToolRegistry.
 pub fn spawn_all_plugins(
     user_plugins: &[ResolvedPlugin],
     kv: Arc<dyn PluginKv>,
@@ -195,12 +133,7 @@ pub fn spawn_all_plugins(
     let mut all_hosts: Vec<Arc<PluginHost>> = Vec::new();
     let mut all_tools: Vec<Arc<dyn Tool>> = Vec::new();
 
-    // 1. Built-in tools (required)
-    let (builtin_host, builtin_tools) = spawn_builtin_tools(Arc::clone(&kv))?;
-    all_hosts.push(builtin_host);
-    all_tools.extend(builtin_tools);
-
-    // 2. User plugins (optional, soft-fail per plugin)
+    // User plugins (soft-fail per plugin)
     for cfg in user_plugins {
         match spawn_user_plugin(cfg, Arc::clone(&kv)) {
             Ok((host, tools)) => {
