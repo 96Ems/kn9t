@@ -10,7 +10,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kn9t_core::{
@@ -1171,6 +1171,197 @@ fn approve_no_pending_is_ok() {
     let r = req_auth(&h, "POST", "/approve",
         &hdrs, serde_json::json!({ "id": 9999, "decision": "allow" }));
     assert_eq!(r.status, 200, "approve no-pending: {}", String::from_utf8_lossy(&r.body));
+    h.handle.shutdown();
+}
+
+// ── approve: blocks on Ask, HardDeny never prompts ─────────────────────────
+
+/// Dummy bash tool that just returns ok.
+struct DummyBashTool {
+    spec: kn9t_core::ToolSpec,
+}
+impl kn9t_core::Tool for DummyBashTool {
+    fn spec(&self) -> &kn9t_core::ToolSpec { &self.spec }
+    fn execute(
+        &self,
+        _args: &serde_json::Value,
+        _ctx: &kn9t_core::ToolCtx,
+        _cancel: &kn9t_core::Cancel,
+    ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+        Ok(kn9t_core::ToolOutput {
+            content: vec![kn9t_core::Content::Text { text: "ok".into() }],
+            details: None,
+            is_error: false,
+        })
+    }
+}
+fn dummy_bash_registry() -> kn9t_core::ToolRegistry {
+    let spec = kn9t_core::ToolSpec {
+        name: "bash".into(),
+        description: "run shell".into(),
+        schema: serde_json::json!({"type":"object"}),
+        hidden: false,
+    };
+    kn9t_core::ToolRegistry::from_tools(vec![Arc::new(DummyBashTool { spec }) as Arc<dyn kn9t_core::Tool>])
+}
+
+/// Provider that emits one bash tool call with the given cmd, then a final stop.
+struct OneToolProvider {
+    cmd: String,
+    calls: Arc<Mutex<u32>>,
+}
+impl kn9t_core::Provider for OneToolProvider {
+    fn name(&self) -> &str { "one-tool" }
+    fn stream(
+        &self,
+        _req: &kn9t_core::Request,
+        _cancel: &kn9t_core::Cancel,
+    ) -> Result<Box<dyn Iterator<Item = Result<kn9t_core::Chunk, kn9t_core::ProvErr>> + Send>, kn9t_core::ProvErr> {
+        let n = {
+            let mut c = self.calls.lock().unwrap();
+            let n = *c;
+            *c += 1;
+            n
+        };
+        if n == 0 {
+            // First turn iteration: emit the tool call
+            let args = serde_json::json!({"cmd": self.cmd}).to_string();
+            let chunks = vec![
+                Ok(kn9t_core::Chunk::ToolCall { idx: 0, id: kn9t_core::CallId("call_1".into()), name: "bash".into() }),
+                Ok(kn9t_core::Chunk::ToolArgs { idx: 0, delta: args }),
+                Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens { input: 10, output: 5, ..Default::default() }, model: ModelRef { provider: "one-tool".into(), id: "m1".into() } })),
+                Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::ToolUse)),
+            ];
+            Ok(Box::new(chunks.into_iter()))
+        } else {
+            // Second iteration: final answer (no more tools)
+            let chunks = vec![
+                Ok(kn9t_core::Chunk::Text { idx: 0, delta: "done".into() }),
+                Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens { input: 10, output: 5, ..Default::default() }, model: ModelRef { provider: "one-tool".into(), id: "m1".into() } })),
+                Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
+            ];
+            Ok(Box::new(chunks.into_iter()))
+        }
+    }
+}
+
+#[test]
+fn approve_resolves_blocked_policy() {
+    // An Ask (rm) must emit ApprovalRequest and block until POST /approve.
+    let (store, _tmp) = temp_store();
+    let token = kn9t_server::auth::generate_token();
+    let calls = Arc::new(Mutex::new(0u32));
+    let provider: Arc<dyn kn9t_core::Provider> = Arc::new(OneToolProvider { cmd: "rm -rf /tmp/test".into(), calls: calls.clone() });
+    let tools = dummy_bash_registry();
+    let mut state = kn9t_server::state::ServerState::new(store, token, tools, Vec::new())
+        .with_default_model(model_spec())
+        .with_provider(provider);
+    state.model_registry = vec![model_spec()];
+    let state = Arc::new(state);
+    let h = start(state.clone());
+    let id = make_session(&h);
+    let lease = acquire_lease(&h, &id);
+
+    // Subscribe BEFORE the prompt so we don't miss the transient ApprovalRequest.
+    let sub = state.buses.subscribe(&id, 64);
+
+    // Prompt that triggers a tool call requiring approval (rm is in always_ask).
+    let lease_hdr = [("X-Lease", lease.as_str())];
+    let r = req_auth(&h, "POST", &format!("/session/{id}/prompt"), &lease_hdr, serde_json::json!({"text":"do rm"}));
+    assert_eq!(r.status, 200, "prompt: {}", String::from_utf8_lossy(&r.body));
+
+    // Wait for ApprovalRequest on the bus (transient, not stored).
+    // The turn emits TurnStarted, MessageAppended etc before the tool batch,
+    // so loop until we see ApprovalRequest.
+    let approval_id = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut found = None;
+        while std::time::Instant::now() < deadline {
+            if let Some(ev) = sub.recv_timeout(Duration::from_millis(200)) {
+                match ev {
+                    Event::ApprovalRequest { id, tool, .. } if tool == "bash" => {
+                        found = Some(id);
+                        break;
+                    }
+                    _ => continue, // ignore other transients
+                }
+            }
+        }
+        found.expect("ApprovalRequest must be emitted for Ask")
+    };
+
+    // Turn should still be running (blocked on approval).
+    assert!(kn9t_server::turn::is_turn_running(&id), "turn must be blocked on Ask");
+
+    // Resolve via POST /approve (allow).
+    let hdrs = [("X-Lease", lease.as_str()), ("X-Lease-Session", id.as_str())];
+    let r = req_auth(&h, "POST", "/approve", &hdrs, serde_json::json!({"id": approval_id.0, "decision":"allow"}));
+    assert_eq!(r.status, 200, "approve: {}", String::from_utf8_lossy(&r.body));
+
+    // Wait for turn to finish.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while kn9t_server::turn::is_turn_running(&id) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!kn9t_server::turn::is_turn_running(&id), "turn must have unblocked after approve");
+
+    // Transcript must contain the tool result (dummy bash returned ok) and final assistant text.
+    let snap = req_auth(&h, "GET", &format!("/session/{id}"), &[], serde_json::Value::Null).json();
+    let transcript = snap["transcript"].as_array().unwrap();
+    let has_tool_result = transcript.iter().any(|m| {
+        m["content"].as_array().map(|c| c.iter().any(|b| b["type"].as_str()==Some("tool_result"))).unwrap_or(false)
+    });
+    assert!(has_tool_result, "tool_result must appear after approval, transcript={}", serde_json::to_string_pretty(&snap).unwrap());
+
+    h.handle.shutdown();
+}
+
+#[test]
+fn approve_hard_deny_no_prompt() {
+    // A never (sudo) must be HardDeny with NO ApprovalRequest and no block.
+    let (store, _tmp) = temp_store();
+    let token = kn9t_server::auth::generate_token();
+    let calls = Arc::new(Mutex::new(0u32));
+    let provider: Arc<dyn kn9t_core::Provider> = Arc::new(OneToolProvider { cmd: "sudo rm -rf /".into(), calls: calls.clone() });
+    let tools = dummy_bash_registry();
+    let mut state = kn9t_server::state::ServerState::new(store, token, tools, Vec::new())
+        .with_default_model(model_spec())
+        .with_provider(provider);
+    state.model_registry = vec![model_spec()];
+    let state = Arc::new(state);
+    let h = start(state.clone());
+    let id = make_session(&h);
+    let lease = acquire_lease(&h, &id);
+    let sub = state.buses.subscribe(&id, 64);
+
+    let lease_hdr = [("X-Lease", lease.as_str())];
+    let r = req_auth(&h, "POST", &format!("/session/{id}/prompt"), &lease_hdr, serde_json::json!({"text":"try sudo"}));
+    assert_eq!(r.status, 200);
+
+    // Wait a bit for turn to finish — it must NOT have emitted ApprovalRequest.
+    std::thread::sleep(Duration::from_millis(500));
+    // Drain any events; there must be no ApprovalRequest.
+    let mut saw_approval = false;
+    while let Some(ev) = sub.try_recv() {
+        if matches!(ev, Event::ApprovalRequest { .. }) { saw_approval = true; }
+    }
+    assert!(!saw_approval, "HardDeny (sudo) must not emit ApprovalRequest");
+
+    // Turn should have finished already (not blocked).
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while kn9t_server::turn::is_turn_running(&id) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!kn9t_server::turn::is_turn_running(&id), "HardDeny must not block");
+
+    // The denied tool should be a is_error tool_result.
+    let snap = req_auth(&h, "GET", &format!("/session/{id}"), &[], serde_json::Value::Null).json();
+    let transcript = snap["transcript"].as_array().unwrap();
+    let has_error_result = transcript.iter().any(|m| {
+        m["content"].as_array().map(|c| c.iter().any(|b| b["is_error"].as_bool()==Some(true))).unwrap_or(false)
+    });
+    assert!(has_error_result, "HardDeny must produce is_error tool_result");
+
     h.handle.shutdown();
 }
 

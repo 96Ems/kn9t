@@ -18,7 +18,9 @@ use kn9t_plugin::PluginHost;
 use kn9t_store::SqliteStore;
 
 use crate::bus::SessionBuses;
+use crate::classify::BashPolicy;
 use crate::lease::{LeaseMap, DEFAULT_LEASE_IDLE};
+use crate::policy::{ApprovalRegistry, InteractivePolicy};
 
 /// Grace period after last client disconnects before the server exits.
 /// Short enough to feel immediate, long enough to survive a TUI restart.
@@ -127,6 +129,8 @@ pub struct ServerState {
     pub default_model: Option<ModelSpec>,
     /// Policy for tool dispatch inside turns.
     pub policy: Arc<dyn Policy>,
+    /// Registry for blocking approval requests (DESIGN §10).
+    pub approval_registry: Arc<ApprovalRegistry>,
     /// Working directory root (server process cwd), used for the tool context when
     /// a session does not pin its own.
     pub cwd: PathBuf,
@@ -149,6 +153,11 @@ impl ServerState {
         tools: ToolRegistry,
         plugin_hosts: Vec<Arc<PluginHost>>,
     ) -> Self {
+        let approval_registry = Arc::new(ApprovalRegistry::new());
+        let policy: Arc<dyn Policy> = Arc::new(InteractivePolicy::new(
+            BashPolicy::default(),
+            approval_registry.clone(),
+        ));
         ServerState {
             store,
             buses: SessionBuses::new(),
@@ -159,7 +168,8 @@ impl ServerState {
             provider: None,
             providers: std::collections::HashMap::new(),
             default_model: None,
-            policy: Arc::new(AllowPolicy),
+            policy,
+            approval_registry,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             provider_reported_budget: Mutex::new(None),
             model_registry: Vec::new(),
@@ -178,6 +188,10 @@ impl ServerState {
     }
     pub fn with_provider(mut self, p: Arc<dyn Provider>) -> Self {
         self.provider = Some(p);
+        self
+    }
+    pub fn with_policy(mut self, p: Arc<dyn Policy>) -> Self {
+        self.policy = p;
         self
     }
     pub fn with_providers(mut self, providers: Vec<(String, Arc<dyn Provider>)>) -> Self {

@@ -129,11 +129,13 @@ pub struct ToolCall {
 }
 
 /// R-CORE-270
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(tag = "decision", rename_all = "lowercase")]
 pub enum Decision {
     Allow,
     Deny { reason: String },
+    Ask,
+    HardDeny { reason: String },
 }
 
 /// R-CORE-270

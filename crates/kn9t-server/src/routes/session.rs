@@ -362,7 +362,10 @@ pub fn approve(state: &Arc<ServerState>, body: serde_json::Value) -> JsonResp {
     let decision = body.get("decision").and_then(|d| d.as_str()).unwrap_or("deny");
     match approval_id {
         Some(aid) => {
-            turn::record_approval(state, aid, decision == "allow");
+            // F4: TUI sends "always" for the Always choice; treat it as an
+            // allow (scope handling lands in 1.5). Any non-deny is allow.
+            let allow = matches!(decision, "allow" | "always");
+            turn::record_approval(state, aid, allow);
             JsonResp::ok(serde_json::json!({ "approved": aid, "decision": decision }))
         }
         None => JsonResp::error(400, "bad_approval", "approval id required"),

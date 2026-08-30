@@ -21,6 +21,7 @@ pub mod auth;
 pub mod bus;
 pub mod classify;
 pub mod config;
+pub mod policy;
 pub mod http_util;
 pub mod lease;
 pub mod log;

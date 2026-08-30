@@ -352,6 +352,8 @@ impl ReactLoop {
         match self.policy.check(&dispatch, &params.cwd) {
             Decision::Allow => CallPlan::Execute { args },
             Decision::Deny { reason } => CallPlan::Deny(reason),
+            Decision::Ask => CallPlan::Deny("approval required".to_string()),
+            Decision::HardDeny { reason } => CallPlan::Deny(reason),
         }
     }
 }

@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use kn9t_core::{
-    Cancel, Content, Event, EventSink, HookHost, Message, MsgId, Price, Request, Role, SessionId,
-    Store, Thinking, Tokens, Usage, UsageKind,
+    Cancel, Content, Decision, Event, EventSink, HookHost, Message, MsgId, Price, Request, Role,
+    SessionId, Store, Thinking, Tokens, Usage, UsageKind,
 };
 use kn9t_plugin::ComposedHookHost;
 use kn9t_react::{ReactConfig, ReactLoop, RunParams};
@@ -26,18 +26,9 @@ use crate::system_prompt;
 /// Per-session cancellation handles for `abort` (R-SRV-060 command). A running turn
 /// registers its `Cancel`; `abort` fires it.
 static ABORTS: Mutex<Option<HashMap<String, Cancel>>> = Mutex::new(None);
-/// Approval decisions keyed by approval id (R-SRV-010 `/approve`).
-static APPROVALS: Mutex<Option<HashMap<u64, bool>>> = Mutex::new(None);
 
 fn aborts() -> std::sync::MutexGuard<'static, Option<HashMap<String, Cancel>>> {
     let mut g = ABORTS.lock().expect("aborts poisoned");
-    if g.is_none() {
-        *g = Some(HashMap::new());
-    }
-    g
-}
-fn approvals() -> std::sync::MutexGuard<'static, Option<HashMap<u64, bool>>> {
-    let mut g = APPROVALS.lock().expect("approvals poisoned");
     if g.is_none() {
         *g = Some(HashMap::new());
     }
@@ -68,8 +59,19 @@ pub fn abort(_state: &Arc<ServerState>, session: &str) {
 }
 
 /// Record an approval decision (R-SRV-010 `/approve`).
-pub fn record_approval(_state: &Arc<ServerState>, id: u64, allow: bool) {
-    approvals().as_mut().unwrap().insert(id, allow);
+/// `decision` is `"allow"`/`"always"` -> Allow, else Deny. Resolved via the
+/// command path (never the bus) — DESIGN §10.
+pub fn record_approval(state: &Arc<ServerState>, id: u64, allow: bool) {
+    let decision = if allow {
+        Decision::Allow
+    } else {
+        Decision::Deny {
+            reason: "denied by user".into(),
+        }
+    };
+    // Resolve the blocking InteractivePolicy waiter if any. If no pending
+    // request with this id, this is a no-op 200 (idempotent, test `approve_no_pending_is_ok`).
+    let _ = state.approval_registry.resolve(id, decision);
 }
 
 /// Spawn a background turn for `session`. If no provider is wired, this is a no-op
@@ -128,7 +130,7 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             policy: state.policy.clone(),
             tools: state.tools.clone(),  // R-PLUG2-110: tools from plugin subprocess
             hooks,
-            bus: sink,
+            bus: sink.clone(),
         };
 
         let params = RunParams {
@@ -143,8 +145,15 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             cancel: Some(cancel.clone()),
         };
 
+        // Publish ApprovalRequest via policy check needs the session sink.
+        // Install the sink in TLS for InteractivePolicy (keeps Policy::check
+        // signature unchanged — thread-local per turn, no global race as each
+        // turn runs on its own thread).
+        crate::policy::set_policy_sink(Some(sink.clone()));
         crate::log!("turn started: session={}", session.0);
-        match loop_.run(params) {
+        let run_result = loop_.run(params);
+        crate::policy::set_policy_sink(None);
+        match run_result {
             Ok(_)  => crate::log!("turn finished: session={}", session.0),
             Err(e) => crate::log!("turn error: session={} error={e:?}", session.0),
         }
