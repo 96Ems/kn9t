@@ -61,6 +61,7 @@ pub fn abort(_state: &Arc<ServerState>, session: &str) {
 /// Record an approval decision (R-SRV-010 `/approve`).
 /// `decision` is `"allow"`/`"always"` -> Allow, else Deny. Resolved via the
 /// command path (never the bus) — DESIGN §10.
+/// Kept for backward compat; new code should use `resolve_approval`.
 pub fn record_approval(state: &Arc<ServerState>, id: u64, allow: bool) {
     let decision = if allow {
         Decision::Allow
@@ -72,6 +73,70 @@ pub fn record_approval(state: &Arc<ServerState>, id: u64, allow: bool) {
     // Resolve the blocking InteractivePolicy waiter if any. If no pending
     // request with this id, this is a no-op 200 (idempotent, test `approve_no_pending_is_ok`).
     let _ = state.approval_registry.resolve(id, decision);
+}
+
+/// New scope-aware approval: validates `decision` and `scope`, resolves the
+/// registry, and updates session/persistent caches. Returns error string for 400.
+pub fn resolve_approval(state: &Arc<ServerState>, id: u64, decision_str: &str, scope_str: Option<&str>) -> Result<Decision, String> {
+    // Validate decision — return 400 on unknown instead of default-deny (F4 fix).
+    let is_allow = match decision_str {
+        "allow" | "always" => true,
+        "deny" => false,
+        other => return Err(format!("unknown decision {other:?}; expected allow|deny|always")),
+    };
+    let scope = match scope_str {
+        Some(s) => match s {
+            "once" | "session" | "always" => s,
+            other => return Err(format!("unknown scope {other:?}; expected once|session|always")),
+        },
+        None => {
+            // Legacy: decision "always" implies scope always, else once
+            if decision_str == "always" { "always" } else { "once" }
+        }
+    };
+    // Handle legacy "always" decision as scope always (DESIGN §10)
+    let effective_scope = if decision_str == "always" { "always" } else { scope };
+
+    let decision = if is_allow {
+        Decision::Allow
+    } else {
+        Decision::Deny { reason: "denied by user".into() }
+    };
+
+    // Resolve with meta for caching
+    if let Some(meta) = state.approval_registry.resolve_with_meta(id, decision.clone()) {
+        // Only cache Allow decisions, never Deny, and never HardDeny (which has no meta)
+        if is_allow {
+            match effective_scope {
+                "session" => {
+                    // Use the session id from the registry meta (captured at request time)
+                    let sid = if meta.session_id.is_empty() {
+                        // fallback: no session id captured, nothing to cache
+                        String::new()
+                    } else {
+                        meta.session_id.clone()
+                    };
+                    if !sid.is_empty() {
+                        state.approval_cache.approve_session(sid, meta.fingerprint);
+                    }
+                }
+                "always" => {
+                    // Persistent — write back to config.toml
+                    // HardDeny commands are never emitted, so no meta for them; this is safe.
+                    if let Err(e) = state.approval_cache.approve_persistent(meta.fingerprint) {
+                        // Log but don't fail the approval — the turn is unblocked regardless.
+                        crate::log!("approve_persistent failed: {e}");
+                    }
+                }
+                _ => {} // once: nothing
+            }
+        }
+    } else {
+        // No pending approval with this id — still need to resolve for waiting turn?
+        // `resolve_with_meta` already tried; fallback to plain resolve for idempotency.
+        let _ = state.approval_registry.resolve(id, decision.clone());
+    }
+    Ok(decision)
 }
 
 /// Spawn a background turn for `session`. If no provider is wired, this is a no-op
@@ -146,13 +211,15 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
         };
 
         // Publish ApprovalRequest via policy check needs the session sink.
-        // Install the sink in TLS for InteractivePolicy (keeps Policy::check
+        // Install the sink + session id in TLS for InteractivePolicy (keeps Policy::check
         // signature unchanged — thread-local per turn, no global race as each
         // turn runs on its own thread).
         crate::policy::set_policy_sink(Some(sink.clone()));
+        crate::policy::set_policy_session(Some(session.0.clone()));
         crate::log!("turn started: session={}", session.0);
         let run_result = loop_.run(params);
         crate::policy::set_policy_sink(None);
+        crate::policy::set_policy_session(None);
         match run_result {
             Ok(_)  => crate::log!("turn finished: session={}", session.0),
             Err(e) => crate::log!("turn error: session={} error={e:?}", session.0),

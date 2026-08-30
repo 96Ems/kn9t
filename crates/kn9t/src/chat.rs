@@ -39,8 +39,12 @@ pub fn attach(args: &[String], port: u16, server_token: &str) {
 
 pub fn run(args: &[String], port: u16, server_token: &str) {
     // ── parse args ──
-    let mut model_provider = "anthropic".to_string();
-    let mut model_id = "anthropic::2024-10-22::claude-sonnet-4-6-latest".to_string();
+    let auth = format!("Bearer {server_token}");
+    let host = format!("127.0.0.1:{port}");
+
+    // Default: first model from server registry. Falls back to deepseek-v4-flash.
+    let (mut model_provider, mut model_id) = resolve_default_model(&host, &auth)
+        .unwrap_or_else(|| ("opencode-go".into(), "deepseek-v4-flash".into()));
     let mut do_continue = false;
     let mut prompt_words: Vec<&str> = Vec::new();
     let mut i = 0;
@@ -66,9 +70,6 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
         }
     }
 
-    let auth = format!("Bearer {server_token}");
-    let host = format!("127.0.0.1:{port}");
-    
     // Keep server alive while CLI is running.
     let _attach_stop = spawn_global_attach(&host, &auth);
 
@@ -110,6 +111,34 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
 
     stream_events(rx); // rx dropped here → SSE thread exits → server client_detached
     release_lease(&host, &auth, &session_id, &lease);
+}
+
+// ── Default model resolution ─────────────────────────────────────────────────
+
+/// Query GET /models and return (provider, id) for the default model.
+fn resolve_default_model(host: &str, auth: &str) -> Option<(String, String)> {
+    let request = format!("GET /models HTTP/1.0\r\nHost: {host}\r\nAuthorization: {auth}\r\n\r\n");
+    let mut stream = TcpStream::connect(host).ok()?;
+    stream.write_all(request.as_bytes()).ok()?;
+    stream.flush().ok()?;
+    let mut resp = String::new();
+    BufReader::new(stream).read_to_string(&mut resp).ok()?;
+    let body_start = resp.find("\r\n\r\n").map(|i| i + 4).unwrap_or(resp.len());
+    let body: Value = serde_json::from_str(&resp[body_start..]).ok()?;
+    let models = body.get("models")?.as_array()?;
+    // Find the model marked as default.
+    for m in models {
+        if m.get("is_default") == Some(&Value::Bool(true)) {
+            let provider = m.get("provider")?.as_str()?.to_string();
+            let id = m.get("id")?.as_str()?.to_string();
+            return Some((provider, id));
+        }
+    }
+    // Fallback: first model in list.
+    let first = models.first()?;
+    let provider = first.get("provider")?.as_str()?.to_string();
+    let id = first.get("id")?.as_str()?.to_string();
+    Some((provider, id))
 }
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────

@@ -83,6 +83,16 @@ pub struct RawPolicy {
     pub mode: Option<String>,
     #[serde(default)]
     pub bash: RawBashPolicy,
+    /// Persistent approvals: `scope=always` writes here (`[policy.approvals]`).
+    #[serde(default)]
+    pub approvals: RawApprovals,
+}
+
+/// `[policy.approvals]` — persistent `scope=always` fingerprints.
+#[derive(Debug, Deserialize, Default)]
+pub struct RawApprovals {
+    #[serde(default)]
+    pub always: Vec<String>,
 }
 
 /// `[policy.bash]` block. Each field is `Option` so we can tell

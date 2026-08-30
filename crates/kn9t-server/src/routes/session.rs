@@ -356,17 +356,23 @@ pub fn set_model(state: &Arc<ServerState>, id: &str, body: serde_json::Value) ->
 
 /// `POST /approve` — `{id, decision, scope}` [lease required]. Records an approval
 /// decision that the tool-dispatch policy consults. In v1 the decision is signaled
-/// to the running turn via the approval registry.
+/// to the running turn via the approval registry. `scope` is `once` (default),
+/// `session`, or `always` (writes back to `~/.kn9t/config.toml`). The TUI's legacy
+/// `"always"` decision is treated as `decision=allow, scope=always` for compat.
+/// Unknown `decision` or `scope` values are 400 (not default-deny).
 pub fn approve(state: &Arc<ServerState>, body: serde_json::Value) -> JsonResp {
     let approval_id = body.get("id").and_then(|x| x.as_u64());
-    let decision = body.get("decision").and_then(|d| d.as_str()).unwrap_or("deny");
+    let decision = match body.get("decision").and_then(|d| d.as_str()) {
+        Some(s) => s,
+        None => return JsonResp::error(400, "bad_approval", "decision required: allow|deny|always"),
+    };
+    let scope = body.get("scope").and_then(|s| s.as_str());
     match approval_id {
         Some(aid) => {
-            // F4: TUI sends "always" for the Always choice; treat it as an
-            // allow (scope handling lands in 1.5). Any non-deny is allow.
-            let allow = matches!(decision, "allow" | "always");
-            turn::record_approval(state, aid, allow);
-            JsonResp::ok(serde_json::json!({ "approved": aid, "decision": decision }))
+            match turn::resolve_approval(state, aid, decision, scope) {
+                Ok(_) => JsonResp::ok(serde_json::json!({ "approved": aid, "decision": decision, "scope": scope.unwrap_or(if decision=="always" {"always"} else {"once"}) })),
+                Err(e) => JsonResp::error(400, "bad_approval", &e),
+            }
         }
         None => JsonResp::error(400, "bad_approval", "approval id required"),
     }

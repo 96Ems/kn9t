@@ -67,7 +67,7 @@ fn run() -> std::io::Result<()> {
     // Apply [policy] config — DESIGN §10.1 (global only). This replaces the
     // default AskOnMutation/InteractivePolicy if the user configured a mode.
     {
-        let policy = ServerState::policy_from_config(&resolved.policy_mode, resolved.bash_policy.clone(), &state.approval_registry);
+        let policy = ServerState::policy_from_config_with_cache(&resolved.policy_mode, resolved.bash_policy.clone(), &state.approval_registry, &state.approval_cache);
         state = state.with_policy(policy);
         kn9t_server::log!("policy: mode={:?} bash.allow_read={} always_ask={} never={} allow_read_sub={}",
             resolved.policy_mode, resolved.bash_policy.allow_read.len(), resolved.bash_policy.always_ask.len(), resolved.bash_policy.never.len(), resolved.bash_policy.allow_read_sub.len());

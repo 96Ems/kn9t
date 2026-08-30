@@ -263,11 +263,15 @@ pub struct PromptReq {
     pub images: Vec<String>,
 }
 
-/// Approval response.
+/// Approval response — DESIGN §10 scope=once|session|always.
+/// For backward compat the server still accepts `decision="always"` as
+/// `allow+always`; new clients should send `decision="allow", scope="always"`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ApprovalResp {
     pub id: u64,
-    pub decision: String, // "allow" | "deny" | "always"
+    pub decision: String, // "allow" | "deny" (legacy "always" still accepted)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>, // "once" | "session" | "always"
 }
 
 /// Model info.

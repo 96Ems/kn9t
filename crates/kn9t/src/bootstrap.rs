@@ -336,6 +336,10 @@ price_out = 0.40
 # git   = ["log","diff","show","status","branch","blame","describe","rev-parse","ls-files","remote","tag"]
 # cargo = ["tree","metadata","--version"]
 # npm   = ["ls","view","outdated"]
+
+# Persistent always-approvals (written by `scope=always`, never hand-edit `never` entries).
+# [policy.approvals]
+# always = ["bash:rm -rf /tmp/test"]
 "#;
 
 // ── UUID v4 (no deps) ─────────────────────────────────────────────────────────

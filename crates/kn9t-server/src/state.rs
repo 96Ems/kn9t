@@ -21,7 +21,7 @@ use crate::bus::SessionBuses;
 use crate::classify::BashPolicy;
 use crate::config::PolicyMode;
 use crate::lease::{LeaseMap, DEFAULT_LEASE_IDLE};
-use crate::policy::{ApprovalRegistry, ConfigPolicy, DenyAllPolicy, InteractivePolicy};
+use crate::policy::{ApprovalCache, ApprovalRegistry, ConfigPolicy, DenyAllPolicy, InteractivePolicy};
 
 /// Grace period after last client disconnects before the server exits.
 /// Short enough to feel immediate, long enough to survive a TUI restart.
@@ -132,6 +132,8 @@ pub struct ServerState {
     pub policy: Arc<dyn Policy>,
     /// Registry for blocking approval requests (DESIGN §10).
     pub approval_registry: Arc<ApprovalRegistry>,
+    /// Session + persistent approval cache (scope=session|always).
+    pub approval_cache: Arc<ApprovalCache>,
     /// Working directory root (server process cwd), used for the tool context when
     /// a session does not pin its own.
     pub cwd: PathBuf,
@@ -155,9 +157,11 @@ impl ServerState {
         plugin_hosts: Vec<Arc<PluginHost>>,
     ) -> Self {
         let approval_registry = Arc::new(ApprovalRegistry::new());
-        let policy: Arc<dyn Policy> = Arc::new(InteractivePolicy::new(
+        let approval_cache = Arc::new(ApprovalCache::new(crate::config::global_config_path()));
+        let policy: Arc<dyn Policy> = Arc::new(InteractivePolicy::new_with_cache(
             BashPolicy::default(),
             approval_registry.clone(),
+            approval_cache.clone(),
         ));
         ServerState {
             store,
@@ -171,6 +175,7 @@ impl ServerState {
             default_model: None,
             policy,
             approval_registry,
+            approval_cache,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             provider_reported_budget: Mutex::new(None),
             model_registry: Vec::new(),
@@ -197,14 +202,24 @@ impl ServerState {
     }
     /// Build a `Policy` from resolved `[policy]` config — DESIGN §10.1.
     /// Called from `main.rs` after `config::load`. The state's
-    /// `approval_registry` is shared with `InteractivePolicy`.
+    /// `approval_registry` and `approval_cache` are shared with `InteractivePolicy`.
     pub fn policy_from_config(
         mode: &PolicyMode,
         bash: BashPolicy,
         registry: &Arc<ApprovalRegistry>,
     ) -> Arc<dyn Policy> {
+        // For config-driven policy we use the global cache (from file).
+        let cache = Arc::new(ApprovalCache::new(crate::config::global_config_path()));
+        Self::policy_from_config_with_cache(mode, bash, registry, &cache)
+    }
+    pub fn policy_from_config_with_cache(
+        mode: &PolicyMode,
+        bash: BashPolicy,
+        registry: &Arc<ApprovalRegistry>,
+        cache: &Arc<ApprovalCache>,
+    ) -> Arc<dyn Policy> {
         match mode {
-            PolicyMode::AskOnMutation => Arc::new(InteractivePolicy::new(bash, registry.clone())),
+            PolicyMode::AskOnMutation => Arc::new(InteractivePolicy::new_with_cache(bash, registry.clone(), cache.clone())),
             PolicyMode::AllowAll => Arc::new(AllowPolicy),
             PolicyMode::ReadOnly => Arc::new(ConfigPolicy::new(bash)),
             PolicyMode::DenyAll => Arc::new(DenyAllPolicy),

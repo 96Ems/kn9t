@@ -157,7 +157,23 @@ impl Client {
 
     /// Respond to approval request.
     pub fn approve(&self, session_id: &str, holder: &str, id: u64, decision: &str) -> Result<(), ClientError> {
-        let req = ApprovalResp { id, decision: decision.to_string() };
+        // Map legacy "always" decision to scope=always for schema correctness (Phase 2).
+        let (decision_str, scope) = match decision {
+            "always" => ("allow".to_string(), Some("always".to_string())),
+            other => (other.to_string(), None),
+        };
+        let req = ApprovalResp { id, decision: decision_str, scope };
+        self.request("POST", "/approve")
+            .set("X-Lease", holder)
+            .set("X-Lease-Session", session_id)
+            .send_json(&req)
+            .map_err(|e| ClientError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Scope-aware approve (Phase 1.5): decision allow|deny + scope once|session|always.
+    pub fn approve_scoped(&self, session_id: &str, holder: &str, id: u64, decision: &str, scope: &str) -> Result<(), ClientError> {
+        let req = ApprovalResp { id, decision: decision.to_string(), scope: Some(scope.to_string()) };
         self.request("POST", "/approve")
             .set("X-Lease", holder)
             .set("X-Lease-Session", session_id)
