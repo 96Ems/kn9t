@@ -11,7 +11,8 @@ members = [
     "crates/kn9t-tui",
     "crates/kn9t-plugin",
     "crates/kn9t-plugin-sdk",
-    "crates/kn9t"
+    "crates/kn9t",
+    "xtask"
 ]
 
 [workspace.package]

@@ -1,0 +1,241 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "kn9t HTTP API",
+  "description": "Authoritative HTTP API for kn9t-server (R-SRV-010). Server is source of truth per R-TUI-012.",
+  "routes": [
+    {
+      "method": "POST",
+      "path": "/session",
+      "lease": false,
+      "request": {
+        "type": "object",
+        "properties": {
+          "cwd": { "type": "string", "description": "Working directory for the session" },
+          "model": {
+            "type": "object",
+            "properties": {
+              "provider": { "type": "string" },
+              "id": { "type": "string" }
+            },
+            "required": ["provider", "id"],
+            "additionalProperties": false
+          },
+          "name": { "type": "string", "description": "Human title, suppresses auto-title" }
+        },
+        "additionalProperties": false
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "cwd": { "type": "string" },
+          "name": { "type": ["string", "null"] },
+          "model": { "type": "object", "properties": { "provider": { "type": "string" }, "id": { "type": "string" } }, "required": ["provider", "id"] }
+        },
+        "required": ["id", "cwd", "model"]
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/session",
+      "lease": false,
+      "response": {
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "name": { "type": ["string", "null"] },
+                "cwd": { "type": "string" },
+                "head_seq": { "type": "integer" },
+                "created_at": { "type": "string", "format": "date-time", "description": "ISO8601, millis since epoch normalized at boundary" }
+              },
+              "required": ["id", "head_seq"]
+            }
+          }
+        },
+        "required": ["sessions"]
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/session/{id}",
+      "lease": false,
+      "response": {
+        "type": "object",
+        "properties": {
+          "meta": { "type": "object", "properties": { "id": { "type": "string" }, "name": { "type": ["string", "null"] }, "cwd": { "type": "string" }, "created_at": { "type": "string", "format": "date-time" } }, "required": ["id"] },
+          "head_seq": { "type": "integer" },
+          "ctx_tokens": { "type": "integer" },
+          "cost_usd": { "type": "number" },
+          "model": { "type": "object", "properties": { "provider": { "type": "string" }, "id": { "type": "string" } }, "required": ["provider", "id"] },
+          "transcript": { "type": "array", "items": { "type": "object" } }
+        },
+        "required": ["meta", "head_seq", "transcript"]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/session/{id}/fork",
+      "lease": false,
+      "request": {
+        "type": "object",
+        "properties": {
+          "origin_seq": { "type": "integer" },
+          "reason": { "type": "string", "enum": ["fork", "rewind", "subagent", "tree"] }
+        },
+        "additionalProperties": false
+      },
+      "response": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }
+    },
+    {
+      "method": "DELETE",
+      "path": "/session/{id}",
+      "lease": false,
+      "response": { "type": "object", "properties": { "deleted": { "type": "string" } }, "required": ["deleted"] }
+    },
+    {
+      "method": "POST",
+      "path": "/session/{id}/lease",
+      "lease": false,
+      "response": { "type": "object", "properties": { "lease": { "type": "string" }, "session": { "type": "string" } }, "required": ["lease", "session"] }
+    },
+    {
+      "method": "DELETE",
+      "path": "/session/{id}/lease",
+      "lease": false,
+      "response": { "type": "object", "properties": { "released": { "type": "string" } }, "required": ["released"] }
+    },
+    {
+      "method": "POST",
+      "path": "/session/{id}/prompt",
+      "lease": true,
+      "request": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "blobs": { "type": "array", "items": { "type": "string" } },
+          "images": { "type": "array", "items": { "type": "string", "description": "data:image/png;base64,..." } }
+        },
+        "additionalProperties": false
+      },
+      "response": { "type": "object", "properties": { "accepted": { "type": "boolean" }, "seq": { "type": "integer" } }, "required": ["accepted", "seq"] }
+    },
+    {
+      "method": "POST",
+      "path": "/session/{id}/steer",
+      "lease": true,
+      "request": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"], "additionalProperties": false },
+      "response": { "type": "object", "properties": { "steered": { "type": "boolean" }, "seq": { "type": "integer" } }, "required": ["steered"] }
+    },
+    {
+      "method": "POST",
+      "path": "/session/{id}/abort",
+      "lease": true,
+      "response": { "type": "object", "properties": { "aborted": { "type": "string" } }, "required": ["aborted"] }
+    },
+    {
+      "method": "POST",
+      "path": "/session/{id}/model",
+      "lease": true,
+      "request": { "type": "object", "properties": { "provider": { "type": "string" }, "id": { "type": "string" } }, "required": ["provider", "id"], "additionalProperties": false },
+      "response": { "type": "object", "properties": { "model_set": { "type": "boolean" }, "seq": { "type": "integer" } }, "required": ["model_set"] }
+    },
+    {
+      "method": "POST",
+      "path": "/approve",
+      "lease": true,
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "decision": { "type": "string", "enum": ["allow", "deny", "always"] },
+          "scope": { "type": "string", "enum": ["once", "session", "always"] }
+        },
+        "required": ["id", "decision"],
+        "additionalProperties": false
+      },
+      "response": { "type": "object", "properties": { "approved": { "type": "integer" }, "decision": { "type": "string" }, "scope": { "type": "string" } }, "required": ["approved"] }
+    },
+    {
+      "method": "POST",
+      "path": "/blob",
+      "lease": false,
+      "request": { "type": "string", "contentEncoding": "binary" },
+      "response": { "type": "object", "properties": { "hash": { "type": "string" }, "mime": { "type": "string" } }, "required": ["hash"] }
+    },
+    {
+      "method": "GET",
+      "path": "/blob/{hash}",
+      "lease": false,
+      "response": { "type": "string", "contentEncoding": "binary" }
+    },
+    {
+      "method": "GET",
+      "path": "/models",
+      "lease": false,
+      "response": { "type": "object", "properties": { "models": { "type": "array", "items": { "type": "object" } }, "auth": { "type": "object" } }, "required": ["models"] }
+    },
+    {
+      "method": "GET",
+      "path": "/cost",
+      "lease": false,
+      "response": { "type": "object" }
+    },
+    {
+      "method": "GET",
+      "path": "/budget",
+      "lease": false,
+      "response": { "type": "object" }
+    },
+    {
+      "method": "GET",
+      "path": "/session/{id}/events",
+      "lease": false,
+      "description": "SSE: ?from={seq} replay durable >from then live, snake_case kind"
+    },
+    {
+      "method": "GET",
+      "path": "/attach",
+      "lease": false,
+      "description": "Global attach heartbeat"
+    },
+    {
+      "method": "POST",
+      "path": "/stop",
+      "lease": false,
+      "response": { "type": "object", "properties": { "ok": { "type": "boolean" } }, "required": ["ok"] }
+    },
+    {
+      "method": "GET",
+      "path": "/health",
+      "lease": false,
+      "response": { "type": "object", "properties": { "ok": { "type": "boolean" }, "idle_secs": { "type": "integer" }, "attached_clients": { "type": "integer" }, "running_turns": { "type": "integer" } }, "required": ["ok"] }
+    }
+  ],
+  "sse": {
+    "kind": { "type": "string", "description": "snake_case per AGENTS.md §12" },
+    "events": [
+      { "kind": "message_appended", "seq": "u64", "msg": "Message" },
+      { "kind": "usage_recorded", "seq": "u64", "provider": "string", "model": "string", "usage_kind": "string", "tokens": "Tokens", "cost_usd": "number", "estimated": "bool" },
+      { "kind": "model_changed", "seq": "u64", "model": "ModelRef" },
+      { "kind": "compacted", "seq": "u64", "replaced": "SeqRange", "summary": "Message" },
+      { "kind": "turn_started", "turn": "u32" },
+      { "kind": "text_delta", "msg_id": "string", "idx": "u32", "delta": "string" },
+      { "kind": "thinking_delta", "msg_id": "string", "idx": "u32", "delta": "string" },
+      { "kind": "tool_args_delta", "msg_id": "string", "idx": "u32", "delta": "string" },
+      { "kind": "tool_started", "call_id": "string", "name": "string" },
+      { "kind": "tool_progress", "call_id": "string", "note": "string" },
+      { "kind": "tool_finished", "call_id": "string", "is_error": "bool" },
+      { "kind": "approval_request", "id": "u64", "tool": "string", "args": "Value", "cwd": "string" },
+      { "kind": "turn_ended", "turn": "u32", "stop": "string" },
+      { "kind": "hook_failed", "plugin": "string", "hook": "string", "reason": "string" },
+      { "kind": "title_changed", "title": "string" },
+      { "kind": "error", "message": "string" },
+      { "kind": "plugin_notification", "plugin": "string", "message": "string" }
+    ]
+  }
+}

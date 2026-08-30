@@ -1,0 +1,92 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "kn9t Plugin Protocol (v1)",
+  "description": "Host ↔ Plugin NdJSON, ToolSpec, ProviderDecl, hooks. SDK and host JSON compatible.",
+  "host_to_plugin": {
+    "Hello": {
+      "type": "object",
+      "properties": {
+        "t": { "const": "hello" },
+        "proto": { "type": "integer", "const": 1 },
+        "kn9t": { "type": "string" }
+      },
+      "required": ["t", "proto", "kn9t"],
+      "additionalProperties": false
+    },
+    "Hook": {
+      "type": "object",
+      "properties": {
+        "t": { "const": "hook" },
+        "id": { "type": "integer" },
+        "hook": { "type": "string" },
+        "payload": { "type": "object" }
+      },
+      "required": ["t", "id", "hook", "payload"]
+    },
+    "Cancel": { "type": "object", "properties": { "t": { "const": "cancel" }, "id": { "type": "integer" } }, "required": ["t", "id"] },
+    "Shutdown": { "type": "object", "properties": { "t": { "const": "shutdown" } }, "required": ["t"] }
+  },
+  "plugin_to_host": {
+    "Hello": {
+      "type": "object",
+      "properties": {
+        "t": { "const": "hello" },
+        "name": { "type": "string" },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "hooks": { "type": "array", "items": { "type": "string" } },
+        "tools": { "type": "array", "items": { "$ref": "#/definitions/ToolSpec" } },
+        "provider": { "$ref": "#/definitions/ProviderDecl" },
+        "events": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["t", "name"],
+      "additionalProperties": false
+    },
+    "Result": { "type": "object", "properties": { "t": { "const": "result" }, "id": { "type": "integer" } }, "required": ["t", "id"] },
+    "Chunk": { "type": "object", "properties": { "t": { "const": "chunk" }, "id": { "type": "integer" } }, "required": ["t", "id"] },
+    "Done": { "type": "object", "properties": { "t": { "const": "done" }, "id": { "type": "integer" } }, "required": ["t", "id"] }
+  },
+  "definitions": {
+    "ToolSpec": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "schema": { "type": "object" },
+        "parallel_safe": { "type": "boolean", "default": false },
+        "hidden": { "type": "boolean", "default": false },
+        "effects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": { "type": "string" },
+              "kind": { "type": "string", "enum": ["shell", "fs_read", "fs_write", "network"] }
+            },
+            "required": ["field", "kind"],
+            "additionalProperties": false
+          },
+          "default": []
+        }
+      },
+      "required": ["name", "description", "schema"],
+      "additionalProperties": false
+    },
+    "ProviderDecl": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "models": { "type": "array", "items": { "$ref": "#/definitions/ModelDecl" } }
+      },
+      "required": ["id", "models"]
+    },
+    "ModelDecl": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ctx_window": { "type": "integer" },
+        "price": { "type": "object", "properties": { "input": { "type": "number" }, "output": { "type": "number" }, "cache_read": { "type": "number" }, "cache_write": { "type": "number" } } }
+      },
+      "required": ["id", "ctx_window"]
+    }
+  }
+}
