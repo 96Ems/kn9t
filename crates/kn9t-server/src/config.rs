@@ -326,7 +326,7 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
             }
             "plugin" => {
                 let binary_name = rp.binary.as_deref().unwrap_or_else(|| {
-                    eprintln!("[kn9t-config] provider {name:?}: kind=\"plugin\" requires a `binary` field; skipping");
+                    crate::log!("[kn9t-config] provider {name:?}: kind=\"plugin\" requires a `binary` field; skipping");
                     ""
                 });
                 if binary_name.is_empty() { continue; }
@@ -347,7 +347,7 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                 };
 
                 if !binary_path.exists() {
-                    eprintln!(
+                    crate::log!(
                         "[kn9t-config] provider {name:?}: plugin binary not found at {}; skipping",
                         binary_path.display()
                     );
@@ -361,7 +361,7 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                             match std::env::var(var) {
                                 Ok(val) => val,
                                 Err(_) => {
-                                    eprintln!("[kn9t-config] provider {name:?}: env var {var:?} not set; skipping key {k:?}");
+                                    crate::log!("[kn9t-config] provider {name:?}: env var {var:?} not set; skipping key {k:?}");
                                     return None;
                                 }
                             }
@@ -378,7 +378,7 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
 
                 match kn9t_plugin::PluginHost::spawn(&binary_path, &env_refs, std::sync::Arc::new(kn9t_plugin::NoOpPluginKv)) {
                     Ok(host) => {
-                        eprintln!("[kn9t-config] provider {name:?}: spawned plugin {}", binary_path.display());
+                        crate::log!("[kn9t-config] provider {name:?}: spawned plugin {}", binary_path.display());
                         
                         // Extract models from plugin declaration (auto-discovery).
                          if let Some(ref prov_decl) = host.declaration.provider {
@@ -410,7 +410,7 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                                     quirks: ModelQuirks::default(),
                                 };
                                 auto_models.push(spec);
-                                eprintln!("[kn9t-config] provider {name:?}: discovered model {:?}", model_decl.id);
+                                crate::log!("[kn9t-config] provider {name:?}: discovered model {:?}", model_decl.id);
                             }
                         }
                         
@@ -420,13 +420,13 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                         providers.push((name.clone(), Arc::new(remote) as Arc<dyn kn9t_core::Provider>));
                     }
                     Err(e) => {
-                        eprintln!("[kn9t-config] provider {name:?}: spawn failed: {e}; skipping");
+                        crate::log!("[kn9t-config] provider {name:?}: spawn failed: {e}; skipping");
                         continue;
                     }
                 }
             }
             other => {
-                eprintln!(
+                crate::log!(
                     "[kn9t-config] provider {name:?}: kind {other:?} not supported \
                      (supported: \"openai\", \"plugin\"); skipping"
                 );
@@ -478,7 +478,7 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         models.push(spec);
 
         if !provider_quirks.contains_key(&rm.provider) {
-            eprintln!("[kn9t-config] model {:?} references unknown provider {:?}; model registered but turns will fail", rm.id, rm.provider);
+            crate::log!("[kn9t-config] model {:?} references unknown provider {:?}; model registered but turns will fail", rm.id, rm.provider);
         }
         // Store the merged HTTP quirks somewhere the provider can access per-model.
         // In v1 the provider holds a single global Quirks; per-model override is
@@ -498,7 +498,7 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         if !config_model_keys.contains(&(pm.r#ref.provider.clone(), pm.r#ref.id.clone())) {
             models.push(pm);
         } else {
-            eprintln!("[kn9t-config] plugin model {:?} overridden by config", pm.r#ref.id);
+            crate::log!("[kn9t-config] plugin model {:?} overridden by config", pm.r#ref.id);
         }
     }
 
@@ -528,7 +528,7 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
     let plugins: Vec<ResolvedPlugin> = raw.plugins.iter()
         .filter_map(|rp| {
             if rp.cmd.is_empty() {
-                eprintln!("[kn9t-config] plugin {:?}: cmd is empty; skipping", rp.name);
+                crate::log!("[kn9t-config] plugin {:?}: cmd is empty; skipping", rp.name);
                 return None;
             }
             // Resolve env vars: "env:VAR" → value of VAR, otherwise literal.
@@ -538,7 +538,7 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                         match std::env::var(var) {
                             Ok(val) => val,
                             Err(_) => {
-                                eprintln!("[kn9t-config] plugin {:?}: env var {var:?} not set; skipping key {k:?}", rp.name);
+                                crate::log!("[kn9t-config] plugin {:?}: env var {var:?} not set; skipping key {k:?}", rp.name);
                                 return None;
                             }
                         }
@@ -569,13 +569,13 @@ fn resolve_headers(
     for (k, v) in raw {
         match resolve_header_value(v) {
             Ok(val) if val.is_empty() => {
-                eprintln!(
+                crate::log!(
                     "[kn9t-config] provider {provider_name:?}: header {k:?} resolved to empty; omitting (R-SRV-CFG-020)"
                 );
             }
             Ok(val) => out.push((k.clone(), val)),
             Err(e) => {
-                eprintln!(
+                crate::log!(
                     "[kn9t-config] provider {provider_name:?}: header {k:?}: {e}; omitting (R-SRV-CFG-020)"
                 );
             }
@@ -673,19 +673,19 @@ fn fetch_openai_models(
             let mut reader = resp.into_body().into_reader();
             let mut body_str = String::new();
             if let Err(e) = reader.read_to_string(&mut body_str) {
-                eprintln!("[kn9t-config] provider {provider_name:?}: /models read failed: {e}");
+                crate::log!("[kn9t-config] provider {provider_name:?}: /models read failed: {e}");
                 return Vec::new();
             }
             match serde_json::from_str(&body_str) {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("[kn9t-config] provider {provider_name:?}: /models parse failed: {e}");
+                    crate::log!("[kn9t-config] provider {provider_name:?}: /models parse failed: {e}");
                     return Vec::new();
                 }
             }
         },
         Err(e) => {
-            eprintln!("[kn9t-config] provider {provider_name:?}: /models fetch failed: {e}");
+            crate::log!("[kn9t-config] provider {provider_name:?}: /models fetch failed: {e}");
             return Vec::new();
         }
     };
@@ -693,7 +693,7 @@ fn fetch_openai_models(
     let models_arr = match body.get("data").and_then(|d| d.as_array()) {
         Some(arr) => arr,
         None => {
-            eprintln!("[kn9t-config] provider {provider_name:?}: /models response has no 'data' array");
+            crate::log!("[kn9t-config] provider {provider_name:?}: /models response has no 'data' array");
             return Vec::new();
         }
     };
@@ -731,7 +731,7 @@ fn fetch_openai_models(
     }
     
     if !result.is_empty() {
-        eprintln!("[kn9t-config] provider {provider_name:?}: discovered {} models from /models", result.len());
+        crate::log!("[kn9t-config] provider {provider_name:?}: discovered {} models from /models", result.len());
     }
     
     result

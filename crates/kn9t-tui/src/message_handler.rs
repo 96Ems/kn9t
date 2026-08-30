@@ -271,11 +271,9 @@ impl TranscriptParser {
         let mut messages = Vec::new();
 
         for msg in transcript {
-            let role = msg
-                .get("role")
-                .and_then(|r| r.as_str())
-                .unwrap_or("")
-                .to_string();
+            let Some(role) = msg.get("role").and_then(|r| r.as_str()) else {
+                continue;
+            };
             let content = msg.get("content");
 
             let mut text_parts = Vec::new();
@@ -305,7 +303,7 @@ impl TranscriptParser {
             // Only add message if there's content or tools.
             if !content_text.is_empty() || !tools.is_empty() || image_count > 0 {
                 messages.push(Message {
-                    role,
+                    role: role.to_string(),
                     content: content_text,
                     tools,
                     image_count,
@@ -323,11 +321,12 @@ impl TranscriptParser {
         for msg in transcript {
             if let Some(serde_json::Value::Array(arr)) = msg.get("content") {
                 for block in arr {
-                    let btype = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    let Some(btype) = block.get("type").and_then(|t| t.as_str()) else {
+                        continue;
+                    };
                     if btype == "tool_result" {
-                        // Try both "id" (kn9t-core format) and "tool_use_id" (Anthropic API format)
-                        if let Some(id) = block.get("id").and_then(|v| v.as_str())
-                            .or_else(|| block.get("tool_use_id").and_then(|v| v.as_str())) {
+                        // Canonical kn9t format: the result block carries `id`.
+                        if let Some(id) = block.get("id").and_then(|v| v.as_str()) {
                             let is_error = block
                                 .get("is_error")
                                 .and_then(|v| v.as_bool())
@@ -367,7 +366,11 @@ impl TranscriptParser {
         text_parts: &mut Vec<String>,
         tools: &mut Vec<ToolCard>,
     ) {
-        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        // The server is authoritative; a block without a `type` is not a content
+        // block we recognize — skip it explicitly rather than matching "".
+        let Some(block_type) = block.get("type").and_then(|t| t.as_str()) else {
+            return;
+        };
 
         match block_type {
             "text" => {
@@ -380,22 +383,18 @@ impl TranscriptParser {
                     text_parts.push(text.to_string());
                 }
             }
-            "tool_call" | "tool_use" => {
-                let call_id = block
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+            "tool_call" => {
+                // Canonical field is `args_json` (JSON string); one format only (F6 / §10).
+                let Some(call_id) = block.get("id").and_then(|v| v.as_str()) else {
+                    return;
+                };
                 let name = block
                     .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                // Args can be in "args_json" (kn9t-core), "args", or "input" (Anthropic) depending on format
                 let args = block
                     .get("args_json")
-                    .or_else(|| block.get("args"))
-                    .or_else(|| block.get("input"))
                     .map(|v| {
                         if v.is_string() {
                             v.as_str().unwrap_or("").to_string()
@@ -407,12 +406,12 @@ impl TranscriptParser {
 
                 // Look up the result.
                 let (output, is_error) = tool_results
-                    .get(&call_id)
+                    .get(call_id)
                     .cloned()
                     .unwrap_or((String::new(), false));
 
                 tools.push(ToolCard {
-                    call_id,
+                    call_id: call_id.to_string(),
                     name,
                     args,
                     status: if is_error {
@@ -571,7 +570,7 @@ mod tests {
             "role": "assistant",
             "content": [
                 { "type": "text", "text": "Here's the result:" },
-                { "type": "tool_call", "id": "call-1", "name": "bash", "args": {"command": "ls"} }
+                { "type": "tool_call", "id": "call-1", "name": "bash", "args_json": "{\"command\": \"ls\"}" }
             ]
         })];
 
@@ -589,7 +588,7 @@ mod tests {
             serde_json::json!({
                 "role": "assistant",
                 "content": [
-                    { "type": "tool_call", "id": "call-1", "name": "bash", "args": {} }
+                    { "type": "tool_call", "id": "call-1", "name": "bash", "args_json": "{}" }
                 ]
             }),
             serde_json::json!({
@@ -597,7 +596,7 @@ mod tests {
                 "content": [
                     {
                         "type": "tool_result",
-                        "tool_use_id": "call-1",
+                        "id": "call-1",
                         "content": "file1.txt\nfile2.txt",
                         "is_error": false
                     }

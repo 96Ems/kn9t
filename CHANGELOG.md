@@ -11,8 +11,105 @@ pointer current.
 
 ## ▶ Next session starts here
 
-**Next:** Phase 1 — restore bash classifier in kn9t-server, wire InteractivePolicy, parse
-`[policy]` config section. Then Phase 2 (schema-first API contract).
+**Next:** Phase 3 — all-plugins-external migration (move internal plugins out of the
+workspace; auto-discovery per F13). Phase 2 (schema-first API contract) is complete:
+see the 2026-08-31 session below.
+
+---
+
+## Session — 2026-08-31 — Phase 2: schema-first API contract
+
+### Summary
+
+Implemented `job/phase2.md` end-to-end (ADR-0005): one machine-readable contract
+(`schema/http.json` + `schema/plugin.json`), a code generator (`xtask`), typed server
+request structs with `deny_unknown_fields` (unknown field → **400**, never a silent
+ignore), a working drift gate wired into the pre-commit hook, and the two live-bug
+reconciliations (F5 `created_at`, F7 `CreateSessionReq.model`).
+
+### What changed
+
+- **`xtask` generator (2.2).** Replaced the placeholder with a real generator
+  (`xtask/src/{main,schema,gen_server,gen_wire,gen_markdown,gen_stubs}.rs`),
+  invoked as `cargo run -p xtask -- generate`, **idempotent** (verified
+  byte-identical across runs). Produces:
+  - `crates/kn9t-server/src/api.rs` — `CreateSessionReq`, `ForkReq`, `PromptReq`,
+    `SteerReq`, `SetModelReq`, `ApproveReq` + shared `ModelRef`, all with
+    `#[serde(deny_unknown_fields)]`.
+  - `crates/kn9t-tui/src/wire.rs` — regenerated, **GI-6-clean**; `created_at` is a
+    plain `Option<String>` (the 65-line dual-format visitor is **deleted**);
+    `CreateSessionReq.model` is `Option<WireModelRef>` (F7).
+  - `API.md` — regenerated from the schema (never hand-edited again), with
+    snake_case SSE kinds, correct route tables, and `/pref`, `/health`, `/stop`,
+    `/attach` present (F6).
+  - `schema/generated/go_types.go` + `python_types.py` — contract-break-visible
+    stubs (F11).
+- **Server routes (2.2).** `http_util::parse_json<T>` returns 400 on unknown/mistyped
+  fields; `router.rs` deserializes into `crate::api` types for create/fork/prompt/
+  steer/set_model/approve. `fn approve` delegates decision+scope validation to
+  `turn::resolve_approval` (existing F4 fix) — no duplicated validation layer.
+- **Drift gate (2.3).** `scripts/check-schema.sh` rebuilt on `xtask -- --check`
+  (in-memory re-derive + byte compare — no half-written files on failure). Fixed the
+  buggy GI-6 check: the old `grep -q 'kn9t-' f | grep -q 'path'` always passed
+  vacuously (second grep read empty stdin); replaced with an anchored
+  `^[[:space:]]*kn9t-` pattern. `.git/hooks/pre-commit` created, runs
+  `check-gi1.sh` + `check-schema.sh`. Verified the gate fails on a deliberate schema
+  drift and passes when reverted.
+- **Reconcile drift (2.4).**
+  - F5: server now emits ISO8601 `created_at` in `GET /session` and `GET /session/{id}`
+    (`routes/session.rs` `list()`/`snapshot()` normalize stored INTEGER millis at the
+    boundary). Implemented `millis_to_iso` with Hinnant civil-from-days (leap-aware,
+    no new dependency) + unit tests. The TUI visitor and its wrong `days/365`,
+    `remaining_days/30` math are deleted.
+  - F7: `wire.rs` `CreateSessionReq.model` is now `Option<WireModelRef>`; `client.rs`
+    `create_session` takes `Option<&WireModelRef>`.
+- **Fallback chains deleted (2.5).** `message_handler.rs`:
+  - `args_json.or_else(args).or_else(input)` → single `args_json` (one format);
+  - `id.or_else(tool_use_id)` → `id` only;
+  - `block.get("type").unwrap_or("")` → explicit `let Some(t) = … else { return }`.
+  Parser tests updated to the canonical fields.
+- **Cheap fixes.** All 45 `eprintln!` in `kn9t-server` (router, session, turn,
+  config) → `crate::log!` (F12); `read_json` helper deleted (nothing left calls it);
+  `.gitignore` names `kn9t-tui.log` / `custom-provider.log` explicitly (F12 hygiene;
+  `*.log` already covered them and nothing was tracked).
+- **Schema enrichment.** `/models`, `/cost` (with `since`/`group_by` query), `/budget`
+  responses made concrete in `http.json` (were opaque `{type: object}`); `/pref`
+  routes added (missing entirely — a schema gap F6 flagged); route descriptions added.
+  The schema remains the single source of truth; generators render it.
+
+### Deviations / notes
+
+- **No new runtime dependency anywhere in the workspace** (DESIGN §15 budget intact).
+  The generator (`xtask`) deliberately does **not** enable `serde_json/preserve_order`:
+  cargo feature unification would flip `serde_json::Map` to `IndexMap` in every
+  runtime crate too (GI-3: "preserve_order off"). BTreeMap's deterministic sorted
+  iteration is all the generator needs — generated struct field order is sorted,
+  which is functionally identical for serde (parsing/formatting is by field name).
+- `ForkReq.reason` and `ApproveReq.decision` are schema-declared enums held as
+  `String` in the generated structs, validated in the route (unknown → 400). This
+  keeps the generated shape exactly as phase2.md words it while preserving the
+  existing `turn::resolve_approval` F4 behavior.
+- `wire.rs` response structs deliberately omit `deny_unknown_fields` (the TUI is a
+  consumer and tolerates additive server fields); request structs carry only schema
+  fields.
+
+### Verification
+
+- `cargo check --workspace` — clean (3 pre-existing `kn9t-tui` dead-code warnings).
+- `cargo test -p kn9t-server -p kn9t-tui -p kn9t-store` — all pass: server 21 unit +
+  40 acceptance (incl. new `unknown_field_is_400`) + 3 classify; store 14 + 23; TUI
+  109 unit + `tui_no_kn9t_deps` (GI-6).
+- `cargo test --workspace` — green except the 3 documented **F13** `kn9t-react`
+  harness failures (binary lookup, deferred to Phase 3); all 12 pass once
+  `target/debug/kn9t-tools` exists (verified).
+- Generator idempotent; `scripts/check-schema.sh` fails on deliberate drift and
+  passes on revert; pre-commit hook runs both gates cleanly.
+
+### Discovered bugs
+
+| bug | where | status |
+|-----|-------|--------|
+| (none new) | — | F5/F6/F7 were pre-listed in `job/findings.md` and are resolved here |
 
 ---
 

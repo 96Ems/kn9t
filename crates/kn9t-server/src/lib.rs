@@ -17,6 +17,7 @@
 //! runs the accept loop on a background thread, returning the bound port so a test
 //! client can connect.
 
+pub mod api;
 pub mod auth;
 pub mod bus;
 pub mod classify;

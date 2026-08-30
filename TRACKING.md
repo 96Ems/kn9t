@@ -10,7 +10,8 @@ Legend: `☐` pending · `▣` in progress · `☑` done (acceptance test passin
 
 ## Current position
 
-**Stage:** PLAN.md post-v1 improvements (P1–P4 complete). Architecture cleanup 2026-08-30.
+**Stage:** PLAN.md post-v1 improvements (P1–P4 complete). Architecture cleanup 2026-08-30,
+Phase 0–2 done (docs scaffolding, classifier+approvals, schema-first API contract).
 **Last gate green:** stage 09 — R-CP-900 / R-ANTH-900 green. **But G1 is now RED for
 R-TOOL-070/080/090/095** — the bash classifier was deleted in 5b65819 and never restored.
 `cargo test --workspace`: **385 passed, 0 failed**, plus the external `plugins/kn9t-custom-provider`
@@ -65,10 +66,14 @@ detects dead clients. `POST /stop` + `kn9t stop` for graceful shutdown. SPEC-OPE
 5. **TRACKING.md Stage 07 table used obsolete IDs.** Realigned to spec/07-tui.md.
 
 A 4-phase cleanup is underway:
-- Phase 0 (current): docs scaffolding — CONTEXT.md, ADRs, TRACKING corrections.
-- Phase 1: restore classifier + approvals.
-- Phase 2: schema-first API contract (ADR-0005).
-- Phase 3: all-plugins-external migration.
+- Phase 0 (done): docs scaffolding — CONTEXT.md, ADRs, TRACKING corrections.
+- Phase 1 (done): restore classifier + approvals; `[policy]` config parsed (config.rs).
+- Phase 2 (done, 2026-08-31): schema-first API contract (ADR-0005) — xtask generator,
+  typed server request types (`deny_unknown_fields` → 400), regenerated wire.rs/API.md,
+  drift gate + pre-commit hook, F5/F6/F7 reconciled. See CHANGELOG 2026-08-31.
+- Phase 3: all-plugins-external migration (also fixes F13 — react tests' binary
+  lookup fragility determined by honest number: 3 fail on a fresh worktree,
+  12 pass once `target/debug/kn9t-tools` exists).
 - Phase 4: TUI decomposition (app.rs god object).
 
 Five ADRs written in `docs/adr/`:
@@ -78,7 +83,7 @@ Five ADRs written in `docs/adr/`:
 - ADR-0004: plugin discovery scans ~/.kn9t/plugins/ only
 - ADR-0005: schema-first API contract
 
-**Next:** Phase 1 — restore classifier in kn9t-server, wire InteractivePolicy, parse `[policy]`.
+**Next:** Phase 3 — all-plugins-external migration + auto-discovery (F13).
 
 ---
 

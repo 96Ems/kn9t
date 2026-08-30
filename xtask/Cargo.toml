@@ -5,4 +5,7 @@ edition = "2021"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# Deliberately NO preserve_order: feature unification would flip serde_json::Map
+# to IndexMap in every runtime crate too (GI-3: "preserve_order off"). BTreeMap's
+# sorted, deterministic iteration is all the generator needs.
 serde_json = "1"

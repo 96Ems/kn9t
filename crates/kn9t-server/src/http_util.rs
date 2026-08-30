@@ -66,14 +66,55 @@ pub fn read_body(req: &mut Request) -> Vec<u8> {
     buf
 }
 
-/// Read + parse the request body as JSON (empty body → `null`).
-pub fn read_json(req: &mut Request) -> serde_json::Value {
+/// Parse a request body into a typed struct. The target type carries
+/// `#[serde(deny_unknown_fields)]` (generated `crate::api` types), so a malformed,
+/// mistyped, or **unknown** field is a 400 — never a silent ignore (F6).
+pub fn parse_json<T: serde::de::DeserializeOwned>(req: &mut Request) -> Result<T, JsonResp> {
     let bytes = read_body(req);
     if bytes.is_empty() {
-        return serde_json::Value::Null;
+        return Err(JsonResp::error(
+            400,
+            "bad_json",
+            "request body required for this route",
+        ));
     }
-    serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    serde_json::from_slice(&bytes).map_err(|e| {
+        JsonResp::error(400, "bad_json", &format!("invalid request body: {e}"))
+    })
 }
+
+/// Convert milliseconds-since-UNIX-epoch to an ISO8601 UTC string
+/// (`YYYY-MM-DDTHH:MM:SSZ`). The store persists `created_at`/`ts` as INTEGER
+/// millis (R-STOR, `as_millis()`); this is the boundary normalization to the
+/// schema's `format: date-time` string (F5). Proleptic Gregorian via
+/// Hinnant's civil-from-days — no chrono/time dependency (DESIGN §15).
+pub fn millis_to_iso(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let sod = secs.rem_euclid(86_400); // seconds within the day
+
+    // Howard Hinnant's civil_from_days (days → y/m/d), valid for the whole
+    // i64 days range; matches the proleptic Gregorian calendar.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097); // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        sod / 3600,
+        (sod % 3600) / 60,
+        sod % 60
+    )
+}
+
+/// Read the full request body into a byte vector.
 
 /// Look up a header value (case-insensitive on field name).
 pub fn header<'a>(req: &'a Request, name: &str) -> Option<&'a str> {

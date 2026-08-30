@@ -11,9 +11,10 @@ use std::sync::Arc;
 
 use tiny_http::{Method, Request};
 
+use crate::api;
 use crate::auth;
 use crate::http_util::{
-    header, path_of, query_of, query_param, read_body, read_json, respond, JsonResp, Reply,
+    header, parse_json, path_of, query_of, query_param, read_body, respond, JsonResp, Reply,
 };
 use crate::routes;
 use crate::sse;
@@ -129,11 +130,17 @@ fn route(
 ) -> Reply {
     match (method, segs) {
         // ── sessions ──
-        (Method::Post, ["session"]) => routes::session::create(state, read_json(req)).into(),
+        (Method::Post, ["session"]) => match parse_json::<api::CreateSessionReq>(req) {
+            Ok(body) => routes::session::create(state, body).into(),
+            Err(e) => e.into(),
+        },
         (Method::Get, ["session"]) => routes::session::list(state).into(),
         (Method::Get, ["session", id]) => routes::session::snapshot(state, id).into(),
         (Method::Post, ["session", id, "fork"]) => {
-            routes::session::fork(state, id, read_json(req)).into()
+            match parse_json::<api::ForkReq>(req) {
+                Ok(body) => routes::session::fork(state, id, body).into(),
+                Err(e) => e.into(),
+            }
         }
         (Method::Delete, ["session", id]) => routes::session::delete(state, id).into(),
         (Method::Post, ["session", id, "lease"]) => {
@@ -145,17 +152,29 @@ fn route(
             routes::session::lease_release(state, id, holder.as_deref()).into()
         }
         (Method::Post, ["session", id, "prompt"]) => {
-            routes::session::prompt(state, id, read_json(req)).into()
+            match parse_json::<api::PromptReq>(req) {
+                Ok(body) => routes::session::prompt(state, id, body).into(),
+                Err(e) => e.into(),
+            }
         }
         (Method::Post, ["session", id, "steer"]) => {
-            routes::session::steer(state, id, read_json(req)).into()
+            match parse_json::<api::SteerReq>(req) {
+                Ok(body) => routes::session::steer(state, id, body).into(),
+                Err(e) => e.into(),
+            }
         }
         (Method::Post, ["session", id, "abort"]) => routes::session::abort(state, id).into(),
         (Method::Post, ["session", id, "model"]) => {
-            eprintln!("[router] POST /session/{}/model", id);
-            routes::session::set_model(state, id, read_json(req)).into()
+            crate::log!("POST /session/{}/model", id);
+            match parse_json::<api::SetModelReq>(req) {
+                Ok(body) => routes::session::set_model(state, id, body).into(),
+                Err(e) => e.into(),
+            }
         }
-        (Method::Post, ["approve"]) => routes::session::approve(state, read_json(req)).into(),
+        (Method::Post, ["approve"]) => match parse_json::<api::ApproveReq>(req) {
+            Ok(body) => routes::session::approve(state, body).into(),
+            Err(e) => e.into(),
+        },
 
         // ── blobs ──
         (Method::Post, ["blob"]) => {

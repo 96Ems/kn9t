@@ -76,10 +76,11 @@ impl Client {
     }
 
     /// Create a new session.
-    pub fn create_session(&self, cwd: &str, model: Option<&str>) -> Result<String, ClientError> {
+    pub fn create_session(&self, cwd: &str, model: Option<&WireModelRef>) -> Result<String, ClientError> {
         let req = CreateSessionReq {
-            cwd: cwd.to_string(),
-            model: model.map(|s| s.to_string()),
+            cwd: Some(cwd.to_string()),
+            model: model.cloned(),
+            name: None,
         };
         let resp = self.request("POST", "/session")
             .send_json(&req)
@@ -138,7 +139,11 @@ impl Client {
 
     /// Send prompt.
     pub fn prompt(&self, session_id: &str, holder: &str, text: &str, images: Vec<String>) -> Result<(), ClientError> {
-        let req = PromptReq { text: text.to_string(), images };
+        let req = PromptReq {
+            text: Some(text.to_string()),
+            blobs: None,
+            images: if images.is_empty() { None } else { Some(images) },
+        };
         self.request("POST", &format!("/session/{}/prompt", session_id))
             .set("X-Lease", holder)
             .send_json(&req)

@@ -1,35 +1,41 @@
-//! Wire types — serde mirrors of server API.
+//! Wire types — serde mirrors of the server API.
 //!
-//! R-TUI-010: No kn9t-* deps, so we duplicate the types here.
-//! R-TUI-012: MUST match API.md wire format exactly.
+//! GENERATED FILE — do not edit by hand. Regenerate with `cargo run -p xtask -- generate`.
+//! Source of truth: `schema/http.json` + `schema/plugin.json` (ADR-0005).
+//!
+//! R-TUI-010 / GI-6: no `kn9t-*` dependency — standalone serde-only file,
+//! verifiable by `crates/kn9t-tui/tests/acceptance.rs::tui_no_kn9t_deps`.
+//! R-TUI-012: matches the schema wire format exactly; the server is authoritative.
 
 use serde::{Deserialize, Serialize};
 
-/// SSE frame from the server — matches kn9t-core Event enum.
-/// Uses `#[serde(tag = "kind")]` per API.md §4.3.
+/// SSE frame from the server — `#[serde(tag = "kind", rename_all = "snake_case")]`
+/// per AGENTS.md §12. Durable events carry `seq`; transient events do not.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SseFrame {
     // ── Durable events (have seq) ──
     MessageAppended {
-        seq: u64,
         msg: WireMessage,
+        seq: u64,
     },
     UsageRecorded {
-        seq: u64,
-        provider: String,
-        model: String,
-        usage_kind: String,
-        tokens: WireTokens,
         cost_usd: f64,
         estimated: bool,
+        model: String,
+        provider: String,
+        seq: u64,
+        tokens: WireTokens,
+        usage_kind: String,
     },
     ModelChanged {
-        seq: u64,
         model: WireModelRef,
+        seq: u64,
     },
     Compacted {
+        replaced: WireSeqRange,
         seq: u64,
+        summary: WireMessage,
     },
 
     // ── Transient events (no seq) ──
@@ -37,19 +43,19 @@ pub enum SseFrame {
         turn: u32,
     },
     TextDelta {
-        msg_id: String,
-        idx: u32,
         delta: String,
+        idx: u32,
+        msg_id: String,
     },
     ThinkingDelta {
-        msg_id: String,
-        idx: u32,
         delta: String,
+        idx: u32,
+        msg_id: String,
     },
     ToolArgsDelta {
-        msg_id: String,
-        idx: u32,
         delta: String,
+        idx: u32,
+        msg_id: String,
     },
     ToolStarted {
         call_id: String,
@@ -64,18 +70,18 @@ pub enum SseFrame {
         is_error: bool,
     },
     ApprovalRequest {
-        id: u64,
-        tool: String,
         args: serde_json::Value,
         cwd: String,
+        id: u64,
+        tool: String,
     },
     TurnEnded {
-        turn: u32,
         stop: String,
+        turn: u32,
     },
     HookFailed {
-        plugin: String,
         hook: String,
+        plugin: String,
         reason: String,
     },
     TitleChanged {
@@ -84,11 +90,9 @@ pub enum SseFrame {
     Error {
         message: String,
     },
-    /// Generic plugin notification — plugins can emit custom events.
-    /// Payload has `plugin` (name) and `message` (display text) fields.
     PluginNotification {
-        plugin: String,
         message: String,
+        plugin: String,
     },
 }
 
@@ -96,10 +100,10 @@ impl SseFrame {
     /// Get seq if this is a durable event.
     pub fn seq(&self) -> Option<u64> {
         match self {
-            SseFrame::MessageAppended { seq, .. }
-            | SseFrame::UsageRecorded { seq, .. }
-            | SseFrame::ModelChanged { seq, .. }
-            | SseFrame::Compacted { seq, .. } => Some(*seq),
+            SseFrame::MessageAppended { seq, .. } => Some(*seq),
+            SseFrame::UsageRecorded { seq, .. } => Some(*seq),
+            SseFrame::ModelChanged { seq, .. } => Some(*seq),
+            SseFrame::Compacted { seq, .. } => Some(*seq),
             _ => None,
         }
     }
@@ -137,8 +141,15 @@ pub struct WireTokens {
     pub reasoning: u64,
 }
 
-/// Wire model reference.
+/// Seq range (`compacted.replaced`).
 #[derive(Debug, Clone, Deserialize)]
+pub struct WireSeqRange {
+    pub start: u64,
+    pub end: u64,
+}
+
+/// Wire model reference — Serialize (request payloads) + Deserialize (SSE).
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WireModelRef {
     pub provider: String,
     pub id: String,
@@ -150,84 +161,19 @@ pub struct SessionList {
     pub sessions: Vec<SessionInfo>,
 }
 
+/// One session row — `created_at` is a plain ISO8601 string
+/// (`YYYY-MM-DDTHH:MM:SSZ`); the server normalizes store millis at the
+/// boundary, so no dual-format visitor is needed (F5).
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionInfo {
+    pub created_at: Option<String>,
+    pub cwd: Option<String>,
+    pub head_seq: u64,
     pub id: String,
     pub name: Option<String>,
-    pub head_seq: u64,
-    pub cwd: Option<String>,
-    /// Timestamp for date grouping (can be integer or string from SQLite).
-    #[serde(default, deserialize_with = "deserialize_timestamp")]
-    pub created_at: Option<String>,
 }
 
-/// Deserialize timestamp that may be integer (Unix epoch) or string (ISO 8601).
-fn deserialize_timestamp<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::{self, Visitor};
-    
-    struct TimestampVisitor;
-    
-    impl<'de> Visitor<'de> for TimestampVisitor {
-        type Value = Option<String>;
-        
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a timestamp as integer or string")
-        }
-        
-        fn visit_none<E>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        
-        fn visit_unit<E>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        
-        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            // Convert Unix timestamp to ISO 8601 date string.
-            // Simple conversion: just extract year-month-day.
-            let secs = v;
-            let days = secs / 86400;
-            // Approximate date calculation from days since epoch.
-            let years = days / 365;
-            let year = 1970 + years;
-            let remaining_days = days % 365;
-            let month = (remaining_days / 30).min(11) + 1;
-            let day = (remaining_days % 30) + 1;
-            Ok(Some(format!("{:04}-{:02}-{:02}T00:00:00", year, month, day)))
-        }
-        
-        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            self.visit_i64(v as i64)
-        }
-        
-        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(Some(v.to_string()))
-        }
-        
-        fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(Some(v))
-        }
-    }
-    
-    deserializer.deserialize_any(TimestampVisitor)
-}
-
-/// Session detail response.
+/// Session detail response (GET /session/{id}).
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionDetail {
     pub meta: serde_json::Value,
@@ -238,6 +184,7 @@ pub struct SessionDetail {
     pub transcript: Vec<TranscriptMessage>,
 }
 
+/// One transcript row (snapshot).
 #[derive(Debug, Clone, Deserialize)]
 pub struct TranscriptMessage {
     pub role: String,
@@ -247,34 +194,40 @@ pub struct TranscriptMessage {
     pub silent: bool,
 }
 
-/// Create session request.
+
+/// `CreateSessionReq` — request body (schema-derived).
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateSessionReq {
-    pub cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<WireModelRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
-/// Prompt request.
+/// `PromptReq` — request body (schema-derived).
 #[derive(Debug, Clone, Serialize)]
 pub struct PromptReq {
-    pub text: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blobs: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
-/// Approval response — DESIGN §10 scope=once|session|always.
-/// For backward compat the server still accepts `decision="always"` as
-/// `allow+always`; new clients should send `decision="allow", scope="always"`.
+/// `ApprovalResp` — request body (schema-derived).
 #[derive(Debug, Clone, Serialize)]
 pub struct ApprovalResp {
+    pub decision: String,
     pub id: u64,
-    pub decision: String, // "allow" | "deny" (legacy "always" still accepted)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>, // "once" | "session" | "always"
+    pub scope: Option<String>,
 }
 
-/// Model info.
+
+/// Model info (GET /models).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelInfo {
     pub provider: String,

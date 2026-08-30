@@ -919,8 +919,19 @@ fn list_sessions_body() {
     let sessions = j["sessions"].as_array().expect("sessions array");
     assert!(sessions.iter().any(|s| s["id"].as_str() == Some(&id)),
         "created session must appear in list");
+    // F5: created_at must be the schema-pinned ISO8601 string (millis normalized
+    // at the boundary), not a raw INTEGER the client would misread.
+    for s in sessions {
+        if let Some(ca) = s["created_at"].as_str() {
+            let yyyy = ca.split('-').next().unwrap_or("");
+            assert!(yyyy.len() == 4 && yyyy.starts_with('2'),
+                "created_at must be ISO8601 (YYYY-...), got {ca:?}");
+        }
+    }
     h.handle.shutdown();
 }
+
+// ── snapshot_body ─────────────────────────────────────────────────────────────
 
 #[test]
 fn snapshot_body() {
@@ -930,6 +941,11 @@ fn snapshot_body() {
     assert_eq!(r.status, 200);
     let j = r.json();
     assert!(j["meta"]["id"].as_str().is_some(), "meta.id present");
+    // F5: meta.created_at normalized to ISO8601 at the boundary.
+    if let Some(ca) = j["meta"]["created_at"].as_str() {
+        assert!(ca.contains('T') && ca.ends_with('Z'),
+            "meta.created_at must be ISO8601 (YYYY-MM-DDTHH:MM:SSZ), got {ca:?}");
+    }
     assert!(j["head_seq"].is_number(), "head_seq is a number");
     assert!(j["ctx_tokens"].is_number(), "ctx_tokens present");
     assert!(j["cost_usd"].is_number(), "cost_usd present");
@@ -938,6 +954,61 @@ fn snapshot_body() {
     // snapshot on unknown id → 404
     let r2 = req_auth(&h, "GET", "/session/nonexistent", &[], serde_json::Value::Null);
     assert_eq!(r2.status, 404);
+    h.handle.shutdown();
+}
+
+// ── unknown fields → 400 (Phase 2: deny_unknown_fields contract) ──────────────
+
+#[test]
+fn unknown_field_is_400() {
+    let (h, _tmp) = harness();
+
+    // POST /session with an unknown field → 400, not a silent ignore (F6).
+    let r = req_auth(&h, "POST", "/session", &[], serde_json::json!({
+        "cwd": ".", "bogus_field": 1
+    }));
+    assert_eq!(r.status, 400, "unknown create field: {}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.json()["error"].as_str(), Some("bad_json"));
+
+    // Wrong-typed field (object where string expected) → 400.
+    let r0 = req_auth(&h, "POST", "/session", &[], serde_json::json!({
+        "cwd": { "not": "a string" }
+    }));
+    assert_eq!(r0.status, 400, "mistyped create field must 400");
+
+    // Lease-required body routes: prompt / approve / fork with unknown fields → 400.
+    let id = make_session(&h);
+    let lease = acquire_lease(&h, &id);
+    let lh: &str = &lease;
+    let lease_hdr: [(&str, &str); 1] = [("X-Lease", lh)];
+    let r2 = req_auth(&h, "POST", &format!("/session/{id}/prompt"),
+        &lease_hdr, serde_json::json!({ "text": "hi", "unexpected": true }));
+    assert_eq!(r2.status, 400, "unknown prompt field must 400");
+
+    let hdrs: [(&str, &str); 2] = [("X-Lease", lh), ("X-Lease-Session", &id)];
+    let r3 = req_auth(&h, "POST", "/approve",
+        &hdrs, serde_json::json!({ "id": 1, "decision": "allow", "nope": 1 }));
+    assert_eq!(r3.status, 400, "unknown approve field must 400");
+
+    // Mistyped approve field (string where u64 expected) → 400.
+    let r4 = req_auth(&h, "POST", "/approve",
+        &hdrs, serde_json::json!({ "id": "not-a-number", "decision": "allow" }));
+    assert_eq!(r4.status, 400, "mistyped approve field must 400");
+
+    // Enum-invalid decision → 400 (validated, not default-deny).
+    let r5 = req_auth(&h, "POST", "/approve",
+        &hdrs, serde_json::json!({ "id": 1, "decision": "maybe" }));
+    assert_eq!(r5.status, 400, "unknown decision enum must 400");
+
+    // Fork with an invalid reason → 400.
+    let r6 = req_auth(&h, "POST", &format!("/session/{id}/fork"),
+        &[], serde_json::json!({ "origin_seq": 0, "reason": "sideways" }));
+    assert_eq!(r6.status, 400, "unknown fork reason must 400");
+
+    // Valid bodies still pass (regression guard for the stricter parsing).
+    let r7 = req_auth(&h, "POST", "/session", &[], serde_json::json!({ "cwd": "." }));
+    assert_eq!(r7.status, 200, "valid empty-ish create body still 200");
+
     h.handle.shutdown();
 }
 

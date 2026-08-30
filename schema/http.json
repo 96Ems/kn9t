@@ -7,6 +7,7 @@
       "method": "POST",
       "path": "/session",
       "lease": false,
+      "description": "Create a session",
       "request": {
         "type": "object",
         "properties": {
@@ -39,6 +40,7 @@
       "method": "GET",
       "path": "/session",
       "lease": false,
+      "description": "List sessions (newest first)",
       "response": {
         "type": "object",
         "properties": {
@@ -64,6 +66,7 @@
       "method": "GET",
       "path": "/session/{id}",
       "lease": false,
+      "description": "Session snapshot: meta, model, head_seq, transcript",
       "response": {
         "type": "object",
         "properties": {
@@ -81,6 +84,7 @@
       "method": "POST",
       "path": "/session/{id}/fork",
       "lease": false,
+      "description": "Fork a session at an origin seq",
       "request": {
         "type": "object",
         "properties": {
@@ -95,24 +99,28 @@
       "method": "DELETE",
       "path": "/session/{id}",
       "lease": false,
+      "description": "Delete a session",
       "response": { "type": "object", "properties": { "deleted": { "type": "string" } }, "required": ["deleted"] }
     },
     {
       "method": "POST",
       "path": "/session/{id}/lease",
       "lease": false,
+      "description": "Acquire the write lease (?takeover=1 force-steals)",
       "response": { "type": "object", "properties": { "lease": { "type": "string" }, "session": { "type": "string" } }, "required": ["lease", "session"] }
     },
     {
       "method": "DELETE",
       "path": "/session/{id}/lease",
       "lease": false,
+      "description": "Release the write lease (holder only)",
       "response": { "type": "object", "properties": { "released": { "type": "string" } }, "required": ["released"] }
     },
     {
       "method": "POST",
       "path": "/session/{id}/prompt",
       "lease": true,
+      "description": "Send a user prompt and run a turn",
       "request": {
         "type": "object",
         "properties": {
@@ -128,6 +136,7 @@
       "method": "POST",
       "path": "/session/{id}/steer",
       "lease": true,
+      "description": "Inject a steering message that the running turn folds in",
       "request": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"], "additionalProperties": false },
       "response": { "type": "object", "properties": { "steered": { "type": "boolean" }, "seq": { "type": "integer" } }, "required": ["steered"] }
     },
@@ -135,12 +144,14 @@
       "method": "POST",
       "path": "/session/{id}/abort",
       "lease": true,
+      "description": "Cancel the running turn",
       "response": { "type": "object", "properties": { "aborted": { "type": "string" } }, "required": ["aborted"] }
     },
     {
       "method": "POST",
       "path": "/session/{id}/model",
       "lease": true,
+      "description": "Switch the session's active model",
       "request": { "type": "object", "properties": { "provider": { "type": "string" }, "id": { "type": "string" } }, "required": ["provider", "id"], "additionalProperties": false },
       "response": { "type": "object", "properties": { "model_set": { "type": "boolean" }, "seq": { "type": "integer" } }, "required": ["model_set"] }
     },
@@ -148,6 +159,7 @@
       "method": "POST",
       "path": "/approve",
       "lease": true,
+      "description": "Approve or deny a pending tool call (decision allow|deny|always, scope once|session|always)",
       "request": {
         "type": "object",
         "properties": {
@@ -164,6 +176,7 @@
       "method": "POST",
       "path": "/blob",
       "lease": false,
+      "description": "Upload a blob (image) — raw bytes, MIME via Content-Type",
       "request": { "type": "string", "contentEncoding": "binary" },
       "response": { "type": "object", "properties": { "hash": { "type": "string" }, "mime": { "type": "string" } }, "required": ["hash"] }
     },
@@ -171,25 +184,99 @@
       "method": "GET",
       "path": "/blob/{hash}",
       "lease": false,
+      "description": "Download a blob by content hash (ETag + immutable cache)",
       "response": { "type": "string", "contentEncoding": "binary" }
     },
     {
       "method": "GET",
       "path": "/models",
       "lease": false,
-      "response": { "type": "object", "properties": { "models": { "type": "array", "items": { "type": "object" } }, "auth": { "type": "object" } }, "required": ["models"] }
+      "description": "List configured models (registry + auth status)",
+      "response": {
+        "type": "object",
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": { "type": "string" },
+                "id": { "type": "string" },
+                "api_id": { "type": "string" },
+                "ctx_window": { "type": "integer" },
+                "max_out": { "type": "integer" },
+                "price": {
+                  "type": "object",
+                  "properties": {
+                    "input": { "type": "number" },
+                    "output": { "type": "number" },
+                    "cache_read": { "type": "number" },
+                    "cache_write": { "type": "number" }
+                  },
+                  "required": ["input", "output", "cache_read", "cache_write"]
+                },
+                "is_default": { "type": "boolean" }
+              },
+              "required": ["provider", "id"]
+            }
+          },
+          "auth": {
+            "type": "object",
+            "properties": {
+              "provider": { "type": ["string", "null"] },
+              "authenticated": { "type": "boolean" }
+            },
+            "required": ["authenticated"]
+          }
+        },
+        "required": ["models"]
+      }
     },
     {
       "method": "GET",
       "path": "/cost",
       "lease": false,
-      "response": { "type": "object" }
+      "description": "Usage cost analytics (?since=&group_by=model|kind|session)",
+      "query": {
+        "since": { "type": "integer", "description": "Only usage rows with ts >= since (ms epoch). 0 = all." },
+        "group_by": { "type": "string", "enum": ["model", "kind", "session"], "description": "Aggregation dimension (default model)" }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "since": { "type": "integer" },
+          "group_by": { "type": "string" },
+          "total_cost_usd": { "type": "number" },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "group": { "type": "string" },
+                "cost_usd": { "type": "number" },
+                "tokens_in": { "type": "integer" },
+                "tokens_out": { "type": "integer" }
+              },
+              "required": ["group", "cost_usd", "tokens_in", "tokens_out"]
+            }
+          }
+        },
+        "required": ["since", "group_by", "total_cost_usd", "groups"]
+      }
     },
     {
       "method": "GET",
       "path": "/budget",
       "lease": false,
-      "response": { "type": "object" }
+      "description": "Budget: local estimate + provider-reported spend",
+      "response": {
+        "type": "object",
+        "properties": {
+          "local_estimate": { "type": "number", "description": "Cost summed from local usage rows" },
+          "provider_reported": { "type": "number", "description": "Provider-reported spend; omitted when unavailable" }
+        },
+        "required": ["local_estimate"]
+      }
     },
     {
       "method": "GET",
@@ -204,15 +291,32 @@
       "description": "Global attach heartbeat"
     },
     {
+      "method": "GET",
+      "path": "/pref/{key}",
+      "lease": false,
+      "description": "Read a user preference",
+      "response": { "type": "object", "properties": { "key": { "type": "string" }, "value": { "type": "string" } }, "required": ["key", "value"] }
+    },
+    {
+      "method": "PUT",
+      "path": "/pref/{key}",
+      "lease": false,
+      "description": "Write a user preference (raw text body)",
+      "request": { "type": "string" },
+      "response": { "type": "object", "properties": { "key": { "type": "string" }, "value": { "type": "string" } }, "required": ["key", "value"] }
+    },
+    {
       "method": "POST",
       "path": "/stop",
       "lease": false,
+      "description": "Request graceful server shutdown",
       "response": { "type": "object", "properties": { "ok": { "type": "boolean" } }, "required": ["ok"] }
     },
     {
       "method": "GET",
       "path": "/health",
       "lease": false,
+      "description": "Server health + attach/turn counters",
       "response": { "type": "object", "properties": { "ok": { "type": "boolean" }, "idle_secs": { "type": "integer" }, "attached_clients": { "type": "integer" }, "running_turns": { "type": "integer" } }, "required": ["ok"] }
     }
   ],

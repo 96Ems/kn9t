@@ -5,7 +5,6 @@ use kn9t_plugin_sdk::{
     Plugin,
 };
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use sha2::{Digest, Sha256};
@@ -97,7 +96,7 @@ impl PluginTool for Read {
             Ok(content) => {
                 // Record hash for edit guard via KV (session-scoped)
                 let hash = Sha256::digest(content.as_bytes());
-                let hash_hex = hex::encode(hash);
+                let hash_hex = format!("{hash:x}");
                 // Use ctx.kv to store read hash - best effort, ignore errors
                 let _ = ctx.kv.set("", &format!("read:{}", path), &json!({"hash": hash_hex}));
                 // Apply offset/limit

@@ -49,12 +49,12 @@ pub fn is_turn_running(session: &str) -> bool {
 
 /// Fire the cancel for `session`'s running turn, if any.
 pub fn abort(_state: &Arc<ServerState>, session: &str) {
-    eprintln!("[DEBUG abort] session={}", session);
+    crate::log!("[DEBUG abort] session={}", session);
     if let Some(c) = aborts().as_ref().unwrap().get(session) {
-        eprintln!("[DEBUG abort] firing cancel for session={}", session);
+        crate::log!("[DEBUG abort] firing cancel for session={}", session);
         c.cancel();
     } else {
-        eprintln!("[DEBUG abort] no cancel registered for session={}", session);
+        crate::log!("[DEBUG abort] no cancel registered for session={}", session);
     }
 }
 
@@ -144,25 +144,25 @@ pub fn resolve_approval(state: &Arc<ServerState>, id: u64, decision_str: &str, s
 pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
     // Use session's current model (from ModelChanged events), fallback to default.
     let session_model = state.store.get_model_spec_for_session(&session.0);
-    eprintln!("[spawn_turn] session={} session_model={:?}", session.0, session_model.as_ref().map(|m| format!("{}:{}", m.r#ref.provider, m.r#ref.id)));
+    crate::log!("[spawn_turn] session={} session_model={:?}", session.0, session_model.as_ref().map(|m| format!("{}:{}", m.r#ref.provider, m.r#ref.id)));
     let model = session_model.or_else(|| {
-        eprintln!("[spawn_turn] using default model");
+        crate::log!("[spawn_turn] using default model");
         state.default_model.clone()
     });
     let Some(model) = model else {
-        eprintln!("[spawn_turn] no model available");
+        crate::log!("[spawn_turn] no model available");
         return;
     };
-    eprintln!("[spawn_turn] using model {}:{}", model.r#ref.provider, model.r#ref.id);
+    crate::log!("[spawn_turn] using model {}:{}", model.r#ref.provider, model.r#ref.id);
     
     // Get the provider for this model.
     let provider = state.get_provider(&model.r#ref.provider)
         .or_else(|| state.provider.clone());
     let Some(provider) = provider else {
-        eprintln!("[spawn_turn] no provider for {}", model.r#ref.provider);
+        crate::log!("[spawn_turn] no provider for {}", model.r#ref.provider);
         return;
     };
-    eprintln!("[spawn_turn] using provider {}", model.r#ref.provider);
+    crate::log!("[spawn_turn] using provider {}", model.r#ref.provider);
 
     std::thread::spawn(move || {
         state.idle.turn_started();

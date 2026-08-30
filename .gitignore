@@ -16,7 +16,11 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+# runtime logs — generic catch + the named offenders that have sat in the tree
+# (F12 repo hygiene: kn9t-tui.log, custom-provider.log were 726 KB / 29 MB)
 *.log
+kn9t-tui.log
+custom-provider.log
 
 # python bytecode (plugins/kn9t-mcp)
 __pycache__/
