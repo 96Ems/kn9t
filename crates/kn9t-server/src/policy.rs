@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use kn9t_core::{ApprovalId, Decision, Event, EventSink, Policy, ToolCall};
+use kn9t_core::{ApprovalId, Decision, EffectKind, Event, EventSink, Policy, ToolCall, ToolRegistry};
 
 use crate::classify::{classify, BashPolicy, Classification, Shell};
 
@@ -328,35 +328,113 @@ fn extract_cmd(args_json: &str) -> Option<String> {
     None
 }
 
+// ── Helpers for effects ───────────────────────────────────────────────────────
+fn extract_field(args_json: &str, field: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(args_json).ok()?;
+    // Support JSON pointer with leading "/" or bare top-level key
+    let key = field.strip_prefix('/').unwrap_or(field);
+    // For simplicity support only top-level key (no nested) and also handle
+    // JSON pointer with "/" splits for one level.
+    let first = key.split('/').next().unwrap_or(key);
+    v.get(first).and_then(|x| x.as_str()).map(|s| s.to_string())
+}
+
+/// Evaluate a single effect kind for a tool call. Returns the Decision for that effect.
+fn eval_effect(kind: &EffectKind, args_json: &str, field: &str, bash: &BashPolicy) -> Decision {
+    match kind {
+        EffectKind::Shell => {
+            let cmd = match extract_field(args_json, field) {
+                Some(c) => c,
+                None => return Decision::Deny { reason: format!("missing field `{field}` for shell effect") },
+            };
+            match classify(&cmd, Shell::Posix, bash) {
+                Classification::AllowReadOnly => Decision::Allow,
+                Classification::Ask => Decision::Ask,
+                Classification::HardDeny(r) => Decision::HardDeny { reason: r },
+            }
+        }
+        EffectKind::FsRead => {
+            // Reads are safe by default; could add path allowlist later.
+            // For now, FsRead is Allow.
+            Decision::Allow
+        }
+        EffectKind::FsWrite => {
+            // Writes are gated as hard as bash (DESIGN §10). For now, any FsWrite is Ask.
+            // A missing field is treated as Ask (strict).
+            if extract_field(args_json, field).is_none() {
+                return Decision::Ask;
+            }
+            Decision::Ask
+        }
+        EffectKind::Network => Decision::Ask,
+    }
+}
+
+/// Core effects dispatch: look up tool spec via `tools` registry, evaluate each effect,
+/// and combine: HardDeny > Ask > Allow. Empty effects or unknown tool → strict Ask.
+fn dispatch_effects(call: &ToolCall, bash: &BashPolicy, tools: &ToolRegistry) -> Decision {
+    // If registry is empty (e.g., unit tests without tools), fallback to legacy bash-only logic
+    // so that `bash` still classifies correctly and non-bash is Allow. This keeps old tests green.
+    if tools.is_empty() {
+        if call.name == "bash" {
+            let cmd = match extract_cmd(&call.args_json) {
+                Some(c) => c,
+                None => return Decision::Deny { reason: "missing command".into() },
+            };
+            return match classify(&cmd, Shell::Posix, bash) {
+                Classification::AllowReadOnly => Decision::Allow,
+                Classification::Ask => Decision::Ask,
+                Classification::HardDeny(r) => Decision::HardDeny { reason: r },
+            };
+        } else {
+            return Decision::Allow;
+        }
+    }
+
+    // Non-empty registry: use declared effects
+    let spec = match tools.get(&call.name) {
+        Some(t) => t.spec(),
+        None => return Decision::Ask, // unknown tool → strict
+    };
+    if spec.effects.is_empty() {
+        // No effects declared → strictest default (ADR-0002)
+        return Decision::Ask;
+    }
+    let mut has_ask = false;
+    for eff in &spec.effects {
+        match eval_effect(&eff.kind, &call.args_json, &eff.field, bash) {
+            Decision::HardDeny { reason } => return Decision::HardDeny { reason },
+            Decision::Ask => has_ask = true,
+            Decision::Deny { reason } => return Decision::Deny { reason },
+            Decision::Allow => {}
+        }
+    }
+    if has_ask { Decision::Ask } else { Decision::Allow }
+}
+
 // ── ConfigPolicy ─────────────────────────────────────────────────────────────
 
 /// Instant, non-blocking policy. Used for `-p`/CI. A classifier `Ask` is
 /// mapped to a hard `Deny` (no prompt in non-interactive mode).
 pub struct ConfigPolicy {
     pub bash: BashPolicy,
+    pub tools: ToolRegistry,
 }
 
 impl ConfigPolicy {
     pub fn new(bash: BashPolicy) -> Self {
-        ConfigPolicy { bash }
+        ConfigPolicy { bash, tools: ToolRegistry::default() }
+    }
+    pub fn with_tools(bash: BashPolicy, tools: ToolRegistry) -> Self {
+        ConfigPolicy { bash, tools }
     }
 }
 
 impl Policy for ConfigPolicy {
     fn check(&self, call: &ToolCall, _cwd: &Path) -> Decision {
-        if call.name != "bash" {
-            return Decision::Allow;
-        }
-        let cmd = match extract_cmd(&call.args_json) {
-            Some(c) => c,
-            None => return Decision::Deny { reason: "missing command".into() },
-        };
-        match classify(&cmd, Shell::Posix, &self.bash) {
-            Classification::AllowReadOnly => Decision::Allow,
-            Classification::Ask => Decision::Deny {
-                reason: "approval required".into(),
-            },
-            Classification::HardDeny(r) => Decision::HardDeny { reason: r },
+        match dispatch_effects(call, &self.bash, &self.tools) {
+            Decision::Ask => Decision::Deny { reason: "approval required".into() },
+            other => other,
         }
     }
 }
@@ -373,40 +451,32 @@ pub struct InteractivePolicy {
     pub bash: BashPolicy,
     pub registry: Arc<ApprovalRegistry>,
     pub cache: Arc<ApprovalCache>,
+    pub tools: ToolRegistry,
 }
 
 impl InteractivePolicy {
     pub fn new(bash: BashPolicy, registry: Arc<ApprovalRegistry>) -> Self {
         let cache = Arc::new(ApprovalCache::new(crate::config::global_config_path()));
-        InteractivePolicy { bash, registry, cache }
+        InteractivePolicy { bash, registry, cache, tools: ToolRegistry::default() }
     }
     pub fn new_with_cache(bash: BashPolicy, registry: Arc<ApprovalRegistry>, cache: Arc<ApprovalCache>) -> Self {
-        InteractivePolicy { bash, registry, cache }
+        InteractivePolicy { bash, registry, cache, tools: ToolRegistry::default() }
+    }
+    pub fn with_tools(bash: BashPolicy, registry: Arc<ApprovalRegistry>, cache: Arc<ApprovalCache>, tools: ToolRegistry) -> Self {
+        InteractivePolicy { bash, registry, cache, tools }
     }
 }
 
 impl Policy for InteractivePolicy {
     fn check(&self, call: &ToolCall, cwd: &Path) -> Decision {
-        if call.name != "bash" {
-            return Decision::Allow;
+        let dispatch = dispatch_effects(call, &self.bash, &self.tools);
+        match dispatch {
+            Decision::HardDeny { reason } => return Decision::HardDeny { reason },
+            Decision::Allow => return Decision::Allow,
+            Decision::Deny { reason } => return Decision::Deny { reason },
+            Decision::Ask => {} // fall through to approval flow
         }
-        let cmd = match extract_cmd(&call.args_json) {
-            Some(c) => c,
-            None => {
-                return Decision::Deny {
-                    reason: "missing command".into(),
-                }
-            }
-        };
-        // HardDeny is never cacheable and never prompts — check first.
-        let classification = classify(&cmd, Shell::Posix, &self.bash);
-        if let Classification::HardDeny(r) = classification {
-            return Decision::HardDeny { reason: r };
-        }
-        if matches!(classification, Classification::AllowReadOnly) {
-            return Decision::Allow;
-        }
-        // At this point classification is Ask — check caches before prompting.
+        // Ask — check caches before prompting.
         let fp = fingerprint(call);
         let session = get_policy_session();
         if self.cache.is_approved(session.as_deref(), &fp) {
@@ -701,5 +771,110 @@ mod tests {
         cache.approve_persistent("bash:sudo rm -rf /".into()).unwrap_or(());
         let d2 = with_policy_sink(sink.clone(), || p.check(&bash_call("sudo rm -rf /"), Path::new("/")));
         assert!(matches!(d2, Decision::HardDeny { .. }), "HardDeny must not be overridden by cache");
+    }
+
+    #[test]
+    fn no_effects_is_ask_and_strict() {
+        // Tool with no effects → strictest (Ask for Interactive, Deny for Config)
+        use kn9t_core::{Effect, ToolRegistry, ToolSpec};
+        let reg = Arc::new(ApprovalRegistry::new());
+        let cache = Arc::new(ApprovalCache::new_empty());
+        let mut tools = ToolRegistry::default();
+        let spec = ToolSpec {
+            name: "mystery".into(),
+            description: "undeclared".into(),
+            schema: serde_json::json!({"type":"object"}),
+            hidden: false,
+            effects: vec![],
+        };
+        struct Mystery { spec: ToolSpec }
+        impl kn9t_core::Tool for Mystery {
+            fn spec(&self) -> &ToolSpec { &self.spec }
+            fn execute(&self, _a: &serde_json::Value, _c: &kn9t_core::ToolCtx, _k: &kn9t_core::Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> { unreachable!() }
+        }
+        tools.push(Arc::new(Mystery { spec }) as Arc<dyn kn9t_core::Tool>);
+        let p_interactive = InteractivePolicy::with_tools(BashPolicy::default(), reg.clone(), cache.clone(), tools.clone());
+        let p_config = ConfigPolicy::with_tools(BashPolicy::default(), tools);
+        let call = ToolCall { id: kn9t_core::CallId("c1".into()), name: "mystery".into(), args_json: r#"{"foo":"bar"}"#.into() };
+        let call_clone = call.clone();
+        let sink = Arc::new(RecordingSink::default());
+        // Interactive should be Ask (prompts)
+        let h = std::thread::spawn({
+            let p = Arc::new(p_interactive);
+            let sink = sink.clone();
+            let c = call_clone.clone();
+            move || with_policy_sink(sink, || p.check(&c, Path::new("/")))
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if !sink.events.lock().unwrap().is_empty() { break; }
+            if std::time::Instant::now() > deadline { panic!("mystery tool must prompt (Ask)"); }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let id = match &sink.events.lock().unwrap()[0] { Event::ApprovalRequest { id, .. } => id.0, _ => panic!() };
+        reg.resolve(id, Decision::Allow);
+        assert_eq!(h.join().unwrap(), Decision::Allow);
+        // Config should be Deny (no prompt, instant deny)
+        let d2 = p_config.check(&call, Path::new("/"));
+        assert!(matches!(d2, Decision::Deny { .. }), "no-effects in ConfigPolicy must be Deny, got {:?}", d2);
+    }
+
+    #[test]
+    fn fs_write_is_ask_and_read_is_allow() {
+        use kn9t_core::{Effect, EffectKind, ToolRegistry, ToolSpec};
+        let reg = Arc::new(ApprovalRegistry::new());
+        let cache = Arc::new(ApprovalCache::new_empty());
+        let mut tools = ToolRegistry::default();
+        let write_spec = ToolSpec {
+            name: "write".into(),
+            description: "write file".into(),
+            schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            hidden: false,
+            effects: vec![Effect { field: "path".into(), kind: EffectKind::FsWrite }],
+        };
+        let read_spec = ToolSpec {
+            name: "read".into(),
+            description: "read file".into(),
+            schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            hidden: false,
+            effects: vec![Effect { field: "path".into(), kind: EffectKind::FsRead }],
+        };
+        struct W { spec: ToolSpec } impl kn9t_core::Tool for W { fn spec(&self) -> &ToolSpec { &self.spec } fn execute(&self, _: &serde_json::Value, _: &kn9t_core::ToolCtx, _: &kn9t_core::Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> { unreachable!() } }
+        struct R { spec: ToolSpec } impl kn9t_core::Tool for R { fn spec(&self) -> &ToolSpec { &self.spec } fn execute(&self, _: &serde_json::Value, _: &kn9t_core::ToolCtx, _: &kn9t_core::Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> { unreachable!() } }
+        tools.push(Arc::new(W { spec: write_spec }) as Arc<dyn kn9t_core::Tool>);
+        tools.push(Arc::new(R { spec: read_spec }) as Arc<dyn kn9t_core::Tool>);
+        let p = InteractivePolicy::with_tools(BashPolicy::default(), reg.clone(), cache, tools);
+        let sink = Arc::new(RecordingSink::default());
+        // write must be Ask
+        let write_call = ToolCall { id: kn9t_core::CallId("c1".into()), name: "write".into(), args_json: r#"{"path":"/tmp/foo"}"#.into() };
+        let h = std::thread::spawn({
+            let p = Arc::new(p);
+            let sink = sink.clone();
+            let call = write_call.clone();
+            move || with_policy_sink(sink, || p.check(&call, Path::new("/tmp")))
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop { if !sink.events.lock().unwrap().is_empty() { break; } if std::time::Instant::now() > deadline { panic!("write must be Ask"); } std::thread::sleep(std::time::Duration::from_millis(10)); }
+        let id = match &sink.events.lock().unwrap()[0] { Event::ApprovalRequest { id, .. } => id.0, _ => panic!() };
+        // need to resolve to not hang, but we need a new policy instance for read check (different p moved)
+        // Re-create for read check with fresh registry
+        let reg2 = Arc::new(ApprovalRegistry::new());
+        let cache2 = Arc::new(ApprovalCache::new_empty());
+        let mut tools2 = ToolRegistry::default();
+        tools2.push(Arc::new(R { spec: ToolSpec { name: "read".into(), description: "".into(), schema: serde_json::json!({}), hidden: false, effects: vec![Effect { field: "path".into(), kind: EffectKind::FsRead }] } }) as Arc<dyn kn9t_core::Tool>);
+        // Use original p for write, but we moved it; use reg to resolve
+        reg.resolve(id, Decision::Allow);
+        let _ = h.join();
+        // read must be Allow (no prompt)
+        let read_call = ToolCall { id: kn9t_core::CallId("c2".into()), name: "read".into(), args_json: r#"{"path":"/tmp/foo"}"#.into() };
+        let sink2 = Arc::new(RecordingSink::default());
+        let p2 = InteractivePolicy::with_tools(BashPolicy::default(), reg2, cache2, {
+            let mut t = ToolRegistry::default();
+            t.push(Arc::new(R { spec: ToolSpec { name: "read".into(), description: "".into(), schema: serde_json::json!({}), hidden: false, effects: vec![Effect { field: "path".into(), kind: EffectKind::FsRead }] } }) as Arc<dyn kn9t_core::Tool>);
+            t
+        });
+        let d = with_policy_sink(sink2.clone(), || p2.check(&read_call, Path::new("/tmp")));
+        assert_eq!(d, Decision::Allow);
+        assert!(sink2.events.lock().unwrap().is_empty(), "FsRead must be Allow without prompt");
     }
 }

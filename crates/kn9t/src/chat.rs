@@ -42,9 +42,14 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
     let auth = format!("Bearer {server_token}");
     let host = format!("127.0.0.1:{port}");
 
-    // Default: first model from server registry. Falls back to deepseek-v4-flash.
-    let (mut model_provider, mut model_id) = resolve_default_model(&host, &auth)
-        .unwrap_or_else(|| ("opencode-go".into(), "deepseek-v4-flash".into()));
+    // Default: first model from server config.
+    let (mut model_provider, mut model_id) = match resolve_default_model(&host, &auth) {
+        Some(m) => m,
+        None => {
+            eprintln!("[kn9t chat] no models configured — add a [[provider]] and [[model]] to ~/.kn9t/config.toml");
+            std::process::exit(1);
+        }
+    };
     let mut do_continue = false;
     let mut prompt_words: Vec<&str> = Vec::new();
     let mut i = 0;
@@ -322,7 +327,7 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
         };
 
         match ev["kind"].as_str().unwrap_or("") {
-            "TextDelta" => {
+            "text_delta" => {
                 if let Some(text) = ev["delta"].as_str() {
                     in_text = true;
                     print!("{text}");
@@ -330,14 +335,14 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
                 }
             }
 
-            "ToolArgsDelta" => {
+            "tool_args_delta" => {
                 let msg_id = ev["msg_id"].as_str().unwrap_or("").to_string();
                 let idx    = ev["idx"].as_u64().unwrap_or(0) as u32;
                 let delta  = ev["delta"].as_str().unwrap_or("");
                 args_acc.entry((msg_id, idx)).or_default().push_str(delta);
             }
 
-            "ToolStarted" => {
+            "tool_started" => {
                 let call_id  = ev["call_id"].as_str().unwrap_or("?").to_string();
                 let name     = ev["name"].as_str().unwrap_or("?").to_string();
                 if in_text { eprintln!(); in_text = false; }
@@ -349,12 +354,12 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
                 args_acc.clear();
             }
 
-            "ToolProgress" => {
+            "tool_progress" => {
                 let note = ev["note"].as_str().unwrap_or("");
                 eprintln!("  {note}");
             }
 
-            "ToolFinished" => {
+            "tool_finished" => {
                 let is_error = ev["is_error"].as_bool().unwrap_or(false);
                 let call_id  = ev["call_id"].as_str().unwrap_or("?");
                 if is_error {
@@ -364,7 +369,7 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
                 // Successful result text is shown via MessageAppended below.
             }
 
-            "MessageAppended" => {
+            "message_appended" => {
                 let msg  = &ev["msg"];
                 let role = msg["role"].as_str().unwrap_or("");
                 // Tool results arrive as role="tool" messages.
@@ -381,7 +386,7 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
                 }
             }
 
-            "TurnEnded" => {
+            "turn_ended" => {
                 let stop = ev["stop"].as_str().unwrap_or("stop");
                 if in_text { println!(); }
                 eprintln!("---");
@@ -389,7 +394,7 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
                 break;
             }
 
-            "ApprovalRequest" => {
+            "approval_request" => {
                 let req_id   = ev["id"].as_str().unwrap_or("?").to_string();
                 let tool     = ev["tool"].as_str().unwrap_or("?");
                 let args_val = &ev["args"];

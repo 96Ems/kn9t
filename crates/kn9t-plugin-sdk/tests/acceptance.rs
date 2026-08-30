@@ -63,7 +63,7 @@ fn handshake() {
             description: "echoes input".into(),
             schema: json!({"type":"object","properties":{"msg":{"type":"string"}}}),
             parallel_safe: true,
-            hidden: false,
+            hidden: false, effects: vec![],
         }],
         provider: None,
         events: vec!["MessageAppended".into()],

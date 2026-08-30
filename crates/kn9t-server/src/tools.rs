@@ -119,6 +119,7 @@ fn extract_tools(host: &Arc<PluginHost>) -> Vec<Arc<dyn Tool>> {
                 description: spec.description.clone(),
                 schema: spec.schema.clone(),
                 hidden: spec.hidden,
+                effects: spec.effects.clone(),
             };
             Arc::new(RemoteTool::new(tool_spec, host.clone())) as Arc<dyn Tool>
         })

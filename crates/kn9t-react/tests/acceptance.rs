@@ -288,7 +288,7 @@ impl AbortingTool {
             spec: kn9t_core::ToolSpec {
                 name: "abort".to_string(),
                 description: "test tool that cancels the turn".to_string(),
-                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false
+                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false, effects: vec![]
             },
         }
     }
@@ -384,7 +384,7 @@ impl SlowToolWithExternalCancel {
             spec: kn9t_core::ToolSpec {
                 name: name.to_string(),
                 description: "slow test tool".to_string(),
-                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false
+                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false, effects: vec![]
             },
             delay_ms,
         }
@@ -426,7 +426,7 @@ impl FastTool {
             spec: kn9t_core::ToolSpec {
                 name: name.to_string(),
                 description: "fast test tool".to_string(),
-                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false
+                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false, effects: vec![]
             },
         }
     }
@@ -780,7 +780,7 @@ fn tool_result_not_double_wrapped() {
                 name: "echo".into(),
                 description: "echo".into(),
                 schema: serde_json::json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
-                hidden: false,
+                hidden: false, effects: vec![],
             }))
         }
         fn parallel_safe(&self) -> bool { false }
@@ -887,7 +887,7 @@ fn tool_output_reaches_second_provider_call() {
                 name: "echo".into(),
                 description: "echo".into(),
                 schema: serde_json::json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
-                hidden: false,
+                hidden: false, effects: vec![],
             }))
         }
         fn parallel_safe(&self) -> bool { false }

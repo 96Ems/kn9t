@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kn9t_core::{
-    CacheMode, Cancel, Chunk, Content, Event, ModelRef, ModelSpec, MsgId, Price, ProvErr, Provider,
+    CacheMode, Cancel, Chunk, Content, Event, ModelRef, ModelSpec, MsgId, Policy, Price, ProvErr, Provider,
     Quirks, Request, Role, SessionId, StopReason, Store, Tokens, Usage,
 };
 use kn9t_server::state::ServerState;
@@ -1201,8 +1201,27 @@ fn dummy_bash_registry() -> kn9t_core::ToolRegistry {
         description: "run shell".into(),
         schema: serde_json::json!({"type":"object"}),
         hidden: false,
+        effects: vec![kn9t_core::Effect { field: "cmd".into(), kind: kn9t_core::EffectKind::Shell }],
     };
     kn9t_core::ToolRegistry::from_tools(vec![Arc::new(DummyBashTool { spec }) as Arc<dyn kn9t_core::Tool>])
+}
+
+fn dummy_no_effect_registry() -> kn9t_core::ToolRegistry {
+    let spec = kn9t_core::ToolSpec {
+        name: "nope".into(),
+        description: "no effects".into(),
+        schema: serde_json::json!({"type":"object"}),
+        hidden: false,
+        effects: vec![],
+    };
+    struct NopeTool { spec: kn9t_core::ToolSpec }
+    impl kn9t_core::Tool for NopeTool {
+        fn spec(&self) -> &kn9t_core::ToolSpec { &self.spec }
+        fn execute(&self, _args: &serde_json::Value, _ctx: &kn9t_core::ToolCtx, _cancel: &kn9t_core::Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+            Ok(kn9t_core::ToolOutput { content: vec![kn9t_core::Content::Text { text: "ok".into() }], details: None, is_error: false })
+        }
+    }
+    kn9t_core::ToolRegistry::from_tools(vec![Arc::new(NopeTool { spec }) as Arc<dyn kn9t_core::Tool>])
 }
 
 /// Provider that emits one bash tool call with the given cmd, then a final stop.
@@ -1862,6 +1881,166 @@ fn sh_bypass_prompts_and_sudo_is_hard_deny() {
     assert!(!kn9t_server::turn::is_turn_running(&sid2));
     h.handle.shutdown();
     h2.handle.shutdown();
+}
+
+#[test]
+fn tool_no_effects_is_strict() {
+    // A tool with no effects must be Ask (Interactive) → prompts, and Deny in ConfigPolicy
+    use kn9t_server::classify::BashPolicy;
+    use kn9t_server::policy::{ApprovalCache, ApprovalRegistry, InteractivePolicy, ConfigPolicy};
+    let (store, _tmp) = temp_store();
+    let token = kn9t_server::auth::generate_token();
+    let cache = Arc::new(ApprovalCache::new_empty());
+    let registry = Arc::new(ApprovalRegistry::new());
+    let tools = dummy_no_effect_registry();
+    let policy: Arc<dyn kn9t_core::Policy> = Arc::new(InteractivePolicy::with_tools(BashPolicy::default(), registry.clone(), cache.clone(), tools.clone()));
+    let mut state = ServerState::new(store, token, tools.clone(), Vec::new());
+    state.approval_registry = registry.clone();
+    state.approval_cache = cache.clone();
+    state = state.with_policy(policy).with_default_model(model_spec()).with_provider(Arc::new(OneToolProvider { cmd: "ignored".into(), calls: Arc::new(Mutex::new(0)) }));
+    // Override provider to emit mystery tool
+    struct MysteryProvider { calls: Arc<Mutex<u32>> }
+    impl kn9t_core::Provider for MysteryProvider {
+        fn name(&self) -> &str { "mystery" }
+        fn stream(&self, req: &kn9t_core::Request, _c: &kn9t_core::Cancel) -> Result<Box<dyn Iterator<Item = Result<kn9t_core::Chunk, kn9t_core::ProvErr>> + Send>, kn9t_core::ProvErr> {
+            if req.max_tokens == Some(16) {
+                return Ok(Box::new(vec![
+                    Ok(kn9t_core::Chunk::Text { idx: 0, delta: "title".into() }),
+                    Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "mystery".into(), id: "m1".into() } })),
+                    Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
+                ].into_iter()));
+            }
+            let n = { let mut c = self.calls.lock().unwrap(); let n = *c; *c += 1; n };
+            if n % 2 == 0 {
+                let args = serde_json::json!({"foo":"bar"}).to_string();
+                Ok(Box::new(vec![
+                    Ok(kn9t_core::Chunk::ToolCall { idx: 0, id: kn9t_core::CallId("call_1".into()), name: "mystery".into() }),
+                    Ok(kn9t_core::Chunk::ToolArgs { idx: 0, delta: args }),
+                    Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "mystery".into(), id: "m1".into() } })),
+                    Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::ToolUse)),
+                ].into_iter()))
+            } else {
+                Ok(Box::new(vec![
+                    Ok(kn9t_core::Chunk::Text { idx: 0, delta: "done".into() }),
+                    Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "mystery".into(), id: "m1".into() } })),
+                    Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
+                ].into_iter()))
+            }
+        }
+    }
+    let provider: Arc<dyn kn9t_core::Provider> = Arc::new(MysteryProvider { calls: Arc::new(Mutex::new(0)) });
+    state = state.with_policy(Arc::new(InteractivePolicy::with_tools(BashPolicy::default(), registry.clone(), cache.clone(), tools.clone()))).with_provider(provider);
+    state.model_registry = vec![model_spec()];
+    let state = Arc::new(state);
+    let h = start(state.clone());
+    let sid = make_session(&h);
+    let lease = acquire_lease(&h, &sid);
+    let sub = state.buses.subscribe(&sid, 64);
+    let r = req_auth(&h, "POST", &format!("/session/{sid}/prompt"), &[("X-Lease", lease.as_str())], serde_json::json!({"text":"mystery"}));
+    assert_eq!(r.status, 200);
+    let mut found = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if let Some(ev) = sub.recv_timeout(Duration::from_millis(200)) {
+            if let Event::ApprovalRequest { id, tool, .. } = ev { if tool == "mystery" { found = Some(id); break; } }
+        }
+    }
+    assert!(found.is_some(), "tool with no effects must be Ask and prompt");
+    let aid = found.unwrap();
+    let r = req_auth(&h, "POST", "/approve", &[("X-Lease", lease.as_str()), ("X-Lease-Session", sid.as_str())], serde_json::json!({"id": aid.0, "decision": "allow", "scope": "once"}));
+    assert_eq!(r.status, 200);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while kn9t_server::turn::is_turn_running(&sid) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    assert!(!kn9t_server::turn::is_turn_running(&sid));
+    // ConfigPolicy with same tool must be Deny (no prompt, instant deny)
+    let config_policy = ConfigPolicy::with_tools(BashPolicy::default(), tools);
+    let call = kn9t_core::ToolCall { id: kn9t_core::CallId("c1".into()), name: "mystery".into(), args_json: r#"{"foo":"bar"}"#.into() };
+    let d = config_policy.check(&call, std::path::Path::new("/tmp"));
+    assert!(matches!(d, kn9t_core::Decision::Deny { .. }), "ConfigPolicy must deny no-effects tool, got {:?}", d);
+    h.handle.shutdown();
+}
+
+#[test]
+fn tool_write_fs_write_is_ask() {
+    use kn9t_server::classify::BashPolicy;
+    use kn9t_server::policy::{ApprovalCache, ApprovalRegistry, InteractivePolicy};
+    let (store, _tmp) = temp_store();
+    let token = kn9t_server::auth::generate_token();
+    let cache = Arc::new(ApprovalCache::new_empty());
+    let registry = Arc::new(ApprovalRegistry::new());
+    let mut tools = kn9t_core::ToolRegistry::default();
+    let write_spec = kn9t_core::ToolSpec {
+        name: "write".into(),
+        description: "write file".into(),
+        schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
+        hidden: false,
+        effects: vec![kn9t_core::Effect { field: "path".into(), kind: kn9t_core::EffectKind::FsWrite }],
+    };
+    struct WriteTool { spec: kn9t_core::ToolSpec }
+    impl kn9t_core::Tool for WriteTool {
+        fn spec(&self) -> &kn9t_core::ToolSpec { &self.spec }
+        fn execute(&self, _a: &serde_json::Value, _c: &kn9t_core::ToolCtx, _k: &kn9t_core::Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> { Ok(kn9t_core::ToolOutput { content: vec![kn9t_core::Content::Text { text: "ok".into() }], details: None, is_error: false }) }
+    }
+    tools.push(Arc::new(WriteTool { spec: write_spec }) as Arc<dyn kn9t_core::Tool>);
+    let policy: Arc<dyn kn9t_core::Policy> = Arc::new(InteractivePolicy::with_tools(BashPolicy::default(), registry.clone(), cache.clone(), tools.clone()));
+    let mut state = ServerState::new(store, token, tools.clone(), Vec::new());
+    state.approval_registry = registry.clone();
+    state.approval_cache = cache.clone();
+    state = state.with_policy(policy).with_default_model(model_spec()).with_provider({
+        struct WriteProvider { calls: Arc<Mutex<u32>> }
+        impl kn9t_core::Provider for WriteProvider {
+            fn name(&self) -> &str { "write" }
+            fn stream(&self, req: &kn9t_core::Request, _c: &kn9t_core::Cancel) -> Result<Box<dyn Iterator<Item = Result<kn9t_core::Chunk, kn9t_core::ProvErr>> + Send>, kn9t_core::ProvErr> {
+                if req.max_tokens == Some(16) {
+                    return Ok(Box::new(vec![
+                        Ok(kn9t_core::Chunk::Text { idx: 0, delta: "title".into() }),
+                        Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "write".into(), id: "m1".into() } })),
+                        Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
+                    ].into_iter()));
+                }
+                let n = { let mut c = self.calls.lock().unwrap(); let n = *c; *c += 1; n };
+                if n % 2 == 0 {
+                    let args = serde_json::json!({"path":"/tmp/foo"}).to_string();
+                    Ok(Box::new(vec![
+                        Ok(kn9t_core::Chunk::ToolCall { idx: 0, id: kn9t_core::CallId("call_1".into()), name: "write".into() }),
+                        Ok(kn9t_core::Chunk::ToolArgs { idx: 0, delta: args }),
+                        Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "write".into(), id: "m1".into() } })),
+                        Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::ToolUse)),
+                    ].into_iter()))
+                } else {
+                    Ok(Box::new(vec![
+                        Ok(kn9t_core::Chunk::Text { idx: 0, delta: "done".into() }),
+                        Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "write".into(), id: "m1".into() } })),
+                        Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
+                    ].into_iter()))
+                }
+            }
+        }
+        Arc::new(WriteProvider { calls: Arc::new(Mutex::new(0)) }) as Arc<dyn kn9t_core::Provider>
+    });
+    state.model_registry = vec![model_spec()];
+    let state = Arc::new(state);
+    let h = start(state.clone());
+    let sid = make_session(&h);
+    let lease = acquire_lease(&h, &sid);
+    let sub = state.buses.subscribe(&sid, 64);
+    let r = req_auth(&h, "POST", &format!("/session/{sid}/prompt"), &[("X-Lease", lease.as_str())], serde_json::json!({"text":"write"}));
+    assert_eq!(r.status, 200);
+    let mut found = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if let Some(ev) = sub.recv_timeout(Duration::from_millis(200)) {
+            if let Event::ApprovalRequest { id, tool, .. } = ev { if tool == "write" { found = Some(id); break; } }
+        }
+    }
+    assert!(found.is_some(), "write with FsWrite must be Ask and prompt");
+    let aid = found.unwrap();
+    let r = req_auth(&h, "POST", "/approve", &[("X-Lease", lease.as_str()), ("X-Lease-Session", sid.as_str())], serde_json::json!({"id": aid.0, "decision": "allow", "scope": "once"}));
+    assert_eq!(r.status, 200);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while kn9t_server::turn::is_turn_running(&sid) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    assert!(!kn9t_server::turn::is_turn_running(&sid));
+    h.handle.shutdown();
 }
 
 // ── abort_then_prompt_race ────────────────────────────────────────────────────

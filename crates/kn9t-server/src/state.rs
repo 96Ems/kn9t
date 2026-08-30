@@ -158,10 +158,12 @@ impl ServerState {
     ) -> Self {
         let approval_registry = Arc::new(ApprovalRegistry::new());
         let approval_cache = Arc::new(ApprovalCache::new(crate::config::global_config_path()));
-        let policy: Arc<dyn Policy> = Arc::new(InteractivePolicy::new_with_cache(
+        let tools_for_policy = tools.clone();
+        let policy: Arc<dyn Policy> = Arc::new(InteractivePolicy::with_tools(
             BashPolicy::default(),
             approval_registry.clone(),
             approval_cache.clone(),
+            tools_for_policy,
         ));
         ServerState {
             store,
@@ -218,10 +220,19 @@ impl ServerState {
         registry: &Arc<ApprovalRegistry>,
         cache: &Arc<ApprovalCache>,
     ) -> Arc<dyn Policy> {
+        Self::policy_from_config_with_cache_and_tools(mode, bash, registry, cache, ToolRegistry::default())
+    }
+    pub fn policy_from_config_with_cache_and_tools(
+        mode: &PolicyMode,
+        bash: BashPolicy,
+        registry: &Arc<ApprovalRegistry>,
+        cache: &Arc<ApprovalCache>,
+        tools: ToolRegistry,
+    ) -> Arc<dyn Policy> {
         match mode {
-            PolicyMode::AskOnMutation => Arc::new(InteractivePolicy::new_with_cache(bash, registry.clone(), cache.clone())),
+            PolicyMode::AskOnMutation => Arc::new(InteractivePolicy::with_tools(bash, registry.clone(), cache.clone(), tools)),
             PolicyMode::AllowAll => Arc::new(AllowPolicy),
-            PolicyMode::ReadOnly => Arc::new(ConfigPolicy::new(bash)),
+            PolicyMode::ReadOnly => Arc::new(ConfigPolicy::with_tools(bash, tools)),
             PolicyMode::DenyAll => Arc::new(DenyAllPolicy),
         }
     }

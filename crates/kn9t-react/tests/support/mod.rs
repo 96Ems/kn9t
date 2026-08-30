@@ -336,7 +336,7 @@ pub fn spawn_tools_registry() -> (Arc<PluginHost>, ToolRegistry) {
         let tool_spec = kn9t_core::ToolSpec {
             name: spec.name.clone(),
             description: spec.description.clone(),
-            schema: spec.schema.clone(), hidden: false
+            schema: spec.schema.clone(), hidden: false, effects: spec.effects.clone()
         };
         let remote = RemoteTool::new(tool_spec, host.clone());
         tools.push(Arc::new(remote));

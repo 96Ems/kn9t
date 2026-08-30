@@ -96,6 +96,24 @@ pub enum PluginMsg {
 
 // ── Shared data types ─────────────────────────────────────────────────────────
 
+/// Effect kind for ADR-0002 (server decides risk from declared effects).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectKind {
+    Shell,
+    FsRead,
+    FsWrite,
+    Network,
+}
+
+/// One declared side-effect of a tool argument.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Effect {
+    /// JSON field name or pointer (e.g. `"cmd"` or `"/command"`).
+    pub field: String,
+    pub kind: EffectKind,
+}
+
 /// Tool declaration sent in the plugin hello.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {
@@ -114,6 +132,9 @@ pub struct ToolSpec {
     /// the agent discovers them via a meta-tool (e.g., `mcp_search_tools`).
     #[serde(default)]
     pub hidden: bool,
+    /// Declared effects (ADR-0002). Empty → strictest policy default.
+    #[serde(default)]
+    pub effects: Vec<Effect>,
 }
 
 /// Provider declaration sent in the plugin hello.
