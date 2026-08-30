@@ -1,0 +1,39 @@
+# MCP servers configuration for kn9t-mcp plugin
+# Each [[mcp]] entry defines one MCP server
+#
+# Types:
+#   local  - subprocess (spawn with cmd)
+#   remote - HTTP/SSE (connect to url)
+#
+# Environment variables: use "env:VAR_NAME" to read from environment
+
+# ── LocalMcpStdio ─────────────────────────────────────────────────────────────────
+[[mcp]]
+name = "LocalMcpStdio"
+type = "local"
+cmd  = ["python", "-m", "LocalMcpStdio.server"]
+[mcp.env]
+Custom_env1 = "stuf"
+Custom_env2 = '{"key":{"name":"thing","project":"thing","defaults":{"status":"New","category":"thing"}}}'
+
+# ── Atlassian (Jira + Confluence) via WSL ─────────────────────────────────────
+[[mcp]]
+name = "atlassian"
+type = "local"
+cmd  = [
+    "wsl", "--",
+    "mcp-atlassian",
+    "--jira-url", "https://jira.com",
+    "--jira-personal-token", "token",
+    "--confluence-url", "https://confluence.com",
+    "--confluence-personal-token", "token"
+]
+
+# ── (remote HTTP) ─────────────────────────────────────────────────
+[[mcp]]
+name = "RemoteMcp"
+type = "remote"
+url  = "url"
+[mcp.headers]
+header1 = "whatever"
+header2 = "whatever"

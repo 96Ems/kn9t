@@ -1,0 +1,2 @@
+# Fixtures are raw provider bytes, verbatim (R-RPLY-010). Never convert line endings.
+crates/kn9t-provider-replay/fixtures/** -text

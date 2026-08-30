@@ -1,0 +1,58 @@
+# kn9t configuration — nxf97118
+# Global config: providers and credentials. Do not commit this file.
+
+# ── NXP Bedrock (Claude via LiteLLM gateway) ─────────────────────────────────
+
+[provider.custom_name]
+kind         = "openai"
+base_url     = "url"
+api_key = "apikey"
+#enverin env needed
+
+[provider.custom_name.headers]
+#custom header
+X-User-Id         = "custom"
+source_identifier = "custom"
+
+[provider.custom_name.quirks]
+#custom quirks
+max_tokens_field = "max_completion_tokens"
+system_role      = "system"
+usage_in_stream  = true
+finish_reason    = true
+reasoning        = "none"
+require_tools    = true
+thinking_style   = "none"
+streaming        = true
+
+# ── Custom V9 plugin (Claude via custom gateway) ─────────────────────────────
+# Models auto-discovered from plugin — no [[model]] needed!
+
+[provider.provider_by_plugin]
+kind   = "plugin"
+binary = "path to plugin executable"
+
+[provider.provider_by_plugin.env]
+SRC_ACCESS_TOKEN = "token"
+SRC_ENDPOINT     = "url"
+
+# ── MCP Plugin ────────────────────────────────────────────────────────────────
+# Bridges kn9t to MCP servers (Jira, GitHub, etc.)
+# Configure MCP servers in ~/.kn9t/mcp.toml
+
+[[plugin]]
+name = "kn9t-mcp"
+cmd  = ["python", "-m", "kn9t_mcp"]
+
+[plugin.env]
+PYTHONPATH = "C:\\_ddm\\projects\\Agents\\kn9t\\plugins\\kn9t-mcp"
+
+# ── AGENTS.md Plugin ──────────────────────────────────────────────────────────
+# Auto-discovers and injects AGENTS.md files into context.
+# - Global: ~/.kn9t/AGENTS.md
+# - Project: $CWD/AGENTS.md
+# - Subdirectories: discovered when tools read files
+
+[[plugin]]
+name = "kn9t-agents-md"
+cmd  = ["C:\\_ddm\\projects\\Agents\\kn9t\\plugins\\kn9t-agents-md\\kn9t-agents-md.exe"]

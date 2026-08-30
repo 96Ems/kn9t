@@ -1,0 +1,10 @@
+kind: raw-sse
+status: 200
+content-type: text/event-stream
+note: RAW TWIN of replay/truncated_toolcall. Body is a >50KB-style response cut mid tool-arguments with no terminal stopReason (ECONNRESET shape). A real streaming-provider classifier must map to ProvErr::Truncated (R-RPLY-070). Not parsed at stage 2.
+
+event: completion
+data: {"deltaText":"I'll write the file now."}
+
+event: completion
+data: {"delta_tool_calls":[{"index":0,"id":"toolu_01","function":{"name":"write","arguments":"{\"path\":\"main.rs\",\"content\":\"fn main() {\n    // ...very long content truncated by the upstream at the byte boundary and never

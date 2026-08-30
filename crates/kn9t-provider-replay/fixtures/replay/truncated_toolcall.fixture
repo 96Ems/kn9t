@@ -1,0 +1,12 @@
+kind: replay
+status: 200
+content-type: text/event-stream
+terminal-error: truncated
+note: stream starts a tool call then ends with no stop chunk; raw twin truncates the body
+
+data: {"chunk":"text","idx":0,"delta":"writing the file"}
+
+data: {"chunk":"tool_call","idx":0,"id":"call_w","name":"write"}
+
+data: {"chunk":"tool_args","idx":0,"delta":"{\"path\":\"main.rs\",\"content\":\"fn main("}
+

@@ -1,0 +1,8 @@
+kind: replay
+status: 200
+content-type: text/event-stream
+terminal-error: stream: {"error":"upstream connection reset"}
+note: mid-stream error frame -> ProvErr::Stream, fatal to the turn
+
+data: {"chunk":"text","idx":0,"delta":"starting"}
+

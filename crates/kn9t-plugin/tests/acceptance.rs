@@ -1,0 +1,639 @@
+//! Acceptance tests for kn9t-plugin (Stage 08).
+//!
+//! Tests live in `mod plug` so `cargo test plug::handshake` etc. work.
+
+use kn9t_plugin::codec::{write_plugin_msg, HostMsg, PluginDeclaration, PluginMsg};
+use kn9t_core::{Content, HookName, HookVeto, Message, ModelRef, MsgId, Role, StopReason, Tokens, Usage};
+use serde_json::json;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+// ── shared helpers ────────────────────────────────────────────────────────────
+
+fn channel_pipe() -> (Box<dyn Read + Send>, Box<dyn Write + Send>) {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(256);
+    (Box::new(ChannelReader { rx, buf: Vec::new(), pos: 0 }), Box::new(ChannelWriter { tx }))
+}
+
+fn make_pipes() -> (
+    Box<dyn Read + Send>, Box<dyn Write + Send>,
+    Box<dyn Read + Send>, Box<dyn Write + Send>,
+) {
+    let (h_read, p_write) = channel_pipe();
+    let (p_read, h_write) = channel_pipe();
+    (h_read, h_write, p_read, p_write)
+}
+
+struct ChannelReader {
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    buf: Vec<u8>,
+    pos: usize,
+}
+impl Read for ChannelReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.buf.len() {
+            match self.rx.recv() {
+                Ok(data) => { self.buf = data; self.pos = 0; }
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = out.len().min(self.buf.len() - self.pos);
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+struct ChannelWriter { tx: std::sync::mpsc::SyncSender<Vec<u8>> }
+impl Write for ChannelWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.tx.send(buf.to_vec()).map(|_| buf.len())
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed"))
+    }
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+
+fn decl(name: &str, hooks: Vec<HookName>) -> PluginDeclaration {
+    PluginDeclaration { name: name.to_string(), capabilities: vec![], hooks, tools: vec![], subscribed_events: vec![], provider: None }
+}
+
+fn test_usage() -> Usage {
+    Usage {
+        tokens: Tokens::default(),
+        model: ModelRef { provider: "test".to_string(), id: "m".to_string() },
+    }
+}
+
+fn test_message(text: &str) -> Message {
+    Message {
+        id: MsgId::new(), role: Role::User,
+        content: vec![Content::Text { text: text.to_string() }],
+        silent: false,
+    }
+}
+
+/// Spawn a plugin thread that reads N hook requests and replies with the given bodies.
+fn spawn_plugin_multi(
+    plugin_read: Box<dyn Read + Send>,
+    plugin_write: Box<dyn Write + Send>,
+    replies: Vec<serde_json::Value>,
+) {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(plugin_read);
+        let mut writer = plugin_write;
+        for reply_body in replies {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 { break; }
+            let msg: HostMsg = match serde_json::from_str(line.trim_end()) {
+                Ok(m) => m, Err(_) => break,
+            };
+            let id = match &msg { HostMsg::Hook { id, .. } => *id, _ => continue };
+            let reply = PluginMsg::Result { id, body: reply_body };
+            if write_plugin_msg(&mut writer, &reply).is_err() { break; }
+        }
+    });
+}
+
+fn spawn_plugin_responder(
+    plugin_read: Box<dyn Read + Send>,
+    plugin_write: Box<dyn Write + Send>,
+    reply_body: serde_json::Value,
+) {
+    spawn_plugin_multi(plugin_read, plugin_write, vec![reply_body]);
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+mod plug {
+    use super::*;
+    use kn9t_plugin::{
+        codec::{read_host_msg, write_host_msg},
+        config::{filter_configs, PluginConfig},
+        ComposedHookHost, NoOpPluginKv, PluginHost, SpawnTool,
+    };
+    use kn9t_core::{HookHost, Tool};
+    use std::path::Path;
+
+    // ── R-PLUG-040: handshake ─────────────────────────────────────────────────
+
+    #[test]
+    fn handshake() {
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+
+        let plugin_handle = std::thread::spawn(move || {
+            let mut reader = BufReader::new(p_read);
+            let mut writer = p_write;
+            let msg = read_host_msg(&mut reader).expect("plugin: read hello");
+            match &msg {
+                HostMsg::Hello { proto, kn9t } => {
+                    assert_eq!(*proto, 1);
+                    assert!(!kn9t.is_empty());
+                }
+                _ => panic!("expected Hello"),
+            }
+            let reply = PluginMsg::Hello {
+                name: "redact".to_string(),
+                capabilities: vec![],
+                hooks: vec!["after_tool_call".to_string()],
+                tools: vec![],
+                events: vec!["MessageAppended".to_string()],
+                provider: None,
+            };
+            write_plugin_msg(&mut writer, &reply).expect("plugin: write hello");
+        });
+
+        let mut host_writer = h_write;
+        let mut host_reader = BufReader::new(h_read);
+        let hello = HostMsg::Hello { proto: 1, kn9t: "0.1.0".to_string() };
+        write_host_msg(&mut host_writer, &hello).expect("host: write hello");
+        let reply = kn9t_plugin::codec::read_plugin_msg(&mut host_reader)
+            .expect("host: read plugin hello");
+        match reply {
+            PluginMsg::Hello { name, hooks, tools, events, .. } => {
+                assert_eq!(name, "redact");
+                assert_eq!(hooks, vec!["after_tool_call"]);
+                assert!(tools.is_empty());
+                assert_eq!(events, vec!["MessageAppended"]);
+            }
+            _ => panic!("expected Hello reply"),
+        }
+        plugin_handle.join().unwrap();
+    }
+
+    // ── R-PLUG-040 (real spawn): PluginHost::spawn() against kn9t-tools binary ──
+
+    /// plug::spawn_real — PluginHost::spawn() performs the hello/hello handshake
+    /// against a real subprocess binary (kn9t-tools), registers its declared tools,
+    /// and the host can send Shutdown cleanly.
+    #[test]
+    fn spawn_real() {
+        // Locate the kn9t-tools binary built by cargo in the same target dir.
+        // CARGO_TARGET_TMPDIR is not available in integration tests, but the
+        // binary is always at target/{profile}/kn9t-tools[.exe].
+        let ext = if cfg!(windows) { ".exe" } else { "" };
+        let bin_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug")
+            .join(format!("kn9t-tools{ext}"));
+
+        if !bin_path.exists() {
+            eprintln!("skip plug::spawn_real — binary not found at {}", bin_path.display());
+            eprintln!("run `cargo build -p kn9t-tools-plugin` first");
+            return;
+        }
+
+        let host = PluginHost::spawn(&bin_path, &[], Arc::new(NoOpPluginKv))
+            .expect("spawn must succeed");
+
+        // kn9t-tools declares bash, read, edit tools.
+        assert!(!host.declaration.name.is_empty(), "plugin must declare a name");
+        assert!(
+            host.declaration.tools.iter().any(|t| t.name == "bash"),
+            "kn9t-tools must declare the bash tool"
+        );
+        assert!(
+            host.declaration.tools.iter().any(|t| t.name == "read"),
+            "kn9t-tools must declare the read tool"
+        );
+        assert!(
+            host.declaration.is_streaming(),
+            "kn9t-tools must declare streaming capability"
+        );
+
+        // Clean shutdown.
+        host.shutdown();
+    }
+
+    // ── R-PLUG-060: hook surface ──────────────────────────────────────────────
+
+    #[test]
+    fn hook_surface() {
+        // before_tool_call → allow
+        {
+            let (h_read, h_write, p_read, p_write) = make_pipes();
+            spawn_plugin_responder(p_read, p_write, json!({"action": "allow"}));
+            let host = PluginHost::from_io(h_read, h_write, decl("p", vec![HookName::BeforeToolCall]), Arc::new(NoOpPluginKv));
+            let result = host.before_tool_call("bash", &json!({"cmd": "ls"}), Path::new("/"));
+            assert!(matches!(result, HookVeto::Allow));
+        }
+        // after_tool_call → keep
+        {
+            let (h_read, h_write, p_read, p_write) = make_pipes();
+            spawn_plugin_responder(p_read, p_write, json!({"action": "keep"}));
+            let host = PluginHost::from_io(h_read, h_write, decl("p", vec![HookName::AfterToolCall]), Arc::new(NoOpPluginKv));
+            let result = host.after_tool_call("bash", &json!({}), vec![Content::Text { text: "hi".to_string() }]);
+            assert_eq!(result.len(), 1);
+        }
+        // before_request → keep
+        {
+            let (h_read, h_write, p_read, p_write) = make_pipes();
+            spawn_plugin_responder(p_read, p_write, json!({"action": "keep"}));
+            let host = PluginHost::from_io(h_read, h_write, decl("p", vec![HookName::BeforeRequest]), Arc::new(NoOpPluginKv));
+            let msgs = vec![test_message("hi")];
+            let model = ModelRef { provider: "t".to_string(), id: "m".to_string() };
+            let result = host.before_request(msgs.clone(), &model, None);
+            assert_eq!(result.len(), 1);
+        }
+        // should_stop_after_turn → continue
+        {
+            let (h_read, h_write, p_read, p_write) = make_pipes();
+            spawn_plugin_responder(p_read, p_write, json!({"action": "continue"}));
+            let host = PluginHost::from_io(h_read, h_write, decl("p", vec![HookName::ShouldStopAfterTurn]), Arc::new(NoOpPluginKv));
+            assert!(!host.should_stop_after_turn(StopReason::Stop, &test_usage(), 1));
+        }
+        // prepare_next_turn → keep
+        {
+            let (h_read, h_write, p_read, p_write) = make_pipes();
+            spawn_plugin_responder(p_read, p_write, json!({"action": "keep"}));
+            let host = PluginHost::from_io(h_read, h_write, decl("p", vec![HookName::PrepareNextTurn]), Arc::new(NoOpPluginKv));
+            let patch = host.prepare_next_turn(StopReason::Stop, &test_usage());
+            assert!(patch.model.is_none() && patch.thinking.is_none());
+        }
+        // get_steering → empty
+        {
+            let (h_read, h_write, p_read, p_write) = make_pipes();
+            spawn_plugin_responder(p_read, p_write, json!({"messages": []}));
+            let host = PluginHost::from_io(h_read, h_write, decl("p", vec![HookName::GetSteering]), Arc::new(NoOpPluginKv));
+            assert!(host.get_steering().is_empty());
+        }
+        // get_followup → empty
+        {
+            let (h_read, h_write, p_read, p_write) = make_pipes();
+            spawn_plugin_responder(p_read, p_write, json!({"messages": []}));
+            let host = PluginHost::from_io(h_read, h_write, decl("p", vec![HookName::GetFollowup]), Arc::new(NoOpPluginKv));
+            assert!(host.get_followup().is_empty());
+        }
+        // get_api_key → null
+        {
+            let (h_read, h_write, p_read, p_write) = make_pipes();
+            spawn_plugin_responder(p_read, p_write, json!({"key": null}));
+            let host = PluginHost::from_io(h_read, h_write, decl("p", vec![HookName::GetApiKey]), Arc::new(NoOpPluginKv));
+            assert!(host.get_api_key("openai").is_none());
+        }
+    }
+
+    // ── R-PLUG-070: composition (real subprocess binaries) ────────────────────
+
+    fn test_plugin_bin() -> std::path::PathBuf {
+        let ext = if cfg!(windows) { ".exe" } else { "" };
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug")
+            .join(format!("kn9t-test-plugin{ext}"))
+    }
+
+    #[test]
+    fn composition() {
+        let bin = test_plugin_bin();
+        if !bin.exists() {
+            eprintln!("skip plug::composition — build kn9t-test-plugin first");
+            return;
+        }
+
+        // ── Pipeline: after_tool_call — A replaces, B sees A's output ──
+        {
+            let host_a = Arc::new(
+                PluginHost::spawn(&bin, &[
+                    ("TEST_PLUGIN_HOOK",  "after_tool_call"),
+                    ("TEST_PLUGIN_REPLY", r#"{"action":"replace","content":[{"type":"text","text":"from_a"}]}"#),
+                ], Arc::new(NoOpPluginKv)).expect("spawn plugin-a")
+            );
+            let host_b = Arc::new(
+                PluginHost::spawn(&bin, &[
+                    ("TEST_PLUGIN_HOOK",  "after_tool_call"),
+                    ("TEST_PLUGIN_REPLY", r#"{"action":"keep"}"#),
+                ], Arc::new(NoOpPluginKv)).expect("spawn plugin-b")
+            );
+            let composed = ComposedHookHost::new(vec![host_a, host_b]);
+            let original = vec![Content::Text { text: "original".to_string() }];
+            let result = composed.after_tool_call("bash", &json!({}), original);
+            // A replaced → "from_a"; B kept it → still "from_a"
+            assert_eq!(result.len(), 1);
+            match &result[0] {
+                Content::Text { text } => assert_eq!(text, "from_a"),
+                _ => panic!("expected text"),
+            }
+        }
+
+        // ── Veto: before_tool_call — first deny wins, B not reached ──
+        {
+            let host_a = Arc::new(
+                PluginHost::spawn(&bin, &[
+                    ("TEST_PLUGIN_HOOK",  "before_tool_call"),
+                    ("TEST_PLUGIN_REPLY", r#"{"action":"deny","reason":"blocked"}"#),
+                ], Arc::new(NoOpPluginKv)).expect("spawn plugin-a")
+            );
+            let host_b = Arc::new(
+                PluginHost::spawn(&bin, &[
+                    ("TEST_PLUGIN_HOOK",  "before_tool_call"),
+                    ("TEST_PLUGIN_REPLY", r#"{"action":"allow"}"#),
+                ], Arc::new(NoOpPluginKv)).expect("spawn plugin-b")
+            );
+            let composed = ComposedHookHost::new(vec![host_a, host_b]);
+            let result = composed.before_tool_call("bash", &json!({}), Path::new("/"));
+            assert!(matches!(result, HookVeto::Deny { .. }), "expected Deny");
+        }
+
+        // ── Collect: get_steering — concat two plugins in order ──
+        {
+            let msg_a_val = serde_json::to_value(test_message("steer_a")).unwrap();
+            let msg_b_val = serde_json::to_value(test_message("steer_b")).unwrap();
+            let reply_a = format!(r#"{{"messages":[{}]}}"#, msg_a_val);
+            let reply_b = format!(r#"{{"messages":[{}]}}"#, msg_b_val);
+
+            let host_a = Arc::new(
+                PluginHost::spawn(&bin, &[
+                    ("TEST_PLUGIN_HOOK",  "get_steering"),
+                    ("TEST_PLUGIN_REPLY", &reply_a),
+                ], Arc::new(NoOpPluginKv)).expect("spawn plugin-a")
+            );
+            let host_b = Arc::new(
+                PluginHost::spawn(&bin, &[
+                    ("TEST_PLUGIN_HOOK",  "get_steering"),
+                    ("TEST_PLUGIN_REPLY", &reply_b),
+                ], Arc::new(NoOpPluginKv)).expect("spawn plugin-b")
+            );
+            let composed = ComposedHookHost::new(vec![host_a, host_b]);
+            let result = composed.get_steering();
+            assert_eq!(result.len(), 2, "two steering messages collected");
+        }
+    }
+
+    // ── R-PLUG-080: timeouts (real subprocess binary) ─────────────────────────
+
+    #[test]
+    fn timeout() {
+        use kn9t_plugin::host::default_timeout;
+
+        // Default timeout values (spec R-PLUG-080).
+        assert_eq!(default_timeout(HookName::BeforeToolCall),      Duration::from_millis(30_000));
+        assert_eq!(default_timeout(HookName::AfterToolCall),        Duration::from_millis(2_000));
+        assert_eq!(default_timeout(HookName::BeforeRequest),        Duration::from_millis(2_000));
+        assert_eq!(default_timeout(HookName::ShouldStopAfterTurn),  Duration::from_millis(1_000));
+        assert_eq!(default_timeout(HookName::PrepareNextTurn),       Duration::from_millis(1_000));
+        assert_eq!(default_timeout(HookName::GetSteering),          Duration::from_millis(500));
+        assert_eq!(default_timeout(HookName::GetFollowup),          Duration::from_millis(500));
+        assert_eq!(default_timeout(HookName::GetApiKey),            Duration::from_millis(5_000));
+
+        let bin = test_plugin_bin();
+        if !bin.exists() {
+            eprintln!("skip plug::timeout (real subprocess) — build kn9t-test-plugin first");
+            // Fall back to the in-process pipe stub so the timeout value assertions
+            // above still act as a gate.
+            let (h_read, h_write, _p_read, _p_write) = make_pipes();
+            let host = PluginHost::from_io(h_read, h_write, decl("slow", vec![HookName::GetSteering]), Arc::new(NoOpPluginKv));
+            let start = Instant::now();
+            let result = host.get_steering();
+            let elapsed = start.elapsed();
+            assert!(result.is_empty(), "failure posture: empty on timeout");
+            assert!(elapsed < Duration::from_millis(600), "timeout too slow: {:?}", elapsed);
+            return;
+        }
+
+        // Real subprocess that sleeps 5 000 ms — far beyond the 500 ms get_steering
+        // timeout. The host must cut it at budget and return the failure posture (empty).
+        let host = PluginHost::spawn(&bin, &[
+            ("TEST_PLUGIN_HOOK",     "get_steering"),
+            ("TEST_PLUGIN_SLEEP_MS", "5000"),
+            ("TEST_PLUGIN_REPLY",    r#"{"messages":[]}"#),
+        ], Arc::new(NoOpPluginKv)).expect("spawn slow plugin");
+
+        let start = Instant::now();
+        let result = host.get_steering();
+        let elapsed = start.elapsed();
+
+        assert!(result.is_empty(), "failure posture: empty on timeout");
+        assert!(elapsed < Duration::from_millis(600), "timeout too slow: {:?}", elapsed);
+    }
+
+    // ── R-PLUG-100: project-local plugin ignored ──────────────────────────────
+
+    #[test]
+    fn project_plugin_ignored() {
+        let configs = vec![
+            PluginConfig {
+                name: "user-plugin".to_string(),
+                command: "user-plugin-bin".to_string(),
+                args: vec![],
+                project_local: false,
+            },
+            PluginConfig {
+                name: "project-plugin".to_string(),
+                command: "project-plugin-bin".to_string(),
+                args: vec![],
+                project_local: true,
+            },
+        ];
+        let filtered = filter_configs(configs);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "user-plugin");
+    }
+
+    // ── R-PLUG-110: spawn_session ─────────────────────────────────────────────
+
+    #[test]
+    fn spawn_session() {
+        use kn9t_core::{ToolCtx, Cancel};
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use std::path::PathBuf;
+
+        // Mock executor: records calls and returns a fixed result.
+        let called = Arc::new(Mutex::new(false));
+        let called_clone = called.clone();
+
+        let executor = Box::new(move |task: &str, _budget: f64, _tools: Option<Vec<String>>| {
+            *called_clone.lock().unwrap() = true;
+            Ok(format!("done: {task}"))
+        });
+
+        let tool = SpawnTool::new(None, None, executor);
+        let args = json!({"task": "summarize the repo"});
+
+        // Build a minimal ToolCtx
+        let bus = Arc::new(kn9t_core::Bus::new());
+        let ctx = ToolCtx {
+            cwd: PathBuf::from("/tmp"),
+            read: Arc::new(Mutex::new(HashMap::new())),
+            bus: bus.clone(),
+            call_id: kn9t_core::CallId("test-call".to_string()),
+        };
+        let cancel = Cancel::new();
+
+        let output = tool.execute(&args, &ctx, &cancel).expect("spawn_session execute");
+        assert!(!output.is_error);
+        assert!(*called.lock().unwrap());
+        match &output.content[0] {
+            Content::Text { text } => assert!(text.contains("done:")),
+            _ => panic!("expected text"),
+        }
+    }
+
+    // ── R-PLUG-120: spawn_toolset ─────────────────────────────────────────────
+
+    #[test]
+    fn spawn_toolset() {
+        use kn9t_core::{ToolCtx, Cancel};
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use std::path::PathBuf;
+
+        let received_tools: Arc<Mutex<Option<Option<Vec<String>>>>> = Arc::new(Mutex::new(None));
+        let received_clone = received_tools.clone();
+
+        let executor = Box::new(move |_task: &str, _budget: f64, tools: Option<Vec<String>>| {
+            *received_clone.lock().unwrap() = Some(tools);
+            Ok("ok".to_string())
+        });
+
+        let child_tools = Some(vec!["read".to_string(), "bash".to_string()]);
+        let tool = SpawnTool::new(child_tools.clone(), None, executor);
+        let args = json!({"task": "do something"});
+
+        let bus = Arc::new(kn9t_core::Bus::new());
+        let ctx = ToolCtx {
+            cwd: PathBuf::from("/tmp"),
+            read: Arc::new(Mutex::new(HashMap::new())),
+            bus: bus.clone(),
+            call_id: kn9t_core::CallId("test-call".to_string()),
+        };
+        let cancel = Cancel::new();
+
+        tool.execute(&args, &ctx, &cancel).expect("spawn_toolset execute");
+
+        let got = received_tools.lock().unwrap().clone().unwrap();
+        assert_eq!(got, child_tools);
+    }
+
+    // ── R-PLUG-130: spawn_budget ──────────────────────────────────────────────
+
+    #[test]
+    fn spawn_budget() {
+        use kn9t_core::{ToolCtx, Cancel};
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use std::path::PathBuf;
+
+        let bus = Arc::new(kn9t_core::Bus::new());
+        let make_ctx = || ToolCtx {
+            cwd: PathBuf::from("/tmp"),
+            read: Arc::new(Mutex::new(HashMap::new())),
+            bus: bus.clone(),
+            call_id: kn9t_core::CallId("test-call".to_string()),
+        };
+        let cancel = Cancel::new();
+
+        // Case 1: budget_usd_arg > parent_remaining → capped to parent_remaining
+        {
+            let received_budget: Arc<Mutex<Option<f64>>> = Arc::new(Mutex::new(None));
+            let rb = received_budget.clone();
+            let executor = Box::new(move |_task: &str, budget: f64, _tools: Option<Vec<String>>| {
+                *rb.lock().unwrap() = Some(budget);
+                Ok("ok".to_string())
+            });
+            let tool = SpawnTool::new(None, Some(1.0), executor); // parent has $1 remaining
+            let args = json!({"task": "t", "budget_usd": 5.0}); // requests $5
+            tool.execute(&args, &make_ctx(), &cancel).unwrap();
+            let got = received_budget.lock().unwrap().unwrap();
+            assert!((got - 1.0).abs() < 1e-9, "budget should be capped to parent remaining");
+        }
+
+        // Case 2: parent_remaining = 0 → error ToolResult
+        {
+            let executor = Box::new(|_task: &str, _budget: f64, _tools: Option<Vec<String>>| {
+                Ok("should not run".to_string())
+            });
+            let tool = SpawnTool::new(None, Some(0.0), executor);
+            let args = json!({"task": "t", "budget_usd": 1.0});
+            let output = tool.execute(&args, &make_ctx(), &cancel).unwrap();
+            assert!(output.is_error, "should be error when budget exhausted");
+        }
+
+        // Case 3: no parent budget → use requested budget directly
+        {
+            let received_budget: Arc<Mutex<Option<f64>>> = Arc::new(Mutex::new(None));
+            let rb = received_budget.clone();
+            let executor = Box::new(move |_task: &str, budget: f64, _tools: Option<Vec<String>>| {
+                *rb.lock().unwrap() = Some(budget);
+                Ok("ok".to_string())
+            });
+            let tool = SpawnTool::new(None, None, executor); // no parent budget
+            let args = json!({"task": "t", "budget_usd": 2.5});
+            tool.execute(&args, &make_ctx(), &cancel).unwrap();
+            let got = received_budget.lock().unwrap().unwrap();
+            assert!((got - 2.5).abs() < 1e-9);
+        }
+    }
+
+    // ── concurrent call tests ─────────────────────────────────────────────────
+
+    /// Test that two concurrent calls don't block each other.
+    /// Before the fix: call 2 would block waiting for call 1's lock.
+    /// After the fix: both run in parallel.
+    #[test]
+    fn plug_concurrent_calls_no_block() {
+        use kn9t_plugin::PluginHost;
+
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+        let host = PluginHost::from_io(h_read, h_write, decl("test", vec![HookName::GetSteering]), Arc::new(NoOpPluginKv));
+
+        // Plugin: respond to calls with delays, but in order received.
+        // Call 1 takes 200ms, Call 2 takes 50ms.
+        // If blocking: total ~250ms. If concurrent: total ~200ms.
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(p_read);
+            let mut writer = p_write;
+            
+            // Read first call
+            let mut line1 = String::new();
+            reader.read_line(&mut line1).unwrap();
+            let msg1: HostMsg = serde_json::from_str(line1.trim_end()).unwrap();
+            let id1 = match msg1 { HostMsg::Hook { id, .. } => id, _ => panic!() };
+            
+            // Read second call (should arrive quickly if not blocked)
+            let mut line2 = String::new();
+            reader.read_line(&mut line2).unwrap();
+            let msg2: HostMsg = serde_json::from_str(line2.trim_end()).unwrap();
+            let id2 = match msg2 { HostMsg::Hook { id, .. } => id, _ => panic!() };
+
+            // Respond to call 2 first (faster)
+            std::thread::sleep(Duration::from_millis(50));
+            let reply2 = PluginMsg::Result { id: id2, body: json!({"messages": []}) };
+            write_plugin_msg(&mut writer, &reply2).unwrap();
+
+            // Respond to call 1 later (slower)
+            std::thread::sleep(Duration::from_millis(150));
+            let reply1 = PluginMsg::Result { id: id1, body: json!({"messages": []}) };
+            write_plugin_msg(&mut writer, &reply1).unwrap();
+        });
+
+        let host = Arc::new(host);
+        let h1 = Arc::clone(&host);
+        let h2 = Arc::clone(&host);
+
+        let start = Instant::now();
+
+        // Launch two concurrent calls
+        let t1 = std::thread::spawn(move || {
+            h1.get_steering()
+        });
+        let t2 = std::thread::spawn(move || {
+            h2.get_steering()
+        });
+
+        let r1 = t1.join().unwrap();
+        let r2 = t2.join().unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(r1.is_empty(), "call 1 should return empty messages");
+        assert!(r2.is_empty(), "call 2 should return empty messages");
+        
+        // If concurrent: ~200ms. If blocking: ~250ms+.
+        // Use 230ms threshold to detect blocking.
+        assert!(
+            elapsed < Duration::from_millis(230),
+            "concurrent calls took {:?}, expected <230ms (blocking detected)",
+            elapsed
+        );
+    }
+
+} // mod plug

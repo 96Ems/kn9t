@@ -1,0 +1,6 @@
+kind: raw-sse
+status: 200
+content-type: text/event-stream
+note: RAW TWIN of replay/context_overflow. Literal non-JSON body text `prompt is too long`; a real streaming-provider classifier must map this to ProvErr::ContextOverflow (R-RPLY-070). Not parsed at stage 2.
+
+prompt is too long: 210000 tokens > 200000 maximum

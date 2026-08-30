@@ -1,0 +1,11 @@
+[package]
+name = "kn9t-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "kn9t vocabulary crate: events, types, traits, bus, pure functions."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

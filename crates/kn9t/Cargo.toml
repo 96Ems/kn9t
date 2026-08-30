@@ -1,0 +1,11 @@
+[package]
+name    = "kn9t"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# GI-1: no workspace dependencies. The launcher only reads files and spawns
+# processes; it does not link any kn9t-* library.
+[dependencies]
+serde_json = { workspace = true }
+crossterm  = { version = "0.27" }

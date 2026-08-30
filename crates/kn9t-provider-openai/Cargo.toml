@@ -1,0 +1,17 @@
+[package]
+name        = "kn9t-provider-openai"
+version     = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# GI-1: single workspace dep (kn9t-provider-core). Use re-exports, not direct kn9t-core.
+[dependencies]
+kn9t-provider-core = { path = "../kn9t-provider-core" }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+
+# GI-1 counts [dependencies] only (spec/04-store.md §preamble sets this precedent, and
+# kn9t-react does the same). Tests need `kn9t_core::Quirks`, which provider-core
+# deliberately does NOT re-export because it collides with its own HTTP `Quirks`.
+[dev-dependencies]
+kn9t-core = { path = "../kn9t-core" }

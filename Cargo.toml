@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kn9t-core",
+    "crates/kn9t-provider-replay",
+    "crates/kn9t-react",
+    "crates/kn9t-store",
+    "crates/kn9t-provider-core",
+    "crates/kn9t-provider-openai",
+    "crates/kn9t-server",
+    "crates/kn9t-tui",
+    "crates/kn9t-plugin",
+    "crates/kn9t-plugin-sdk",
+    "crates/kn9t"
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+rust-version = "1.94"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Patch crossterm to use the Windows VT input fix for bracketed paste
+# See: https://github.com/crossterm-rs/crossterm/pull/1030
+[patch.crates-io]
+crossterm = { git = "https://github.com/eitsupi/crossterm", branch = "feature/windows-vt-input" }

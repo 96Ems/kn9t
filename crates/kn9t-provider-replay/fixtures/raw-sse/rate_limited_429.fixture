@@ -1,0 +1,7 @@
+kind: raw-sse
+status: 429
+content-type: application/json
+retry-after: 30
+note: rate limited; ReplayProvider returns pre-stream ProvErr::Http without chunks (R-RPLY-035)
+
+{"error":"rate limit exceeded, retry later"}

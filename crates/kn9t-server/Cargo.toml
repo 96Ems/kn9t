@@ -1,0 +1,38 @@
+[package]
+name        = "kn9t-server"
+version     = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# GI-1 EXCEPTION (spec 06 §preamble): kn9t-server is the one crate permitted more
+# than one workspace dependency. It is the sole wiring point that names concrete
+# Provider/Tool/Store/Policy types (DESIGN §2, §12).
+#
+# Tools are loaded from the kn9t-tools plugin subprocess (R-PLUG2-110), not from
+# an in-process crate — this validates the full plugin code path.
+[dependencies]
+kn9t-core          = { path = "../kn9t-core" }
+kn9t-store         = { path = "../kn9t-store" }
+kn9t-react         = { path = "../kn9t-react" }
+kn9t-provider-core = { path = "../kn9t-provider-core" }
+kn9t-provider-openai = { path = "../kn9t-provider-openai" }
+kn9t-plugin        = { path = "../kn9t-plugin" }
+tiny_http          = "0.12"
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+sha2               = "0.10"
+mime_guess         = "2"
+toml               = "0.8"
+ureq               = "3"
+base64             = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "kn9t-server"
+path = "src/main.rs"
+
+[lib]
+name = "kn9t_server"
+path = "src/lib.rs"

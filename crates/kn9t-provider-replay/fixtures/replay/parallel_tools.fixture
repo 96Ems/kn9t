@@ -1,0 +1,25 @@
+kind: replay
+status: 200
+content-type: text/event-stream
+note: two parallel tool calls interleaved by idx, then usage + tool_use stop
+
+data: {"chunk":"text","idx":0,"delta":"I'll read both files."}
+
+data: {"chunk":"tool_call","idx":0,"id":"call_a","name":"read"}
+
+data: {"chunk":"tool_call","idx":1,"id":"call_b","name":"read"}
+
+data: {"chunk":"tool_args","idx":0,"delta":"{\"path\":\"a"}
+
+data: {"chunk":"tool_args","idx":1,"delta":"{\"path\":\"b"}
+
+data: {"chunk":"tool_args","idx":0,"delta":".txt\"}"}
+
+data: {"chunk":"tool_args","idx":1,"delta":".txt\"}"}
+
+data: {"chunk":"usage","tokens":{"input":42,"output":18,"cache_read":0,"cache_write":0,"reasoning":0},"model":{"provider":"replay","id":"parallel-tools"}}
+
+data: {"chunk":"stop","tool_use":null}
+
+data: [DONE]
+

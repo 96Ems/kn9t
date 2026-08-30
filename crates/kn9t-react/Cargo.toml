@@ -1,0 +1,17 @@
+[package]
+name = "kn9t-react"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "kn9t ReAct loop: turn sequencing, cancellation/abort, truncation ladder, compaction, hook integration."
+
+[dependencies]
+kn9t-provider-core = { path = "../kn9t-provider-core" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+kn9t-core = { path = "../kn9t-core" }
+kn9t-provider-replay = { path = "../kn9t-provider-replay" }
+kn9t-plugin = { path = "../kn9t-plugin" }
+serde_json = { workspace = true }

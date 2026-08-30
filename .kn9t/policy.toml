@@ -1,0 +1,67 @@
+# kn9t sandbox policy — user-level defaults
+# Generated on first run. Edit freely.
+#
+# Layering order:
+#   1. Built-in baseline (shell builtins — always allowed)
+#   2. This file (~/.kn9t/policy.toml) — user-global defaults
+#   3. .kn9t/policy.toml — project-level overrides (committed to repo)
+#   4. Piece capabilities — from loaded pieces
+#   5. grants.toml — runtime Airlock grants
+#
+# Deny lists override allow lists. Mandatory denies (SPEC-003) override everything.
+
+[process]
+allow = [
+    # Filesystem (read-only / informational)
+    "ls", "dir", "ll", "la", "cat", "head", "tail", "less", "more",
+    "wc", "file", "stat", "readlink", "realpath", "basename", "dirname",
+    "find", "tree", "du", "df",
+    # Text processing
+    "grep", "egrep", "fgrep", "rg", "ag",
+    "awk", "gawk", "sed", "sort", "uniq", "cut", "tr",
+    "paste", "join", "comm", "diff", "patch", "tee", "xargs",
+    "fmt", "fold", "column", "rev", "tac", "nl",
+    "strings", "od", "xxd", "hexdump",
+    "md5sum", "sha256sum", "sha1sum", "cksum",
+    # System info
+    "uname", "hostname", "whoami", "id", "groups",
+    "date", "cal", "uptime", "arch", "nproc", "lscpu", "free",
+    "lsb_release", "getconf", "printenv",
+    # Development tools
+    "rustc", "cargo", "gcc", "g++", "clang", "clang++", "cc",
+    "make", "cmake", "ninja", "meson",
+    "python", "python3", "python3.12", "python3.11", "python3.10",
+    "node", "npm", "npx", "yarn", "pnpm", "bun", "deno",
+    "go", "java", "javac", "mvn", "gradle", "dotnet",
+    "ruby", "gem", "bundle", "perl", "php", "composer", "lua", "zig",
+    # Version control
+    "git", "svn", "hg",
+    # Test runners
+    "pytest", "jest", "mocha", "vitest",
+    # Linters / formatters
+    "eslint", "prettier", "black", "ruff", "mypy", "pylint", "flake8",
+    "clippy", "rustfmt", "gofmt", "clang-format",
+    # Windows
+    "powershell", "powershell.exe", "where", "ver", "systeminfo",
+    # Shell utilities
+    "sleep", "seq", "expr", "yes", "tput", "clear", "reset", "stty",
+    "bc", "dc", "jq", "yq", "xmllint", "base64", "iconv",
+    "man", "info", "help",
+    "mkdir", "touch", "cp", "mv",  # common file ops (fs policy guards paths)
+]
+deny = []
+
+[filesystem]
+# Additional paths beyond project dir and system dirs.
+# Project dir is always allowed. System dirs (/usr, /lib, etc.) are
+# always readable. Add extra paths here if needed.
+allow_read = []
+allow_write = []
+deny_read = []
+deny_write = []
+
+[network]
+# "domain:port" entries. Provider endpoints are added automatically
+# from piece capabilities. Add extras here.
+allow = []
+deny = []

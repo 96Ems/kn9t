@@ -1,0 +1,12 @@
+kind: replay
+status: 200
+content-type: text/event-stream
+chunks: 20,55
+note: splits at byte 20 (mid first data: line) and 55, must parse identically to whole
+
+data: {"chunk":"text","idx":0,"delta":"hello world"}
+
+data: {"chunk":"stop","stop":null}
+
+data: [DONE]
+

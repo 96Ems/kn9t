@@ -1,0 +1,26 @@
+# Rust
+/target
+**/target
+*.pdb
+# Cargo.lock IS committed (this is an application with binaries)
+
+# kn9t runtime state
+~/.kn9t/
+kn9t.db
+kn9t.db-wal
+kn9t.db-shm
+
+# editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*.log
+
+# python bytecode (plugins/kn9t-mcp)
+__pycache__/
+*.py[cod]
+
+# scratch
+out.txt

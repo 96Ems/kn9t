@@ -1,0 +1,8 @@
+kind: replay
+status: 200
+content-type: text/event-stream
+terminal-error: context_overflow
+note: raw twin raw-sse/prompt_too_long carries the literal wire text (R-RPLY-070)
+
+data: {"chunk":"text","idx":0,"delta":""}
+

@@ -1,0 +1,424 @@
+﻿# TRACKING — kn9t
+
+Live status scoreboard. This is the mutable counterpart to `AGENTS.md` (the rulebook) and
+`CHANGELOG.md` (the narrative). Update it **as you work**.
+
+Legend: `☐` pending · `▣` in progress · `☑` done (acceptance test passing) · `✗` failing ·
+`—` test not written yet.
+
+---
+
+## Current position
+
+**Stage:** PLAN.md post-v1 improvements (P1–P4 complete). Architecture cleanup 2026-08-30.
+**Last gate green:** stage 09 — R-CP-900 / R-ANTH-900 green. **But G1 is now RED for
+R-TOOL-070/080/090/095** — the bash classifier was deleted in 5b65819 and never restored.
+`cargo test --workspace`: **385 passed, 0 failed**, plus the external `plugins/kn9t-custom-provider`
+crate: **26 passed, 0 failed** (run separately — it is no longer a workspace member;
+`cd plugins/kn9t-custom-provider && cargo test`). **411 total.**
+Verified 2026-08-30 via `cmd.exe /c "cargo ..."` — see AGENTS.md §8.1.
+**v1 e2e fully verified:** `kn9t chat` → server → ReAct loop → `kn9t-tools` + `kn9t-custom-provider`. Date: 2026-08-27.
+**PLAN.md progress:**
+- P1-A bootstrap ☑ — `~/.kn9t/` auto-created on first run (config.toml template + token).
+- P2-A one-shot ☑ — already working; kept clean.
+- P2-B REPL + `--continue` ☑ — `kn9t chat` enters REPL; `--continue` resumes latest session by `head_seq`.
+- P2-C approval flow ☑ — crossterm inline `[ No ] / [ Yes ]` selector on `ApprovalRequest`.
+- P3-A `kn9t sessions` ☑ — live verified (20 sessions, sorted by SEQ desc).
+- P3-B `kn9t history` ☑ — live verified (transcript with ANSI roles, tool calls, results).
+- P3-C `kn9t attach` ☑ — live verified (piped prompt, streamed response with tool calls).
+- P4-A real subprocess tests ☑ — `kn9t-test-plugin` binary; `plug::composition` + `plug::timeout` use `PluginHost::spawn()`.
+- P5-A G3 gate ☐ — deferred (requires human at terminal: 3 TUI instances + screenshot).
+- P5-B TUI redesign ☑ — implemented (7.3K lines). Manager composition completed 2026-08-28.
+**Architecture cleanup (2026-08-28):**
+- **GI-1 was violated and is now enforced.** `kn9t-provider-openai` had 2 workspace deps
+  (`kn9t-core` + `kn9t-provider-core`) while every doc asserted "GI-1 holds". Fixed via
+  re-exports; `scripts/check-gi1.sh` + a pre-commit hook now enforce it mechanically.
+  Lesson: the invariant claim in this file was untrue for an unknown period because nothing
+  checked it. Prefer a script over an assertion.
+- **TUI manager extraction finished.** `SessionManager`/`ModelSelector`/`TokenTracker`/
+  `Transcript` were dead code (0 external refs, ~835 lines) while `app.rs` duplicated their
+  state by hand. Now composed: `App` 53 → 32 fields, and their 36 unit tests cover live paths.
+- **Duplicate SSE parser removed.** `kn9t-custom-provider`/`kn9t-anthropic` each carried a byte-identical
+  102-line copy. Moved to `kn9t-plugin-sdk` (their only workspace dep, so GI-1 is preserved —
+  `kn9t-provider-core` would have broken it). Net −65 lines.
+- **Test-suite drift repaired.** ~40 initializers predated the `Message.silent` /
+  `ToolSpec.hidden` fields and the `ServerState::new` signature change; `core::event_tag`
+  asserted PascalCase discriminants against the snake_case rule in AGENTS.md §11.
+- **Two production bugs found via the above:** `/attach` hardcoded a 30 s heartbeat instead
+  of `sse::heartbeat_interval()` (dead-client detection was untestable and unconfigurable);
+  `kn9t-react` silently swallowed malformed `args_json` — now emits `Event::Error`.
+**Idle-exit fixed (2026-08-27):** grace-on-last-disconnect (5 s default). Keepalive ping
+detects dead clients. `POST /stop` + `kn9t stop` for graceful shutdown. SPEC-OPEN 14 resolved.
+**Architecture review (2026-08-30):** Found critical issues:
+1. **Deleted classifier.** Commit 5b65819 deleted `classify.rs` (323 lines) during the
+   tools-to-plugin migration. The acceptance tests named in TRACKING.md (`tool::classify_*`)
+   do not exist. `AllowPolicy::check()` returns `Allow` unconditionally. The `sh -c 'rm -rf /'`
+   bypass (R-TOOL-090 rule 5) is currently open. Gate G1 is **no longer green** for
+   R-TOOL-070/080/090/095.
+2. **Dead APPROVALS map.** `static APPROVALS` in turn.rs is declared and inserted into but
+   never read. Nothing emits `Event::ApprovalRequest`. The TUI's approval overlay is dead code.
+3. **Three-way API drift.** API.md, the server, and wire.rs disagree on nearly every route.
+   Root cause: no typed request structs, no `deny_unknown_fields`. Example: TUI sends
+   `decision: "always"` but server checks `== "allow"`, so "always" silently records as deny.
+4. **Year-57668 bug.** Store writes `created_at` as milliseconds; TUI deserializer treats it
+   as seconds.
+5. **TRACKING.md Stage 07 table used obsolete IDs.** Realigned to spec/07-tui.md.
+
+A 4-phase cleanup is underway:
+- Phase 0 (current): docs scaffolding — CONTEXT.md, ADRs, TRACKING corrections.
+- Phase 1: restore classifier + approvals.
+- Phase 2: schema-first API contract (ADR-0005).
+- Phase 3: all-plugins-external migration.
+- Phase 4: TUI decomposition (app.rs god object).
+
+Five ADRs written in `docs/adr/`:
+- ADR-0001: bash classifier lives in server
+- ADR-0002: plugins declare effects, server decides risk
+- ADR-0003: dry-run is preview, not safety input
+- ADR-0004: plugin discovery scans ~/.kn9t/plugins/ only
+- ADR-0005: schema-first API contract
+
+**Next:** Phase 1 — restore classifier in kn9t-server, wire InteractivePolicy, parse `[policy]`.
+
+---
+
+## Overall progress
+
+| stage | crate(s) | reqs done / total | gate | status |
+|---|---|---|---|---|
+| 01 | kn9t-core | 36 / 36 | R-CORE-900 | ☑ |
+| 02 | kn9t-provider-replay | 8 / 9 | R-RPLY-900 | ☑ |
+| 03 | kn9t-react, kn9t-tools | 20 / 25 | G1 | ✗ (classifier deleted) |
+| 04 | kn9t-store | 18 / 18 | G2 | ☑ |
+| 05 | kn9t-provider-core, -openai | 22 / 22 | R-PCORE/OAI/NBED-900 | ☑ |
+| 06 | kn9t-server | 13 / 13 | R-SRV-900 | ☑ |
+| 07 | kn9t-tui | 2 / 27 | G3 | ▣ (most reqs have no test) |
+| 08 | kn9t-plugin | 13 / 13 | R-PLUG-900 | ☑ |
+| 08b | kn9t-plugin-sdk, kn9t-plugin (v2), internal-plugins/kn9t-tools | 12 / 12 | R-PLUG2-900 | ☑ |
+| 09 | plugins/kn9t-custom-provider (external), kn9t-anthropic (bundled), RemoteProvider | 16 / 16 | R-CP/ANTH-900 | ☑ |
+| 10 | bedrock-native, gemini (v2) | 0 / 8 | R-BEDN/GEM-900 | ☐ |
+
+**v1 release = stages 01–09 gates green.**
+
+---
+
+## Per-stage requirement + test status
+
+The **test** column is the acceptance test named in the spec (`**Accept:** cargo test
+<name>`). A requirement is `☑` only when its test passes.
+
+### Stage 01 — kn9t-core  (`spec/01-core.md`)  — DONE (gate R-CORE-900 green)
+All 36 requirements implemented; 13 named `core::*` acceptance tests pass; build clean under
+`-D warnings`; GI-1/2/3/5 verified; `cargo doc` clean. Statuses below all ☑.
+| req | subject | test | status |
+|---|---|---|---|
+| R-CORE-010 | dep set = serde/serde_json only | ci: cargo-toml dep set | ☑ |
+| R-CORE-020 | no async/await/tokio | ci: grep + cargo tree | ☑ |
+| R-CORE-030 | event payloads are pure data | core::payload_is_pod | ☑ |
+| R-CORE-040 | identifier newtypes | core::id_serde | ☑ |
+| R-CORE-045 | ULID new(), monotonic | core::ulid_monotonic | ☑ |
+| R-CORE-050 | Role, Message | (compile) | ☑ |
+| R-CORE-060 | Content flat enum, tagged | core::content_tag | ☑ |
+| R-CORE-062 | args_json verbatim | core::args_verbatim | ☑ |
+| R-CORE-064 | Thinking persisted w/ signature | core::thinking_roundtrip | ☑ |
+| R-CORE-070 | ModelRef, ModelSpec | (compile) | ☑ |
+| R-CORE-080 | Price four tiers | (compile) | ☑ |
+| R-CORE-090 | Effort, Thinking | (compile) | ☑ |
+| R-CORE-095 | Quirks / ThinkingReplay | (compile) | ☑ |
+| R-CORE-100 | Tokens partition, Usage | core::tokens_default_zero | ☑ |
+| R-CORE-110 | StopReason | (compile) | ☑ |
+| R-CORE-120 | ToolSpec, ordered schema | (compile) | ☑ |
+| R-CORE-130 | ProvErr variants | (compile) | ☑ |
+| R-CORE-135 | StoreErr, ToolErr | (compile) | ☑ |
+| R-CORE-140 | Event enum, tagged | core::event_tag | ☑ |
+| R-CORE-142 | UsageRecorded.estimated | (compile) | ☑ |
+| R-CORE-145 | seq()/is_durable() | core::seq_partition | ☑ |
+| R-CORE-150 | UsageKind | (compile) | ☑ |
+| R-CORE-155 | HookName (8 variants) | (compile) | ☑ |
+| R-CORE-160 | ForkReason, ForkSnapshot | core::fork_snapshot_serde | ☑ |
+| R-CORE-170 | Request (single def, cache) | (compile) | ☑ |
+| R-CORE-180 | Chunk enum | (compile) | ☑ |
+| R-CORE-190 | Provider trait | (compile) | ☑ |
+| R-CORE-200 | Cache, CacheMode | (compile) | ☑ |
+| R-CORE-210 | breakpoints() | core::breakpoints | ☑ |
+| R-CORE-220 | Bus, non-blocking, bounded | core::bus_never_blocks | ☑ |
+| R-CORE-225 | bus is not persistence | (review) | ☑ |
+| R-CORE-230 | EventSink trait | (compile) | ☑ |
+| R-CORE-240 | Cancel | core::cancel_wakes | ☑ |
+| R-CORE-250 | Store trait, RequestPlan | (compile) | ☑ |
+| R-CORE-260 | Tool trait, ToolCtx | (compile) | ☑ |
+| R-CORE-270 | Policy trait, Decision | (compile) | ☑ |
+| **R-CORE-900** | **stage gate** | build -Dwarnings + all core::* + GI-1/2/3/5 | ☑ |
+
+### Stage 02 — kn9t-provider-replay  (`spec/02-replay.md`)  — DONE (gate R-RPLY-900 green)
+8/9 requirements done; R-RPLY-070 (re-point the inline SSE splitter at
+`kn9t-provider-core`) is deferred to stage 05 by design and tracked there.
+10 named `rply::*` acceptance tests pass; build+doc clean under `-D warnings`;
+GI-1 (one workspace dep = kn9t-core) and GI-5 verified; runs with no net, no key.
+| req | subject | test | status |
+|---|---|---|---|
+| R-RPLY-010 | fixture header + verbatim body | rply::header_parse | ☑ |
+| R-RPLY-015 | chunked delivery annotation | rply::chunk_boundary | ☑ |
+| R-RPLY-020 | fixtures redact secrets | rply::recorder_redacts_secrets | ☑ |
+| R-RPLY-030 | ReplayProvider yields chunks | rply::yields_expected_chunks | ☑ |
+| R-RPLY-035 | status→ProvErr pre-stream | rply::status_maps_to_prestream_error | ☑ |
+| R-RPLY-040 | ProvErr classification fixtures | rply::classification_fixtures_exist_and_map | ☑ |
+| R-RPLY-050 | --record recorder | rply::record_roundtrip | ☑ |
+| R-RPLY-070 | re-point at PCORE (stage 5) | rply::* still green post-re-point | ☑ |
+| **R-RPLY-900** | **stage gate** | cargo test, no net, no key | ☑ |
+
+### Stage 03 — kn9t-react + kn9t-tools  (`spec/03-react-tools.md`)  — DONE (gate G1 green)
+25 requirements: 24 ☑ + 1 ⧗ (R-RCT-120 host-queue-first is implemented; its full
+interleave test requires the plugin host from stage 08; spec explicitly defers it there).
+All named `rct::*` (9) and `tool::*` (8) acceptance tests pass; GI-1/3/5 verified.
+DB-02 resolved: assemble delegated to kn9t-provider-core (kn9t-react dep swapped to pcore).
+| req | subject | test | status |
+|---|---|---|---|
+| R-RCT-010 | loop owns only traits | (compile + GI-1) | ☑ |
+| R-RCT-020 | turn sequence | rct::turn_sequence | ☑ |
+| R-RCT-030 | TurnStarted/TurnEnded | (part of turn_sequence) | ☑ |
+| R-RCT-040 | Cancel per turn, boundary checks | rct::cancel_boundary | ☑ |
+| R-RCT-050 | abort in stream | rct::abort_in_stream | ☑ |
+| R-RCT-060 | abort in tools, close orphans | rct::abort_in_tools | ☑ |
+| R-RCT-070 | truncation ladder | rct::truncation_ladder | ☑ |
+| R-RCT-080 | overflow→compaction, length ok | (part of compaction test) | ☑ |
+| R-RCT-090 | compaction re-plan once | rct::compaction_replan_once | ☑ |
+| R-RCT-095 | compaction usage kind | (part of replan test) | ☑ |
+| R-RCT-100 | HookHost (trait in core) | (compile) | ☑ |
+| R-RCT-110 | per-hook failure posture | rct::hook_posture | ☑ |
+| R-RCT-120 | host-queue-first steering | (full interleave test in 08) | ⧗ (impl done; test at 08) |
+| R-RCT-130 | parallel read, call-order persist | rct::parallel_order | ☑ |
+| R-TOOL-010 | ordered registry | tool::spec_order_stable | ☑ |
+| R-TOOL-020 | v1 tools, hand-written schema | (compile) | ☑ |
+| R-TOOL-030 | content truncation only | tool::truncation | ☑ |
+| R-TOOL-040 | read parallel-safe, records hash | tool::read_records_hash | ☑ |
+| R-TOOL-050 | edit staleness guard | tool::edit_guard | ☑ |
+| R-TOOL-060 | write guard | tool::write_guard | ☑ |
+| R-TOOL-070 | bash defers to policy, kill on cancel | (impl; classify tests) | ✗ |
+| R-TOOL-080 | pwsh + POSIX classifiers | **DELETED** — tests do not exist | ✗ |
+| R-TOOL-090 | classifier decision pipeline | **DELETED** — tests do not exist | ✗ |
+| R-TOOL-095 | heuristic not sandbox | (doc/review) | ✗ |
+| **R-RCT-900 / R-TOOL-900** | **GATE G1** | full loop vs replay, no net/spend | ✗ |
+
+> **2026-08-30 arch review:** The bash safety classifier (`crates/kn9t-tools/src/classify.rs`,
+> 323 lines implementing the Ask/AllowReadOnly/HardDeny pipeline) was deleted in commit
+> 5b65819 during the tools-to-plugin migration. The named acceptance tests
+> (`tool::classify_posix`, `tool::classify_pwsh`, `tool::classify_pipeline`) **do not exist**.
+> `AllowPolicy::check()` returns `Allow` unconditionally; nothing emits `ApprovalRequest`;
+> the `sh -c 'rm -rf /'` bypass (R-TOOL-090 rule 5) is open. **GATE G1 is NO LONGER GREEN
+> for R-TOOL-070/080/090/095.** See ADR-0001.
+
+### Stage 04 — kn9t-store  (`spec/04-store.md`)  — DONE (gate G2 green)
+All 18 requirements implemented; 18 named `stor::*` acceptance tests pass (plus 1 debug helper); build clean; GI-1/GI-4 verified; no tokenizer dep.
+| req | subject | test | status |
+|---|---|---|---|
+| R-STOR-010 | WAL pragmas | stor::pragmas | ☑ |
+| R-STOR-020 | many readers, one writer | WAL mode, single Mutex writer conn | ☑ |
+| R-STOR-030 | schema DDL exact | stor::schema_matches | ☑ |
+| R-STOR-040 | append assigns seq in txn | stor::append_assigns_seq | ☑ |
+| R-STOR-050 | reject transient, no update events | stor::append_rejects_transient | ☑ |
+| R-STOR-060 | project() total | stor::project_is_total | ☑ |
+| R-STOR-070 | cost tiered at write time | stor::cost_tiered | ☑ |
+| R-STOR-080 | reproject rebuilds | stor::reproject_rebuilds | ☑ |
+| R-STOR-090 | reproject --check clean | stor::reproject_check_clean | ☑ |
+| R-STOR-100 | plan_request, no tokenizer | stor::plan_no_tokenizer | ☑ |
+| R-STOR-110 | compaction boundary snap | stor::compact_boundary | ☑ |
+| R-STOR-120 | linear session, fork = new row | (part of fork tests) | ☑ |
+| R-STOR-130 | fork copies ctx not usage | stor::fork_no_usage, stor::fork_renumber | ☑ |
+| R-STOR-140 | blob put/get content-addressed | stor::blob_dedup | ☑ |
+| R-STOR-150 | blob refcount | stor::blob_refcount | ☑ |
+| R-STOR-160 | session delete + blob decrement | stor::session_delete_blobs | ☑ |
+| R-STOR-170 | live_messages non-canonical | stor::live_truncated_on_open | ☑ |
+| R-STOR-180 | cost rollup query | stor::cost_rollup | ☑ |
+| **R-STOR-900** | **GATE G2** | all stor::* pass; reproject_check clean; no tokenizer | ☑ |
+
+### Stage 05 — provider-core + openai + litellm-gateway  (`spec/05-provider-core-openai.md`)  — DONE (gate green)
+All 22 requirements implemented; 25 acceptance tests pass (11 pcore + 14 oai/nbed). GI-1/GI-5 hold. One SHOULD deviation (tls_insecure) recorded in CHANGELOG.
+| req | subject | test | status |
+|---|---|---|---|
+| R-PCORE-010 | blocking http client | pcore::connect_timeout | ☑ |
+| R-PCORE-020 | connect-only timeout | pcore::connect_timeout | ☑ |
+| R-PCORE-030 | auth scheme data | pcore::auth_scheme | ☑ |
+| R-PCORE-035 | tls default secure | pcore::tls_default_secure | ☑ |
+| R-PCORE-040 | sse_lines boundary buffering | pcore::sse_boundary | ☑ |
+| R-PCORE-050 | assemble, verbatim args | pcore::assemble_verbatim_args | ☑ |
+| R-PCORE-060 | retry pre-stream only | pcore::retry_pre_stream, pcore::retry_no_retry_after_chunk | ☑ |
+| R-PCORE-070 | cache encoding scaffold | oai::cache_automatic_omits, oai::cache_explicit_places | ☑ |
+| R-PCORE-080 | Quirks merge | pcore::quirks_merge | ☑ |
+| R-PCORE-090 | hand-written prices required | pcore::model_prices_required | ☑ |
+| R-PCORE-100 | --dump-request | build_request dump_request=true (eprintln) | ☑ |
+| R-OAI-010 | request shape + quirks | oai::request_shape_default_quirks, oai::request_shape_completion_tokens_quirk | ☑ |
+| R-OAI-020 | decode sse | oai::decode_text_stream, oai::decode_tool_call_stream, oai::decode_reasoning_stream | ☑ |
+| R-OAI-030 | toolcall correlate by id | oai::toolcall_correlate | ☑ |
+| R-OAI-040 | cache automatic omit / explicit place | oai::cache_automatic_omits, oai::cache_explicit_places | ☑ |
+| R-NBED-010 | kind=openai /v1 gateway | base_url=https://llm-gateway.example.com/v1 in OpenAiConfig | ☑ |
+| R-NBED-020 | identity precedence | nbed::identity_precedence | ☑ |
+| R-NBED-030 | preflight cache + invalidate | nbed::preflight_cache_and_invalidate | ☑ |
+| R-NBED-040 | /user/usage ground truth | OpenAiProvider::user_usage() helper (consumed by stage 06) | ☑ |
+| R-NBED-050 | three rewrites | nbed::rewrites_adaptive_thinking, nbed::rewrites_placeholder_tool | ☑ |
+| R-NBED-060 | dual-field usage decode | nbed::usage_fields | ☑ |
+| R-NBED-070 | 1M model pair | nbed::onem_pair | ☑ |
+| **R-PCORE/OAI/NBED-900** | **stage gate** | all 25 tests pass; no tokio; GI-1 holds | ☑ |
+
+### Stage 06 — kn9t-server  (`spec/06-server.md`)  — ☑
+| req | subject | test | status |
+|---|---|---|---|
+| R-SRV-010 | http surface | srv::routes | ☑ |
+| R-SRV-015 | tiny_http, no tokio | (GI-5) | ☑ |
+| R-SRV-020 | auth mandatory | srv::auth_required | ☑ |
+| R-SRV-030 | origin rejected | srv::origin_rejected | ☑ |
+| R-SRV-040 | SSE subscribe→read→dedup | srv::sse_no_gap_no_dup | ☑ |
+| R-SRV-050 | live_messages on attach | (part of sse test) | ☑ |
+| R-SRV-060 | single-writer lease + takeover | srv::lease_single_writer | ☑ |
+| R-SRV-070 | auto-spawn race-free | srv::spawn_race | ☑ |
+| R-SRV-080 | idle exit | srv::idle_exit | ☑ |
+| R-SRV-090 | blob roundtrip + ETag | srv::blob_roundtrip | ☑ |
+| R-SRV-100 | auto-title best-effort | srv::autotitle | ☑ |
+| R-SRV-110 | cost query | srv::cost_query | ☑ |
+| R-SRV-120 | budget reports both | srv::budget_reports_both | ☑ |
+| **R-SRV-900** | **stage gate** | all above | ☑ |
+
+### Stage 07 — kn9t-tui  (`spec/07-tui.md`)  — ▣ (G3 manual deferred)
+
+> **2026-08-30 arch review:** The table below is realigned to spec/07-tui.md (R-TUI-010
+> through R-TUI-240). Previous table used obsolete IDs. Most TUI requirements have NO
+> acceptance test — app.rs, client.rs, ui/render.rs, wire.rs, event.rs, config.rs,
+> keybind.rs are entirely untested. The crate has 58 unit tests, but they cover managers
+> and helpers, not the core TUI logic.
+
+| req | subject | test | status |
+|---|---|---|---|
+| R-TUI-010 | links no workspace crate (GI-6) | ci: cargo tree | ☑ |
+| R-TUI-011 | env vars KN9T_URL/TOKEN/MODEL | tui::env_vars | ☐ no test |
+| R-TUI-012 | wire types match server API | manual | ▣ (drift exists; see ADR-0005) |
+| R-TUI-020 | event architecture, zero polling | tui::event_loop_blocks | ☐ no test |
+| R-TUI-030 | 2-column layout, responsive | tui::layout_responsive | ☐ no test |
+| R-TUI-040 | session picker overlay | tui::session_switch | ☐ no test |
+| R-TUI-050 | right sidebar context panel | tui::tool_toggle | ☐ no test |
+| R-TUI-060 | transcript, tool cards | tui::tool_card_lazy | ☐ no test |
+| R-TUI-070 | virtual scrolling | tui::virtual_scroll | ☐ no test |
+| R-TUI-080 | scroll behavior, auto-disengage | tui::scroll_auto_disengage | ☐ no test |
+| R-TUI-090 | input box multiline | tui::input_multiline | ☐ no test |
+| R-TUI-100 | file mentions @path | tui::file_mention_autocomplete | ☐ no test |
+| R-TUI-110 | image paste | tui::image_paste | ▣ (impl exists; no test) |
+| R-TUI-120 | status bar streaming | tui::status_bar_streaming | ☐ no test |
+| R-TUI-130 | approval overlay | tui::approval_blocks_input | ▣ (overlay renders but is dead code — nothing emits ApprovalRequest) |
+| R-TUI-140 | diff viewer | tui::diff_comment | ☐ no test |
+| R-TUI-150 | help overlay | tui::help_shows_bindings | ☐ no test |
+| R-TUI-160 | keybindings configurable | tui::keybind_override | ☐ no test |
+| R-TUI-170 | mouse support | tui::mouse_hover_sidebar | ☐ no test |
+| R-TUI-180 | theming | tui::theme_override | ☐ no test |
+| R-TUI-190 | error display persisted | tui::error_persisted | ☐ no test |
+| R-TUI-200 | confirmations | tui::quit_confirm | ☐ no test |
+| R-TUI-210 | git integration sidebar | tui::git_sidebar | ☐ no test |
+| R-TUI-220 | plugin sidebar API (SidebarWidget) | tui::plugin_sidebar | ✗ (SidebarWidget type does not exist) |
+| R-TUI-230 | SSE reconnect | tui::sse_reconnect | ✗ (prints "reconnecting..." but never retries) |
+| R-TUI-240 | server autostart | tui::server_autostart | ☐ no test |
+| **R-TUI-900** | **GATE G3** | 3 TUIs, 1 server, 1 lease, screenshot | — |
+
+### Stage 08 — kn9t-plugin  (`spec/08-plugin.md`)  — DONE (gate R-PLUG-900 green)
+All 13 requirements implemented; 8 named `plug::*` acceptance tests pass; GI-1 verified (only `kn9t-core` workspace dep).
+| req | subject | test | status |
+|---|---|---|---|
+| R-PLUG-010 | HookHost in core (GI-1) | ci: GI-1 both crates | ☑ |
+| R-PLUG-020 | subprocess not dylib | (design: PluginHost accepts io) | ☑ |
+| R-PLUG-030 | no per-delta hook | (design: hook surface has 8, none per-delta) | ☑ |
+| R-PLUG-040 | handshake | plug::handshake | ☑ |
+| R-PLUG-050 | RemoteTool | plug::handshake (registers tools) | ☑ |
+| R-PLUG-060 | 8 hooks surface | plug::hook_surface | ☑ |
+| R-PLUG-065 | dropped hooks absent | (design: only 8 hook variants exist) | ☑ |
+| R-PLUG-070 | composition classes | plug::composition | ☑ |
+| R-PLUG-080 | per-hook timeouts | plug::timeout | ☑ |
+| R-PLUG-090 | HookFailed + 3-fail unsubscribe | plug::hook_surface | ☑ |
+| R-PLUG-100 | project [[plugin]] ignored | plug::project_plugin_ignored | ☑ |
+| R-PLUG-110 | spawn creates subagent session | plug::spawn_session | ☑ |
+| R-PLUG-120 | configurable child toolset | plug::spawn_toolset | ☑ |
+| R-PLUG-130 | budget cap enforced | plug::spawn_budget | ☑ |
+| **R-PLUG-900** | **stage gate** | all above | ☑ |
+
+### Stage 08b — plugin protocol v2  (`spec/08b-plugin-redesign.md`)  — ☑ DONE (R-PLUG2-900 green)
+
+Implementation complete (2026-08-26). All 10 `plug2::*` acceptance tests + 9 doc tests pass. Supersedes wire protocol from 08.
+
+| req | subject | test | status |
+|---|---|---|---|
+| R-PLUG2-010 | kn9t-plugin-sdk zero workspace deps | cargo tree check | ☑ |
+| R-PLUG2-020 | internal-plugins/kn9t-tools deps sdk only, compiles to binary | cargo tree check | ☑ |
+| R-PLUG2-030 | kn9t-plugin host retains kn9t-core only (GI-1) | ci | ☑ |
+| R-PLUG2-040 | chunk/done used for streaming calls; ordering guaranteed | plug2::streaming_tool_chunks_then_done | ☑ |
+| R-PLUG2-050 | cancel message stops in-flight call; done error reply | plug2::cancel_in_flight | ☑ |
+| R-PLUG2-060 | provider chunk kinds match schema; unknown kinds ignored | plug2::provider_chunks_assembled | ☑ |
+| R-PLUG2-070 | cancel listener thread never blocked by dispatch | plug2::cancel_does_not_block_dispatch | ☑ |
+| R-PLUG2-080 | SDK is blocking throughout; no async/tokio | CI grep | ☑ |
+| R-PLUG2-090 | every public SDK item has doc comment; root has module doc | cargo doc clean | ☑ |
+| R-PLUG2-095 | each SDK trait has doc example | cargo test --doc | ☑ |
+| R-PLUG2-100 | hot-reload cancels in-flight, re-handshakes | plug2::hot_reload_cancels_inflight | ☑ |
+| R-PLUG2-110 | kn9t-tools auto-spawned at startup; missing binary = startup fail | plug2::autostart_tools_plugin | ☑ |
+| R-PLUG2-120 | bash streams chunk progress; cancel stops child | plug2::bash_streams_progress | ☑ |
+| R-PLUG2-130 | read-tracking inside kn9t-tools process; edit detects stale read | plug2::edit_detects_stale_read | ☑ |
+| **R-PLUG2-900** | **stage gate** | all above | ☑ |
+
+### Stage 09 — anthropic (`spec/09-anthropic.md`) + custom plugin (`spec/09a-custom-provider.md`)  — ☑ DONE (R-CP/ANTH-900 green)
+
+Both providers ship as subprocess plugin binaries (Q31). `RemoteProvider` in `kn9t-plugin` adapts the stream into `Provider`. 10 custom-provider + 4 anth acceptance tests pass.
+
+| req | subject | test | status |
+|---|---|---|---|
+| R-CP-005 | kn9t-custom-provider is an external standalone crate in plugins/, not a workspace member | standalone `cargo build` + `cargo test` in plugins/kn9t-custom-provider; check-gi1.sh | ☑ |
+| R-CP-010 | version gate, no fallback | cp::version_gate | ☑ |
+| R-CP-020 | vision disabled errors | cp::vision_disabled_errors | ☑ |
+| R-CP-030 | auth token scheme | (part of message_map) | ☑ |
+| R-CP-040 | speaker/content mapping | cp::message_map | ☑ |
+| R-CP-050 | four mapping rules | cp::mapping_rules | ☑ |
+| R-CP-060 | custom body field names | cp::body_fields | ☑ |
+| R-CP-070 | delta_tool_calls index bug | cp::parallel_toolcalls | ☑ |
+| R-CP-080 | text tool calls off | cp::text_tool_off | ☑ |
+| R-CP-090 | usage sum (uncached) | cp::usage_sum | ☑ |
+| R-CP-100 | error classification | cp::error_classify | ☑ |
+| R-CP-110 | cache part-level placement | cp::cache_part_level | ☑ |
+| R-CP-120 | config + model catalog | (hand-written catalog in main.rs) | ☑ |
+| R-ANTH-010 | messages api decode | anth::decode | ☑ |
+| R-ANTH-020 | thinking verbatim signature | anth::thinking_verbatim | ☑ |
+| R-ANTH-030 | cache message-level priority order | anth::cache_priority_order | ☑ |
+| R-ANTH-040 | usage partition, min_tokens | anth::usage_partition | ☑ |
+| **R-CP-900 / R-ANTH-900** | **stage gate** | all above | ☑ |
+
+### Stage 10 — native bedrock + gemini (v2)  (`spec/10-bedrock-native-v2.md`)  — ☐  *(v2, not a v1 gate)*
+| req | subject | test | status |
+|---|---|---|---|
+| R-BEDN-010 | SigV4 signer | (v2) | — |
+| R-BEDN-020 | eventstream decode | bedn::eventstream_decode | — |
+| R-BEDN-030 | cachePoint appended | bedn::cachepoint_appended | — |
+| R-BEDN-040 | cache usage fields | (v2) | — |
+| R-BEDN-050 | 1h TTL opt-in | (v2) | — |
+| R-BEDN-060 | automatic cache_control | (v2) | — |
+| R-GEM-010 | cached-content resource | (v2) | — |
+| R-GEM-020 | generateContent decode | gem::decode | — |
+| **R-BEDN-900 / R-GEM-900** | **v2 stage gate** | all above | — |
+
+---
+
+## SPEC-OPEN resolution register
+
+When you resolve a SPEC-OPEN (pick or change a value), fill its row here **and** update the
+spec file + `spec/README.md`. Interim values ship until changed.
+
+| id / topic | spec ref | interim value | resolved value | date / session |
+|---|---|---|---|---|
+| cache TTL | 05, §8.4.2.2 | 5 min | — | — |
+| server idle-exit | 06 R-SRV-080 | 30 min | — | — |
+| truncation give-up count | 03 R-RCT-070 | 4 | — | — |
+| truncation reminder ladder | 03 R-RCT-070 | 150/100/50/25/10 | — | — |
+| compaction threshold | 04 R-STOR-110 | 0.80 × ctx | — | — |
+| lease idle timeout | 06 R-SRV-060 | 5 min | — | — |
+| LDAP check TTL | 05 R-NBED-030 | 12 h | — | — |
+| connect timeout | 05 R-PCORE-020 | 20 s | — | — |
+| plugin unsubscribe count | 08 R-PLUG-090 | 3 | — | — |
+| session-delete of live-fork origin | 04 R-STOR-160 | reject | — | — |
+| compaction prompt wording | 04 / §18.1 | fixed template (unfrozen) | — | — |
+| custom provider model catalog disk cache | 09 R-CP-120 | fetch per process | — | — |
+| budget drift warning | 06 R-SRV-120 | report both, no warn | — | — |
+| cache-hit reporting in `kn9t cost` | §18.11 | not surfaced | — | — |
+| compaction-boundary snap for ② | §18.10 | no snap | — | — |
+| BEDN SigV4 transport crate | 10 R-BEDN-010 | undecided (v2) | — | — |
+| GEM cached-content lifecycle | 10 R-GEM-010 | undecided (v2) | — | — |

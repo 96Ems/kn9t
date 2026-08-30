@@ -1,0 +1,11 @@
+kind: replay
+status: 200
+content-type: text/event-stream
+note: clean context-deadline case; NOT an error, ends as StopReason::Length
+
+data: {"chunk":"text","idx":0,"delta":"partial answer cut by deadline"}
+
+data: {"chunk":"stop","length":null}
+
+data: [DONE]
+
