@@ -1862,12 +1862,23 @@ impl App {
                 // This marks turn-reset as pending so last_turn stats stay visible during streaming.
                 self.tokens.on_turn_started();
             }
-            SseFrame::TurnEnded { .. } => {
+            SseFrame::TurnEnded { stop, .. } => {
                 self.streaming = false;
                 self.aborting = false;
                 self.tick_ctl.set_streaming(false);
                 // Finalize throughput calculation.
                 self.tokens.on_turn_ended();
+                if stop.to_ascii_lowercase().contains("abort") {
+                    let partial = self.transcript.take_delta();
+                    if !partial.is_empty() {
+                        // Keep the partial streaming text so resend doesn't lose it (user noted it disappears)
+                        let preview: String = partial.chars().take(400).collect();
+                        self.transcript.push(Message::new("system", format!("Aborted — kept partial ({} chars): {}", partial.len(), preview)));
+                        // Also put partial back into input for easy resend? Keep as system note only; input stays as user left it.
+                    } else {
+                        self.transcript.push(Message::new("system", "Aborted"));
+                    }
+                }
             }
             SseFrame::TextDelta { delta, .. } => {
                 self.transcript.append_delta(&delta);

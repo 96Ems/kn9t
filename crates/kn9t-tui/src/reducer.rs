@@ -59,9 +59,18 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             state.transcript.take_delta();
             state.tokens.on_turn_started();
         }
-        SseFrame::TurnEnded { .. } => {
+        SseFrame::TurnEnded { stop, .. } => {
             state.streaming = false;
             state.tokens.on_turn_ended();
+            if stop.to_ascii_lowercase().contains("abort") {
+                let partial = state.transcript.take_delta();
+                if !partial.is_empty() {
+                    let preview: String = partial.chars().take(400).collect();
+                    state.transcript.push(Message::new("system", format!("Aborted — kept partial ({} chars): {}", partial.len(), preview)));
+                } else {
+                    state.transcript.push(Message::new("system", "Aborted"));
+                }
+            }
         }
         SseFrame::TextDelta { delta, .. } => {
             state.transcript.append_delta(&delta);
