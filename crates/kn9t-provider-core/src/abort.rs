@@ -18,10 +18,9 @@ impl<R> CancellableReader<R> {
 impl<R: Read + Send + 'static> Read for CancellableReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.cancel.cancelled() {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+            return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"));
         }
         let len = buf.len();
-        // Clone Arc for thread
         let inner = self.inner.clone();
         let cancel = self.cancel.clone();
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -32,7 +31,7 @@ impl<R: Read + Send + 'static> Read for CancellableReader<R> {
         });
         loop {
             if cancel.cancelled() {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"));
             }
             match rx.recv_timeout(std::time::Duration::from_millis(10)) {
                 Ok((res, tmp)) => {
@@ -67,10 +66,10 @@ mod tests {
         let mut buf = [0u8; 5];
         assert_eq!(r.read(&mut buf).unwrap(), 5);
         assert_eq!(&buf, b"hello");
-        // after cancel, next read is Interrupted
+        // after cancel, next read is ConnectionAborted (not Interrupted, which BufReader retries)
         cancel.cancel();
         let err = r.read(&mut buf).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionAborted);
     }
 
     #[test]
@@ -108,7 +107,62 @@ mod tests {
         let mut buf = [0u8; 1024];
         let err = r.read(&mut buf).unwrap_err();
         let elapsed = start.elapsed();
-        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionAborted);
         assert!(elapsed < Duration::from_millis(500), "cancel took too long: {elapsed:?}");
+    }
+
+    #[test]
+    fn abort_interrupts_http_sse_quickly() {
+        use crate::{send, HttpRequest};
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1000\r\n\r\n").unwrap();
+            stream.write_all(b"data: {\"x\":1}\n\n").unwrap();
+            stream.flush().unwrap();
+            std::thread::sleep(Duration::from_secs(10));
+            // keep connection open
+            std::thread::sleep(Duration::from_secs(10));
+        });
+
+        let cancel = Cancel::new();
+        let cancel_c = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            eprintln!("test: firing cancel");
+            cancel_c.cancel();
+        });
+
+        let start = Instant::now();
+        let req = HttpRequest {
+            method: "POST".into(),
+            url: format!("http://{}/", addr),
+            headers: vec![],
+            body: vec![],
+            auth: None,
+            tls_insecure: false,
+        };
+        let resp = send(req, Duration::from_secs(5), Some(cancel)).expect("send ok");
+        let mut lines = crate::sse::sse_lines(resp.body);
+        eprintln!("test: reading first line");
+        let first = lines.next().expect("first").expect("ok");
+        eprintln!("test: first line ok {:?}", first);
+        assert_eq!(first, b"{\"x\":1}");
+        eprintln!("test: reading second line (should block then cancel)");
+        let second = lines.next();
+        let elapsed = start.elapsed();
+        assert!(elapsed < Duration::from_millis(800), "cancel took too long: {elapsed:?}");
+        if let Some(Err(e)) = second {
+            assert_eq!(e.kind(), std::io::ErrorKind::ConnectionAborted);
+        } else {
+            assert!(elapsed < Duration::from_millis(800));
+        }
+        // Don't join server, let it timeout
+        let _ = server;
     }
 }
