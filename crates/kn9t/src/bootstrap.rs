@@ -321,13 +321,24 @@ price_out = 0.40
 # build of plugins/kn9t-tools is found; you can also drop any plugin binary in
 # manually and restart the server.
 #
-# An explicit [[plugin]] entry (global config only) can override/discover pin a
-# plugin by name, path, or extra env vars:
+# An explicit [[plugin]] entry (global config only) can override discovery:
+# - pin a path:   [[plugin]] name="my-tools" cmd=["/abs/path/to/my-tools"]
+#                 → discovered "my-tools" is suppressed; this path is spawned instead
+# - inject env:   [[plugin]] name="my-tools"  [plugin.env] FOO="bar"
+#                 → env vars are injected when the discovered "my-tools" is spawned
+# - disable:      [[plugin]] name="my-tools" enabled=false   (or disabled=true)
+#                 → discovered "my-tools" is not spawned at all
+#
+# Examples:
 # [[plugin]]
 # name = "my-tools"
 # cmd  = ["/absolute/path/to/my-tools"]
 # [plugin.env]
 # FOO = "bar"
+#
+# [[plugin]]
+# name = "noisy-plugin"
+# enabled = false
 
 # ── Server ────────────────────────────────────────────────────────────────────
 # Optional. Defaults shown — you usually do not need to change these.

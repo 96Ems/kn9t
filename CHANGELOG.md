@@ -11,10 +11,78 @@ pointer current.
 
 ## ▶ Next session starts here
 
-**Next:** Phase 3 Step 3.3 — `[[plugin]]` config overrides discovery (disable / pin
-path / inject env), keeping `plug::project_plugin_ignored` green. Step 3.2
-(auto-discovery of `~/.kn9t/plugins/`, ADR-0004) is complete — see the Phase 3 entry
-below.
+**Next:** Phase 3 Step 3.4 — rewrite R-PLUG2-110 for discovery (was startup *fail*
+when tools missing) + `spec/README` + `DESIGN §16` + `lib.rs` doc, recording the
+spec bug per AGENTS.md §9. Then Step 3.5 `POST /plugin/{name}/reload`
+(`plug2::hot_reload_cancels_inflight`). Step 3.3 (config overrides) is complete —
+see the Phase 3 entry below.
+
+---
+
+## Session — 2026-08-31 — Phase 3 Step 3.3: config overrides discovery (disable/pin/env)
+
+### Summary
+
+Implemented `job/phase3.md` Step 3.3: `[[plugin]]` in the global config can now
+**disable** a discovered plugin, **pin** an explicit `cmd` (config wins, discovered
+suppressed), and **inject env** vars into a discovered spawn. Fixed the live
+duplicate `kn9t-tools` bug that caused `total tools registered: 8` (4 ×2) and a
+strict-duplicate `400` from the provider (`deepseek-v4-pro` tolerant `flash` vs
+strict `pro`), which surfaced as `[kn9t chat] stop: aborted`.
+
+### What changed
+
+- **`crates/kn9t-server/src/config.rs`** — `RawPlugin` now has optional
+  `cmd: Option<Vec<String>>`, `enabled: Option<bool>`, `disabled: Option<bool>`
+  (ADR-0004 security hole stays closed: project-local `[[plugin]]` still ignored,
+  `plug::project_plugin_ignored` green). `ResolvedPlugin` mirrors it with
+  `cmd: Option<Vec<String>>` + `disabled: bool`. Resolve computes
+  `disabled = disabled==true || enabled==false`, warns on empty/disabled,
+  logs `env override for discovered plugin` when `cmd` omitted but `env` set, and
+  skips empty entries. Six new `config::tests` cover pin/enabled/disabled/
+  env-override/empty cases; old `cmd = [...]` configs still parse.
+- **`crates/kn9t-server/src/tools.rs`** — full Step 3.3 override logic:
+  partition configs into disabled set, pinned plugins (`cmd` Some), and
+  env-overrides (`cmd` None + env). Spawn pinned first (soft-fail); track
+  successful declared names + binary paths for dedup. Discovery then
+  pre-filters by exact path and file-stem disabled, injects env per file-stem
+  heuristic (`~/.kn9t/plugins/<name>` stem == config name), handshakes,
+  post-filters by declared-name disabled/pinned, warns on heuristic miss,
+  dedupes **tool names** (`seen_tools` set, first wins — prevents `bash` x2
+  400), logs `superseded by pinned config (same path)` and `superseded by pinned
+  config plugin '<name>' — discarding`. `spawn_discovered_plugin` now takes
+  `env_vars`. New helper `write_env_conditional_plugin` + 6 new `tools::*`
+  tests: `discovery_disabled_via_config_suppresses`, `discovery_pinned_supersedes_discovered`,
+  `discovery_pinned_same_path_dedups`, `discovery_env_injection`,
+  `discovery_duplicate_tool_names_deduped`, `discovery_kn9t_tools_config_does_not_duplicate`
+  (regression for the 8→4 bug). All 11 `tools` tests green; 32 lib tests green; 40
+  server acceptance green.
+- **`crates/kn9t/src/bootstrap.rs`** — config template `Plugins` section now
+  documents the three override forms (pin / inject env / disable) with examples,
+  incl. `enabled = false`.
+
+### Verification
+
+- `cargo check --workspace` — clean (pre-existing `kn9t-tui` dead-code warnings only).
+- `cargo test -p kn9t-server --lib` — **32 passed** (21 existing + 5 discovery (3.2) + 6 new (3.3)).
+- `cargo test -p kn9t-server --lib tools` — **11 passed** (5 old + 6 new).
+- `cargo test -p kn9t-server --test acceptance` — **40 passed**.
+- `cargo test -p kn9t-react` — **12 passed** (F13 still fixed, `kn9t-tools` found via `plugins/kn9t-tools/target/*`).
+- `cargo test -p kn9t-plugin --test acceptance` — **10 passed** (`plug::project_plugin_ignored` still green).
+- `scripts/check-gi1.sh` — OK; `cargo run -p xtask -- generate` — no drift.
+- **Live:** before fix `server.log` showed `total tools registered: 8` and `stop: aborted`
+  (provider 400 on duplicate `bash`). After rebuild `total tools registered: 4`,
+  log `discovered plugin ... superseded by pinned config (same path) — skipping`,
+  `kn9t chat hello` on `deepseek-v4-pro` now succeeds (`stop: stop`).
+
+### Notes / deferred
+
+- Step 3.4 must still rewrite **R-PLUG2-110** (still mandates *fail* when tools
+  binary missing; Phase 3.2/3.3 intentionally only warn) and record the spec bug
+  per AGENTS.md §9.
+- Env injection uses file-stem heuristic (binary name == config name). If a binary's
+  declared name differs from its file name, the post-handshake warning fires and
+  the env is not injected — rename the binary or use a pinned `cmd` instead.
 
 ---
 

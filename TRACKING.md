@@ -76,7 +76,9 @@ A 4-phase cleanup is underway:
   12 pass once `target/debug/kn9t-tools` exists). **Step 3.1 done** (plugins moved
   to `plugins/`; workspace clean) **+ Step 3.2 done 2026-08-31** (auto-discovery of
   `~/.kn9t/plugins/`, ADR-0004; server merges discovered + `[[plugin]]` tools;
-  project-relative `plugins/` never scanned, proven by test). Steps 3.3–3.5 pending.
+  project-relative `plugins/` never scanned, proven by test) **+ Step 3.3 done
+  2026-08-31** (config overrides discovery: pin / env-inject / disable; duplicate
+  `kn9t-tools` deduped, was 8 tools → 400, now 4). Steps 3.4–3.5 pending.
 - Phase 4: TUI decomposition (app.rs god object).
 
 Five ADRs written in `docs/adr/`:
@@ -86,8 +88,9 @@ Five ADRs written in `docs/adr/`:
 - ADR-0004: plugin discovery scans ~/.kn9t/plugins/ only
 - ADR-0005: schema-first API contract
 
-**Next:** Phase 3 Step 3.3 — `[[plugin]]` config overrides discovery (disable/pin/env);
-then Step 3.4 spec rewrite of R-PLUG2-110.
+**Next:** Phase 3 Step 3.4 — spec rewrite of R-PLUG2-110 (was startup *fail* when
+tools missing; now discovery warns, Phase 3.2 intentionally did not edit specs)
++ Step 3.5 `POST /plugin/{name}/reload` (`plug2::hot_reload_cancels_inflight`).
 
 ---
 

@@ -1,14 +1,24 @@
-//! R-PLUG2-110 (redesign in progress, Phase 3.2) — spawn tool plugins at server startup.
+//! Spawn tool plugins at server startup — discovery + config overrides.
 //!
 //! All tools come from external plugins, merged into one `ToolRegistry` from two sources:
 //!
-//! 1. **User plugins** configured via `[[plugin]]` in the global config.toml.
-//! 2. **Discovered plugins** scanned from `<KN9T_HOME|~/.kn9t>/plugins/` (ADR-0004).
+//! 1. **Discovered plugins** scanned from `<KN9T_HOME|~/.kn9t>/plugins/` (ADR-0004).
+//! 2. **User plugins** configured via `[[plugin]]` in the global config.toml
+//!    (R-PLUG-100: never from a project-local file).
 //!
 //! Discovery scans **only** the user plugin dir and **never** a project-relative `plugins/`
 //! directory (ADR-0004): a repo-committed file must not run arbitrary binaries — `git clone`
 //! then `kn9t` must not be code execution. The repo's `plugins/` directory is *build source*;
 //! `~/.kn9t/plugins/` is the *install target*.
+//!
+//! Step 3.3 — config overrides discovery (job/phase3.md 3.3):
+//! - `enabled = false` / `disabled = true` → discovered plugin with same `name`
+//!   (and file-stem fallback) is suppressed; the entry itself is not spawned.
+//! - `cmd = [...]` → pinned plugin: spawned as a user plugin; discovered plugin
+//!   with same declared name (or same binary path) is suppressed (config wins).
+//! - `cmd` omitted + `env` set → env injection: when the discovered plugin with
+//!   matching `name` (file-stem heuristic pre-handshake) is spawned, those env vars
+//!   are injected.
 //!
 //! Each discovered executable is treated as a plugin binary and handshaked (single-element
 //! command array). A plugin that fails to spawn or handshake is **soft-failed**: a warning is
@@ -18,6 +28,7 @@
 use crate::config::ResolvedPlugin;
 use kn9t_core::{PluginKv, Tool, ToolRegistry};
 use kn9t_plugin::{PluginHost, RemoteTool};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -79,9 +90,10 @@ pub fn discover_plugin_binaries(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Spawn a user plugin from [[plugin]] config.
+/// Spawn a pinned user plugin from [[plugin]] config (cmd is Some).
 fn spawn_user_plugin(cfg: &ResolvedPlugin, kv: Arc<dyn PluginKv>) -> Result<(Arc<PluginHost>, Vec<Arc<dyn Tool>>), String> {
-    crate::log!("spawning user plugin '{}': {:?}", cfg.name, cfg.cmd);
+    let cmd = cfg.cmd.as_ref().expect("spawn_user_plugin called with no cmd");
+    crate::log!("spawning user plugin '{}': {:?}", cfg.name, cmd);
 
     // Build env as slice of refs
     let env_refs: Vec<(&str, &str)> = cfg.env.iter()
@@ -89,7 +101,7 @@ fn spawn_user_plugin(cfg: &ResolvedPlugin, kv: Arc<dyn PluginKv>) -> Result<(Arc
         .collect();
 
     // Spawn using command + args
-    let host = spawn_with_cmd(&cfg.cmd, &env_refs, kv)
+    let host = spawn_with_cmd(cmd, &env_refs, kv)
         .map_err(|e| format!("failed to spawn plugin '{}': {e}", cfg.name))?;
 
     // Verify plugin name matches config (warning only)
@@ -111,14 +123,18 @@ fn spawn_user_plugin(cfg: &ResolvedPlugin, kv: Arc<dyn PluginKv>) -> Result<(Arc
     Ok((host, tools))
 }
 
-/// Handshake one auto-discovered plugin binary (single-element command array).
-fn spawn_discovered_plugin(bin: &Path, kv: Arc<dyn PluginKv>) -> Result<(Arc<PluginHost>, Vec<Arc<dyn Tool>>), String> {
-    crate::log!("spawning discovered plugin: {}", bin.display());
+/// Handshake one auto-discovered plugin binary (single-element command array), with optional env.
+fn spawn_discovered_plugin(bin: &Path, env_vars: &[(&str, &str)], kv: Arc<dyn PluginKv>) -> Result<(Arc<PluginHost>, Vec<Arc<dyn Tool>>), String> {
+    if env_vars.is_empty() {
+        crate::log!("spawning discovered plugin: {}", bin.display());
+    } else {
+        crate::log!("spawning discovered plugin: {} (with {} env vars)", bin.display(), env_vars.len());
+    }
 
     // Single-element cmd: the binary itself, no args. spawn_with_cmd performs the
     // hello/hello handshake exactly as for configured user plugins.
     let cmd = vec![bin.to_string_lossy().into_owned()];
-    let host = spawn_with_cmd(&cmd, &[], kv)
+    let host = spawn_with_cmd(&cmd, env_vars, kv)
         .map_err(|e| format!("failed to spawn plugin '{}': {e}", bin.display()))?;
 
     crate::log!("discovered plugin '{}' handshake complete: {} tools, {} hooks declared",
@@ -217,8 +233,14 @@ fn extract_tools(host: &Arc<PluginHost>) -> Vec<Arc<dyn Tool>> {
 /// Spawn all plugins and return a merged ToolRegistry.
 ///
 /// Two sources, merged into one registry:
-/// - user plugins from `[[plugin]]` config
+/// - pinned user plugins from `[[plugin]]` config with `cmd` (config wins over discovery)
 /// - auto-discovered plugins from [`plugin_dir`] (`~/.kn9t/plugins/`, ADR-0004)
+///
+/// Config overrides (Phase 3.3):
+/// - `disabled = true` / `enabled = false` → discovered plugin with matching `name`
+///   (or file-stem) is suppressed; the entry itself is not spawned.
+/// - `cmd` present → pinned: discovered with same declared name or same binary path is suppressed.
+/// - `cmd` absent + `env` present → env injected into discovered spawn for matching file-stem.
 ///
 /// Soft-fails per plugin: a plugin that fails to spawn or handshake is logged as a
 /// warning and startup continues with the rest. An empty/missing discovery dir is
@@ -241,17 +263,63 @@ fn spawn_all_plugins_in_dir(
 ) -> Result<(Vec<Arc<PluginHost>>, ToolRegistry), String> {
     let mut all_hosts: Vec<Arc<PluginHost>> = Vec::new();
     let mut all_tools: Vec<Arc<dyn Tool>> = Vec::new();
+    // For dedup: track tool names already registered (first wins, duplicate warns).
+    let mut seen_tools: HashSet<String> = HashSet::new();
 
-    // User plugins (soft-fail per plugin)
+    // Partition config entries.
+    let mut disabled_names: HashSet<String> = HashSet::new();
+    let mut env_overrides: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut pinned_plugins: Vec<&ResolvedPlugin> = Vec::new();
+
     for cfg in user_plugins {
+        if cfg.disabled {
+            disabled_names.insert(cfg.name.clone());
+            // Also record env if any? Disabled wins over env, so ignore.
+            continue;
+        }
+        if let Some(cmd) = &cfg.cmd {
+            if !cmd.is_empty() {
+                pinned_plugins.push(cfg);
+            } else if !cfg.env.is_empty() {
+                // Empty cmd treated as env-only override.
+                env_overrides.insert(cfg.name.clone(), cfg.env.clone());
+            }
+        } else if !cfg.env.is_empty() {
+            env_overrides.insert(cfg.name.clone(), cfg.env.clone());
+        }
+    }
+
+    // Track successful pinned plugin declared names and binary paths for dedup.
+    let mut pinned_declared_names: HashSet<String> = HashSet::new();
+    let mut pinned_paths: HashSet<PathBuf> = HashSet::new();
+
+    // Pinned user plugins (soft-fail per plugin)
+    for cfg in pinned_plugins {
         match spawn_user_plugin(cfg, Arc::clone(&kv)) {
             Ok((host, tools)) => {
+                pinned_declared_names.insert(host.declaration.name.clone());
+                if let Some(cmd) = &cfg.cmd {
+                    if let Some(first) = cmd.first() {
+                        pinned_paths.insert(PathBuf::from(first));
+                    }
+                }
+                // Dedup tools by name (config wins, but pinned are first so they win naturally).
+                let mut filtered = Vec::new();
+                for t in tools {
+                    let name = t.spec().name.clone();
+                    if seen_tools.contains(&name) {
+                        crate::log!("warning: duplicate tool '{}' from pinned plugin '{}' — keeping first, discarding duplicate", name, cfg.name);
+                        continue;
+                    }
+                    seen_tools.insert(name);
+                    filtered.push(t);
+                }
                 all_hosts.push(host);
-                all_tools.extend(tools);
+                all_tools.extend(filtered);
             }
             Err(e) => {
                 crate::log!("warning: user plugin '{}' failed to start: {e}", cfg.name);
-                // Continue with other plugins
+                // Don't add to pinned_declared_names/paths on failure — allow discovered fallback.
             }
         }
     }
@@ -275,11 +343,60 @@ fn spawn_all_plugins_in_dir(
             crate::log!("plugin discovery: {} candidate(s) in {}", discovered.len(), discovery_dir.display());
         }
         for bin in &discovered {
-            match spawn_discovered_plugin(bin, Arc::clone(&kv)) {
+            // Pre-handshake path dedup: if this exact path was pinned successfully, skip.
+            if pinned_paths.contains(bin) {
+                crate::log!("discovered plugin {} superseded by pinned config (same path) — skipping", bin.display());
+                continue;
+            }
+            // Pre-handshake file-stem disabled check (cheap, covers typical case).
+            let file_stem = bin.file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if disabled_names.contains(&file_stem) {
+                crate::log!("discovered plugin {} disabled via config (name '{}') — skipping", bin.display(), file_stem);
+                continue;
+            }
+            // Determine env to inject for this discovered binary (file-stem heuristic).
+            let env_for_bin: Vec<(&str, &str)> = env_overrides.get(&file_stem)
+                .map(|v| v.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect())
+                .unwrap_or_default();
+            if !env_for_bin.is_empty() {
+                crate::log!("discovered plugin {} will be spawned with {} env vars from config override for '{}'", bin.display(), env_for_bin.len(), file_stem);
+            }
+            match spawn_discovered_plugin(bin, &env_for_bin, Arc::clone(&kv)) {
                 Ok((host, tools)) => {
-                    let n = tools.len();
+                    let declared = host.declaration.name.clone();
+                    // Post-handshake disabled check (declared name may differ from file stem).
+                    if disabled_names.contains(&declared) {
+                        crate::log!("discovered plugin '{}' ({}) disabled via config — discarding", declared, bin.display());
+                        // Host will be dropped; child exits on pipe close. Best-effort shutdown.
+                        host.shutdown();
+                        continue;
+                    }
+                    // Pinned name supersedes discovered with same declared name.
+                    if pinned_declared_names.contains(&declared) {
+                        crate::log!("discovered plugin '{}' ({}) superseded by pinned config plugin '{}' — discarding", declared, bin.display(), declared);
+                        host.shutdown();
+                        continue;
+                    }
+                    // If declared name has an env override but file stem didn't match, warn (heuristic miss).
+                    if env_overrides.contains_key(&declared) && !env_overrides.contains_key(&file_stem) {
+                        crate::log!("warning: discovered plugin '{}' ({}) matches env override for '{}' but file name '{}' did not — env not injected (rename binary to match config name or use pinned cmd)", declared, bin.display(), declared, file_stem);
+                    }
+                    // Dedup tools by name.
+                    let mut filtered = Vec::new();
+                    for t in tools {
+                        let name = t.spec().name.clone();
+                        if seen_tools.contains(&name) {
+                            crate::log!("warning: duplicate tool '{}' from discovered plugin '{}' ({}) — keeping first, discarding duplicate", name, declared, bin.display());
+                            continue;
+                        }
+                        seen_tools.insert(name);
+                        filtered.push(t);
+                    }
+                    let n = filtered.len();
                     all_hosts.push(host);
-                    all_tools.extend(tools);
+                    all_tools.extend(filtered);
                     crate::log!("  registered {} tool(s) from {}", n, bin.display());
                 }
                 Err(e) => {
@@ -338,6 +455,23 @@ mod tests {
              while IFS= read -r _line; do :; done\n"
         );
         std::fs::write(path, script).expect("write dummy plugin");
+        let mode = std::fs::metadata(path).unwrap().permissions().mode();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o111)).unwrap();
+    }
+
+    /// Write a dummy plugin that declares its tool name based on an env var.
+    /// If `env_key` is set to `env_val`, tool name is `tool_when_set`, else `tool_when_unset`.
+    #[cfg(unix)]
+    fn write_env_conditional_plugin(path: &Path, name: &str, env_key: &str, env_val: &str, tool_when_set: &str, tool_when_unset: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let script = format!(
+            "#!/bin/sh\n\
+             IFS= read -r _host_hello\n\
+             if [ \"${env_key}\" = \"{env_val}\" ]; then TOOL=\"{tool_when_set}\"; else TOOL=\"{tool_when_unset}\"; fi\n\
+             printf '%s\\n' \"{{\\\"t\\\":\\\"hello\\\",\\\"name\\\":\\\"{name}\\\",\\\"capabilities\\\":[\\\"streaming\\\"],\\\"tools\\\":[{{\\\"name\\\":\\\"$TOOL\\\",\\\"description\\\":\\\"dummy\\\",\\\"schema\\\":{{\\\"type\\\":\\\"object\\\"}},\\\"parallel_safe\\\":false}}]}}\"\n\
+             while IFS= read -r _line; do :; done\n"
+        );
+        std::fs::write(path, script).expect("write env conditional plugin");
         let mode = std::fs::metadata(path).unwrap().permissions().mode();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o111)).unwrap();
     }
@@ -447,5 +581,139 @@ mod tests {
         let (hosts, _tools) = spawn_all_plugins_in_dir(&[], dir.path(), noop_kv()).unwrap();
         let host_names: Vec<&str> = hosts.iter().map(|h| h.declaration.name.as_str()).collect();
         assert_eq!(host_names, vec!["a-tools", "b-tools"]);
+    }
+
+    /// Phase 3.3: disabled config suppresses discovered plugin with same name (file-stem heuristic).
+    #[test]
+    #[cfg(unix)]
+    fn discovery_disabled_via_config_suppresses() {
+        let dir = TempDir::new("dis-disabled");
+        // Binary file name "my-tools" declares name "my-tools".
+        let bin = dir.path().join("my-tools");
+        write_dummy_plugin(&bin, "my-tools", "my_tool");
+
+        let disabled_cfg = ResolvedPlugin {
+            name: "my-tools".to_string(),
+            cmd: None,
+            env: vec![],
+            disabled: true,
+        };
+        let (hosts, tools) = spawn_all_plugins_in_dir(&[disabled_cfg], dir.path(), noop_kv()).unwrap();
+        assert!(hosts.is_empty(), "disabled plugin must not be spawned");
+        assert!(tools.is_empty(), "disabled plugin tools must not be registered");
+    }
+
+    /// Phase 3.3: pinned config (cmd) supersedes discovered plugin with same declared name.
+    #[test]
+    #[cfg(unix)]
+    fn discovery_pinned_supersedes_discovered() {
+        let dir = TempDir::new("dis-pinned");
+        // Discovered binary declares "dup-tools" with tool "discovered_tool".
+        let discovered_bin = dir.path().join("dup-tools");
+        write_dummy_plugin(&discovered_bin, "dup-tools", "discovered_tool");
+
+        // Pinned binary elsewhere declares same name "dup-tools" but tool "pinned_tool".
+        let pinned_dir = TempDir::new("pinned-src");
+        let pinned_bin = pinned_dir.path().join("pinned-dup");
+        write_dummy_plugin(&pinned_bin, "dup-tools", "pinned_tool");
+
+        let pinned_cfg = ResolvedPlugin {
+            name: "dup-tools".to_string(),
+            cmd: Some(vec![pinned_bin.to_string_lossy().into_owned()]),
+            env: vec![],
+            disabled: false,
+        };
+        let (hosts, tools) = spawn_all_plugins_in_dir(&[pinned_cfg], dir.path(), noop_kv()).unwrap();
+        // Only pinned host should survive; discovered suppressed.
+        assert_eq!(hosts.len(), 1, "only pinned host should be registered");
+        assert_eq!(hosts[0].declaration.name, "dup-tools");
+        assert!(tools.iter().any(|t| t.spec().name == "pinned_tool"), "pinned tool must be present");
+        assert!(!tools.iter().any(|t| t.spec().name == "discovered_tool"), "discovered tool must be suppressed");
+        assert_eq!(tools.len(), 1);
+    }
+
+    /// Phase 3.3: pinned config with same path as discovered dedups by path (no duplicate even if names differ).
+    #[test]
+    #[cfg(unix)]
+    fn discovery_pinned_same_path_dedups() {
+        let dir = TempDir::new("dis-pinned-path");
+        let bin = dir.path().join("same-bin");
+        write_dummy_plugin(&bin, "same-plugin", "tool_a");
+
+        // Pinned config points to the exact same path.
+        let pinned_cfg = ResolvedPlugin {
+            name: "same-plugin".to_string(),
+            cmd: Some(vec![bin.to_string_lossy().into_owned()]),
+            env: vec![],
+            disabled: false,
+        };
+        let (hosts, tools) = spawn_all_plugins_in_dir(&[pinned_cfg], dir.path(), noop_kv()).unwrap();
+        assert_eq!(hosts.len(), 1, "same path should not duplicate");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools.iter().next().unwrap().spec().name, "tool_a");
+    }
+
+    /// Phase 3.3: env injection — config provides env for discovered plugin matched by file-stem.
+    #[test]
+    #[cfg(unix)]
+    fn discovery_env_injection() {
+        let dir = TempDir::new("dis-env");
+        let bin = dir.path().join("env-tools");
+        // Plugin checks INJECTED env var.
+        write_env_conditional_plugin(&bin, "env-tools", "INJECTED", "yes", "when_set", "when_unset");
+
+        // Without override, tool should be when_unset.
+        let (hosts, tools) = spawn_all_plugins_in_dir(&[], dir.path(), noop_kv()).unwrap();
+        assert_eq!(tools.iter().next().unwrap().spec().name, "when_unset");
+        drop(hosts);
+
+        // With env override matching file-stem "env-tools".
+        let env_cfg = ResolvedPlugin {
+            name: "env-tools".to_string(),
+            cmd: None,
+            env: vec![("INJECTED".to_string(), "yes".to_string())],
+            disabled: false,
+        };
+        let (hosts, tools) = spawn_all_plugins_in_dir(&[env_cfg], dir.path(), noop_kv()).unwrap();
+        assert!(tools.iter().any(|t| t.spec().name == "when_set"), "env injection should affect discovered plugin");
+        assert!(!tools.iter().any(|t| t.spec().name == "when_unset"));
+        // Cleanup: hosts dropped, children exit.
+        drop(hosts);
+    }
+
+    /// Phase 3.3: duplicate tool names across different plugins are deduped (first wins).
+    #[test]
+    #[cfg(unix)]
+    fn discovery_duplicate_tool_names_deduped() {
+        let dir = TempDir::new("dis-dup-tool");
+        write_dummy_plugin(&dir.path().join("a.sh"), "a-tools", "shared_tool");
+        write_dummy_plugin(&dir.path().join("b.sh"), "b-tools", "shared_tool");
+
+        let (hosts, tools) = spawn_all_plugins_in_dir(&[], dir.path(), noop_kv()).unwrap();
+        assert_eq!(hosts.len(), 2, "both hosts spawned");
+        // But tool registry dedupes by tool name: first wins.
+        assert_eq!(tools.len(), 1, "duplicate tool name must be deduped");
+        assert_eq!(tools.iter().next().unwrap().spec().name, "shared_tool");
+    }
+
+    /// Phase 3.3: regression — existing duplicate kn9t-tools config + discovered does NOT double-register.
+    /// This is the bug that caused 8 tools (bash/read/write/edit x2) and 400 from strict duplicate check.
+    #[test]
+    #[cfg(unix)]
+    fn discovery_kn9t_tools_config_does_not_duplicate() {
+        let dir = TempDir::new("dis-kn9t-tools");
+        let bin = dir.path().join("kn9t-tools");
+        write_dummy_plugin(&bin, "kn9t-tools", "bash");
+
+        // Simulate user's ~/.kn9t/config.toml entry that points to same binary.
+        let cfg = ResolvedPlugin {
+            name: "kn9t-tools".to_string(),
+            cmd: Some(vec![bin.to_string_lossy().into_owned()]),
+            env: vec![],
+            disabled: false,
+        };
+        let (hosts, tools) = spawn_all_plugins_in_dir(&[cfg], dir.path(), noop_kv()).unwrap();
+        assert_eq!(tools.len(), 1, "kn9t-tools must not duplicate: pinned supersedes discovered");
+        assert_eq!(hosts.len(), 1);
     }
 }

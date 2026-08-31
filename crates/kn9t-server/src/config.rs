@@ -130,15 +130,34 @@ impl PolicyMode {
 }
 
 /// Configuration for a user tool plugin.
+///
+/// `[[plugin]]` in the global config (`~/.kn9t/config.toml`, R-PLUG-100) can
+/// override discovery (ADR-0004):
+/// - **pin a path:** `cmd = ["/abs/path/to/plugin"]` — discovered plugin with
+///   the same declared name is suppressed, this cmd is spawned instead.
+/// - **inject env:** `cmd` omitted, `env` set — env vars are injected when the
+///   discovered plugin with matching `name` is spawned.
+/// - **disable:** `enabled = false` or `disabled = true` — discovered plugin
+///   with matching `name` (and file-stem fallback) is not spawned at all.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawPlugin {
-    /// Plugin name (for logging; also verified against handshake).
+    /// Plugin name — matches the plugin's declared `name` in its hello reply
+    /// (and typically its binary file name). Used for dedup/disabled matching.
     pub name: String,
-    /// Command + args to spawn (e.g., ["python", "path/to/plugin.py"]).
-    pub cmd: Vec<String>,
+    /// Command + args to spawn. Omit (or set `enabled=false`) for an
+    /// env-only override or a disable entry that targets a discovered plugin.
+    #[serde(default)]
+    pub cmd: Option<Vec<String>>,
     /// Environment variables to inject. Values support `env:VAR` syntax.
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// If `false`, this entry disables the discovered plugin with the same
+    /// `name`. Defaults to `true` when omitted.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Alias for `enabled = false`. If `true`, the plugin is disabled.
+    #[serde(default)]
+    pub disabled: Option<bool>,
 }
 
 /// `[server]` config block — all fields optional, defaults shown.
@@ -240,8 +259,13 @@ pub struct ResolvedConfig {
 #[derive(Debug, Clone)]
 pub struct ResolvedPlugin {
     pub name: String,
-    pub cmd: Vec<String>,
+    /// `None` → env-only override or disable entry (targets a discovered plugin).
+    /// `Some(cmd)` → pinned plugin to spawn.
+    pub cmd: Option<Vec<String>>,
     pub env: Vec<(String, String)>,
+    /// If true, the discovered plugin with this `name` is suppressed and this
+    /// entry itself is not spawned.
+    pub disabled: bool,
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -524,13 +548,16 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
             .unwrap_or(def_bash.allow_read_sub),
     };
 
-    // Resolve user tool plugins.
+    // Resolve user tool plugins — supports pin/disable/env-override (job/phase3.md 3.3).
     let plugins: Vec<ResolvedPlugin> = raw.plugins.iter()
         .filter_map(|rp| {
-            if rp.cmd.is_empty() {
-                crate::log!("[kn9t-config] plugin {:?}: cmd is empty; skipping", rp.name);
-                return None;
-            }
+            let disabled = rp.disabled.unwrap_or(false) || rp.enabled == Some(false);
+            // Normalize cmd: None or Some([]) → None (env-only/disable).
+            let cmd = match &rp.cmd {
+                None => None,
+                Some(v) if v.is_empty() => None,
+                Some(v) => Some(v.clone()),
+            };
             // Resolve env vars: "env:VAR" → value of VAR, otherwise literal.
             let env: Vec<(String, String)> = rp.env.iter()
                 .filter_map(|(k, v)| {
@@ -548,10 +575,22 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                     Some((k.clone(), resolved))
                 })
                 .collect();
+            if disabled {
+                crate::log!("[kn9t-config] plugin {:?}: disabled via config — discovered plugin suppressed", rp.name);
+                return Some(ResolvedPlugin { name: rp.name.clone(), cmd: None, env, disabled: true });
+            }
+            if cmd.is_none() && env.is_empty() {
+                crate::log!("[kn9t-config] plugin {:?}: no cmd and no env and not disabled; skipping", rp.name);
+                return None;
+            }
+            if cmd.is_none() && !env.is_empty() {
+                crate::log!("[kn9t-config] plugin {:?}: env override for discovered plugin (no cmd)", rp.name);
+            }
             Some(ResolvedPlugin {
                 name: rp.name.clone(),
-                cmd: rp.cmd.clone(),
+                cmd,
                 env,
+                disabled,
             })
         })
         .collect();
@@ -887,5 +926,88 @@ mode = "bogus"
         };
         // Simulate ConfigPolicy (readonly) behaviour: mytool still HardDeny
         assert!(matches!(classify("mytool x", Shell::Posix, &p), Classification::HardDeny(_)));
+    }
+
+    #[test]
+    fn plugin_pinned_parses() {
+        let raw = parse_raw(r#"
+            [[plugin]]
+            name = "my-tools"
+            cmd = ["/abs/path/to/my-tools", "--flag"]
+        "#);
+        let resolved = resolve(raw).unwrap();
+        assert_eq!(resolved.plugins.len(), 1);
+        assert_eq!(resolved.plugins[0].name, "my-tools");
+        assert_eq!(resolved.plugins[0].cmd.as_ref().unwrap(), &vec!["/abs/path/to/my-tools".to_string(), "--flag".to_string()]);
+        assert!(!resolved.plugins[0].disabled);
+    }
+
+    #[test]
+    fn plugin_disabled_via_enabled_false() {
+        let raw = parse_raw(r#"
+            [[plugin]]
+            name = "my-tools"
+            enabled = false
+        "#);
+        let resolved = resolve(raw).unwrap();
+        assert_eq!(resolved.plugins.len(), 1);
+        assert_eq!(resolved.plugins[0].name, "my-tools");
+        assert!(resolved.plugins[0].disabled);
+        assert!(resolved.plugins[0].cmd.is_none());
+    }
+
+    #[test]
+    fn plugin_disabled_via_disabled_true() {
+        let raw = parse_raw(r#"
+            [[plugin]]
+            name = "my-tools"
+            disabled = true
+        "#);
+        let resolved = resolve(raw).unwrap();
+        assert_eq!(resolved.plugins.len(), 1);
+        assert!(resolved.plugins[0].disabled);
+    }
+
+    #[test]
+    fn plugin_env_override_without_cmd() {
+        let raw = parse_raw(r#"
+            [[plugin]]
+            name = "my-tools"
+
+            [plugin.env]
+            FOO = "bar"
+        "#);
+        let resolved = resolve(raw).unwrap();
+        assert_eq!(resolved.plugins.len(), 1);
+        assert_eq!(resolved.plugins[0].name, "my-tools");
+        assert!(resolved.plugins[0].cmd.is_none());
+        assert!(!resolved.plugins[0].disabled);
+        assert_eq!(resolved.plugins[0].env, vec![("FOO".to_string(), "bar".to_string())]);
+    }
+
+    #[test]
+    fn plugin_pinned_with_env() {
+        let raw = parse_raw(r#"
+            [[plugin]]
+            name = "my-tools"
+            cmd = ["/path/to/my-tools"]
+
+            [plugin.env]
+            FOO = "bar"
+        "#);
+        let resolved = resolve(raw).unwrap();
+        assert_eq!(resolved.plugins.len(), 1);
+        assert_eq!(resolved.plugins[0].cmd.as_ref().unwrap()[0], "/path/to/my-tools");
+        assert_eq!(resolved.plugins[0].env[0], ("FOO".to_string(), "bar".to_string()));
+    }
+
+    #[test]
+    fn plugin_empty_is_skipped() {
+        let raw = parse_raw(r#"
+            [[plugin]]
+            name = "empty"
+        "#);
+        let resolved = resolve(raw).unwrap();
+        assert_eq!(resolved.plugins.len(), 0, "plugin with no cmd/env and not disabled should be skipped");
     }
 }
