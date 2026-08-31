@@ -64,6 +64,7 @@ fn handshake() {
             schema: json!({"type":"object","properties":{"msg":{"type":"string"}}}),
             parallel_safe: true,
             hidden: false, effects: vec![],
+            policy: Default::default(),
         }],
         provider: None,
         events: vec!["MessageAppended".into()],

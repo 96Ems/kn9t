@@ -1,4 +1,4 @@
-//! Stage-03 ReAct acceptance tests (`rct::*`). Names match `spec/03-react-tools.md`.
+﻿//! Stage-03 ReAct acceptance tests (`rct::*`). Names match `spec/03-react-tools.md`.
 //! Everything is driven by the replay provider over synthetic native fixtures: no network,
 //! no API key, no spend.
 
@@ -288,7 +288,7 @@ impl AbortingTool {
             spec: kn9t_core::ToolSpec {
                 name: "abort".to_string(),
                 description: "test tool that cancels the turn".to_string(),
-                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false, effects: vec![]
+                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false, effects: vec![], policy: Default::default()
             },
         }
     }
@@ -384,7 +384,7 @@ impl SlowToolWithExternalCancel {
             spec: kn9t_core::ToolSpec {
                 name: name.to_string(),
                 description: "slow test tool".to_string(),
-                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false, effects: vec![]
+                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false, effects: vec![], policy: Default::default()
             },
             delay_ms,
         }
@@ -426,7 +426,7 @@ impl FastTool {
             spec: kn9t_core::ToolSpec {
                 name: name.to_string(),
                 description: "fast test tool".to_string(),
-                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false, effects: vec![]
+                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false, effects: vec![], policy: Default::default()
             },
         }
     }
@@ -741,7 +741,7 @@ fn parallel_order() {
     assert_eq!(order, vec!["c_slow", "c_fast", "c_write"]);
 }
 
-// ── Bug regression: tool result double-wrap ───────────────────────────────────
+// â”€â”€ Bug regression: tool result double-wrap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // `execute_one` previously called `tool_result_content()` which already returns
 // `Content::ToolResult{..}`, then wrapped that inside ANOTHER `Content::ToolResult`.
@@ -750,11 +750,11 @@ fn parallel_order() {
 //   ToolResult { content: [ ToolResult { content: [Text("hello")] } ] }
 //
 // The OpenAI encoder extracts only `Text` children, so the inner `ToolResult`
-// was silently dropped and the model received an empty string — making it
+// was silently dropped and the model received an empty string â€” making it
 // believe the tool returned nothing.
 
 /// Unit-level: a sequential tool call must store a `ToolResult` whose `content`
-/// is a flat `[Text("…")]`, never a nested `[ToolResult{…}]`.
+/// is a flat `[Text("â€¦")]`, never a nested `[ToolResult{â€¦}]`.
 #[test]
 fn tool_result_not_double_wrapped() {
     // One turn: assistant calls "echo" tool, then model finishes.
@@ -775,12 +775,12 @@ fn tool_result_not_double_wrapped() {
     struct EchoTool;
     impl kn9t_core::Tool for EchoTool {
         fn spec(&self) -> &kn9t_core::ToolSpec {
-            // Leak the spec — fine for tests.
+            // Leak the spec â€” fine for tests.
             Box::leak(Box::new(kn9t_core::ToolSpec {
                 name: "echo".into(),
                 description: "echo".into(),
                 schema: serde_json::json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
-                hidden: false, effects: vec![],
+                hidden: false, effects: vec![], policy: Default::default(),
             }))
         }
         fn parallel_safe(&self) -> bool { false }
@@ -861,7 +861,7 @@ fn tool_result_not_double_wrapped() {
 }
 
 /// Integration-level: when the second provider call is made (after a tool run),
-/// the messages it receives must contain the tool result text — not an empty string.
+/// the messages it receives must contain the tool result text â€” not an empty string.
 /// This catches the silent drop caused by the double-wrap.
 #[test]
 fn tool_output_reaches_second_provider_call() {
@@ -887,7 +887,7 @@ fn tool_output_reaches_second_provider_call() {
                 name: "echo".into(),
                 description: "echo".into(),
                 schema: serde_json::json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
-                hidden: false, effects: vec![],
+                hidden: false, effects: vec![], policy: Default::default(),
             }))
         }
         fn parallel_safe(&self) -> bool { false }
@@ -973,7 +973,7 @@ fn tool_output_reaches_second_provider_call() {
     looop.run(params).expect("loop ran");
 
     // The second plan_request call (turn 2) must have a Tool-role message whose
-    // ToolResult content contains the sentinel text — not an empty string.
+    // ToolResult content contains the sentinel text â€” not an empty string.
     let plans = captured_plans.lock().unwrap();
     assert!(plans.len() >= 2, "expected at least 2 plan_request calls, got {}", plans.len());
     let second_plan_msgs = &plans[1];

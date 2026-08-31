@@ -149,7 +149,7 @@ fn main() {
                 }
             },
             "required": ["expression"]
-        }), hidden: false, effects: vec![]
+        }), hidden: false, effects: vec![], policy: Default::default()
     };
 
     // Turn 2a: user asks → expect ToolUse stop.
