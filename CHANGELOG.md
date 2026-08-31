@@ -11,7 +11,143 @@ pointer current.
 
 ## ▶ Next session starts here
 
-**Next:** G3 manual verification (3 TUIs, 1 server, 1 lease, screenshot paste) or Stage 10 bedrock-native/gemini (v2) or `R-TUI-220` SidebarWidget (v2). Phase 4 + Phase 5 done 2026-08-31 — 424 tests (398 workspace + 26 external), DESIGN §11/§15 §15 trigger fired→schema-first, §10 effects + Policy as single seam (ADR-0006), §16 `plugins/` not `internal-plugins`, ADRs 0006/0007, `.gitattributes * text=auto`, `spec/07-tui.md` R-TUI-012/050/110/220/230 reconciliation, TRACKING honest, G1 green.
+**Next:** G3 manual verification (3 TUIs, 1 server, 1 lease, screenshot paste) or Stage 10 bedrock-native/gemini (v2) or `R-TUI-220` SidebarWidget (v2). R-STOR-115/116/117 + R-PCORE-050 committed — 224 workspace tests green (1 Windows skip).
+
+---
+
+## Session — R-STOR-117 / R-PCORE-050: a truncated `args_json` bricked a session
+
+### Summary
+
+User report: after a `tool_call` failed mid-stream, the session became permanently unusable —
+every subsequent turn returned `500 litellm.APIConnectionError: Unable to convert openai tool
+calls ... Unterminated string starting at line 1 column 6264`, then a system abort. Confirmed
+against the real `~/.kn9t/kn9t.db`: session `01M1BZ6592KJXFX6SQP36YG82W`, `events` seq 272
+holds an `edit` `tool_call` whose `args_json` is 6296 bytes of unterminated JSON.
+
+Note this is **not** the R-STOR-115 orphan case: the call *was* answered (seq 274, the tool's
+own `is_error: true` / `missing 'path'`). The poison is the *arguments*, not a missing result.
+
+### Root cause
+
+Two independent defects with the same consequence:
+
+1. **`assemble` never validated the concat.** R-PCORE-050 already required parsing the
+   accumulated tool-arg JSON "once at the end", but `assemble.rs` only concatenated
+   `Chunk::ToolArgs` fragments and pushed them straight into `Content::ToolCall`. A stream cut
+   mid-arguments therefore produced a structurally invalid `args_json` and returned it as a
+   perfectly ordinary `Message`. The requirement was in the spec and simply unimplemented.
+2. **Nothing repaired it on read.** Once that message is persisted, `events` is append-only
+   (GI-4) so the bytes can never be rewritten; `plan_request` replays them on every turn and
+   the provider rejects the whole request. Permanent, exactly like R-STOR-115.
+
+Notably the machinery to handle this already existed and was never reachable:
+`ProvErr::Truncated` ("stream ended with unfinished tool calls", R-CORE-130) plus the
+write-size retry ladder in `turn.rs` (R-RCT-070). The bug was that `assemble` never returned
+it.
+
+### What changed
+
+- **`assemble.rs` (R-PCORE-050)** — the end-of-stream parse is now a *gate*: if any tool
+  call's concat does not parse, return `Err(ProvErr::Truncated)` instead of a `Message`. The
+  parsed value is discarded, so `args_json` stays the verbatim concat (R-CORE-062). `exec.rs`
+  already maps `Truncated` → `Attempt::Truncated`, so the existing ladder retries the turn
+  with no new plumbing. An argless call still normalises to `{}` and does not trip the gate.
+- **`plan.rs` (new R-STOR-117)** — `repair_unparseable_tool_args` replaces any unparseable
+  `args_json` with `{}` in the folded message list, before `close_orphan_tool_calls_with`.
+  This heals the sessions already on disk. The call is **kept, not dropped**: deleting it
+  would orphan its `ToolResult` (§7.5). Valid args are left byte-identical.
+- **Spec** — `spec/05` R-PCORE-050 now states the gate explicitly and names its two new
+  acceptance tests; `spec/04` gains R-STOR-117.
+
+Per AGENTS.md §10, the fix is at the two architectural seams (the assemble boundary that
+admits data, and the fold that derives the read) rather than a special case in the encoder.
+
+### Verification
+
+- `cargo test -p kn9t-provider-core` — 13 pass, incl. `pcore_assemble_rejects_incomplete_args`
+  and `pcore_assemble_accepts_argless_call`.
+- `cargo test -p kn9t-store` — 24 pass, incl. `stor_plan_repairs_unparseable_tool_args`.
+- 163 tests green across `core / provider-core / provider-openai / provider-replay / react /
+  store`.
+- **Against the real DB** (throwaway test on a copy of the user's `kn9t.db`): the bricked
+  session now plans 185 messages / 107 tool calls with every `args_json` parseable. A scan of
+  the whole DB found exactly one poisoned call, so no other session was affected.
+
+**Full workspace now compiles and passes** (224 tests, 1 skip: `srv::plugin_reload` panics
+on Windows by design). The policy work was completed in parallel; R-STOR-115/116/117 +
+R-PCORE-050 are committed.
+
+---
+
+## Session — R-STOR-115: orphaned tool calls survive a process death
+
+### Summary
+
+User report: restarting a previously-stopped session (or restarting kn9t itself) fails every
+subsequent turn with `messages.N: tool_use ids were found without tool_result blocks
+immediately after: tooluse_...`. Not a litellm quirk and nothing to do with persistence of
+the id — the id persists fine. Reproduced against the user's real `~/.kn9t/kn9t.db`: 2 of 3
+sessions were permanently unusable.
+
+### Root cause
+
+DESIGN §7.5's hard invariant (no `ToolCall` without its `ToolResult`) was enforced in two
+places, and both have the same blind spot — they only run *inside a living loop*:
+
+- `exec.rs:375 synth_error` closes calls on abort/deny/panic (§9.1, R-RCT-060);
+- `plan.rs has_orphan_tool_call` only snaps the *compaction* boundary (R-STOR-110).
+
+`turn.rs:139` appends the tool-role message with all results **after** the whole batch
+finishes. So the window between "assistant `MessageAppended` with `tool_call` persisted"
+(`turn.rs:108`) and "tool-role `MessageAppended` persisted" is unprotected: if the process
+dies in it (`kill -9`, server restart, Ctrl-C, panic), the orphan becomes durable. Because
+`events` is append-only (GI-4), the missing result can never be back-filled — the session is
+bricked forever, which is exactly what the user saw. Confirmed in the real DB: both broken
+sessions end `MessageAppended assistant [text,tool_call]` → `UsageRecorded` → nothing.
+
+### What changed
+
+- **`crates/kn9t-store/src/plan.rs`** — new `close_orphan_tool_calls(&mut seqs, &mut messages)`,
+  called from `plan_request` *before* `breakpoints` and `compact_span` so all three see the
+  same §7.5-clean list the provider will. Inserts a synthesized
+  `ToolResult { is_error: true }` with the provider's verbatim `CallId` right after the
+  opening message; walks backwards so an insert cannot shift an unvisited index; keeps `seqs`
+  in step so `compact_span` still reports real `SeqRange`s.
+- **`crates/kn9t-store/src/lib.rs`** — export `close_orphan_tool_calls`.
+- **`spec/04-store.md`** — new **R-STOR-115** (§7.5, §9.1).
+- **`crates/kn9t-store/tests/acceptance.rs`** — `stor_orphan_from_interrupted_tool_execution`
+  inverted: it previously *asserted the bug* (`assert!(has_orphan_tool_call(...), "this is
+  the bug!")` with a comment listing the three possible fixes). Now asserts the log keeps the
+  honest record **and** the planned request is clean, the synthesized result carries the
+  original id and sits immediately after its opener, and an answered call gains no second
+  result.
+
+### Why the fold and not the loop
+
+Per AGENTS.md §10 (fix the architecture, don't patch): adding another `synth_error` call site
+in the loop would be a third copy of the same invariant and still lose the race — no code
+running *in* the doomed process can be trusted to close the call. The invariant belongs where
+the message list is *derived*, so it holds no matter how the previous process died. `events`
+keeps the truth (the call never answered); `plan_request` derives a valid request from it on
+every read. This also self-heals the already-corrupted sessions in the user's DB with no
+migration and no mutation of the append-only log.
+
+### Verification
+
+`cargo test -p kn9t-store` 23/23. `cargo test --workspace`: only `srv::plugin_reload` fails,
+pre-existing and unrelated (`acceptance.rs:2303` is a literal
+`panic!("plugin_reload test not supported on Windows in this harness")`; confirmed failing
+identically on a clean `git stash`). Verified against the user's real DB via a temporary
+scratch test (copy, then `plan_request` every session): the two bricked sessions now plan
+with `orphan=false` (7 and 92 messages). Scratch test removed.
+
+### Discovered bugs
+
+| # | bug | where | status |
+|---|---|---|---|
+| F12 | §7.5's invariant was only enforced by live-loop code, so a process death between the assistant `MessageAppended` and the tool-role `MessageAppended` durably bricks a session (append-only ⇒ unrecoverable). Provider 400s on every later turn. | `kn9t-react/src/turn.rs:108..139`, `kn9t-store/src/plan.rs` | fixed — R-STOR-115 |
+| F13 | `stor_orphan_from_interrupted_tool_execution` encoded the bug as the expected result, so a real regression test was green while the product was broken. Tests must assert the invariant, never the defect. | `kn9t-store/tests/acceptance.rs:602` | fixed |
 
 ---
 

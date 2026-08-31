@@ -233,6 +233,8 @@ All 18 requirements implemented; 18 named `stor::*` acceptance tests pass (plus 
 | R-STOR-090 | reproject --check clean | stor::reproject_check_clean | ☑ |
 | R-STOR-100 | plan_request, no tokenizer | stor::plan_no_tokenizer | ☑ |
 | R-STOR-110 | compaction boundary snap | stor::compact_boundary | ☑ |
+| R-STOR-115 | close orphaned tool calls in the fold | stor_orphan_from_interrupted_tool_execution | ☑ |
+| R-STOR-117 | repair unparseable args_json in the fold | stor_plan_repairs_unparseable_tool_args | ☑ |
 | R-STOR-120 | linear session, fork = new row | (part of fork tests) | ☑ |
 | R-STOR-130 | fork copies ctx not usage | stor::fork_no_usage, stor::fork_renumber | ☑ |
 | R-STOR-140 | blob put/get content-addressed | stor::blob_dedup | ☑ |
@@ -251,7 +253,7 @@ All 22 requirements implemented; 25 acceptance tests pass (11 pcore + 14 oai/nbe
 | R-PCORE-030 | auth scheme data | pcore::auth_scheme | ☑ |
 | R-PCORE-035 | tls default secure | pcore::tls_default_secure | ☑ |
 | R-PCORE-040 | sse_lines boundary buffering | pcore::sse_boundary | ☑ |
-| R-PCORE-050 | assemble, verbatim args | pcore::assemble_verbatim_args | ☑ |
+| R-PCORE-050 | assemble, verbatim args + truncation gate | pcore::assemble_verbatim_args, pcore_assemble_rejects_incomplete_args, pcore_assemble_accepts_argless_call | ☑ |
 | R-PCORE-060 | retry pre-stream only | pcore::retry_pre_stream, pcore::retry_no_retry_after_chunk | ☑ |
 | R-PCORE-070 | cache encoding scaffold | oai::cache_automatic_omits, oai::cache_explicit_places | ☑ |
 | R-PCORE-080 | Quirks merge | pcore::quirks_merge | ☑ |
