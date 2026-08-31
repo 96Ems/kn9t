@@ -18,8 +18,8 @@ enum ReaderMsg {
 }
 
 use kn9t_core::{
-    Content, Event, EventSink, HookName, HookVeto, Message, ModelRef, MsgId, NextTurnPatch,
-    PluginKv, Role, StopReason, Usage,
+    Cancel, Content, Event, EventSink, HookName, HookVeto, Message, ModelRef, MsgId,
+    NextTurnPatch, PluginKv, Role, StopReason, Usage,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -394,6 +394,29 @@ impl PluginHost {
         self.wait_for_streaming(id, timeout, on_chunk)
     }
 
+    /// Cancellable streaming hook — polls `Cancel` every 10ms and sends `HostMsg::Cancel` on fire.
+    /// `job/instant-cut.md` step 5.
+    pub fn call_raw_hook_str_streaming_cancellable(
+        &self,
+        hook_str: &str,
+        payload: Value,
+        timeout: Duration,
+        cancel: &Cancel,
+        on_chunk: impl FnMut(serde_json::Value),
+    ) -> Result<Value, String> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let msg = HostMsg::Hook {
+            id,
+            hook: hook_str.to_string(),
+            payload,
+        };
+        {
+            let mut w = self.writer.lock().unwrap();
+            write_host_msg(&mut **w, &msg).map_err(|e| format!("write error: {e}"))?;
+        }
+        self.wait_for_streaming_cancellable(id, cancel, timeout, on_chunk)
+    }
+
     /// Register a per-call channel and return the receiver.
     /// Caller is responsible for unregistering after use.
     fn register_call(&self, id: u64) -> mpsc::Receiver<ReaderMsg> {
@@ -455,6 +478,41 @@ impl PluginHost {
                 }
             }
         }
+    }
+
+    /// Cancellable streaming wait — polls `Cancel` every 10ms, sends `HostMsg::Cancel` on fire.
+    /// `job/instant-cut.md` step 4.
+    pub fn wait_for_streaming_cancellable(
+        &self,
+        expected_id: u64,
+        cancel: &Cancel,
+        timeout: Duration,
+        mut on_chunk: impl FnMut(serde_json::Value),
+    ) -> Result<Value, String> {
+        let rx = self.register_call(expected_id);
+        let deadline = std::time::Instant::now() + timeout;
+        let result = loop {
+            if cancel.cancelled() {
+                self.cancel_call(expected_id);
+                break Err("cancelled".to_string());
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break Err(format!("plugin '{}' timed out (call {})", self.declaration.name, expected_id));
+            }
+            let poll = remaining.min(Duration::from_millis(10));
+            match rx.recv_timeout(poll) {
+                Ok(ReaderMsg::Final { body }) => break Ok(body),
+                Ok(ReaderMsg::Chunk { body }) => on_chunk(body),
+                Ok(ReaderMsg::Err { reason }) => break Err(reason),
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break Err(format!("plugin '{}' disconnected (call {})", self.declaration.name, expected_id))
+                }
+            }
+        };
+        self.unregister_call(expected_id);
+        result
     }
 
     /// Send a cancel message for an in-flight call (R-PLUG2-050).
@@ -584,24 +642,14 @@ impl PluginHost {
     }
 
     pub fn get_steering(&self) -> Vec<Message> {
-        eprintln!("[DEBUG PluginHost::get_steering] plugin='{}' has_hook={}", 
-            self.declaration.name, self.has_hook(HookName::GetSteering));
         if !self.has_hook(HookName::GetSteering) {
             return Vec::new();
         }
         let payload = serde_json::json!({ "session_id": self.session_id() });
         let timeout = default_timeout(HookName::GetSteering);
-        eprintln!("[DEBUG PluginHost::get_steering] calling call_hook_raw with timeout={:?}", timeout);
         match self.call_hook_raw(HookName::GetSteering, payload, timeout) {
-            Ok(body) => {
-                eprintln!("[DEBUG PluginHost::get_steering] got body: {}", 
-                    serde_json::to_string(&body).unwrap_or_default());
-                let msgs = parse_messages_list(&body);
-                eprintln!("[DEBUG PluginHost::get_steering] parsed {} messages", msgs.len());
-                msgs
-            }
+            Ok(body) => parse_messages_list(&body),
             Err(e) => {
-                eprintln!("[DEBUG PluginHost::get_steering] ERROR: {}", e);
                 self.emit_hook_failed(HookName::GetSteering, &e);
                 Vec::new()
             }

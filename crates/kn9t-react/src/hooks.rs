@@ -106,14 +106,12 @@ impl ReactLoop {
         args: &serde_json::Value,
         result: Vec<kn9t_provider_core::Content>,
     ) -> Vec<kn9t_provider_core::Content> {
-        eprintln!("[DEBUG hook_after_tool_call] tool={}", tool);
         let hooks = self.hooks.clone();
         let orig = result.clone();
         match catch_unwind(AssertUnwindSafe(|| {
             hooks.after_tool_call(tool, args, result)
         })) {
             Ok(v) => {
-                eprintln!("[DEBUG hook_after_tool_call] returned {} content items", v.len());
                 v
             }
             Err(_) => {
@@ -160,11 +158,9 @@ impl ReactLoop {
     }
 
     pub(crate) fn collect_steering(&self) -> Vec<Message> {
-        eprintln!("[DEBUG collect_steering] calling hooks.get_steering()");
         let hooks = self.hooks.clone();
         match catch_unwind(AssertUnwindSafe(|| hooks.get_steering())) {
             Ok(v) => {
-                eprintln!("[DEBUG collect_steering] got {} messages", v.len());
                 v
             }
             Err(_) => {

@@ -37,7 +37,7 @@ impl Tool for RemoteTool {
         &self,
         args: &serde_json::Value,
         ctx: &ToolCtx,
-        _cancel: &Cancel,
+        cancel: &Cancel,
     ) -> Result<ToolOutput, ToolErr> {
         let payload = serde_json::json!({
             "tool": self.spec.name,
@@ -50,10 +50,12 @@ impl Tool for RemoteTool {
 
         // Tool calls can be long-running (bash has 120s default, but builds can take longer).
         // Use 5 minutes as the host timeout; the tool's internal timeout takes precedence.
-        let result = self.host.call_raw_hook_str_streaming(
+        // Cancellable: polls `Cancel` every 10ms and sends `HostMsg::Cancel` on fire (`job/instant-cut.md`).
+        let result = self.host.call_raw_hook_str_streaming_cancellable(
             "tool_call",
             payload,
             Duration::from_secs(300),
+            cancel,
             |chunk| {
                 // Plugin sends chunks like {"text": "--- a/file.rs"}
                 if let Some(text) = chunk.get("text").and_then(|v| v.as_str()) {

@@ -1,6 +1,7 @@
 //! R-PCORE-010 .. R-PCORE-035 — blocking HTTP + TLS, auth schemes, connect timeout.
 
-use kn9t_core::ProvErr;
+use crate::abort::CancellableReader;
+use kn9t_core::{Cancel, ProvErr};
 use std::io::Read;
 use std::time::Duration;
 
@@ -38,7 +39,9 @@ pub struct HttpResponse {
 }
 
 /// R-PCORE-010/020 — send the request with a connect-only timeout.
-pub fn send(req: HttpRequest, connect_timeout: Duration) -> Result<HttpResponse, ProvErr> {
+/// If `cancel` is `Some`, the response body is wrapped in `CancellableReader` so the
+/// next `read()` returns `Interrupted` (<1ms) when `cancel.cancelled()` (`job/instant-cut.md`).
+pub fn send(req: HttpRequest, connect_timeout: Duration, cancel: Option<Cancel>) -> Result<HttpResponse, ProvErr> {
     let config = ureq::config::Config::builder()
         .timeout_connect(Some(connect_timeout))
         // No read timeout — body streams unbounded (R-PCORE-020).
@@ -81,10 +84,14 @@ pub fn send(req: HttpRequest, connect_timeout: Duration) -> Result<HttpResponse,
         .map(|(k, v)| (k.as_str().to_owned(), v.to_str().unwrap_or("").to_owned()))
         .collect();
 
+    let body: Box<dyn Read + Send> = match cancel {
+        Some(c) => Box::new(CancellableReader::new(resp.into_body().into_reader(), c)),
+        None => Box::new(resp.into_body().into_reader()),
+    };
     Ok(HttpResponse {
         status,
         headers: resp_headers,
-        body: Box::new(resp.into_body().into_reader()),
+        body,
     })
 }
 
@@ -94,6 +101,7 @@ pub fn send_get(
     headers: Vec<(String, String)>,
     auth: Option<(AuthScheme, String)>,
     connect_timeout: Duration,
+    cancel: Option<Cancel>,
 ) -> Result<HttpResponse, ProvErr> {
     let config = ureq::config::Config::builder()
         .timeout_connect(Some(connect_timeout))
@@ -120,10 +128,14 @@ pub fn send_get(
         .map(|(k, v)| (k.as_str().to_owned(), v.to_str().unwrap_or("").to_owned()))
         .collect();
 
+    let body: Box<dyn Read + Send> = match cancel {
+        Some(c) => Box::new(CancellableReader::new(resp.into_body().into_reader(), c)),
+        None => Box::new(resp.into_body().into_reader()),
+    };
     Ok(HttpResponse {
         status,
         headers: resp_headers,
-        body: Box::new(resp.into_body().into_reader()),
+        body,
     })
 }
 

@@ -65,69 +65,35 @@ impl ReactLoop {
         };
 
         // R-RCT-020 step 4: stream + assemble.
-        eprintln!("[DEBUG one_attempt] calling provider.stream, cancel.cancelled()={}", cancel.cancelled());
         let stream = match self.provider.stream(&req, cancel) {
-            Ok(s) => {
-                eprintln!("[DEBUG one_attempt] provider.stream returned Ok");
-                s
-            }
-            Err(ProvErr::ContextOverflow) => {
-                eprintln!("[DEBUG one_attempt] provider.stream returned ContextOverflow");
-                return Ok(Attempt::ContextOverflow);
-            }
-            Err(ProvErr::Truncated) => {
-                eprintln!("[DEBUG one_attempt] provider.stream returned Truncated");
-                return Ok(Attempt::Truncated);
-            }
+            Ok(s) => s,
+            Err(ProvErr::ContextOverflow) => return Ok(Attempt::ContextOverflow),
+            Err(ProvErr::Truncated) => return Ok(Attempt::Truncated),
             Err(e) => {
-                eprintln!("[DEBUG one_attempt] provider.stream returned Err: {}", e);
+                if cancel.cancelled() {
+                    // Stream creation was interrupted by cancel (instant-cut)
+                    return Ok(Attempt::AbortedInStream(estimated_assembled(&params.model.r#ref)));
+                }
                 return Err(ReactError::Provider(e.to_string()));
             }
         };
 
-        eprintln!("[DEBUG one_attempt] calling assemble, cancel.cancelled()={}", cancel.cancelled());
         match assemble(stream, self.bus.as_ref()) {
             Ok(mut a) => {
-                let tool_call_count = a.message.content.iter()
-                    .filter(|c| matches!(c, Content::ToolCall { .. }))
-                    .count();
-                let stop_str = match a.stop {
-                    StopReason::Stop => "Stop",
-                    StopReason::ToolUse => "ToolUse",
-                    StopReason::Length => "Length",
-                    StopReason::Aborted => "Aborted",
-                    StopReason::Refusal => "Refusal",
-                };
-                eprintln!("[DEBUG one_attempt] assemble returned Ok, tool_calls={}, stop={}, cancel.cancelled()={}", 
-                    tool_call_count, stop_str, cancel.cancelled());
-                // Attribute usage to the request model (sec.7.4).
                 a.usage.model = params.model.r#ref.clone();
                 if cancel.cancelled() {
-                    eprintln!("[DEBUG one_attempt] returning AbortedInStream (cancel after assemble)");
                     Ok(Attempt::AbortedInStream(a))
                 } else {
-                    eprintln!("[DEBUG one_attempt] returning Completed");
                     Ok(Attempt::Completed(a))
                 }
             }
-            Err(ProvErr::ContextOverflow) => {
-                eprintln!("[DEBUG one_attempt] assemble returned ContextOverflow");
-                Ok(Attempt::ContextOverflow)
-            }
-            Err(ProvErr::Truncated) => {
-                eprintln!("[DEBUG one_attempt] assemble returned Truncated");
-                Ok(Attempt::Truncated)
-            }
+            Err(ProvErr::ContextOverflow) => Ok(Attempt::ContextOverflow),
+            Err(ProvErr::Truncated) => Ok(Attempt::Truncated),
             Err(e) => {
-                eprintln!("[DEBUG one_attempt] assemble returned Err: {}, cancel.cancelled()={}", e, cancel.cancelled());
-                // If cancellation raced a mid-stream error, treat as abort so a partial-usage
-                // estimate is still recorded (R-RCT-050).
                 if cancel.cancelled() {
-                    eprintln!("[DEBUG one_attempt] returning AbortedInStream with ESTIMATED (empty) message");
                     let est = estimated_assembled(&params.model.r#ref);
                     Ok(Attempt::AbortedInStream(est))
                 } else {
-                    eprintln!("[DEBUG one_attempt] returning Provider error");
                     Err(ReactError::Provider(e.to_string()))
                 }
             }

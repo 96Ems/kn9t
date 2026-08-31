@@ -79,6 +79,7 @@ impl OpenAiProvider {
         &self,
         req: &Request<'_>,
         model_ref: ModelRef,
+        cancel: Option<Cancel>,
     ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
         let body = build_request(req, &self.config.quirks, &req.model.cache, self.config.dump_request);
         let body_bytes = serde_json::to_vec(&body)
@@ -98,7 +99,7 @@ impl OpenAiProvider {
         };
 
         let timeout = Duration::from_millis(self.config.connect_timeout_ms);
-        let resp = send(http_req, timeout)?;
+        let resp = send(http_req, timeout, cancel)?;
 
         if resp.status != 200 {
             return Err(ProvErr::Http {
@@ -146,12 +147,16 @@ impl Provider for OpenAiProvider {
     fn stream(
         &self,
         req: &Request,
-        _cancel: &Cancel,
+        cancel: &Cancel,
     ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
         let model_ref = req.model.r#ref.clone();
-        // R-PCORE-060: retry pre-stream errors.
+        let cancel_c = cancel.clone();
+        // R-PCORE-060: retry pre-stream errors. Check cancel between retries (instant-cut).
         with_retry(3, Backoff::default(), || {
-            self.attempt(req, model_ref.clone())
+            if cancel_c.cancelled() {
+                return Err(ProvErr::Stream("cancelled".into()));
+            }
+            self.attempt(req, model_ref.clone(), Some(cancel_c.clone()))
         })
     }
 }

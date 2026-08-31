@@ -238,7 +238,7 @@ fn pcore_connect_timeout() {
     };
     let timeout = Duration::from_millis(300);
     let start = Instant::now();
-    let result = send(req, timeout);
+    let result = send(req, timeout, None);
     let elapsed = start.elapsed();
     assert!(result.is_err(), "must fail");
     // Can't unwrap_err on Result<HttpResponse> because HttpResponse isn't Debug.

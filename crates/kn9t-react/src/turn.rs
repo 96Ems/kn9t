@@ -59,7 +59,6 @@ impl ReactLoop {
         turn: u32,
         cancel: &Cancel,
     ) -> Result<TurnOutcome, ReactError> {
-        eprintln!("[DEBUG execute_turn] START turn={}", turn);
         let mut reminders: Vec<Message> = Vec::new();
         let mut trunc_n: u32 = 0;
         let mut replans: u32 = 0;
@@ -67,16 +66,11 @@ impl ReactLoop {
         // Attempt loop: truncation retries (R-RCT-070) + context-overflow re-plans
         // (R-RCT-080/090).
         let assembled = loop {
-            eprintln!("[DEBUG execute_turn] calling one_attempt, cancel.cancelled()={}", cancel.cancelled());
             match self.one_attempt(params, cancel, &reminders, &mut replans)? {
                 Attempt::Completed(a) => {
-                    eprintln!("[DEBUG execute_turn] Attempt::Completed, tool_calls={}", 
-                        a.message.content.iter().filter(|c| matches!(c, Content::ToolCall { .. })).count());
                     break a;
                 }
                 Attempt::AbortedInStream(a) => {
-                    eprintln!("[DEBUG execute_turn] Attempt::AbortedInStream, tool_calls={}, NOT persisting message",
-                        a.message.content.iter().filter(|c| matches!(c, Content::ToolCall { .. })).count());
                     // R-RCT-050: record usage (estimated if the stream carried none); do NOT
                     // append the discarded partial assistant message.
                     self.record_usage(params, &a.usage, UsageKind::Main, !a.usage_reported)?;
@@ -100,27 +94,10 @@ impl ReactLoop {
         };
 
         // Persist assistant message + main usage (R-RCT-020 step 5).
-        eprintln!("[DEBUG execute_turn] PERSISTING assistant message with {} content blocks",
-            assembled.message.content.len());
-        for (i, c) in assembled.message.content.iter().enumerate() {
-            match c {
-                Content::ToolCall { id, name, .. } => {
-                    eprintln!("[DEBUG execute_turn]   content[{}] = ToolCall(id={}, name={})", i, id.0, name);
-                }
-                Content::Text { text } => {
-                    eprintln!("[DEBUG execute_turn]   content[{}] = Text({} chars)", i, text.len());
-                }
-                _ => {
-                    eprintln!("[DEBUG execute_turn]   content[{}] = Other", i);
-                }
-            }
-        }
         self.append(params, Event::MessageAppended { seq: 0, msg: assembled.message.clone() })?;
-        eprintln!("[DEBUG execute_turn] assistant message PERSISTED");
         self.record_usage(params, &assembled.usage, UsageKind::Main, !assembled.usage_reported)?;
 
         let tool_calls = collect_tool_calls(&assembled.message);
-        eprintln!("[DEBUG execute_turn] collected {} tool_calls", tool_calls.len());
 
         if tool_calls.is_empty() {
             // No tool calls (R-RCT-020 step 6).
@@ -139,11 +116,7 @@ impl ReactLoop {
         }
 
         // Tool calls (R-RCT-020 step 7-9).
-        eprintln!("[DEBUG execute_turn] running tool batch, cancel.cancelled()={}", cancel.cancelled());
         let results = self.run_tool_batch(params, &tool_calls, cancel);
-        eprintln!("[DEBUG execute_turn] tool batch done, got {} results, cancel.cancelled()={}", 
-            results.len(), cancel.cancelled());
-        
         // Persist tool results in the model's call order (R-RCT-020 step 8, R-RCT-130).
         let msg = Message {
             id: MsgId::new(),
@@ -151,22 +124,9 @@ impl ReactLoop {
             content: results.clone(),
             silent: false,
         };
-        eprintln!("[DEBUG execute_turn] PERSISTING tool results message with {} content blocks", msg.content.len());
-        for (i, c) in msg.content.iter().enumerate() {
-            match c {
-                Content::ToolResult { id, is_error, .. } => {
-                    eprintln!("[DEBUG execute_turn]   result[{}] = ToolResult(id={}, is_error={})", i, id.0, is_error);
-                }
-                _ => {
-                    eprintln!("[DEBUG execute_turn]   result[{}] = Other", i);
-                }
-            }
-        }
         self.append(params, Event::MessageAppended { seq: 0, msg })?;
-        eprintln!("[DEBUG execute_turn] tool results PERSISTED");
 
         if cancel.cancelled() {
-            eprintln!("[DEBUG execute_turn] cancel detected AFTER tool results persisted, returning Idle(Aborted)");
             // R-RCT-060: keep the transcript consistent (assistant msg + all results,
             // aborted ones synthesized), do not roll back, then go idle.
             return Ok(TurnOutcome::Idle(StopReason::Aborted));

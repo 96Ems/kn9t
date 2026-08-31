@@ -1,3 +1,4 @@
+pub mod abort;
 pub mod assemble;
 pub mod http;
 pub mod pricing;
@@ -5,8 +6,9 @@ pub mod quirks;
 pub mod retry;
 pub mod sse;
 
+pub use abort::CancellableReader;
 pub use assemble::{assemble, AssembleResult};
-pub use http::{AuthScheme, HttpRequest, HttpResponse, send};
+pub use http::{AuthScheme, HttpRequest, HttpResponse, send, send_get};
 pub use pricing::lookup_price;
 pub use quirks::Quirks;
 pub use retry::{Backoff, with_retry};
