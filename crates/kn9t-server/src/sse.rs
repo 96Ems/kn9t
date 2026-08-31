@@ -49,6 +49,8 @@ fn event_name(e: &Event) -> &'static str {
         Event::HookFailed { .. } => "hook_failed",
         Event::TitleChanged { .. } => "title_changed",
         Event::Error { .. } => "error",
+        Event::RetryAttempt { .. } => "retry_attempt",
+        Event::TurnStatus { .. } => "turn_status",
         Event::PluginNotification { .. } => "plugin_notification",
     }
 }

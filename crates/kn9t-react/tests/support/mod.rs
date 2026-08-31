@@ -68,6 +68,8 @@ pub fn event_tag(e: &Event) -> String {
         Event::TurnEnded { .. } => "TurnEnded",
         Event::HookFailed { .. } => "HookFailed",
         Event::Error { .. } => "Error",
+        Event::RetryAttempt { .. } => "RetryAttempt",
+        Event::TurnStatus { .. } => "TurnStatus",
         Event::TitleChanged { .. } => "TitleChanged",
         Event::PluginNotification { .. } => "PluginNotification",
     }

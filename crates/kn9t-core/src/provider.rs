@@ -49,4 +49,15 @@ pub trait Provider: Send + Sync {
         req: &Request,
         cancel: &Cancel,
     ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr>;
+    /// Same as `stream` but may emit `Event::RetryAttempt` / `Event::TurnStatus` via `sink`
+    /// before each retry sleep so the TUI can show progress instead of a silent spinner.
+    /// Default impl delegates to `stream` without emitting (backward compat for tests/fakes).
+    fn stream_with_sink(
+        &self,
+        req: &Request,
+        cancel: &Cancel,
+        _sink: Option<&dyn crate::bus::EventSink>,
+    ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
+        self.stream(req, cancel)
+    }
 }

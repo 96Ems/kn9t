@@ -192,6 +192,8 @@ fn event_kind_name(event: &Event) -> &'static str {
         Event::HookFailed { .. }      => "HookFailed",
         Event::TitleChanged { .. }        => "TitleChanged",
         Event::Error { .. }               => "Error",
+        Event::RetryAttempt { .. }        => "RetryAttempt",
+        Event::TurnStatus { .. }          => "TurnStatus",
         Event::PluginNotification { .. }  => "PluginNotification",
     }
 }

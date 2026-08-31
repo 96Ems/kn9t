@@ -408,6 +408,8 @@
       { "kind": "hook_failed", "plugin": "string", "hook": "string", "reason": "string" },
       { "kind": "title_changed", "title": "string" },
       { "kind": "error", "message": "string" },
+      { "kind": "retry_attempt", "attempt": "u32", "max": "u32", "error": "string", "delay_ms": "u64", "retry_kind": "string" },
+      { "kind": "turn_status", "phase": "string", "message": "string" },
       { "kind": "plugin_notification", "plugin": "string", "message": "string" }
     ]
   }

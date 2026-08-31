@@ -65,15 +65,23 @@ impl ReactLoop {
         };
 
         // R-RCT-020 step 4: stream + assemble.
-        let stream = match self.provider.stream(&req, cancel) {
-            Ok(s) => s,
+        // Sync TUI status machine: thinking while provider connects
+        self.bus.emit(Event::TurnStatus { phase: "thinking".into(), message: String::new() });
+        let stream = match self.provider.stream_with_sink(&req, cancel, Some(self.bus.as_ref())) {
+            Ok(s) => {
+                // Provider connected, now streaming deltas
+                self.bus.emit(Event::TurnStatus { phase: "streaming".into(), message: String::new() });
+                s
+            },
             Err(ProvErr::ContextOverflow) => return Ok(Attempt::ContextOverflow),
             Err(ProvErr::Truncated) => return Ok(Attempt::Truncated),
             Err(e) => {
                 if cancel.cancelled() {
-                    // Stream creation was interrupted by cancel (instant-cut)
+                    self.bus.emit(Event::TurnStatus { phase: "aborted".into(), message: String::new() });
                     return Ok(Attempt::AbortedInStream(estimated_assembled(&params.model.r#ref)));
                 }
+                self.bus.emit(Event::TurnStatus { phase: "failed".into(), message: format!("{e:?}") });
+                self.bus.emit(Event::Error { message: format!("provider failed: {e:?}") });
                 return Err(ReactError::Provider(e.to_string()));
             }
         };
@@ -82,8 +90,10 @@ impl ReactLoop {
             Ok(mut a) => {
                 a.usage.model = params.model.r#ref.clone();
                 if cancel.cancelled() {
+                    self.bus.emit(Event::TurnStatus { phase: "aborted".into(), message: String::new() });
                     Ok(Attempt::AbortedInStream(a))
                 } else {
+                    // assemble emitted TextDelta/ThinkingDelta; phase inferred but emit idle briefly before Complete
                     Ok(Attempt::Completed(a))
                 }
             }
@@ -91,9 +101,12 @@ impl ReactLoop {
             Err(ProvErr::Truncated) => Ok(Attempt::Truncated),
             Err(e) => {
                 if cancel.cancelled() {
+                    self.bus.emit(Event::TurnStatus { phase: "aborted".into(), message: String::new() });
                     let est = estimated_assembled(&params.model.r#ref);
                     Ok(Attempt::AbortedInStream(est))
                 } else {
+                    self.bus.emit(Event::TurnStatus { phase: "failed".into(), message: format!("provider stream failed mid-stream: {e:?}") });
+                    self.bus.emit(Event::Error { message: format!("provider stream failed: {e:?}") });
                     Err(ReactError::Provider(e.to_string()))
                 }
             }
@@ -131,9 +144,10 @@ impl ReactLoop {
             max_tokens: params.max_tokens,
             cache: &no_cache,
         };
+        self.bus.emit(Event::TurnStatus { phase: "thinking".into(), message: String::new() });
         let stream = self
             .provider
-            .stream(&req, cancel)
+            .stream_with_sink(&req, cancel, Some(self.bus.as_ref()))
             .map_err(|e| ReactError::Provider(e.to_string()))?;
         let mut a = assemble(stream, self.bus.as_ref())
             .map_err(|e| ReactError::Provider(e.to_string()))?;

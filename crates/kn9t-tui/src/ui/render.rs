@@ -605,16 +605,32 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         }
     }
 
-    // Streaming indicator.
-    if app.streaming {
+    // Phase-synced streaming indicator — server is source of truth.
+    if app.streaming || matches!(app.turn_phase.as_str(), "retrying" | "failed" | "tool" | "thinking") {
         let spinner = SPINNER[app.spinner_frame % SPINNER.len()];
         if app.aborting {
-            // Show aborting state with distinct color
             lines.push(Line::from(Span::styled(format!("  {} Aborting...", spinner), Style::default().fg(theme.error))));
+        } else if app.turn_phase == "retrying" {
+            let detail = if app.turn_status_msg.is_empty() { "retrying...".to_string() } else { app.turn_status_msg.clone() };
+            lines.push(Line::from(Span::styled(format!("  {} {}", spinner, detail), Style::default().fg(theme.warning))));
+        } else if app.turn_phase == "failed" {
+            let detail = if app.turn_status_msg.is_empty() { "failed".to_string() } else { app.turn_status_msg.clone() };
+            lines.push(Line::from(Span::styled(format!("  {} failed: {}", spinner, detail), Style::default().fg(theme.error))));
+        } else if app.turn_phase == "tool" {
+            let detail = if app.turn_status_msg.is_empty() { "running tool...".to_string() } else { app.turn_status_msg.clone() };
+            lines.push(Line::from(Span::styled(format!("  {} {}", spinner, detail), Style::default().fg(theme.warning))));
+        } else if app.turn_phase == "thinking" {
+            lines.push(Line::from(Span::styled(format!("  {} thinking...", spinner), Style::default().fg(theme.muted))));
+        } else if !app.transcript.live_delta().is_empty() {
+            // streaming with deltas — show spinner without extra phrase (content already visible)
+            lines.push(Line::from(Span::styled(format!("  {} streaming...", spinner), Style::default().fg(theme.muted))));
         } else {
             let phrase = &app.config.streaming_phrases[app.phrase_idx % app.config.streaming_phrases.len()];
             lines.push(Line::from(Span::styled(format!("  {} {}", spinner, phrase), Style::default().fg(theme.muted))));
         }
+    } else if app.turn_phase == "failed" && !app.turn_status_msg.is_empty() {
+        // Brief failed notice even if not streaming (TurnEnded already cleared streaming but phase stays failed until next turn)
+        lines.push(Line::from(Span::styled(format!("  ✗ {}", app.turn_status_msg), Style::default().fg(theme.error))));
     }
 
     // Scroll logic:
@@ -821,13 +837,23 @@ fn render_status(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         String::new()
     };
 
+    let phase_disp = match app.turn_phase.as_str() {
+        "idle" => "idle",
+        "thinking" => "thinking",
+        "streaming" => "streaming",
+        "tool" => "tool",
+        "retrying" => "retrying",
+        "failed" => "failed",
+        "aborted" => "aborted",
+        other => other,
+    };
     let status = format!(
         "{} | ${:.4} | {}{} | {} | ^P",
         app.current_model_name(),
         app.tokens.cost,
         turn_info,
         tps_info,
-        if app.streaming { "streaming" } else { "idle" },
+        phase_disp,
     );
 
     let para = Paragraph::new(Line::from(Span::styled(status, Style::default().fg(theme.muted))));

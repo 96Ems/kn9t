@@ -90,6 +90,17 @@ pub enum SseFrame {
     Error {
         message: String,
     },
+    RetryAttempt {
+        attempt: u32,
+        delay_ms: u64,
+        error: String,
+        max: u32,
+        retry_kind: String,
+    },
+    TurnStatus {
+        message: String,
+        phase: String,
+    },
     PluginNotification {
         message: String,
         plugin: String,

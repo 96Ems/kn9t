@@ -131,6 +131,8 @@ pub struct App {
     // State.
     pub streaming: bool,
     pub aborting: bool,  // True when abort requested, waiting for TurnEnded
+    pub turn_phase: String, // idle|thinking|streaming|tool|retrying|failed|aborted — syncs server state machine
+    pub turn_status_msg: String, // detail from TurnStatus
     pub spinner_frame: usize,
     pub phrase_idx: usize,
     pub overlay: Option<Overlay>,
@@ -193,6 +195,8 @@ impl App {
             staged_images: Vec::new(),
             streaming: false,
             aborting: false,
+            turn_phase: "idle".into(),
+            turn_status_msg: String::new(),
             spinner_frame: 0,
             phrase_idx: 0,
             overlay: None,
@@ -269,6 +273,9 @@ impl App {
 
         // Reset streaming state.
         self.streaming = false;
+        self.aborting = false;
+        self.turn_phase = "idle".into();
+        self.turn_status_msg.clear();
         self.tick_ctl.set_streaming(false);
 
         // Clear any pending UI state.
@@ -1856,31 +1863,41 @@ impl App {
         match frame {
             SseFrame::TurnStarted { .. } => {
                 self.streaming = true;
+                self.aborting = false;
+                // Sync server state machine — turn_started implies thinking phase
+                self.turn_phase = "thinking".into();
+                self.turn_status_msg.clear();
                 self.tick_ctl.set_streaming(true);
                 self.transcript.take_delta(); // clear live_delta
-                // Delegate turn-start accounting to TokenTracker.
-                // This marks turn-reset as pending so last_turn stats stay visible during streaming.
                 self.tokens.on_turn_started();
             }
             SseFrame::TurnEnded { stop, .. } => {
                 self.streaming = false;
                 self.aborting = false;
                 self.tick_ctl.set_streaming(false);
-                // Finalize throughput calculation.
                 self.tokens.on_turn_ended();
                 if stop.to_ascii_lowercase().contains("abort") {
+                    self.turn_phase = "aborted".into();
                     let partial = self.transcript.take_delta();
                     if !partial.is_empty() {
-                        // Keep the partial streaming text so resend doesn't lose it (user noted it disappears)
                         let preview: String = partial.chars().take(400).collect();
                         self.transcript.push(Message::new("system", format!("Aborted — kept partial ({} chars): {}", partial.len(), preview)));
-                        // Also put partial back into input for easy resend? Keep as system note only; input stays as user left it.
                     } else {
                         self.transcript.push(Message::new("system", "Aborted"));
                     }
+                } else if stop.to_ascii_lowercase().contains("failed") || self.turn_phase == "failed" {
+                    self.turn_phase = "failed".into();
+                    // Error already pushed via Error frame; keep status
+                } else {
+                    self.turn_phase = "idle".into();
+                    self.turn_status_msg.clear();
                 }
             }
             SseFrame::TextDelta { delta, .. } => {
+                // Sync: text streaming means phase is streaming (not thinking)
+                if self.turn_phase == "thinking" {
+                    self.turn_phase = "streaming".into();
+                }
                 self.transcript.append_delta(&delta);
             }
             SseFrame::MessageAppended { msg, .. } => {
@@ -1942,10 +1959,10 @@ impl App {
                 self.tokens.record_usage(counts, cost_usd, usage_kind == "title");
             }
             SseFrame::ToolStarted { call_id, .. } => {
-                // Find the tool card (created by MessageAppended) and mark it running.
+                self.turn_phase = "tool".into();
                 self.transcript.update_tool(&call_id, |tool| {
                     tool.status = "running".into();
-                    tool.expanded = true;  // Auto-expand running tools
+                    tool.expanded = true;
                     tool.active_tab = crate::message_handler::ToolTab::Progress;
                 });
             }
@@ -1976,7 +1993,42 @@ impl App {
                 });
             }
             SseFrame::Error { message } => {
+                // Mid-stream provider fail: mark failed phase so spinner doesn't lie about "thinking"
+                self.turn_phase = "failed".into();
+                self.turn_status_msg = message.clone();
                 self.transcript.push(Message::new("error", message));
+            }
+            SseFrame::RetryAttempt { attempt, max, error, delay_ms, retry_kind } => {
+                self.turn_phase = "retrying".into();
+                self.turn_status_msg = format!("retry {}/{} {} in {}ms: {}", attempt, max, retry_kind, delay_ms, error);
+                // Also show in transcript as system line (dedupe: append as progress under spinner, not persistent)
+                self.transcript.push(Message::new("system", format!("↻ retry {}/{} {} in {}ms: {}", attempt, max, retry_kind, delay_ms, error)));
+            }
+            SseFrame::TurnStatus { phase, message } => {
+                self.turn_phase = phase.clone();
+                self.turn_status_msg = message.clone();
+                // For failed phases, also surface as system line so user sees cause without opening logs
+                if phase == "failed" && !message.is_empty() {
+                    self.transcript.push(Message::new("error", format!("turn {}: {}", phase, message)));
+                } else if phase == "retrying" && !message.is_empty() {
+                    // retrying via TurnStatus already covered by RetryAttempt, but keep for truncation/compaction
+                    if !self.transcript.messages().last().map(|m| m.content.contains(&message)).unwrap_or(false) {
+                        self.transcript.push(Message::new("system", message));
+                    }
+                }
+                // Sync streaming flag from phase — ensures TUI can't be stuck streaming after server says idle/failed
+                match phase.as_str() {
+                    "idle" | "failed" | "aborted" => {
+                        self.streaming = false;
+                        self.aborting = false;
+                        self.tick_ctl.set_streaming(false);
+                    }
+                    "thinking" | "streaming" | "tool" | "retrying" => {
+                        self.streaming = true;
+                        self.tick_ctl.set_streaming(true);
+                    }
+                    _ => {}
+                }
             }
             SseFrame::TitleChanged { title } => {
                 // Update the current session title.
@@ -1994,9 +2046,8 @@ impl App {
                 self.transcript.push(Message::new("system", format!("Hook failed {}:{} — {}", plugin, hook, reason)));
             }
             SseFrame::ThinkingDelta { delta, .. } => {
-                // Phase 4: previously ignored (only seq recorded). Now treat as streamed thinking.
+                self.turn_phase = "thinking".into();
                 self.transcript.append_delta(&delta);
-                // Also update thinking collapse state: ensure thinking blocks are expanded while streaming?
             }
             SseFrame::ModelChanged { model, .. } => {
                 // Phase 4: previously ignored. Update model selector if known and show notification.

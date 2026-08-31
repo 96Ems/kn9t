@@ -19,6 +19,8 @@ use crate::app::Overlay;
 #[derive(Debug)]
 pub struct State {
     pub streaming: bool,
+    pub turn_phase: String,
+    pub turn_status_msg: String,
     pub last_seq: u64,
     pub transcript: crate::message_handler::Transcript,
     pub tokens: TokenTracker,
@@ -34,6 +36,8 @@ impl Default for State {
     fn default() -> Self {
         Self {
             streaming: false,
+            turn_phase: "idle".into(),
+            turn_status_msg: String::new(),
             last_seq: 0,
             transcript: crate::message_handler::Transcript::new(),
             tokens: TokenTracker::new(),
@@ -56,6 +60,8 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
     match frame {
         SseFrame::TurnStarted { .. } => {
             state.streaming = true;
+            state.turn_phase = "thinking".into();
+            state.turn_status_msg.clear();
             state.transcript.take_delta();
             state.tokens.on_turn_started();
         }
@@ -63,6 +69,7 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             state.streaming = false;
             state.tokens.on_turn_ended();
             if stop.to_ascii_lowercase().contains("abort") {
+                state.turn_phase = "aborted".into();
                 let partial = state.transcript.take_delta();
                 if !partial.is_empty() {
                     let preview: String = partial.chars().take(400).collect();
@@ -70,13 +77,19 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                 } else {
                     state.transcript.push(Message::new("system", "Aborted"));
                 }
+            } else if stop.to_ascii_lowercase().contains("failed") || state.turn_phase == "failed" {
+                state.turn_phase = "failed".into();
+            } else {
+                state.turn_phase = "idle".into();
+                state.turn_status_msg.clear();
             }
         }
         SseFrame::TextDelta { delta, .. } => {
+            if state.turn_phase == "thinking" { state.turn_phase = "streaming".into(); }
             state.transcript.append_delta(&delta);
         }
         SseFrame::ThinkingDelta { delta, .. } => {
-            // Previously ignored — now appended as thinking (for test visibility, also live_delta).
+            state.turn_phase = "thinking".into();
             state.transcript.append_delta(&delta);
         }
         SseFrame::MessageAppended { msg, .. } => {
@@ -117,6 +130,7 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             state.tokens.record_usage(counts, cost_usd, usage_kind == "title");
         }
         SseFrame::ToolStarted { call_id, .. } => {
+            state.turn_phase = "tool".into();
             state.transcript.update_tool(&call_id, |tool| {
                 tool.status = "running".into();
                 tool.expanded = true;
@@ -156,7 +170,30 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             state.transcript.push(Message::new(&summary.role, summary_text));
         }
         SseFrame::Error { message } => {
+            state.turn_phase = "failed".into();
+            state.turn_status_msg = message.clone();
             state.transcript.push(Message::new("error", message));
+        }
+        SseFrame::RetryAttempt { attempt, max, error, delay_ms, retry_kind } => {
+            state.turn_phase = "retrying".into();
+            state.turn_status_msg = format!("retry {}/{} {} in {}ms: {}", attempt, max, retry_kind, delay_ms, error);
+            state.transcript.push(Message::new("system", format!("↻ retry {}/{} {} in {}ms: {}", attempt, max, retry_kind, delay_ms, error)));
+        }
+        SseFrame::TurnStatus { phase, message } => {
+            state.turn_phase = phase.clone();
+            state.turn_status_msg = message.clone();
+            if phase == "failed" && !message.is_empty() {
+                state.transcript.push(Message::new("error", format!("turn {}: {}", phase, message)));
+            } else if phase == "retrying" && !message.is_empty() {
+                if !state.transcript.messages().last().map(|m| m.content.contains(&message)).unwrap_or(false) {
+                    state.transcript.push(Message::new("system", message.clone()));
+                }
+            }
+            match phase.as_str() {
+                "idle" | "failed" | "aborted" => state.streaming = false,
+                "thinking" | "streaming" | "tool" | "retrying" => state.streaming = true,
+                _ => {}
+            }
         }
         SseFrame::TitleChanged { title } => {
             state.session_title = Some(title.clone());

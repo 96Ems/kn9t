@@ -166,6 +166,25 @@ pub enum Event {
     Error {
         message: String,
     },
+    /// R-PCORE-060 retry — transient progress while the provider pre-stream retries
+    /// (429/5xx/connect). Emitted before the backoff sleep so the TUI can show
+    /// "retry 1/3 in 500ms (429)" instead of a silent spinner.
+    RetryAttempt {
+        attempt: u32,
+        max: u32,
+        error: String,
+        delay_ms: u64,
+        retry_kind: String,
+    },
+    /// Phase sync — explicit server-driven turn phase so TUI spinner can't lie.
+    /// `phase` is one of `thinking|streaming|tool|retrying|failed|idle`.
+    /// Emitted alongside existing `TurnStarted`/`TextDelta`/`ThinkingDelta`/`ToolStarted`/`TurnEnded`
+    /// to give the TUI a single source of truth for status-bar and spinner text.
+    TurnStatus {
+        phase: String,
+        #[serde(default)]
+        message: String,
+    },
     /// Generic plugin notification — forwarded as-is to SSE clients.
     /// Payload must include `plugin` (name) and `message` (display text).
     PluginNotification {

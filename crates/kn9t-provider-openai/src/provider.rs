@@ -1,7 +1,7 @@
 //! R-OAI-010 .. R-OAI-050 — the OpenAI-compatible provider.
 
 use kn9t_provider_core::{
-    send, with_retry, Backoff, HttpRequest, Quirks, AuthScheme, sse_lines,
+    send, Backoff, HttpRequest, Quirks, AuthScheme, sse_lines,
     CallId, Cancel, Chunk, ModelRef, ProvErr, Provider, Request, StopReason, Usage,
 };
 use std::time::Duration;
@@ -149,10 +149,20 @@ impl Provider for OpenAiProvider {
         req: &Request,
         cancel: &Cancel,
     ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
+        self.stream_with_sink(req, cancel, None)
+    }
+
+    fn stream_with_sink(
+        &self,
+        req: &Request,
+        cancel: &Cancel,
+        sink: Option<&dyn kn9t_provider_core::EventSink>,
+    ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
         let model_ref = req.model.r#ref.clone();
         let cancel_c = cancel.clone();
         // R-PCORE-060: retry pre-stream errors. Check cancel between retries (instant-cut).
-        with_retry(3, Backoff::default(), || {
+        // With sink, emit RetryAttempt before each sleep so TUI shows retry instead of silent spinner.
+        kn9t_provider_core::with_retry_with_sink(3, Backoff::default(), sink, || {
             if cancel_c.cancelled() {
                 return Err(ProvErr::Stream("cancelled".into()));
             }

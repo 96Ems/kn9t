@@ -11,7 +11,7 @@ pub use assemble::{assemble, AssembleResult};
 pub use http::{AuthScheme, HttpRequest, HttpResponse, send, send_get};
 pub use pricing::lookup_price;
 pub use quirks::Quirks;
-pub use retry::{Backoff, with_retry};
+pub use retry::{Backoff, is_retryable, with_retry, with_retry_with_sink};
 pub use sse::sse_lines;
 
 // Re-export kn9t-core types used by crates that swap their dep from

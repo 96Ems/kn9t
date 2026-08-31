@@ -30,16 +30,19 @@ impl ReactLoop {
         loop {
             turn += 1;
             self.bus.emit(Event::TurnStarted { turn });
+            self.bus.emit(Event::TurnStatus { phase: "thinking".into(), message: String::new() });
             // R-RCT-040: use external cancel if provided (server abort), else fresh per turn.
             // The external cancel allows the server to abort the entire run when user presses ESC.
             let cancel = params.cancel.clone().unwrap_or_else(Cancel::new);
             match self.execute_turn(&mut params, turn, &cancel) {
                 Ok(TurnOutcome::Continue) => continue,
                 Ok(TurnOutcome::Idle(stop)) => {
+                    self.bus.emit(Event::TurnStatus { phase: "idle".into(), message: String::new() });
                     self.bus.emit(Event::TurnEnded { turn, stop });
                     return Ok(stop);
                 }
                 Err(e) => {
+                    self.bus.emit(Event::TurnStatus { phase: "failed".into(), message: format!("{e:?}") });
                     self.bus.emit(Event::Error {
                         message: format!("{e:?}"),
                     });
@@ -79,15 +82,22 @@ impl ReactLoop {
                 Attempt::Truncated => {
                     trunc_n += 1;
                     if trunc_n > params.config.truncation_attempts {
+                        self.bus.emit(Event::TurnStatus { phase: "failed".into(), message: format!("truncation ladder exhausted after {} attempts", trunc_n - 1) });
+                        self.bus.emit(Event::Error { message: format!("truncation ladder exhausted after {} attempts", trunc_n - 1) });
                         return Err(ReactError::TruncationGaveUp);
                     }
                     let ladder = &params.config.truncation_ladder;
                     let idx = ((trunc_n - 1) as usize).min(ladder.len().saturating_sub(1));
-                    reminders.push(reminder_message(ladder[idx]));
+                    let lines = ladder[idx];
+                    self.bus.emit(Event::RetryAttempt { attempt: trunc_n, max: params.config.truncation_attempts, error: "truncated".into(), delay_ms: 0, retry_kind: "truncation".into() });
+                    self.bus.emit(Event::TurnStatus { phase: "retrying".into(), message: format!("truncated — retry {}/{} with {} lines limit", trunc_n, params.config.truncation_attempts, lines) });
+                    reminders.push(reminder_message(lines));
                     continue;
                 }
                 Attempt::ContextOverflow => {
                     // Counted inside one_attempt's re-plan; a second compact is fatal there.
+                    self.bus.emit(Event::RetryAttempt { attempt: replans, max: params.config.max_context_replans, error: "context_overflow".into(), delay_ms: 0, retry_kind: "compaction".into() });
+                    self.bus.emit(Event::TurnStatus { phase: "retrying".into(), message: format!("context overflow — compaction replan {}/{}", replans, params.config.max_context_replans) });
                     continue;
                 }
             }
@@ -116,6 +126,7 @@ impl ReactLoop {
         }
 
         // Tool calls (R-RCT-020 step 7-9).
+        self.bus.emit(Event::TurnStatus { phase: "tool".into(), message: format!("running {} tool(s)", tool_calls.len()) });
         let results = self.run_tool_batch(params, &tool_calls, cancel);
         // Persist tool results in the model's call order (R-RCT-020 step 8, R-RCT-130).
         let msg = Message {

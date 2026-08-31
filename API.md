@@ -515,6 +515,8 @@ without replaying already-processed events (exact gap-free dedup on the server).
 | `hook_failed` | `hook: string`, `plugin: string`, `reason: string` | no |
 | `title_changed` | `title: string` | no |
 | `error` | `message: string` | no |
+| `retry_attempt` | `attempt: u32`, `delay_ms: u64`, `error: string`, `max: u32`, `retry_kind: string` | no |
+| `turn_status` | `message: string`, `phase: string` | no |
 | `plugin_notification` | `message: string`, `plugin: string` | no |
 
 **Durable events** carry `seq` and are replayed on reconnect. **Transient events** are
