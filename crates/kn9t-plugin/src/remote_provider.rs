@@ -35,7 +35,7 @@ impl Provider for RemoteProvider {
     fn stream(
         &self,
         req: &Request,
-        _cancel: &Cancel,
+        cancel: &Cancel,
     ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
         let payload = serialise_request(req);
         let id = self.host.next_id.fetch_add(1, Ordering::Relaxed);
@@ -52,13 +52,14 @@ impl Provider for RemoteProvider {
                 .map_err(|e| ProvErr::Connect(format!("plugin write: {e}")))?;
         }
 
-        // Collect all chunks synchronously from the plugin.
+        // Collect all chunks synchronously from the plugin — cancellable (instant-cut).
         let mut chunks: Vec<Result<Chunk, ProvErr>> = Vec::new();
         let mut had_usage = false;
         let mut stream_err: Option<ProvErr> = None;
 
-        let done_result = self.host.wait_for_streaming(
+        let done_result = self.host.wait_for_streaming_cancellable(
             id,
+            cancel,
             STREAM_TIMEOUT,
             |body: Value| {
                 if stream_err.is_some() { return; }
