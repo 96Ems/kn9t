@@ -15,6 +15,7 @@ use crate::slash::fuzzy_match;
 use crate::theme::Theme;
 use crate::thinking::{self, ContentSegment};
 use crate::ui::layout::{compute_with_input, Sidebar};
+use serde_json;
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -935,36 +936,28 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
             }
             y += 2;
 
-            // Tool name — wrapped to fit inside border.
+            // Nice per-tool display with highlighting and reason.
             let inner_w = (overlay_w.saturating_sub(4)) as usize;
             let inner_x = overlay_x + 2;
-            let tool_text = format!("Tool: {}", tool);
-            for line in wrap_text(&tool_text, inner_w.max(1)) {
+            let body_lines = approval_body_lines(tool, args, theme, inner_w.max(1));
+            for line in body_lines {
                 if y >= overlay_y + overlay_h - 2 { break; }
-                for (i, ch) in line.chars().enumerate() {
-                    if inner_x + (i as u16) < overlay_x + overlay_w - 1 {
-                        buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                let mut x = inner_x;
+                for span in line.spans {
+                    let style = if span.style.bg.is_none() { span.style.bg(Color::Black) } else { span.style };
+                    for ch in span.content.chars() {
+                        if x >= overlay_x + overlay_w - 1 { break; }
+                        buf[(x, y)].set_char(ch).set_style(style);
+                        x += 1;
                     }
+                    if x >= overlay_x + overlay_w - 1 { break; }
                 }
                 y += 1;
             }
-
-            // Args — wrapped to fit inside border, truncated to leave room for buttons.
-            let args_text = format!("Args: {}", args);
-            let max_args_lines = (overlay_h.saturating_sub(8)) as usize;
-            let mut args_lines = 0usize;
-            for line in wrap_text(&args_text, inner_w.max(1)) {
-                if y >= overlay_y + overlay_h - 3 { break; }
-                if args_lines >= max_args_lines { break; }
-                for (i, ch) in line.chars().enumerate() {
-                    if inner_x + (i as u16) < overlay_x + overlay_w - 1 {
-                        buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
-                    }
-                }
+            // Ensure at least one blank line before buttons if space
+            if y < overlay_y + overlay_h - 2 {
                 y += 1;
-                args_lines += 1;
             }
-            y += 1;
 
             // Buttons.
             let buttons = ["Allow", "Always", "Deny"];
@@ -2008,3 +2001,158 @@ fn format_tool_key_arg(args_json: &str, max_len: usize) -> String {
 }
 
 
+
+// ── Approval nice display + dangerous highlighting ────────────
+fn approval_reason(tool: &str, args: &str) -> Option<String> {
+    let val: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
+    match tool {
+        "bash" => {
+            let cmd = val.get("cmd").and_then(|v| v.as_str()).unwrap_or(args);
+            let lower = cmd.to_lowercase();
+            let always_ask = ["rm","mv","cp","chmod","chown","kill","dd","curl","wget","ssh","scp","sh","bash","zsh","python","python3","node","perl","ruby","eval","pwsh","powershell","iex","sudo","mkfs","fdisk","reboot","shutdown"];
+            for w in always_ask {
+                if lower.split_whitespace().any(|tok| tok.eq_ignore_ascii_case(w)) {
+                    return Some(format!("Uses `{}` (always requires approval)", w));
+                }
+            }
+            if cmd.contains('>') || cmd.contains('<') {
+                return Some("Contains redirection (`>`/`<`)".into());
+            }
+            if cmd.contains("$(") || cmd.contains('`') {
+                return Some("Contains command substitution".into());
+            }
+            if lower.contains("sudo") {
+                return Some("Uses `sudo` (never permitted without explicit approval)".into());
+            }
+            return Some("Potentially destructive shell command".into());
+        },
+        "write" | "edit" => {
+            let path = val.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if !path.is_empty() {
+                return Some(format!("Writes to `{}`", path));
+            }
+            return Some("Writes to file".into());
+        },
+        _ => None,
+    }
+}
+fn bash_highlight_spans(cmd: &str, theme: &Theme) -> Vec<Span<'static>> {
+    let always_ask = ["rm","mv","cp","chmod","chown","kill","dd","curl","wget","ssh","scp","sh","bash","zsh","python","python3","node","perl","ruby","eval","pwsh","powershell","iex","sudo","mkfs","fdisk","reboot","shutdown"];
+    let mut spans = Vec::new();
+    let mut current = String::new();
+    for ch in cmd.chars() {
+        if ch.is_whitespace() {
+            if !current.is_empty() {
+                let lower = current.to_lowercase();
+                let is_dangerous = always_ask.iter().any(|w| lower == *w);
+                let style = if is_dangerous { Style::default().fg(theme.error).add_modifier(Modifier::BOLD) } else { Style::default().fg(theme.fg) };
+                spans.push(Span::styled(current.clone(), style));
+                current.clear();
+            }
+            spans.push(Span::raw(ch.to_string()));
+        } else if ch == '>' || ch == '<' || ch == '|' || ch == ';' || ch == '&' || ch == '$' || ch == '`' {
+            if !current.is_empty() {
+                let lower = current.to_lowercase();
+                let is_dangerous = always_ask.iter().any(|w| lower == *w);
+                let style = if is_dangerous { Style::default().fg(theme.error).add_modifier(Modifier::BOLD) } else { Style::default().fg(theme.fg) };
+                spans.push(Span::styled(current.clone(), style));
+                current.clear();
+            }
+            spans.push(Span::styled(ch.to_string(), Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)));
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        let lower = current.to_lowercase();
+        let is_dangerous = always_ask.iter().any(|w| lower == *w);
+        let style = if is_dangerous { Style::default().fg(theme.error).add_modifier(Modifier::BOLD) } else { Style::default().fg(theme.fg) };
+        spans.push(Span::styled(current, style));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(cmd.to_string(), Style::default().fg(theme.fg)));
+    }
+    spans
+}
+fn approval_body_lines(tool: &str, args: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+    let val: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::String(args.to_string()));
+    match tool {
+        "bash" => {
+            let cmd = val.get("cmd").and_then(|v| v.as_str()).unwrap_or(args);
+            if let Some(reason) = approval_reason(tool, args) {
+                for w in wrap_text(&format!("Reason: {}", reason), width) {
+                    lines.push(Line::from(vec![Span::styled(w, Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC))]));
+                }
+            }
+            lines.push(Line::from(vec![Span::styled("Command:", Style::default().fg(theme.muted).add_modifier(Modifier::BOLD))]));
+            if cmd.len() <= width {
+                lines.push(Line::from(bash_highlight_spans(cmd, theme)));
+            } else {
+                for chunk in wrap_text(cmd, width) {
+                    lines.push(Line::from(bash_highlight_spans(&chunk, theme)));
+                }
+            }
+            if let Some(t) = val.get("timeout_secs").and_then(|v| v.as_u64()) {
+                lines.push(Line::from(vec![Span::styled(format!("Timeout: {}s", t), Style::default().fg(theme.muted))]));
+            }
+        },
+        "read" => {
+            let path = val.get("path").and_then(|v| v.as_str()).unwrap_or(args);
+            lines.push(Line::from(vec![Span::styled("Path: ", Style::default().fg(theme.muted).add_modifier(Modifier::BOLD)), Span::styled(path.to_string(), Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))]));
+            if let Some(reason) = approval_reason(tool, args) {
+                lines.push(Line::from(vec![Span::styled(reason, Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC))]));
+            }
+            if let Some(off) = val.get("offset").and_then(|v| v.as_u64()) {
+                lines.push(Line::from(vec![Span::styled(format!("Offset: {}", off), Style::default().fg(theme.muted))]));
+            }
+        },
+        "write" => {
+            let path = val.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            lines.push(Line::from(vec![Span::styled("Path: ", Style::default().fg(theme.muted).add_modifier(Modifier::BOLD)), Span::styled(path.to_string(), Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))]));
+            if let Some(reason) = approval_reason(tool, args) {
+                lines.push(Line::from(vec![Span::styled(reason, Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC))]));
+            }
+            let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let preview: String = content.lines().take(3).collect::<Vec<_>>().join(" ⏎ ");
+            let preview = if preview.len() > width*2 { format!("{}…", &preview[..width*2-1]) } else { preview };
+            lines.push(Line::from(vec![Span::styled("Content: ", Style::default().fg(theme.muted).add_modifier(Modifier::BOLD)), Span::styled(truncate(&preview, width.saturating_sub(9)), Style::default().fg(theme.fg))]));
+        },
+        "edit" => {
+            let path = val.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            lines.push(Line::from(vec![Span::styled("Path: ", Style::default().fg(theme.muted).add_modifier(Modifier::BOLD)), Span::styled(path.to_string(), Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))]));
+            if let Some(reason) = approval_reason(tool, args) {
+                lines.push(Line::from(vec![Span::styled(reason, Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC))]));
+            }
+            let old = val.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+            let new = val.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+            let old_preview = old.lines().next().unwrap_or("").trim();
+            let new_preview = new.lines().next().unwrap_or("").trim();
+            lines.push(Line::from(vec![Span::styled("Old: ", Style::default().fg(theme.error).add_modifier(Modifier::BOLD)), Span::styled(truncate(old_preview, width.saturating_sub(5)), Style::default().fg(theme.error))]));
+            lines.push(Line::from(vec![Span::styled("New: ", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)), Span::styled(truncate(new_preview, width.saturating_sub(5)), Style::default().fg(theme.success))]));
+        },
+        _ => {
+            let pretty = match &val {
+                serde_json::Value::Object(map) => {
+                    let mut parts = Vec::new();
+                    for (k,v) in map {
+                        let v_str = match v {
+                            serde_json::Value::String(s) => format!("\"{}\"", truncate(s, 40)),
+                            _ => truncate(&v.to_string(), 40),
+                        };
+                        parts.push(format!("{}: {}", k, v_str));
+                    }
+                    parts.join(", ")
+                },
+                _ => truncate(&val.to_string(), width*2),
+            };
+            for w in wrap_text(&pretty, width) {
+                lines.push(Line::from(Span::styled(w, Style::default().fg(theme.muted))));
+            }
+            if let Some(reason) = approval_reason(tool, args) {
+                lines.push(Line::from(vec![Span::styled(reason, Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC))]));
+            }
+        }
+    }
+    lines
+}
