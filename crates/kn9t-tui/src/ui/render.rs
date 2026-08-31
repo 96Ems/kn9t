@@ -935,23 +935,36 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
             }
             y += 2;
 
-            // Tool name.
-            let tool_line = format!("Tool: {}", tool);
-            for (i, ch) in tool_line.chars().enumerate() {
-                if (overlay_x + 2 + i as u16) < overlay_x + overlay_w {
-                    buf[(overlay_x + 2 + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+            // Tool name — wrapped to fit inside border.
+            let inner_w = (overlay_w.saturating_sub(4)) as usize;
+            let inner_x = overlay_x + 2;
+            let tool_text = format!("Tool: {}", tool);
+            for line in wrap_text(&tool_text, inner_w.max(1)) {
+                if y >= overlay_y + overlay_h - 2 { break; }
+                for (i, ch) in line.chars().enumerate() {
+                    if inner_x + (i as u16) < overlay_x + overlay_w - 1 {
+                        buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                    }
                 }
+                y += 1;
+            }
+
+            // Args — wrapped to fit inside border, truncated to leave room for buttons.
+            let args_text = format!("Args: {}", args);
+            let max_args_lines = (overlay_h.saturating_sub(8)) as usize;
+            let mut args_lines = 0usize;
+            for line in wrap_text(&args_text, inner_w.max(1)) {
+                if y >= overlay_y + overlay_h - 3 { break; }
+                if args_lines >= max_args_lines { break; }
+                for (i, ch) in line.chars().enumerate() {
+                    if inner_x + (i as u16) < overlay_x + overlay_w - 1 {
+                        buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                    }
+                }
+                y += 1;
+                args_lines += 1;
             }
             y += 1;
-
-            // Args.
-            let args_line = format!("Args: {}", truncate(args, (overlay_w - 8) as usize));
-            for (i, ch) in args_line.chars().enumerate() {
-                if (overlay_x + 2 + i as u16) < overlay_x + overlay_w {
-                    buf[(overlay_x + 2 + i as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
-                }
-            }
-            y += 3;
 
             // Buttons.
             let buttons = ["Allow", "Always", "Deny"];
