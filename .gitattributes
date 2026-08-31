@@ -1,3 +1,6 @@
 * text=auto
 # Fixtures are raw provider bytes, verbatim (R-RPLY-010). Never convert line endings.
 crates/kn9t-provider-replay/fixtures/** -text
+# Go plugin binaries - never convert line endings
+plugins/kn9t-agents-md/kn9t-agents-md binary
+plugins/kn9t-agents-md/kn9t-agents-md.exe binary
