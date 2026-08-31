@@ -456,7 +456,6 @@ fn stor_live_truncated_on_open() {
 }
 
 // ── stor::orphan_tool_call_detection ─────────────────────────────────────────
-
 /// Test that has_orphan_tool_call correctly detects orphaned ToolCall blocks.
 /// This is the core invariant that prevents the "tool_use without tool_result" API error.
 #[test]
@@ -595,9 +594,11 @@ fn stor_has_orphan_tool_call_parallel_tools() {
 /// 1. Session has a completed turn with tool_use + tool_result
 /// 2. User sends new prompt
 /// 3. Assistant responds with tool_use
-/// 4. Tool execution is interrupted (ESC pressed)
-/// 5. Tool result is never persisted
-/// 6. Next API call fails with "tool_use without tool_result"
+/// 4. The process dies before the tool result is persisted (kill -9 / restart)
+/// 5. Next API call must NOT fail with "tool_use without tool_result"
+///
+/// R-STOR-115: `plan_request` closes the orphan in the fold. The `events` log keeps the
+/// honest record (no tool-role event); the derived message list is §7.5-clean.
 #[test]
 fn stor_orphan_from_interrupted_tool_execution() {
     let (_dir, store) = tmp_store();
@@ -673,20 +674,175 @@ fn stor_orphan_from_interrupted_tool_execution() {
         },
     }).unwrap();
     
-    // *** INTERRUPTION: User presses ESC, tool_result is NEVER persisted ***
-    // This is the corruption scenario
-    
-    // Now try to plan the next request - this will send to the API
+    // *** INTERRUPTION: the process dies here; the tool_result is NEVER persisted ***
+
+    // The durable log still records the orphan honestly (append-only, GI-4).
+    let raw: Vec<String> = store
+        .query_strings(
+            "SELECT content FROM messages WHERE session_id=?1 ORDER BY seq",
+            &[&s.0.as_str()],
+        )
+        .unwrap();
+    assert!(
+        raw.iter().any(|c| c.contains("call-orphaned")) 
+            && !raw.iter().any(|c| c.contains("tool_result") && c.contains("call-orphaned")),
+        "events/messages must keep the honest record: a tool_call with no tool_result"
+    );
+
+    // But the planned request the provider actually sees is §7.5-clean.
     let plan = store.plan_request(&s).unwrap();
-    
-    // The plan will include the orphaned tool_call
-    assert!(has_orphan_tool_call(&plan.messages), 
-        "plan_request must return messages with orphaned ToolCall - this is the bug!");
-    
-    // In a proper system, plan_request should either:
-    // 1. Detect and reject the corrupted session, OR
-    // 2. Synthesize a tool_result to maintain invariant, OR
-    // 3. The interruption handler should have prevented this state
+
+    assert!(
+        !has_orphan_tool_call(&plan.messages),
+        "R-STOR-115: plan_request must close orphaned ToolCalls; every provider 400s otherwise"
+    );
+
+    // The synthesized result is an error, carries the provider's verbatim call id, and
+    // sits immediately after the assistant message that opened the call.
+    let opener = plan
+        .messages
+        .iter()
+        .position(|m| {
+            m.content.iter().any(|c| matches!(c, Content::ToolCall { id, .. } if *id == call2))
+        })
+        .expect("orphaned tool_call survives the fold");
+    let closer = &plan.messages[opener + 1];
+    assert!(matches!(closer.role, Role::Tool), "closer must be a tool-role message");
+    match &closer.content[0] {
+        Content::ToolResult { id, is_error, content } => {
+            assert_eq!(*id, call2, "call id must be the provider's, verbatim");
+            assert!(*is_error, "a call that never reported is an error result");
+            assert!(
+                matches!(&content[0], Content::Text { text } if text.contains("interrupted")),
+                "result must say why it is synthesized"
+            );
+        }
+        _ => panic!("expected a synthesized ToolResult"),
+    }
+
+    // The already-answered call is untouched — no duplicate result synthesized.
+    let results = plan
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter(|c| matches!(c, Content::ToolResult { id, .. } if *id == call1))
+        .count();
+    assert_eq!(results, 1, "a completed call must not gain a second result");
+}
+
+// ── stor::plan_repairs_unparseable_tool_args (R-STOR-117) ────────────────────
+
+/// R-STOR-117 — a `tool_call` whose `args_json` was cut mid-stream is durable in `events`
+/// and, because the log is append-only (GI-4), cannot be rewritten. Without a repair in the
+/// fold, every subsequent turn ships the same unparseable bytes and the provider rejects the
+/// request — observed live as a permanent litellm/Bedrock 500 ("Unable to convert openai
+/// tool calls ... Unterminated string"). `plan_request` must hand the provider `{}` instead,
+/// while leaving valid args byte-identical.
+#[test]
+fn stor_plan_repairs_unparseable_tool_args() {
+    let (_dir, store) = tmp_store();
+    let s = new_session(&store);
+
+    let broken = CallId("call-broken-args".into());
+    let intact = CallId("call-good-args".into());
+
+    // Non-sorted keys: the untouched call must keep its exact byte order (R-CORE-062).
+    let intact_args = r#"{"z":1,"a":2}"#;
+
+    store.append(&s, Event::MessageAppended {
+        seq: 0,
+        msg: Message {
+            id: MsgId::new(),
+            role: Role::User,
+            content: vec![Content::Text { text: "edit it".into() }], silent: false,
+        },
+    }).unwrap();
+
+    store.append(&s, Event::MessageAppended {
+        seq: 0,
+        msg: Message {
+            id: MsgId::new(),
+            role: Role::Assistant,
+            content: vec![
+                Content::ToolCall {
+                    id: broken.clone(),
+                    name: "edit".into(),
+                    // Cut inside a JSON string value — the exact observed corruption.
+                    args_json: r#"{"path":"a.rs","new_string":"fn main("#.into(),
+                },
+                Content::ToolCall {
+                    id: intact.clone(),
+                    name: "read".into(),
+                    args_json: intact_args.into(),
+                },
+            ],
+            silent: false,
+        },
+    }).unwrap();
+
+    // Both calls were answered — this is NOT the R-STOR-115 orphan case.
+    store.append(&s, Event::MessageAppended {
+        seq: 0,
+        msg: Message {
+            id: MsgId::new(),
+            role: Role::Tool,
+            content: vec![
+                Content::ToolResult {
+                    id: broken.clone(),
+                    content: vec![Content::Text { text: "missing 'path'".into() }],
+                    is_error: true,
+                },
+                Content::ToolResult {
+                    id: intact.clone(),
+                    content: vec![Content::Text { text: "ok".into() }],
+                    is_error: false,
+                },
+            ],
+            silent: false,
+        },
+    }).unwrap();
+
+    let plan = store.plan_request(&s).unwrap();
+
+    let args_for = |want: &CallId| -> String {
+        plan.messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|c| match c {
+                Content::ToolCall { id, args_json, .. } if id == want => Some(args_json.clone()),
+                _ => None,
+            })
+            .expect("the tool call must survive the fold")
+    };
+
+    // Every tool call the provider sees must be parseable JSON.
+    for c in plan.messages.iter().flat_map(|m| &m.content) {
+        if let Content::ToolCall { id, args_json, .. } = c {
+            assert!(
+                serde_json::from_str::<serde_json::Value>(args_json).is_ok(),
+                "call {id:?} still carries unparseable args: {args_json}"
+            );
+        }
+    }
+
+    assert_eq!(args_for(&broken), "{}", "unparseable args must be replaced by an empty object");
+    assert_eq!(
+        args_for(&intact), intact_args,
+        "valid args must stay byte-identical, key order included (R-CORE-062)"
+    );
+
+    // The call is kept, not dropped: removing it would orphan its result (§7.5).
+    assert!(
+        !has_orphan_tool_call(&plan.messages),
+        "repair must not break the ToolCall/ToolResult pairing"
+    );
+    let results = plan
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter(|c| matches!(c, Content::ToolResult { id, .. } if *id == broken))
+        .count();
+    assert_eq!(results, 1, "the real result must not be duplicated by synthesis");
 }
 
 // ── stor::cost_rollup (R-STOR-180) ───────────────────────────────────────────

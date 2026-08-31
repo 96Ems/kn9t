@@ -341,6 +341,21 @@ CREATE TABLE IF NOT EXISTS live_messages (
   updated_at      INTEGER NOT NULL
 );
 
+-- R-STOR-116 — accumulated `ToolProgress` per in-flight call, so a call the process
+-- never lived to answer can still report what it had produced (R-STOR-115 synthesis).
+-- Deliberately NOT truncated on open, unlike `live_messages` (R-STOR-170): its whole
+-- purpose is to outlive the process that wrote it. Still non-canonical — `reproject`
+-- ignores it, and losing it degrades detail, never correctness.
+CREATE TABLE IF NOT EXISTS live_tool_calls (
+  session_id TEXT    NOT NULL REFERENCES sessions(id),
+  call_id    TEXT    NOT NULL,
+  tool       TEXT    NOT NULL,
+  progress   TEXT    NOT NULL,
+  truncated  INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, call_id)
+);
+
 CREATE INDEX IF NOT EXISTS usage_by_model    ON usage(model, kind);
 CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id, seq);
 

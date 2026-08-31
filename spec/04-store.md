@@ -205,6 +205,36 @@ governed by the §15 dependency budget, which lists both.
 > **Accept:** `cargo test stor::compact_boundary` — a span whose naive cut would orphan a
 > tool call is snapped to include the pair.
 
+> **R-STOR-115 → DESIGN §7.5, §9.1**
+> Before computing breakpoints or the compact span, `plan_request` MUST close every
+> `ToolCall` in the folded message list that has no matching `ToolResult`, by inserting a
+> synthesized `ToolResult { is_error: true }` carrying the provider's verbatim `CallId`
+> immediately after the message that opened the call. §9.1 has the loop synthesize these on
+> abort, but that only covers aborts the loop survives: a killed process (`kill -9`, server
+> restart, panic) leaves the assistant `MessageAppended` durable with no tool-role message
+> after it, and every provider 400s on the orphan — permanently, since the log is
+> append-only (GI-4) and the missing result can never be back-filled. The repair MUST be in
+> the fold, not the log: `events` keeps the honest record that the call never answered.
+> `seqs` MUST stay in step with the message list so `compact_span` still reports real
+> `SeqRange`s. An already-answered call MUST NOT gain a second result.
+> **Accept:** `cargo test stor_orphan_from_interrupted_tool_execution` — a transcript whose
+> tool result was never persisted plans with no orphan, the synthesized result carries the
+> original call id, and completed calls keep exactly one result.
+
+> **R-STOR-117 → DESIGN §7.5, R-PCORE-050, R-CORE-062**
+> `plan_request` MUST replace any `Content::ToolCall::args_json` that is not parseable JSON
+> with `{}` before the message list is returned. R-PCORE-050 rejects an incomplete args
+> concat at assemble time, so no new message can carry one; but a message persisted before
+> that guard has the broken bytes durable in `events`, and append-only (GI-4) means they can
+> never be rewritten — every later `plan_request` replays them and the provider rejects the
+> whole request, bricking the session exactly as in R-STOR-115. The repair MUST therefore be
+> in the fold, not the log. The call MUST be kept, not dropped: removing it would orphan its
+> `ToolResult` (§7.5) and lose a turn the transcript already accounts for. A parseable
+> `args_json` MUST be left byte-identical, preserving key order (R-CORE-062).
+> **Accept:** `cargo test stor_plan_repairs_unparseable_tool_args` — a transcript holding one
+> truncated and one valid `args_json` plans with every tool call parseable, the broken one as
+> `{}`, the valid one byte-identical, and the pairing intact.
+
 ## 7. Sessions and forking
 
 > **R-STOR-120 → DESIGN §7, §7.1**
