@@ -47,7 +47,7 @@ impl SpawnTool {
                 },
                 "required": ["task"]
             }),
-            hidden: false, effects: vec![],
+            hidden: false, effects: vec![], policy: Default::default(),
         };
         SpawnTool {
             spec,

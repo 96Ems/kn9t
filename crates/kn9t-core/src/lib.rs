@@ -32,9 +32,9 @@ pub use message::{Content, Message, Role};
 pub use model::{Effort, ModelRef, ModelSpec, Price, Quirks, Thinking, ThinkingReplay};
 pub use provider::{Chunk, Provider, Request};
 pub use registry::ToolRegistry;
-pub use toolspec::{Effect, EffectKind, ToolSpec};
+pub use toolspec::{DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec, wildcard_match, value_to_pattern};
 pub use traits::{
-    CompactSpan, Decision, Policy, PluginKv, RequestPlan, SessionSnapshot, Sha256, Store, Tool,
+    Approver, CompactSpan, Decision, PluginKv, RequestPlan, SessionSnapshot, Sha256, Store, Tool,
     ToolCall, ToolCtx, ToolOutput,
 };
 pub use usage::{StopReason, Tokens, Usage};

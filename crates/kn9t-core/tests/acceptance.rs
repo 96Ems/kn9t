@@ -323,6 +323,7 @@ mod core {
                     tool: "bash".into(),
                     args: serde_json::json!({"cmd":"ls"}),
                     cwd: PathBuf::from("/tmp"),
+                    reason: "policy plugin asked".into(),
                 },
                 "approval_request",
             ),
@@ -431,6 +432,7 @@ mod core {
                 tool: "t".into(),
                 args: serde_json::Value::Null,
                 cwd: PathBuf::from("/"),
+                reason: String::new(),
             },
             Event::TurnEnded {
                 turn: 1,

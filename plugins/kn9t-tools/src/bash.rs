@@ -6,7 +6,7 @@
 use kn9t_plugin_sdk::{
     ctx::ToolCallCtx,
     traits::{PluginTool, ToolOutput},
-    wire::{Effect, EffectKind, ToolSpec},
+    wire::{DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec},
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
@@ -79,6 +79,45 @@ impl PluginTool for Bash {
             parallel_safe: false,
             hidden: false,
             effects: vec![Effect { field: "cmd".into(), kind: EffectKind::Shell }],
+            policy: ToolPolicy {
+                pattern_field: Some("cmd".into()),
+                default_policy: DefaultPolicy::Ask,
+                // Read-only commands that are safe to auto-allow
+                builtin_allow: vec![
+                    // Navigation & inspection
+                    "cd *".into(),
+                    "pwd".into(),
+                    "ls *".into(),
+                    "dir *".into(),
+                    "cat *".into(),
+                    "head *".into(),
+                    "tail *".into(),
+                    "echo *".into(),
+                    "type *".into(),
+                    "Get-ChildItem *".into(),
+                    "Get-Content *".into(),
+                    "Get-Location".into(),
+                    "Set-Location *".into(),
+                    // Git read operations
+                    "git status *".into(),
+                    "git log *".into(),
+                    "git diff *".into(),
+                    "git branch *".into(),
+                    "git show *".into(),
+                    "git remote *".into(),
+                    // Cargo
+                    "cargo check *".into(),
+                    "cargo test *".into(),
+                    "cargo build *".into(),
+                    "cargo clippy *".into(),
+                ],
+                // Only truly catastrophic commands that should NEVER run.
+                // Everything else uses Ask — user can approve if needed.
+                builtin_deny: vec![
+                    "sudo *".into(),  // privilege escalation
+                    "su *".into(),    // privilege escalation
+                ],
+            },
         }
     }
 

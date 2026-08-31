@@ -117,7 +117,7 @@ pub trait PluginKv: Send + Sync {
     fn kv_del_scope(&self, plugin: &str, scope: &str) -> Result<(), StoreErr>;
 }
 
-// -- R-CORE-270: Policy --
+// -- R-CORE-270: approval (ADR-0008) --
 
 /// R-CORE-270 -- the dispatch-time view (fully accumulated args, no `Content`
 /// wrapper); distinct from `Content::ToolCall`.
@@ -128,7 +128,9 @@ pub struct ToolCall {
     pub args_json: String,
 }
 
-/// R-CORE-270
+/// R-CORE-270 — the outcome of an approval request. Also the wire type of
+/// `POST /approve` (`{"decision":"allow"}`), which is why it keeps `Ask`/`HardDeny`
+/// even though ADR-0008 removed the code that used to *derive* them.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(tag = "decision", rename_all = "lowercase")]
 pub enum Decision {
@@ -138,7 +140,20 @@ pub enum Decision {
     HardDeny { reason: String },
 }
 
-/// R-CORE-270
-pub trait Policy: Send + Sync {
-    fn check(&self, call: &ToolCall, cwd: &Path) -> Decision;
+/// R-CORE-270 → ADR-0008 — the **approval mechanism**, not the approval decision.
+///
+/// Before ADR-0008 this trait judged risk (`check(call, cwd) -> Decision`, with the
+/// server combining `ToolSpec.effects` and classifying shell commands). That judgement now
+/// belongs to a policy plugin via `HookVeto` on `before_tool_call`; what remains here is
+/// the part a subprocess cannot own: showing the request to the user and blocking the turn
+/// until an answer arrives.
+///
+/// The server implementation emits `Event::ApprovalRequest` on the session bus, waits on a
+/// `Condvar` until `POST /approve` resolves it, and applies the `once|session|always`
+/// scope. `kn9t-react` only sees `dyn Approver` (GI-1) — it cannot reach the bus, the
+/// write lease, or `~/.kn9t/config.toml` itself, which is precisely why this seam exists.
+///
+/// `reason` is the plugin's explanation, shown to the user so the prompt says *why*.
+pub trait Approver: Send + Sync {
+    fn request(&self, call: &ToolCall, cwd: &Path, reason: &str) -> Decision;
 }

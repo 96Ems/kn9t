@@ -34,6 +34,7 @@ use serde_json::Value;
 ///             parallel_safe: true,
 ///             hidden: false,
 ///             effects: vec![],
+///             policy: Default::default(),
 ///         }
 ///     }
 ///     fn execute(&self, args: &Value, _ctx: &ToolCallCtx) -> ToolOutput {

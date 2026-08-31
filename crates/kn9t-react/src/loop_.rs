@@ -1,7 +1,7 @@
-//! R-RCT-010 .. R-RCT-130 -- the ReAct loop driver.
+﻿//! R-RCT-010 .. R-RCT-130 -- the ReAct loop driver.
 //!
 //! The loop owns only trait objects (R-RCT-010, GI-1) and per-run parameters; it never
-//! names a concrete `Provider`, `Tool`, `Store`, or `Policy`. One turn executes the exact
+//! names a concrete `Provider`, `Tool`, `Store`, or `Approver`. One turn executes the exact
 //! sequence of R-RCT-020 / DESIGN sec.9. Everything money-related (provider calls,
 //! `UsageRecorded`) happens here and only here (DESIGN sec.3).
 
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use kn9t_provider_core::{
-    EventSink, HookHost, ModelSpec, Policy, Provider, Sha256, Store, Thinking, ToolRegistry,
+    Approver, EventSink, HookHost, ModelSpec, Provider, Sha256, Store, Thinking, ToolRegistry,
 };
 
 /// SPEC-OPEN (DESIGN sec.18.9) -- truncation give-up count and reminder ladder. Values,
@@ -70,12 +70,12 @@ pub enum ReactError {
 }
 
 /// R-RCT-010 -- the loop driver. Owns only trait objects and the ordered tool registry
-/// (`ToolRegistry` is core vocabulary, DB-03). No concrete provider/tool/store/policy type
+/// (`ToolRegistry` is core vocabulary, DB-03). No concrete provider/tool/store/approver type
 /// is named.
 pub struct ReactLoop {
     pub provider: Arc<dyn Provider>,
     pub store: Arc<dyn Store>,
-    pub policy: Arc<dyn Policy>,
+    pub approver: Arc<dyn Approver>,
     pub tools: ToolRegistry,
     pub hooks: Arc<dyn HookHost>,
     pub bus: Arc<dyn EventSink>,

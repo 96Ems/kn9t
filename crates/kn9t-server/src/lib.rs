@@ -1,17 +1,17 @@
-//! # kn9t-server
+﻿//! # kn9t-server
 //!
 //! The HTTP surface for kn9t (stage 06, spec `06-server.md`). One server process,
-//! N clients (DESIGN §12). Blocking, thread-per-connection over `tiny_http`; no
+//! N clients (DESIGN Â§12). Blocking, thread-per-connection over `tiny_http`; no
 //! tokio, no async (GI-5, R-SRV-015).
 //!
 //! This is the sole crate permitted more than one workspace dependency (GI-1
 //! exception): it wires `kn9t-core`, `kn9t-store`, `kn9t-react`, `kn9t-plugin`,
-//! and the provider crates, naming the concrete `Store`/`Tool`/`Policy`/`Provider`
-//! types (DESIGN §2, §12).
+//! and the provider crates, naming the concrete `Store`/`Tool`/`Approver`/`Provider`
+//! types (DESIGN Â§2, Â§12).
 //!
 //! Tools are loaded from **external** plugin binaries auto-discovered in
 //! `<KN9T_HOME|~/.kn9t>/plugins/` (ADR-0004, R-PLUG2-110), plus any pinned
-//! `[[plugin]]` entries from the global config — never from a project-relative
+//! `[[plugin]]` entries from the global config â€” never from a project-relative
 //! `plugins/` directory and not from an in-process crate. This validates the
 //! full plugin code path.
 //!
@@ -23,7 +23,6 @@
 pub mod api;
 pub mod auth;
 pub mod bus;
-pub mod classify;
 pub mod config;
 pub mod policy;
 pub mod http_util;

@@ -754,6 +754,17 @@ impl PluginHost {
 fn parse_veto(body: &Value) -> HookVeto {
     match body.get("action").and_then(|a| a.as_str()) {
         Some("allow") => HookVeto::Allow,
+        // ADR-0008 — a policy plugin escalates to the user with `ask`. Before that ADR the
+        // hook had no way to say this and had to answer `allow`, letting the (now retired)
+        // server-side policy prompt as a side effect.
+        Some("ask") => {
+            let reason = body
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or("approval required")
+                .to_string();
+            HookVeto::Ask { reason }
+        }
         Some("deny") => {
             let reason = body
                 .get("reason")

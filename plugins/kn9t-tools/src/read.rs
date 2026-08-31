@@ -2,7 +2,7 @@
 //!
 //! R-PLUG2-130: read-tracking map lives inside kn9t-tools, shared with edit via READ_MAP.
 
-use kn9t_plugin_sdk::{ctx::ToolCallCtx, traits::{PluginTool, ToolOutput}, wire::{Effect, EffectKind, ToolSpec}};
+use kn9t_plugin_sdk::{ctx::ToolCallCtx, traits::{PluginTool, ToolOutput}, wire::{DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec}};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -39,6 +39,13 @@ impl PluginTool for Read {
             parallel_safe: true,
             hidden: false,
             effects: vec![Effect { field: "path".into(), kind: EffectKind::FsRead }],
+            // Read is safe — auto-allow by default
+            policy: ToolPolicy {
+                pattern_field: Some("path".into()),
+                default_policy: DefaultPolicy::Allow,
+                builtin_allow: vec![],
+                builtin_deny: vec![],
+            },
         }
     }
 

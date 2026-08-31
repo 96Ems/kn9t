@@ -76,34 +76,25 @@ pub struct RawConfig {
     pub plugins: Vec<RawPlugin>,
 }
 
-/// `[policy]` block — DESIGN §10.1.
-#[derive(Debug, Deserialize, Default)]
+/// `[policy]` block — DESIGN §10.1, reduced by ADR-0008.
+///
+/// `[policy.bash]` and `[policy.allow]` are gone: risk rules live in the policy plugin's own
+/// file now. `mode` survives as a reporting value only — nothing in kn9t derives a verdict
+/// from it.
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct RawPolicy {
     /// `ask_on_mutation` | `allow_all` | `deny_all` | `readonly`
     pub mode: Option<String>,
-    #[serde(default)]
-    pub bash: RawBashPolicy,
     /// Persistent approvals: `scope=always` writes here (`[policy.approvals]`).
     #[serde(default)]
     pub approvals: RawApprovals,
 }
 
 /// `[policy.approvals]` — persistent `scope=always` fingerprints.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct RawApprovals {
     #[serde(default)]
     pub always: Vec<String>,
-}
-
-/// `[policy.bash]` block. Each field is `Option` so we can tell
-/// "absent → default" from "explicitly set to []".
-#[derive(Debug, Deserialize, Default)]
-pub struct RawBashPolicy {
-    pub allow_read: Option<Vec<String>>,
-    pub always_ask: Option<Vec<String>>,
-    pub never: Option<Vec<String>>,
-    /// `[policy.bash.allow_read_sub]` — must come last in TOML.
-    pub allow_read_sub: Option<HashMap<String, Vec<String>>>,
 }
 
 /// Resolved policy mode — DESIGN §10.1 `mode`.
@@ -239,6 +230,7 @@ fn default_min_tokens()     -> u32   { 1024 }
 // ── Resolved output ──────────────────────────────────────────────────────────
 
 /// A wired provider + all its model specs, ready to inject into `ServerState`.
+#[derive(Default)]
 pub struct ResolvedConfig {
     pub providers: Vec<(String, Arc<dyn kn9t_core::Provider>)>,
     pub models:    Vec<ModelSpec>,
@@ -247,8 +239,6 @@ pub struct ResolvedConfig {
     /// Idle-exit duration from `[server] idle_exit_secs`. `None` → use default (30 min).
     /// `Some(0)` → disable auto-exit.
     pub idle_exit: Option<std::time::Duration>,
-    /// Resolved bash classifier policy (DESIGN §10.1). Always present (defaults).
-    pub bash_policy: crate::classify::BashPolicy,
     /// Resolved policy mode.
     pub policy_mode: PolicyMode,
     /// User tool plugins to spawn at startup.
@@ -537,16 +527,6 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         None => PolicyMode::AskOnMutation,
         Some(s) => PolicyMode::parse(s).map_err(|e| format!("config: {e}"))?,
     };
-    let def_bash = crate::classify::BashPolicy::default();
-    let raw_bash = raw.policy.bash;
-    let bash_policy = crate::classify::BashPolicy {
-        allow_read: raw_bash.allow_read.unwrap_or(def_bash.allow_read),
-        always_ask: raw_bash.always_ask.unwrap_or(def_bash.always_ask),
-        never: raw_bash.never.unwrap_or(def_bash.never),
-        allow_read_sub: raw_bash.allow_read_sub
-            .map(|m| m.into_iter().collect::<std::collections::BTreeMap<_, _>>())
-            .unwrap_or(def_bash.allow_read_sub),
-    };
 
     // Resolve user tool plugins — supports pin/disable/env-override (job/phase3.md 3.3).
     let plugins: Vec<ResolvedPlugin> = raw.plugins.iter()
@@ -595,7 +575,8 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         })
         .collect();
 
-    Ok(ResolvedConfig { providers, models, default_model_id, idle_exit, bash_policy, policy_mode, plugins })
+
+    Ok(ResolvedConfig { providers, models, default_model_id, idle_exit, policy_mode, plugins })
 }
 
 /// R-SRV-CFG-010: resolve `[provider.X.headers]` — same `env:VAR` syntax as api_key.
@@ -686,6 +667,102 @@ fn parse_cache_mode(s: &str, breakpoints: u8, min_tokens: u32) -> Result<CacheMo
         "none"      => Ok(CacheMode::None),
         other       => Err(format!("unknown cache mode {other:?}; use \"explicit\", \"automatic\", or \"none\"")),
     }
+}
+
+// ── Policy persistence ────────────────────────────────────────────────────────
+
+impl PolicyMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PolicyMode::AskOnMutation => "ask_on_mutation",
+            PolicyMode::AllowAll => "allow_all",
+            PolicyMode::DenyAll => "deny_all",
+            PolicyMode::ReadOnly => "readonly",
+        }
+    }
+}
+
+/// Update `[policy] mode = ...` in the config file and return the new mode.
+pub fn set_policy_mode(mode: PolicyMode) -> Result<PolicyMode, String> {
+    let path = global_config_path();
+    update_toml_field(&path, &["policy", "mode"], toml::Value::String(mode.as_str().to_string()))?;
+    Ok(mode)
+}
+
+/// Get current policy state without a full reload. ADR-0008: `mode` is reporting only and
+/// `approvals` is the persisted `scope=always` ledger; pattern rules are gone.
+pub fn get_policy_state() -> Result<PolicyState, String> {
+    let path = global_config_path();
+    let val = load_toml_value(&path)?;
+    
+    let mode = val.get("policy")
+        .and_then(|p| p.get("mode"))
+        .and_then(|m| m.as_str())
+        .map(|s| PolicyMode::parse(s).unwrap_or_default())
+        .unwrap_or_default();
+    
+    let approvals = val.get("policy")
+        .and_then(|p| p.get("approvals"))
+        .and_then(|a| a.get("always"))
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    
+    Ok(PolicyState { mode, approvals })
+}
+
+/// Current policy state for API responses.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PolicyState {
+    pub mode: PolicyMode,
+    pub approvals: Vec<String>,
+}
+
+impl serde::Serialize for PolicyMode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+// ── TOML helpers ──────────────────────────────────────────────────────────────
+
+fn load_toml_value(path: &Path) -> Result<toml::Value, String> {
+    if !path.exists() {
+        return Ok(toml::Value::Table(toml::map::Map::new()));
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("read config: {e}"))?;
+    if text.trim().is_empty() {
+        return Ok(toml::Value::Table(toml::map::Map::new()));
+    }
+    toml::from_str(&text).map_err(|e| format!("parse config: {e}"))
+}
+
+fn write_toml_value(path: &Path, val: &toml::Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create dir: {e}"))?;
+    }
+    let text = toml::to_string_pretty(val).map_err(|e| format!("serialize: {e}"))?;
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, &text).map_err(|e| format!("write tmp: {e}"))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("rename: {e}"))?;
+    Ok(())
+}
+
+fn update_toml_field(path: &Path, keys: &[&str], value: toml::Value) -> Result<(), String> {
+    let mut val = load_toml_value(path)?;
+    
+    // Navigate to parent and set the final key
+    let mut current = val.as_table_mut().unwrap();
+    for &key in &keys[..keys.len() - 1] {
+        current = current
+            .entry(key).or_insert(toml::Value::Table(toml::map::Map::new()))
+            .as_table_mut().ok_or(format!("{key} is not a table"))?;
+    }
+    let final_key = keys[keys.len() - 1];
+    current.insert(final_key.to_string(), value);
+    
+    write_toml_value(path, &val)
 }
 
 /// Fetch models from an OpenAI-compatible /v1/models endpoint.
@@ -820,7 +897,6 @@ fn dirs_home() -> Option<PathBuf> { None }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classify::{classify, Shell, Classification};
 
     fn parse_raw(toml: &str) -> RawConfig {
         toml::from_str(toml).expect("parse RawConfig")
@@ -831,58 +907,7 @@ mod tests {
         let raw = parse_raw(r#""#);
         let resolved = resolve(raw).unwrap();
         assert_eq!(resolved.policy_mode, PolicyMode::AskOnMutation);
-        // defaults mirror BashPolicy::default
-        let def = crate::classify::BashPolicy::default();
-        assert_eq!(resolved.bash_policy.allow_read, def.allow_read);
-        assert_eq!(resolved.bash_policy.never, def.never);
     }
-
-    #[test]
-    fn policy_never_mytool_is_hard_deny() {
-        let raw = parse_raw(r#"
-            [policy.bash]
-            never = ["mytool"]
-        "#);
-        let resolved = resolve(raw).unwrap();
-        // never = ["mytool"] replaces default never? We treat Some → exact list,
-        // so it must still be HardDeny for mytool.
-        assert!(resolved.bash_policy.never.contains(&"mytool".to_string()));
-        let cls = classify("mytool --help", Shell::Posix, &resolved.bash_policy);
-        assert!(matches!(cls, Classification::HardDeny(_)), "mytool must be HardDeny, got {cls:?}");
-        // sudo was replaced → no longer HardDeny if we replaced. Document that
-        // explicit never replaces the default list. If we want additive, change
-        // resolve to extend. For now, replacement is the spec-faithful behaviour.
-        // The test only asserts mytool.
-    }
-
-    #[test]
-    fn policy_allow_read_sub_must_be_last() {
-        // TOML requires allow_read_sub to come after the other bash keys; this
-        // is the DESIGN §10.1 shape. Verify parsing succeeds.
-        let raw = parse_raw(r#"
-            [policy]
-            mode = "ask_on_mutation"
-
-            [policy.bash]
-            allow_read = ["ls", "cat"]
-            always_ask = ["rm"]
-            never = ["sudo"]
-
-            [policy.bash.allow_read_sub]
-            git = ["log", "status"]
-            cargo = ["tree"]
-        "#);
-        let resolved = resolve(raw).unwrap();
-        assert_eq!(resolved.policy_mode, PolicyMode::AskOnMutation);
-        assert_eq!(resolved.bash_policy.allow_read, vec!["ls", "cat"]);
-        assert_eq!(resolved.bash_policy.always_ask, vec!["rm"]);
-        assert_eq!(resolved.bash_policy.allow_read_sub.get("git").unwrap(), &vec!["log".to_string(), "status".to_string()]);
-        // git log is allowed
-        assert_eq!(classify("git log", Shell::Posix, &resolved.bash_policy), Classification::AllowReadOnly);
-        // git push is Ask (not in allow_read_sub)
-        assert_eq!(classify("git push", Shell::Posix, &resolved.bash_policy), Classification::Ask);
-    }
-
     #[test]
     fn policy_mode_variants() {
         for (s, expected) in [
@@ -905,27 +930,6 @@ mode = "{s}"
 mode = "bogus"
 "#);
         assert!(resolve(raw).is_err());
-    }
-
-    #[test]
-    fn policy_mode_and_bash_combined_change_behaviour() {
-        // Demonstrates [policy] in config demonstrably changes behaviour (Phase 1 exit criteria).
-        let raw = parse_raw(r#"
-            [policy]
-            mode = "readonly"
-
-            [policy.bash]
-            never = ["mytool"]
-        "#);
-        let resolved = resolve(raw).unwrap();
-        assert_eq!(resolved.policy_mode, PolicyMode::ReadOnly);
-        // mytool is HardDeny via bash policy
-        let p = crate::classify::BashPolicy {
-            never: vec!["mytool".into()],
-            ..crate::classify::BashPolicy::default()
-        };
-        // Simulate ConfigPolicy (readonly) behaviour: mytool still HardDeny
-        assert!(matches!(classify("mytool x", Shell::Posix, &p), Classification::HardDeny(_)));
     }
 
     #[test]

@@ -150,6 +150,11 @@ pub enum Event {
         tool: String,
         args: serde_json::Value,
         cwd: PathBuf,
+        /// ADR-0008 — the policy plugin's explanation, shown in the prompt so the user sees
+        /// *why* approval is being asked. `#[serde(default)]` keeps events written before
+        /// ADR-0008 replayable (GI-4: the log is append-only, old rows are never rewritten).
+        #[serde(default)]
+        reason: String,
     },
     TurnEnded {
         turn: u32,

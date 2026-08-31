@@ -1,9 +1,9 @@
-//! [`ServerState`] — the shared, thread-safe wiring of the server (DESIGN §12).
+//! [`ServerState`] â€” the shared, thread-safe wiring of the server (DESIGN Â§12).
 //!
 //! This is the one place that names concrete `Store` (`SqliteStore`), tool, and
 //! policy types (GI-1 exception). Every `tiny_http` connection thread holds an
 //! `Arc<ServerState>`. Interior state (leases, buses, idle counters) is guarded by
-//! fine-grained locks so a long SSE backlog read never blocks a write (§12.4).
+//! fine-grained locks so a long SSE backlog read never blocks a write (Â§12.4).
 //!
 //! The provider used for turns and auto-titling is injected as `Arc<dyn Provider>`
 //! so tests drive the server fully offline.
@@ -14,29 +14,29 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use kn9t_core::{Decision, ModelSpec, Policy, Provider, ToolCall, ToolRegistry};
+use kn9t_core::{Approver, Decision, ModelSpec, Provider, ToolCall, ToolRegistry};
 use kn9t_plugin::PluginHost;
 use kn9t_store::SqliteStore;
 
 use crate::bus::SessionBuses;
-use crate::classify::BashPolicy;
-use crate::config::PolicyMode;
 use crate::lease::{LeaseMap, DEFAULT_LEASE_IDLE};
-use crate::policy::{ApprovalCache, ApprovalRegistry, ConfigPolicy, DenyAllPolicy, InteractivePolicy};
+use crate::policy::{ApprovalCache, ApprovalRegistry, InteractiveApprover, NonInteractiveApprover};
 
 /// Grace period after last client disconnects before the server exits.
 /// Short enough to feel immediate, long enough to survive a TUI restart.
 /// Overridable via `[server] idle_exit_secs` in config.toml (0 = disable).
 pub const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(5);
 
-/// A permissive policy — the server delegates approval to hooks/clients via the
-/// `/approve` route (DESIGN §12.1); the base policy allows, and denials arrive as
-/// explicit approval decisions. (The real TUI/plugin policy layers land in later
-/// stages; this is the wiring default.)
-pub struct AllowPolicy;
-impl Policy for AllowPolicy {
-    fn check(&self, _call: &ToolCall, _cwd: &std::path::Path) -> Decision {
-        Decision::Allow
+/// ADR-0008 â€” the approver used when nothing can answer a prompt. Reached only if a policy
+/// plugin returned `Ask`, so denying is the honest answer: there is no one to ask.
+///
+/// Note this is *not* the "no policy installed" path. With no policy plugin the hook layer
+/// answers `Allow` and no approver is consulted at all â€” kn9t runs unguarded by design
+/// (ADR-0008 decision 5).
+pub struct DenyAllApprover;
+impl Approver for DenyAllApprover {
+    fn request(&self, _call: &ToolCall, _cwd: &std::path::Path, reason: &str) -> Decision {
+        Decision::Deny { reason: format!("approval required ({reason}), no approver configured") }
     }
 }
 
@@ -88,7 +88,7 @@ impl IdleTracker {
         self.running_turns.load(Ordering::SeqCst)
     }
 
-    /// R-SRV-080 — exit when no client is attached and no turn is running,
+    /// R-SRV-080 â€” exit when no client is attached and no turn is running,
     /// after a short grace period since the last detach.
     ///
     /// - If `idle_exit` is zero: never exit (disabled).
@@ -120,7 +120,7 @@ pub struct ServerState {
     pub leases: LeaseMap,
     pub idle: IdleTracker,
     pub token: String,
-    /// Set by `POST /stop` — the watchdog detects this and exits cleanly.
+    /// Set by `POST /stop` â€” the watchdog detects this and exits cleanly.
     pub stop_requested: AtomicBool,
     /// Provider used for auto-titling and running turns. `None` disables both
     /// (routes still function; a `prompt` without a provider is a no-op turn).
@@ -129,9 +129,11 @@ pub struct ServerState {
     pub providers: std::collections::HashMap<String, Arc<dyn Provider>>,
     /// Default model spec for new sessions and titling.
     pub default_model: Option<ModelSpec>,
-    /// Policy for tool dispatch inside turns.
-    pub policy: Arc<dyn Policy>,
-    /// Registry for blocking approval requests (DESIGN §10).
+    /// ADR-0008 -- turns a policy plugin's `Ask` into a `Decision`. Not a decider: the
+    /// judgement already happened in the plugin. `RwLock` so a non-interactive run can swap
+    /// in the deny-on-ask adapter at startup.
+    pub approver: std::sync::RwLock<Arc<dyn Approver>>,
+    /// Registry for blocking approval requests (DESIGN Â§10).
     pub approval_registry: Arc<ApprovalRegistry>,
     /// Session + persistent approval cache (scope=session|always).
     pub approval_cache: Arc<ApprovalCache>,
@@ -141,19 +143,26 @@ pub struct ServerState {
     /// Provider-reported budget figure, injectable (gateway `/user/usage`,
     /// R-NBED-040 / R-SRV-120). `None` where unavailable.
     pub provider_reported_budget: Mutex<Option<f64>>,
-    /// All model specs loaded from config (GET /models registry, DESIGN §8.2).
+    /// All model specs loaded from config (GET /models registry, DESIGN Â§8.2).
     pub model_registry: Vec<ModelSpec>,
-    /// Tools registry — populated from external auto-discovered plugins in
+    /// Tools registry â€” populated from external auto-discovered plugins in
     /// `~/.kn9t/plugins/` plus pinned `[[plugin]]` entries (R-PLUG2-110, ADR-0004).
     /// Wrapped in a Mutex for hot-reload (R-PLUG2-100): `POST /plugin/{name}/reload`
     /// swaps the host and rebuilds the registry without restarting the server.
     pub tools: Mutex<ToolRegistry>,
-    /// Plugin hosts — for composing hooks from all plugins (discovered + pinned).
+    /// Plugin hosts â€” for composing hooks from all plugins (discovered + pinned).
     /// Mutex for hot-reload.
     pub plugin_hosts: Mutex<Vec<Arc<PluginHost>>>,
-    /// Spawn recipe per plugin declared name — used to respawn on reload (R-PLUG2-100).
+    /// Spawn recipe per plugin declared name â€” used to respawn on reload (R-PLUG2-100).
     /// `cmd` is the exact argv (binary + args) and `env` the injected vars.
     pub plugin_spawn: Mutex<HashMap<String, (Vec<String>, Vec<(String, String)>)>>,
+    /// ADR-0008 -- an in-process `HookHost` that replaces the composed plugin hooks.
+    ///
+    /// Since ADR-0008 an `Ask` can only originate from a policy plugin, so exercising the
+    /// approval flow end-to-end would otherwise require spawning a real subprocess. This seam
+    /// lets a test supply the verdict directly. `None` in production, where hooks are always
+    /// composed from `plugin_hosts`.
+    pub hooks_override: Mutex<Option<Arc<dyn kn9t_core::HookHost>>>,
 }
 
 impl ServerState {
@@ -166,12 +175,9 @@ impl ServerState {
     ) -> Self {
         let approval_registry = Arc::new(ApprovalRegistry::new());
         let approval_cache = Arc::new(ApprovalCache::new(crate::config::global_config_path()));
-        let tools_for_policy = tools.clone();
-        let policy: Arc<dyn Policy> = Arc::new(InteractivePolicy::with_tools(
-            BashPolicy::default(),
+        let approver: Arc<dyn Approver> = Arc::new(InteractiveApprover::with_cache(
             approval_registry.clone(),
             approval_cache.clone(),
-            tools_for_policy,
         ));
         ServerState {
             store,
@@ -183,7 +189,7 @@ impl ServerState {
             provider: None,
             providers: std::collections::HashMap::new(),
             default_model: None,
-            policy,
+            approver: std::sync::RwLock::new(approver),
             approval_registry,
             approval_cache,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -192,10 +198,11 @@ impl ServerState {
             tools: Mutex::new(tools),
             plugin_hosts: Mutex::new(plugin_hosts),
             plugin_spawn: Mutex::new(HashMap::new()),
+            hooks_override: Mutex::new(None),
         }
     }
 
-    /// Snapshot the current tool registry (clone under lock) — used by turns.
+    /// Snapshot the current tool registry (clone under lock) â€” used by turns.
     pub fn tools_snapshot(&self) -> ToolRegistry {
         self.tools.lock().expect("tools poisoned").clone()
     }
@@ -251,7 +258,7 @@ impl ServerState {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         if old_host.pending_count() != 0 {
-            crate::log!("hot-reload: plugin '{}' still has {} in-flight after timeout — proceeding to shutdown", name, old_host.pending_count());
+            crate::log!("hot-reload: plugin '{}' still has {} in-flight after timeout â€” proceeding to shutdown", name, old_host.pending_count());
         }
 
         // 3. shutdown and close write pipe.
@@ -266,7 +273,7 @@ impl ServerState {
             .map_err(|e| format!("respawn failed: {e}"))?;
         let new_decl_name = new_host.declaration.name.clone();
         if new_decl_name != name {
-            crate::log!("hot-reload: warning: plugin declared name '{}' differs from requested '{}' — using declared name for registry", new_decl_name, name);
+            crate::log!("hot-reload: warning: plugin declared name '{}' differs from requested '{}' â€” using declared name for registry", new_decl_name, name);
         }
         let new_host = Arc::new(new_host);
         let new_tools = crate::tools::extract_tools_public(&new_host);
@@ -321,42 +328,22 @@ impl ServerState {
         self.provider = Some(p);
         self
     }
-    pub fn with_policy(mut self, p: Arc<dyn Policy>) -> Self {
-        self.policy = p;
+    pub fn with_approver(self, a: Arc<dyn Approver>) -> Self {
+        *self.approver.write().expect("approver poisoned") = a;
         self
     }
-    /// Build a `Policy` from resolved `[policy]` config — DESIGN §10.1.
-    /// Called from `main.rs` after `config::load`. The state's
-    /// `approval_registry` and `approval_cache` are shared with `InteractivePolicy`.
-    pub fn policy_from_config(
-        mode: &PolicyMode,
-        bash: BashPolicy,
-        registry: &Arc<ApprovalRegistry>,
-    ) -> Arc<dyn Policy> {
-        // For config-driven policy we use the global cache (from file).
-        let cache = Arc::new(ApprovalCache::new(crate::config::global_config_path()));
-        Self::policy_from_config_with_cache(mode, bash, registry, &cache)
-    }
-    pub fn policy_from_config_with_cache(
-        mode: &PolicyMode,
-        bash: BashPolicy,
+    /// ADR-0008 -- pick the approval adapter. This is *not* a risk decision: it only says who
+    /// can answer an `Ask` that a policy plugin already raised. Interactive runs prompt; `-p`
+    /// and CI have nobody to prompt, so an unanswerable ask is denied.
+    pub fn approver_for(
+        interactive: bool,
         registry: &Arc<ApprovalRegistry>,
         cache: &Arc<ApprovalCache>,
-    ) -> Arc<dyn Policy> {
-        Self::policy_from_config_with_cache_and_tools(mode, bash, registry, cache, ToolRegistry::default())
-    }
-    pub fn policy_from_config_with_cache_and_tools(
-        mode: &PolicyMode,
-        bash: BashPolicy,
-        registry: &Arc<ApprovalRegistry>,
-        cache: &Arc<ApprovalCache>,
-        tools: ToolRegistry,
-    ) -> Arc<dyn Policy> {
-        match mode {
-            PolicyMode::AskOnMutation => Arc::new(InteractivePolicy::with_tools(bash, registry.clone(), cache.clone(), tools)),
-            PolicyMode::AllowAll => Arc::new(AllowPolicy),
-            PolicyMode::ReadOnly => Arc::new(ConfigPolicy::with_tools(bash, tools)),
-            PolicyMode::DenyAll => Arc::new(DenyAllPolicy),
+    ) -> Arc<dyn Approver> {
+        if interactive {
+            Arc::new(InteractiveApprover::with_cache(registry.clone(), cache.clone()))
+        } else {
+            Arc::new(NonInteractiveApprover::new(cache.clone()))
         }
     }
     pub fn with_providers(mut self, providers: Vec<(String, Arc<dyn Provider>)>) -> Self {
@@ -377,5 +364,23 @@ impl ServerState {
     pub fn with_provider_budget(self, b: f64) -> Self {
         *self.provider_reported_budget.lock().unwrap() = Some(b);
         self
+    }
+
+    /// ADR-0008 -- install an in-process hook host, replacing plugin-composed hooks.
+    /// Test-only seam: production hooks come from `plugin_hosts`.
+    pub fn with_hooks_override(self, h: Arc<dyn kn9t_core::HookHost>) -> Self {
+        *self.hooks_override.lock().expect("hooks_override poisoned") = Some(h);
+        self
+    }
+
+    /// The hook host for a turn: the override if one was installed, else `None` so the
+    /// caller composes from `plugin_hosts`.
+    pub fn hooks_override_snapshot(&self) -> Option<Arc<dyn kn9t_core::HookHost>> {
+        self.hooks_override.lock().expect("hooks_override poisoned").clone()
+    }
+
+    /// ADR-0008 -- snapshot the current approver for a turn.
+    pub fn approver_snapshot(&self) -> Arc<dyn Approver> {
+        self.approver.read().expect("approver poisoned").clone()
     }
 }

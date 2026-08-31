@@ -1,4 +1,4 @@
-﻿//! Shared test scaffolding for the `rct::*` acceptance tests: a recording bus, a stub
+//! Shared test scaffolding for the `rct::*` acceptance tests: a recording bus, a stub
 //! store, stub policies, and helpers to build in-memory replay fixtures. No network, no
 //! keys, no spend -- everything is driven by `ReplayProvider` over synthetic fixtures.
 //!
@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use kn9t_core::{
-    Cache, CacheMode, CompactSpan, Decision, Event, EventSink, Message, ModelRef, ModelSpec, Policy,
+    Approver, Cache, CacheMode, CompactSpan, Decision, Event, EventSink, Message, ModelRef, ModelSpec,
     Price, Quirks, RequestPlan, SessionId, SessionSnapshot, StoreErr, Tool, ToolCall, ToolSpec,
     ToolRegistry,
 };
@@ -180,18 +180,18 @@ impl kn9t_core::Store for StubStore {
     }
 }
 
-/// Policy that allows everything.
+/// Approver that approves whatever it is asked (ADR-0008).
 pub struct AllowAll;
-impl Policy for AllowAll {
-    fn check(&self, _call: &ToolCall, _cwd: &std::path::Path) -> Decision {
+impl Approver for AllowAll {
+    fn request(&self, _call: &ToolCall, _cwd: &std::path::Path, _reason: &str) -> Decision {
         Decision::Allow
     }
 }
 
-/// Policy that denies everything with a fixed reason.
+/// Approver that refuses whatever it is asked, with a fixed reason.
 pub struct DenyAll(pub String);
-impl Policy for DenyAll {
-    fn check(&self, _call: &ToolCall, _cwd: &std::path::Path) -> Decision {
+impl Approver for DenyAll {
+    fn request(&self, _call: &ToolCall, _cwd: &std::path::Path, _reason: &str) -> Decision {
         Decision::Deny {
             reason: self.0.clone(),
         }

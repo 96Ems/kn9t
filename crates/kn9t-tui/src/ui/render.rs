@@ -1868,7 +1868,7 @@ fn render_tool_output(
 
     let output_lines: Vec<&str> = output.lines().collect();
     let total_lines = output_lines.len();
-    let start = card.scroll_offset;
+    let start = card.scroll_offset.min(total_lines);
     let end = (start + TOOL_OUTPUT_VISIBLE_LINES).min(total_lines);
 
     // Error styling

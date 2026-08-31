@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kn9t_core::{
-    CacheMode, Cancel, Chunk, Content, Event, ModelRef, ModelSpec, MsgId, Policy, Price, ProvErr, Provider,
+    Approver, CacheMode, Cancel, Chunk, Content, Event, ModelRef, ModelSpec, MsgId, Price, ProvErr, Provider,
     Quirks, Request, Role, SessionId, StopReason, Store, Tokens, Usage,
 };
 use kn9t_server::state::ServerState;
@@ -1273,8 +1273,63 @@ fn dummy_bash_registry() -> kn9t_core::ToolRegistry {
         schema: serde_json::json!({"type":"object"}),
         hidden: false,
         effects: vec![kn9t_core::Effect { field: "cmd".into(), kind: kn9t_core::EffectKind::Shell }],
+        policy: kn9t_core::ToolPolicy {
+            pattern_field: Some("cmd".into()),
+            default_policy: kn9t_core::DefaultPolicy::Ask,
+            builtin_allow: vec!["cat *".into(), "ls *".into()],
+            builtin_deny: vec!["sudo *".into()],
+        },
     };
     kn9t_core::ToolRegistry::from_tools(vec![Arc::new(DummyBashTool { spec }) as Arc<dyn kn9t_core::Tool>])
+}
+
+/// ADR-0008 -- a hook host that answers `Ask` for one tool, standing in for a policy plugin.
+///
+/// Since ADR-0008 the server has no opinion about risk: only a plugin can raise an `Ask`.
+/// These tests exercise the surviving *mechanism* (emit `ApprovalRequest`, block the turn,
+/// resolve via `POST /approve`, honour the scope), so they inject the verdict in-process
+/// rather than spawning a Python subprocess.
+struct AskingHooks {
+    tool: String,
+}
+impl kn9t_core::HookHost for AskingHooks {
+    fn before_tool_call(&self, tool: &str, _args: &serde_json::Value, _cwd: &std::path::Path) -> kn9t_core::HookVeto {
+        if tool == self.tool {
+            kn9t_core::HookVeto::Ask { reason: "test policy asks".into() }
+        } else {
+            kn9t_core::HookVeto::Allow
+        }
+    }
+    // Everything else is pass-through: this host exists only to raise the Ask.
+    fn after_tool_call(&self, _tool: &str, _args: &serde_json::Value, result: Vec<kn9t_core::Content>) -> Vec<kn9t_core::Content> { result }
+    fn before_request(&self, msgs: Vec<kn9t_core::Message>, _model: &kn9t_core::ModelRef, _system: Option<&str>) -> Vec<kn9t_core::Message> { msgs }
+    fn should_stop_after_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage, _turn: u32) -> bool { false }
+    fn prepare_next_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage) -> kn9t_core::NextTurnPatch { kn9t_core::NextTurnPatch::default() }
+    fn get_steering(&self) -> Vec<kn9t_core::Message> { Vec::new() }
+    fn get_followup(&self) -> Vec<kn9t_core::Message> { Vec::new() }
+    fn get_api_key(&self, _provider: &str) -> Option<String> { None }
+}
+
+/// ADR-0008 -- a hook host that refuses one tool outright, standing in for a policy plugin
+/// that decided the call is never acceptable (the old `HardDeny`).
+struct DenyingHooks {
+    tool: String,
+}
+impl kn9t_core::HookHost for DenyingHooks {
+    fn before_tool_call(&self, tool: &str, _args: &serde_json::Value, _cwd: &std::path::Path) -> kn9t_core::HookVeto {
+        if tool == self.tool {
+            kn9t_core::HookVeto::Deny { reason: "test policy refuses".into() }
+        } else {
+            kn9t_core::HookVeto::Allow
+        }
+    }
+    fn after_tool_call(&self, _tool: &str, _args: &serde_json::Value, result: Vec<kn9t_core::Content>) -> Vec<kn9t_core::Content> { result }
+    fn before_request(&self, msgs: Vec<kn9t_core::Message>, _model: &kn9t_core::ModelRef, _system: Option<&str>) -> Vec<kn9t_core::Message> { msgs }
+    fn should_stop_after_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage, _turn: u32) -> bool { false }
+    fn prepare_next_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage) -> kn9t_core::NextTurnPatch { kn9t_core::NextTurnPatch::default() }
+    fn get_steering(&self) -> Vec<kn9t_core::Message> { Vec::new() }
+    fn get_followup(&self) -> Vec<kn9t_core::Message> { Vec::new() }
+    fn get_api_key(&self, _provider: &str) -> Option<String> { None }
 }
 
 fn dummy_no_effect_registry() -> kn9t_core::ToolRegistry {
@@ -1284,6 +1339,7 @@ fn dummy_no_effect_registry() -> kn9t_core::ToolRegistry {
         schema: serde_json::json!({"type":"object"}),
         hidden: false,
         effects: vec![],
+        policy: Default::default(),
     };
     struct NopeTool { spec: kn9t_core::ToolSpec }
     impl kn9t_core::Tool for NopeTool {
@@ -1337,13 +1393,16 @@ impl kn9t_core::Provider for OneToolProvider {
 
 #[test]
 fn approve_resolves_blocked_policy() {
-    // An Ask (rm) must emit ApprovalRequest and block until POST /approve.
+    // ADR-0008: a plugin `Ask` must emit ApprovalRequest and block until POST /approve.
+    // This is the mechanism the ADR keeps in the server: bus + condvar + /approve.
     let (store, _tmp) = temp_store();
     let token = kn9t_server::auth::generate_token();
     let calls = Arc::new(Mutex::new(0u32));
     let provider: Arc<dyn kn9t_core::Provider> = Arc::new(OneToolProvider { cmd: "rm -rf /tmp/test".into(), calls: calls.clone() });
     let tools = dummy_bash_registry();
+    // ADR-0008: the Ask comes from the policy plugin, so inject one in-process.
     let mut state = kn9t_server::state::ServerState::new(store, token, tools, Vec::new())
+        .with_hooks_override(Arc::new(AskingHooks { tool: "bash".into() }))
         .with_default_model(model_spec())
         .with_provider(provider);
     state.model_registry = vec![model_spec()];
@@ -1355,7 +1414,7 @@ fn approve_resolves_blocked_policy() {
     // Subscribe BEFORE the prompt so we don't miss the transient ApprovalRequest.
     let sub = state.buses.subscribe(&id, 64);
 
-    // Prompt that triggers a tool call requiring approval (rm is in always_ask).
+    // Prompt that triggers a tool call the injected policy hook asks about.
     let lease_hdr = [("X-Lease", lease.as_str())];
     let r = req_auth(&h, "POST", &format!("/session/{id}/prompt"), &lease_hdr, serde_json::json!({"text":"do rm"}));
     assert_eq!(r.status, 200, "prompt: {}", String::from_utf8_lossy(&r.body));
@@ -1408,13 +1467,16 @@ fn approve_resolves_blocked_policy() {
 
 #[test]
 fn approve_hard_deny_no_prompt() {
-    // A never (sudo) must be HardDeny with NO ApprovalRequest and no block.
+    // ADR-0008: a plugin `Deny` must NOT prompt and must not block -- there is nothing to
+    // ask, the call is simply refused.
     let (store, _tmp) = temp_store();
     let token = kn9t_server::auth::generate_token();
     let calls = Arc::new(Mutex::new(0u32));
     let provider: Arc<dyn kn9t_core::Provider> = Arc::new(OneToolProvider { cmd: "sudo rm -rf /".into(), calls: calls.clone() });
     let tools = dummy_bash_registry();
+    // ADR-0008: an outright refusal now comes from the plugin, not a server-side classifier.
     let mut state = kn9t_server::state::ServerState::new(store, token, tools, Vec::new())
+        .with_hooks_override(Arc::new(DenyingHooks { tool: "bash".into() }))
         .with_default_model(model_spec())
         .with_provider(provider);
     state.model_registry = vec![model_spec()];
@@ -1435,14 +1497,14 @@ fn approve_hard_deny_no_prompt() {
     while let Some(ev) = sub.try_recv() {
         if matches!(ev, Event::ApprovalRequest { .. }) { saw_approval = true; }
     }
-    assert!(!saw_approval, "HardDeny (sudo) must not emit ApprovalRequest");
+    assert!(!saw_approval, "plugin Deny must not emit ApprovalRequest");
 
     // Turn should have finished already (not blocked).
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while kn9t_server::turn::is_turn_running(&id) && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!kn9t_server::turn::is_turn_running(&id), "HardDeny must not block");
+    assert!(!kn9t_server::turn::is_turn_running(&id), "plugin Deny must not block");
 
     // The denied tool should be a is_error tool_result.
     let snap = req_auth(&h, "GET", &format!("/session/{id}"), &[], serde_json::Value::Null).json();
@@ -1450,102 +1512,13 @@ fn approve_hard_deny_no_prompt() {
     let has_error_result = transcript.iter().any(|m| {
         m["content"].as_array().map(|c| c.iter().any(|b| b["is_error"].as_bool()==Some(true))).unwrap_or(false)
     });
-    assert!(has_error_result, "HardDeny must produce is_error tool_result");
+    assert!(has_error_result, "plugin Deny must produce is_error tool_result");
 
     h.handle.shutdown();
 }
 
 // ── policy: config [policy] demonstrably changes behaviour ─────────────────
 
-#[test]
-fn policy_never_mytool_is_hard_deny() {
-    // Verify [policy.bash] never = ["mytool"] → HardDeny (no prompt) — Phase 1 exit criteria.
-    use kn9t_server::classify::BashPolicy;
-    use kn9t_server::config::PolicyMode;
-    use kn9t_server::state::ServerState;
-    let (store, _tmp) = temp_store();
-    let token = kn9t_server::auth::generate_token();
-    // Build a custom bash policy: never contains mytool
-    let bash = BashPolicy { never: vec!["mytool".into()], ..BashPolicy::default() };
-    let calls = Arc::new(Mutex::new(0u32));
-    let provider: Arc<dyn kn9t_core::Provider> = Arc::new(OneToolProvider { cmd: "mytool --help".into(), calls: calls.clone() });
-    let tools = dummy_bash_registry();
-    let mut state = ServerState::new(store, token, tools, Vec::new());
-    // Override policy with the custom bash policy (ask_on_mutation mode → InteractivePolicy)
-    let registry = state.approval_registry.clone();
-    let policy = ServerState::policy_from_config(&PolicyMode::AskOnMutation, bash, &registry);
-    state = state.with_policy(policy).with_default_model(model_spec()).with_provider(provider);
-    state.model_registry = vec![model_spec()];
-    let state = Arc::new(state);
-    let h = start(state.clone());
-    let id = make_session(&h);
-    let lease = acquire_lease(&h, &id);
-    let sub = state.buses.subscribe(&id, 64);
-    let lease_hdr = [("X-Lease", lease.as_str())];
-    let r = req_auth(&h, "POST", &format!("/session/{id}/prompt"), &lease_hdr, serde_json::json!({"text":"run mytool"}));
-    assert_eq!(r.status, 200);
-    std::thread::sleep(Duration::from_millis(500));
-    let mut saw_approval = false;
-    while let Some(ev) = sub.try_recv() {
-        if matches!(ev, Event::ApprovalRequest { .. }) { saw_approval = true; }
-    }
-    assert!(!saw_approval, "HardDeny mytool must not emit ApprovalRequest");
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while kn9t_server::turn::is_turn_running(&id) && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(!kn9t_server::turn::is_turn_running(&id));
-    let snap = req_auth(&h, "GET", &format!("/session/{id}"), &[], serde_json::Value::Null).json();
-    let has_error = snap["transcript"].as_array().unwrap().iter().any(|m| {
-        m["content"].as_array().map(|c| c.iter().any(|b| b["is_error"].as_bool()==Some(true))).unwrap_or(false)
-    });
-    assert!(has_error, "mytool HardDeny must produce is_error tool_result");
-    h.handle.shutdown();
-}
-
-#[test]
-fn policy_mode_allow_all_allows_rm_without_prompt() {
-    use kn9t_server::classify::BashPolicy;
-    use kn9t_server::config::PolicyMode;
-    use kn9t_server::state::ServerState;
-    let (store, _tmp) = temp_store();
-    let token = kn9t_server::auth::generate_token();
-    let calls = Arc::new(Mutex::new(0u32));
-    // rm is always_ask → normally Ask (blocks). With allow_all it must be Allow.
-    let provider: Arc<dyn kn9t_core::Provider> = Arc::new(OneToolProvider { cmd: "rm -rf /tmp/x".into(), calls: calls.clone() });
-    let tools = dummy_bash_registry();
-    let mut state = ServerState::new(store, token, tools, Vec::new());
-    let registry = state.approval_registry.clone();
-    let policy = ServerState::policy_from_config(&PolicyMode::AllowAll, BashPolicy::default(), &registry);
-    state = state.with_policy(policy).with_default_model(model_spec()).with_provider(provider);
-    state.model_registry = vec![model_spec()];
-    let state = Arc::new(state);
-    let h = start(state.clone());
-    let id = make_session(&h);
-    let lease = acquire_lease(&h, &id);
-    let sub = state.buses.subscribe(&id, 64);
-    let lease_hdr = [("X-Lease", lease.as_str())];
-    let r = req_auth(&h, "POST", &format!("/session/{id}/prompt"), &lease_hdr, serde_json::json!({"text":"do rm"}));
-    assert_eq!(r.status, 200);
-    std::thread::sleep(Duration::from_millis(500));
-    let mut saw_approval = false;
-    while let Some(ev) = sub.try_recv() {
-        if matches!(ev, Event::ApprovalRequest { .. }) { saw_approval = true; }
-    }
-    assert!(!saw_approval, "allow_all must not emit ApprovalRequest for rm");
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while kn9t_server::turn::is_turn_running(&id) && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(!kn9t_server::turn::is_turn_running(&id), "allow_all rm must not block");
-    // Tool should have executed (ok, not error)
-    let snap = req_auth(&h, "GET", &format!("/session/{id}"), &[], serde_json::Value::Null).json();
-    let has_ok_result = snap["transcript"].as_array().unwrap().iter().any(|m| {
-        m["content"].as_array().map(|c| c.iter().any(|b| b["type"].as_str()==Some("tool_result") && b["is_error"].as_bool()!=Some(true))).unwrap_or(false)
-    });
-    assert!(has_ok_result, "allow_all rm must produce non-error tool_result");
-    h.handle.shutdown();
-}
 
 // ── approve scope handling (Phase 1.5) ─────────────────────────────────────
 
@@ -1575,8 +1548,7 @@ fn approve_unknown_scope_is_400() {
 #[test]
 fn approve_always_writes_config() {
     // Verify scope=always persists to config.toml under [policy.approvals]
-    use kn9t_server::classify::BashPolicy;
-    use kn9t_server::policy::{ApprovalCache, ApprovalRegistry, InteractivePolicy};
+    use kn9t_server::policy::{ApprovalCache, ApprovalRegistry, InteractiveApprover};
     let (store, _store_tmp) = temp_store();
     let token = kn9t_server::auth::generate_token();
     let config_tmp = tempfile::tempdir().unwrap();
@@ -1585,7 +1557,7 @@ fn approve_always_writes_config() {
     std::fs::write(&config_path, "").unwrap();
     let cache = Arc::new(ApprovalCache::new(config_path.clone()));
     let registry = Arc::new(ApprovalRegistry::new());
-    let policy: Arc<dyn kn9t_core::Policy> = Arc::new(InteractivePolicy::new_with_cache(BashPolicy::default(), registry.clone(), cache.clone()));
+    let approver: Arc<dyn kn9t_core::Approver> = Arc::new(InteractiveApprover::with_cache(registry.clone(), cache.clone()));
     let tools = dummy_bash_registry();
     let mut state = ServerState::new(store, token, tools, Vec::new());
     state.approval_registry = registry.clone();
@@ -1625,7 +1597,9 @@ fn approve_always_writes_config() {
         }
     }
     let provider: Arc<dyn kn9t_core::Provider> = Arc::new(RepeatingProvider { cmd: "rm -rf /tmp/always_test".into(), calls: calls.clone() });
-    state = state.with_policy(policy).with_default_model(model_spec()).with_provider(provider);
+    state = state.with_approver(approver)
+        .with_hooks_override(Arc::new(AskingHooks { tool: "bash".into() }))
+        .with_default_model(model_spec()).with_provider(provider);
     state.model_registry = vec![model_spec()];
     let state = Arc::new(state);
     let h = start(state.clone());
@@ -1685,15 +1659,17 @@ fn approve_always_writes_config() {
     let registry2 = Arc::new(ApprovalRegistry::new());
     // Simulate a pending approval and resolve with legacy decision "always"
     // Use a dummy slot
-    // Create a manual approval id and meta via InteractivePolicy path
+    // Create a manual approval id and meta via the approver path
     // Simpler: just test server route accepts legacy
     let (store2, _t2) = temp_store();
     let token2 = kn9t_server::auth::generate_token();
     let mut state2 = ServerState::new(store2, token2, dummy_bash_registry(), Vec::new());
     state2.approval_registry = registry2.clone();
     state2.approval_cache = cache2.clone();
-    let policy2: Arc<dyn kn9t_core::Policy> = Arc::new(InteractivePolicy::new_with_cache(BashPolicy::default(), registry2.clone(), cache2.clone()));
-    state2 = state2.with_policy(policy2).with_default_model(model_spec()).with_provider(Arc::new(RepeatingProvider { cmd: "rm -rf /tmp/legacy".into(), calls: Arc::new(Mutex::new(0)) }));
+    let approver2: Arc<dyn kn9t_core::Approver> = Arc::new(InteractiveApprover::with_cache(registry2.clone(), cache2.clone()));
+    state2 = state2.with_approver(approver2)
+        .with_hooks_override(Arc::new(AskingHooks { tool: "bash".into() }))
+        .with_default_model(model_spec()).with_provider(Arc::new(RepeatingProvider { cmd: "rm -rf /tmp/legacy".into(), calls: Arc::new(Mutex::new(0)) }));
     state2.model_registry = vec![model_spec()];
     let state2 = Arc::new(state2);
     let h2 = start(state2.clone());
@@ -1726,8 +1702,7 @@ fn approve_always_writes_config() {
 
 #[test]
 fn approve_session_caches() {
-    use kn9t_server::classify::BashPolicy;
-    use kn9t_server::policy::{ApprovalCache, ApprovalRegistry, InteractivePolicy};
+    use kn9t_server::policy::{ApprovalCache, ApprovalRegistry, InteractiveApprover};
     let (store, _tmp) = temp_store();
     let token = kn9t_server::auth::generate_token();
     let config_tmp = tempfile::tempdir().unwrap();
@@ -1735,7 +1710,7 @@ fn approve_session_caches() {
     std::fs::write(&config_path, "").unwrap();
     let cache = Arc::new(ApprovalCache::new(config_path.clone()));
     let registry = Arc::new(ApprovalRegistry::new());
-    let policy: Arc<dyn kn9t_core::Policy> = Arc::new(InteractivePolicy::new_with_cache(BashPolicy::default(), registry.clone(), cache.clone()));
+    let approver: Arc<dyn kn9t_core::Approver> = Arc::new(InteractiveApprover::with_cache(registry.clone(), cache.clone()));
     let tools = dummy_bash_registry();
     let mut state = ServerState::new(store, token, tools, Vec::new());
     state.approval_registry = registry.clone();
@@ -1771,7 +1746,9 @@ fn approve_session_caches() {
         }
     }
     let provider: Arc<dyn kn9t_core::Provider> = Arc::new(Rep { cmd: "rm -rf /tmp/session_test".into(), calls: calls.clone() });
-    state = state.with_policy(policy).with_default_model(model_spec()).with_provider(provider);
+    state = state.with_approver(approver)
+        .with_hooks_override(Arc::new(AskingHooks { tool: "bash".into() }))
+        .with_default_model(model_spec()).with_provider(provider);
     state.model_registry = vec![model_spec()];
     let state = Arc::new(state);
     let h = start(state.clone());
@@ -1829,290 +1806,6 @@ fn approve_session_caches() {
     h.handle.shutdown();
 }
 
-#[test]
-fn sh_bypass_prompts_and_sudo_is_hard_deny() {
-    use kn9t_server::classify::BashPolicy;
-    use kn9t_server::policy::{ApprovalCache, ApprovalRegistry, InteractivePolicy};
-    let (store, _tmp) = temp_store();
-    let token = kn9t_server::auth::generate_token();
-    let cache = Arc::new(ApprovalCache::new_empty());
-    let registry = Arc::new(ApprovalRegistry::new());
-    let policy: Arc<dyn kn9t_core::Policy> = Arc::new(InteractivePolicy::new_with_cache(BashPolicy::default(), registry.clone(), cache.clone()));
-    let tools = dummy_bash_registry();
-    let mut state = ServerState::new(store, token, tools, Vec::new());
-    state.approval_registry = registry.clone();
-    state.approval_cache = cache.clone();
-    // Provider that emits sh -c bypass
-    let calls = Arc::new(Mutex::new(0u32));
-    struct ShProvider { calls: Arc<Mutex<u32>> }
-    impl kn9t_core::Provider for ShProvider {
-        fn name(&self) -> &str { "sh" }
-        fn stream(&self, req: &kn9t_core::Request, _c: &kn9t_core::Cancel) -> Result<Box<dyn Iterator<Item = Result<kn9t_core::Chunk, kn9t_core::ProvErr>> + Send>, kn9t_core::ProvErr> {
-            if req.max_tokens == Some(16) {
-                return Ok(Box::new(vec![
-                    Ok(kn9t_core::Chunk::Text { idx: 0, delta: "title".into() }),
-                    Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "sh".into(), id: "m1".into() } })),
-                    Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
-                ].into_iter()));
-            }
-            let n = { let mut c = self.calls.lock().unwrap(); let n = *c; *c += 1; n };
-            if n % 2 == 0 {
-                let args = serde_json::json!({"cmd": "sh -c 'rm -rf /'"}).to_string();
-                Ok(Box::new(vec![
-                    Ok(kn9t_core::Chunk::ToolCall { idx: 0, id: kn9t_core::CallId("call_1".into()), name: "bash".into() }),
-                    Ok(kn9t_core::Chunk::ToolArgs { idx: 0, delta: args }),
-                    Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "sh".into(), id: "m1".into() } })),
-                    Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::ToolUse)),
-                ].into_iter()))
-            } else {
-                Ok(Box::new(vec![
-                    Ok(kn9t_core::Chunk::Text { idx: 0, delta: "done".into() }),
-                    Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "sh".into(), id: "m1".into() } })),
-                    Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
-                ].into_iter()))
-            }
-        }
-    }
-    state = state.with_policy(policy).with_default_model(model_spec()).with_provider(Arc::new(ShProvider { calls: calls.clone() }));
-    state.model_registry = vec![model_spec()];
-    let state = Arc::new(state);
-    let h = start(state.clone());
-    let sid = make_session(&h);
-    let lease = acquire_lease(&h, &sid);
-    let sub = state.buses.subscribe(&sid, 64);
-    let r = req_auth(&h, "POST", &format!("/session/{sid}/prompt"), &[("X-Lease", lease.as_str())], serde_json::json!({"text":"sh bypass"}));
-    assert_eq!(r.status, 200);
-    let mut found = None;
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if let Some(ev) = sub.recv_timeout(Duration::from_millis(200)) {
-            if let Event::ApprovalRequest { id, .. } = ev { found = Some(id); break; }
-        }
-    }
-    assert!(found.is_some(), "sh -c 'rm -rf /' must be Ask and prompt (bypass closed)");
-    let aid = found.unwrap();
-    let r = req_auth(&h, "POST", "/approve", &[("X-Lease", lease.as_str()), ("X-Lease-Session", sid.as_str())], serde_json::json!({"id": aid.0, "decision": "allow", "scope": "once"}));
-    assert_eq!(r.status, 200);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while kn9t_server::turn::is_turn_running(&sid) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
-    assert!(!kn9t_server::turn::is_turn_running(&sid));
-    // Now HardDeny: sudo must not prompt
-    let (store2, _t2) = temp_store();
-    let token2 = kn9t_server::auth::generate_token();
-    let cache2 = Arc::new(ApprovalCache::new_empty());
-    let registry2 = Arc::new(ApprovalRegistry::new());
-    let policy2: Arc<dyn kn9t_core::Policy> = Arc::new(InteractivePolicy::new_with_cache(BashPolicy::default(), registry2.clone(), cache2.clone()));
-    let mut state2 = ServerState::new(store2, token2, dummy_bash_registry(), Vec::new());
-    state2.approval_registry = registry2.clone();
-    state2.approval_cache = cache2.clone();
-    struct SudoProvider { calls: Arc<Mutex<u32>> }
-    impl kn9t_core::Provider for SudoProvider {
-        fn name(&self) -> &str { "sudo" }
-        fn stream(&self, req: &kn9t_core::Request, _c: &kn9t_core::Cancel) -> Result<Box<dyn Iterator<Item = Result<kn9t_core::Chunk, kn9t_core::ProvErr>> + Send>, kn9t_core::ProvErr> {
-            if req.max_tokens == Some(16) {
-                return Ok(Box::new(vec![
-                    Ok(kn9t_core::Chunk::Text { idx: 0, delta: "title".into() }),
-                    Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "sudo".into(), id: "m1".into() } })),
-                    Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
-                ].into_iter()));
-            }
-            let n = { let mut c = self.calls.lock().unwrap(); let n = *c; *c += 1; n };
-            if n % 2 == 0 {
-                let args = serde_json::json!({"cmd": "sudo rm -rf /"}).to_string();
-                Ok(Box::new(vec![
-                    Ok(kn9t_core::Chunk::ToolCall { idx: 0, id: kn9t_core::CallId("call_1".into()), name: "bash".into() }),
-                    Ok(kn9t_core::Chunk::ToolArgs { idx: 0, delta: args }),
-                    Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "sudo".into(), id: "m1".into() } })),
-                    Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::ToolUse)),
-                ].into_iter()))
-            } else {
-                Ok(Box::new(vec![
-                    Ok(kn9t_core::Chunk::Text { idx: 0, delta: "done".into() }),
-                    Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "sudo".into(), id: "m1".into() } })),
-                    Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
-                ].into_iter()))
-            }
-        }
-    }
-    state2 = state2.with_policy(policy2).with_default_model(model_spec()).with_provider(Arc::new(SudoProvider { calls: Arc::new(Mutex::new(0)) }));
-    state2.model_registry = vec![model_spec()];
-    let state2 = Arc::new(state2);
-    let h2 = start(state2.clone());
-    let sid2 = make_session(&h2);
-    let lease2 = acquire_lease(&h2, &sid2);
-    let sub2 = state2.buses.subscribe(&sid2, 64);
-    let r = req_auth(&h2, "POST", &format!("/session/{sid2}/prompt"), &[("X-Lease", lease2.as_str())], serde_json::json!({"text":"sudo"}));
-    assert_eq!(r.status, 200);
-    std::thread::sleep(Duration::from_millis(700));
-    let mut saw = false;
-    while let Some(ev) = sub2.try_recv() { if matches!(ev, Event::ApprovalRequest{..}) { saw = true; } }
-    assert!(!saw, "sudo must be HardDeny and not emit ApprovalRequest");
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while kn9t_server::turn::is_turn_running(&sid2) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
-    assert!(!kn9t_server::turn::is_turn_running(&sid2));
-    h.handle.shutdown();
-    h2.handle.shutdown();
-}
-
-#[test]
-fn tool_no_effects_is_strict() {
-    // A tool with no effects must be Ask (Interactive) → prompts, and Deny in ConfigPolicy
-    use kn9t_server::classify::BashPolicy;
-    use kn9t_server::policy::{ApprovalCache, ApprovalRegistry, InteractivePolicy, ConfigPolicy};
-    let (store, _tmp) = temp_store();
-    let token = kn9t_server::auth::generate_token();
-    let cache = Arc::new(ApprovalCache::new_empty());
-    let registry = Arc::new(ApprovalRegistry::new());
-    let tools = dummy_no_effect_registry();
-    let policy: Arc<dyn kn9t_core::Policy> = Arc::new(InteractivePolicy::with_tools(BashPolicy::default(), registry.clone(), cache.clone(), tools.clone()));
-    let mut state = ServerState::new(store, token, tools.clone(), Vec::new());
-    state.approval_registry = registry.clone();
-    state.approval_cache = cache.clone();
-    state = state.with_policy(policy).with_default_model(model_spec()).with_provider(Arc::new(OneToolProvider { cmd: "ignored".into(), calls: Arc::new(Mutex::new(0)) }));
-    // Override provider to emit mystery tool
-    struct MysteryProvider { calls: Arc<Mutex<u32>> }
-    impl kn9t_core::Provider for MysteryProvider {
-        fn name(&self) -> &str { "mystery" }
-        fn stream(&self, req: &kn9t_core::Request, _c: &kn9t_core::Cancel) -> Result<Box<dyn Iterator<Item = Result<kn9t_core::Chunk, kn9t_core::ProvErr>> + Send>, kn9t_core::ProvErr> {
-            if req.max_tokens == Some(16) {
-                return Ok(Box::new(vec![
-                    Ok(kn9t_core::Chunk::Text { idx: 0, delta: "title".into() }),
-                    Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "mystery".into(), id: "m1".into() } })),
-                    Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
-                ].into_iter()));
-            }
-            let n = { let mut c = self.calls.lock().unwrap(); let n = *c; *c += 1; n };
-            if n % 2 == 0 {
-                let args = serde_json::json!({"foo":"bar"}).to_string();
-                Ok(Box::new(vec![
-                    Ok(kn9t_core::Chunk::ToolCall { idx: 0, id: kn9t_core::CallId("call_1".into()), name: "mystery".into() }),
-                    Ok(kn9t_core::Chunk::ToolArgs { idx: 0, delta: args }),
-                    Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "mystery".into(), id: "m1".into() } })),
-                    Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::ToolUse)),
-                ].into_iter()))
-            } else {
-                Ok(Box::new(vec![
-                    Ok(kn9t_core::Chunk::Text { idx: 0, delta: "done".into() }),
-                    Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "mystery".into(), id: "m1".into() } })),
-                    Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
-                ].into_iter()))
-            }
-        }
-    }
-    let provider: Arc<dyn kn9t_core::Provider> = Arc::new(MysteryProvider { calls: Arc::new(Mutex::new(0)) });
-    state = state.with_policy(Arc::new(InteractivePolicy::with_tools(BashPolicy::default(), registry.clone(), cache.clone(), tools.clone()))).with_provider(provider);
-    state.model_registry = vec![model_spec()];
-    let state = Arc::new(state);
-    let h = start(state.clone());
-    let sid = make_session(&h);
-    let lease = acquire_lease(&h, &sid);
-    let sub = state.buses.subscribe(&sid, 64);
-    let r = req_auth(&h, "POST", &format!("/session/{sid}/prompt"), &[("X-Lease", lease.as_str())], serde_json::json!({"text":"mystery"}));
-    assert_eq!(r.status, 200);
-    let mut found = None;
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if let Some(ev) = sub.recv_timeout(Duration::from_millis(200)) {
-            if let Event::ApprovalRequest { id, tool, .. } = ev { if tool == "mystery" { found = Some(id); break; } }
-        }
-    }
-    assert!(found.is_some(), "tool with no effects must be Ask and prompt");
-    let aid = found.unwrap();
-    let r = req_auth(&h, "POST", "/approve", &[("X-Lease", lease.as_str()), ("X-Lease-Session", sid.as_str())], serde_json::json!({"id": aid.0, "decision": "allow", "scope": "once"}));
-    assert_eq!(r.status, 200);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while kn9t_server::turn::is_turn_running(&sid) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
-    assert!(!kn9t_server::turn::is_turn_running(&sid));
-    // ConfigPolicy with same tool must be Deny (no prompt, instant deny)
-    let config_policy = ConfigPolicy::with_tools(BashPolicy::default(), tools);
-    let call = kn9t_core::ToolCall { id: kn9t_core::CallId("c1".into()), name: "mystery".into(), args_json: r#"{"foo":"bar"}"#.into() };
-    let d = config_policy.check(&call, std::path::Path::new("/tmp"));
-    assert!(matches!(d, kn9t_core::Decision::Deny { .. }), "ConfigPolicy must deny no-effects tool, got {:?}", d);
-    h.handle.shutdown();
-}
-
-#[test]
-fn tool_write_fs_write_is_ask() {
-    use kn9t_server::classify::BashPolicy;
-    use kn9t_server::policy::{ApprovalCache, ApprovalRegistry, InteractivePolicy};
-    let (store, _tmp) = temp_store();
-    let token = kn9t_server::auth::generate_token();
-    let cache = Arc::new(ApprovalCache::new_empty());
-    let registry = Arc::new(ApprovalRegistry::new());
-    let mut tools = kn9t_core::ToolRegistry::default();
-    let write_spec = kn9t_core::ToolSpec {
-        name: "write".into(),
-        description: "write file".into(),
-        schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
-        hidden: false,
-        effects: vec![kn9t_core::Effect { field: "path".into(), kind: kn9t_core::EffectKind::FsWrite }],
-    };
-    struct WriteTool { spec: kn9t_core::ToolSpec }
-    impl kn9t_core::Tool for WriteTool {
-        fn spec(&self) -> &kn9t_core::ToolSpec { &self.spec }
-        fn execute(&self, _a: &serde_json::Value, _c: &kn9t_core::ToolCtx, _k: &kn9t_core::Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> { Ok(kn9t_core::ToolOutput { content: vec![kn9t_core::Content::Text { text: "ok".into() }], details: None, is_error: false }) }
-    }
-    tools.push(Arc::new(WriteTool { spec: write_spec }) as Arc<dyn kn9t_core::Tool>);
-    let policy: Arc<dyn kn9t_core::Policy> = Arc::new(InteractivePolicy::with_tools(BashPolicy::default(), registry.clone(), cache.clone(), tools.clone()));
-    let mut state = ServerState::new(store, token, tools.clone(), Vec::new());
-    state.approval_registry = registry.clone();
-    state.approval_cache = cache.clone();
-    state = state.with_policy(policy).with_default_model(model_spec()).with_provider({
-        struct WriteProvider { calls: Arc<Mutex<u32>> }
-        impl kn9t_core::Provider for WriteProvider {
-            fn name(&self) -> &str { "write" }
-            fn stream(&self, req: &kn9t_core::Request, _c: &kn9t_core::Cancel) -> Result<Box<dyn Iterator<Item = Result<kn9t_core::Chunk, kn9t_core::ProvErr>> + Send>, kn9t_core::ProvErr> {
-                if req.max_tokens == Some(16) {
-                    return Ok(Box::new(vec![
-                        Ok(kn9t_core::Chunk::Text { idx: 0, delta: "title".into() }),
-                        Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "write".into(), id: "m1".into() } })),
-                        Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
-                    ].into_iter()));
-                }
-                let n = { let mut c = self.calls.lock().unwrap(); let n = *c; *c += 1; n };
-                if n % 2 == 0 {
-                    let args = serde_json::json!({"path":"/tmp/foo"}).to_string();
-                    Ok(Box::new(vec![
-                        Ok(kn9t_core::Chunk::ToolCall { idx: 0, id: kn9t_core::CallId("call_1".into()), name: "write".into() }),
-                        Ok(kn9t_core::Chunk::ToolArgs { idx: 0, delta: args }),
-                        Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "write".into(), id: "m1".into() } })),
-                        Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::ToolUse)),
-                    ].into_iter()))
-                } else {
-                    Ok(Box::new(vec![
-                        Ok(kn9t_core::Chunk::Text { idx: 0, delta: "done".into() }),
-                        Ok(kn9t_core::Chunk::Usage(kn9t_core::Usage { tokens: kn9t_core::Tokens::default(), model: kn9t_core::ModelRef { provider: "write".into(), id: "m1".into() } })),
-                        Ok(kn9t_core::Chunk::Stop(kn9t_core::StopReason::Stop)),
-                    ].into_iter()))
-                }
-            }
-        }
-        Arc::new(WriteProvider { calls: Arc::new(Mutex::new(0)) }) as Arc<dyn kn9t_core::Provider>
-    });
-    state.model_registry = vec![model_spec()];
-    let state = Arc::new(state);
-    let h = start(state.clone());
-    let sid = make_session(&h);
-    let lease = acquire_lease(&h, &sid);
-    let sub = state.buses.subscribe(&sid, 64);
-    let r = req_auth(&h, "POST", &format!("/session/{sid}/prompt"), &[("X-Lease", lease.as_str())], serde_json::json!({"text":"write"}));
-    assert_eq!(r.status, 200);
-    let mut found = None;
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if let Some(ev) = sub.recv_timeout(Duration::from_millis(200)) {
-            if let Event::ApprovalRequest { id, tool, .. } = ev { if tool == "write" { found = Some(id); break; } }
-        }
-    }
-    assert!(found.is_some(), "write with FsWrite must be Ask and prompt");
-    let aid = found.unwrap();
-    let r = req_auth(&h, "POST", "/approve", &[("X-Lease", lease.as_str()), ("X-Lease-Session", sid.as_str())], serde_json::json!({"id": aid.0, "decision": "allow", "scope": "once"}));
-    assert_eq!(r.status, 200);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while kn9t_server::turn::is_turn_running(&sid) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
-    assert!(!kn9t_server::turn::is_turn_running(&sid));
-    h.handle.shutdown();
-}
 
 // ── abort_then_prompt_race ────────────────────────────────────────────────────
 

@@ -227,16 +227,10 @@ pub fn extract_tools_public(host: &Arc<PluginHost>) -> Vec<Arc<dyn Tool>> {
 
 /// Extract RemoteTool wrappers from a PluginHost.
 fn extract_tools(host: &Arc<PluginHost>) -> Vec<Arc<dyn Tool>> {
+    // PluginDeclaration.tools is already Vec<kn9t_core::ToolSpec>, so no conversion needed
     host.declaration.tools.iter()
         .map(|spec| {
-            let tool_spec = kn9t_core::ToolSpec {
-                name: spec.name.clone(),
-                description: spec.description.clone(),
-                schema: spec.schema.clone(),
-                hidden: spec.hidden,
-                effects: spec.effects.clone(),
-            };
-            Arc::new(RemoteTool::new(tool_spec, host.clone())) as Arc<dyn Tool>
+            Arc::new(RemoteTool::new(spec.clone(), host.clone())) as Arc<dyn Tool>
         })
         .collect()
 }

@@ -1,4 +1,4 @@
-﻿//! Stage-03 ReAct acceptance tests (`rct::*`). Names match `spec/03-react-tools.md`.
+//! Stage-03 ReAct acceptance tests (`rct::*`). Names match `spec/03-react-tools.md`.
 //! Everything is driven by the replay provider over synthetic native fixtures: no network,
 //! no API key, no spend.
 
@@ -71,7 +71,7 @@ fn turn_sequence() {
     let looop = ReactLoop {
         provider,
         store: store.clone(),
-        policy: Arc::new(AllowAll),
+        approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
         bus: bus.clone(),
@@ -131,7 +131,7 @@ fn cancel_boundary() {
     let looop = ReactLoop {
         provider,
         store: store.clone(),
-        policy: Arc::new(AllowAll),
+        approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
         bus,
@@ -171,7 +171,7 @@ fn abort_in_stream() {
     let looop = ReactLoop {
         provider,
         store: store.clone(),
-        policy: Arc::new(AllowAll),
+        approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
         bus,
@@ -244,7 +244,7 @@ fn abort_in_tools() {
     let looop = ReactLoop {
         provider,
         store: store.clone(),
-        policy: Arc::new(AllowAll),
+        approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
         bus,
@@ -339,7 +339,7 @@ fn external_cancel_during_tool_execution() {
     let looop = ReactLoop {
         provider,
         store: store.clone(),
-        policy: Arc::new(AllowAll),
+        approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
         bus: bus.clone(),
@@ -476,7 +476,7 @@ fn truncation_ladder() {
     let looop = ReactLoop {
         provider: provider.clone(),
         store: store.clone(),
-        policy: Arc::new(AllowAll),
+        approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
         bus,
@@ -500,7 +500,7 @@ fn truncation_gives_up() {
     let looop = ReactLoop {
         provider,
         store: store.clone(),
-        policy: Arc::new(AllowAll),
+        approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
         bus: bus.clone(),
@@ -537,7 +537,7 @@ fn compaction_replan_once() {
     let looop = ReactLoop {
         provider: provider.clone(),
         store: store.clone(),
-        policy: Arc::new(AllowAll),
+        approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
         bus: bus.clone(),
@@ -589,7 +589,7 @@ fn hook_posture() {
     let looop = ReactLoop {
         provider,
         store: store.clone(),
-        policy: Arc::new(AllowAll),
+        approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(PanicHooks),
         bus: bus.clone(),
@@ -717,7 +717,7 @@ fn parallel_order() {
     let looop = ReactLoop {
         provider,
         store: store.clone(),
-        policy: Arc::new(AllowAll),
+        approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
         bus,
@@ -811,7 +811,7 @@ fn tool_result_not_double_wrapped() {
     let looop = ReactLoop {
         provider,
         store: store.clone(),
-        policy: Arc::new(AllowAll),
+        approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
         bus,
@@ -952,7 +952,7 @@ fn tool_output_reaches_second_provider_call() {
     let looop = ReactLoop {
         provider,
         store: store.clone() as Arc<dyn Store>,
-        policy: Arc::new(AllowAll),
+        approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
         bus,

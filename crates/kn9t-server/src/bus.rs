@@ -10,7 +10,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use kn9t_core::{Bus, Event, EventSink, Subscription};
+use kn9t_core::{Bus, Content, Event, EventSink, Role, SessionId, Subscription};
+use kn9t_store::SqliteStore;
 
 /// Registry of per-session buses, created lazily on first subscribe/publish.
 pub struct SessionBuses {
@@ -58,18 +59,61 @@ impl Default for SessionBuses {
 /// An [`EventSink`] bound to one session, so the ReAct loop (which takes an
 /// `Arc<dyn EventSink>`) publishes onto that session's bus. Cloning the
 /// `Arc<Bus>` up front keeps `emit` lock-free at the registry level.
+///
+/// R-STOR-116: the sink is also where in-flight tool progress is persisted. The loop
+/// cannot do it — it owns only trait objects (GI-1) and `Store` has no live-scratch
+/// methods — but the sink already sees every `ToolStarted`/`ToolProgress`, and the server
+/// is the one component allowed to name `SqliteStore` (GI-1 exception, `state.rs`). So the
+/// salvage path is a side effect of publishing, with no new seam.
 pub struct SessionSink {
     bus: Arc<Bus>,
+    /// `None` in tests that only need the bus.
+    store: Option<Arc<SqliteStore>>,
+    session: SessionId,
 }
 
 impl SessionSink {
     pub fn new(bus: Arc<Bus>) -> Self {
-        SessionSink { bus }
+        SessionSink { bus, store: None, session: SessionId(String::new()) }
+    }
+
+    /// R-STOR-116 — a sink that also salvages tool progress for `session`.
+    pub fn with_store(bus: Arc<Bus>, store: Arc<SqliteStore>, session: SessionId) -> Self {
+        SessionSink { bus, store: Some(store), session }
+    }
+
+    /// Persist what a crash would otherwise lose. Every failure here is swallowed: this is
+    /// non-canonical scratch (R-STOR-116), and a write error must never break the turn that
+    /// is actually producing the output.
+    fn salvage(&self, e: &Event) {
+        let Some(store) = &self.store else { return };
+        match e {
+            Event::ToolStarted { call_id, name } => {
+                let _ = store.begin_live_tool_call(&self.session, call_id, name);
+            }
+            Event::ToolProgress { call_id, note } => {
+                let _ = store.append_live_tool_progress(&self.session, call_id, note);
+            }
+            // The authoritative result is now durable, so the salvage copy is redundant.
+            // Keyed on `MessageAppended`, not `ToolFinished`: a call can finish and still
+            // lose its result if the process dies before the batch's tool-role message is
+            // appended (`turn.rs` appends once per batch), which is the exact window
+            // R-STOR-115 exists to cover.
+            Event::MessageAppended { msg, .. } if msg.role == Role::Tool => {
+                for c in &msg.content {
+                    if let Content::ToolResult { id, .. } = c {
+                        let _ = store.end_live_tool_call(&self.session, id);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
 impl EventSink for SessionSink {
     fn emit(&self, e: Event) {
+        self.salvage(&e);
         self.bus.emit(e);
     }
 }

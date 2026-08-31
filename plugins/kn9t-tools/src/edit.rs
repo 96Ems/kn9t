@@ -8,7 +8,7 @@
 //! - Fuzzy matching handles smart quotes, dashes, special spaces
 //! - Context-aware error messages
 
-use kn9t_plugin_sdk::{ctx::ToolCallCtx, traits::{PluginTool, ToolOutput}, wire::{Effect, EffectKind, ToolSpec}};
+use kn9t_plugin_sdk::{ctx::ToolCallCtx, traits::{PluginTool, ToolOutput}, wire::{DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec}};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -250,6 +250,13 @@ impl PluginTool for Edit {
             parallel_safe: false,
             hidden: false,
             effects: vec![Effect { field: "path".into(), kind: EffectKind::FsWrite }],
+            // Edit requires approval — Ask by default
+            policy: ToolPolicy {
+                pattern_field: Some("path".into()),
+                default_policy: DefaultPolicy::Ask,
+                builtin_allow: vec![],
+                builtin_deny: vec![],
+            },
         }
     }
 

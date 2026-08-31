@@ -174,12 +174,21 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
         state.store.register_model_spec(model.clone());
 
         let bus = state.buses.bus_for(&session.0);
-        let sink: Arc<dyn EventSink> = Arc::new(SessionSink::new(bus.clone()));
+        // R-STOR-116: salvage in-flight tool progress so a crash mid-batch still leaves
+        // usable content for R-STOR-115's synthesized result.
+        let sink: Arc<dyn EventSink> = Arc::new(SessionSink::with_store(
+            bus.clone(),
+            state.store.clone(),
+            session.clone(),
+        ));
 
         // Compose hooks from all plugins (R-PLUG-060).
         // Each plugin host gets a reference to the bus and session for emitting events.
         let hosts = state.hosts_snapshot();
-        let hooks: Arc<dyn HookHost> = if hosts.is_empty() {
+        // ADR-0008: a test may install hooks in-process rather than spawning a policy plugin.
+        let hooks: Arc<dyn HookHost> = if let Some(h) = state.hooks_override_snapshot() {
+            h
+        } else if hosts.is_empty() {
             Arc::new(kn9t_core::NoopHookHost)
         } else {
             // Set the bus and session on each plugin host
@@ -193,7 +202,7 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
         let loop_ = ReactLoop {
             provider: provider.clone(),
             store: state.store.clone(),
-            policy: state.policy.clone(),
+            approver: state.approver_snapshot(),
             tools: state.tools_snapshot(),  // R-PLUG2-110: tools from plugin subprocess
             hooks,
             bus: sink.clone(),

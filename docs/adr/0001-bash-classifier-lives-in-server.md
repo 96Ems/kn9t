@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Superseded by ADR-0008 (2026-08-31) — the classifier leaves the server entirely; risk
+decisions move to a user-installed policy plugin via the `before_tool_call` hook.
 
 ## Date
 

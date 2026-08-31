@@ -114,6 +114,46 @@ pub struct Effect {
     pub kind: EffectKind,
 }
 
+/// Default policy when no user config exists for this tool.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DefaultPolicy {
+    /// Safe tool, auto-allow without prompting (e.g. "read", "glob", "grep").
+    Allow,
+    /// Needs user approval by default (most tools).
+    #[default]
+    Ask,
+    /// Blocked unless explicitly allowed in user config.
+    Deny,
+}
+
+/// Policy declaration for a tool. Plugins declare this to control approval behavior
+/// without hardcoding tool names in the server.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolPolicy {
+    /// Field to extract from args for pattern matching.
+    /// e.g. "cmd" for bash, "path" for read/write, "url" for web_fetch.
+    /// If None, the tool doesn't support pattern matching.
+    #[serde(default)]
+    pub pattern_field: Option<String>,
+    
+    /// Default policy when no user config exists.
+    #[serde(default)]
+    pub default_policy: DefaultPolicy,
+    
+    /// Built-in allow patterns declared by the tool author.
+    /// These are checked AFTER user deny patterns but BEFORE user allow patterns,
+    /// so users can override them. Example: `["git log *", "git status *"]` for a git tool.
+    #[serde(default)]
+    pub builtin_allow: Vec<String>,
+    
+    /// Built-in deny patterns (always deny, even if user allows).
+    /// Example: `["rm -rf /", "sudo *"]` for bash.
+    /// These are "hard deny" — no approval prompt, just rejected.
+    #[serde(default)]
+    pub builtin_deny: Vec<String>,
+}
+
 /// Tool declaration sent in the plugin hello.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {
@@ -135,6 +175,10 @@ pub struct ToolSpec {
     /// Declared effects (ADR-0002). Empty → strictest policy default.
     #[serde(default)]
     pub effects: Vec<Effect>,
+    /// Policy declaration — controls approval behavior.
+    /// If absent, uses `DefaultPolicy::Ask` with no pattern matching.
+    #[serde(default)]
+    pub policy: ToolPolicy,
 }
 
 /// Provider declaration sent in the plugin hello.

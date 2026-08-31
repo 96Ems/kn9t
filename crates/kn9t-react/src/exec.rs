@@ -1,4 +1,4 @@
-//! Provider attempt + tool batch + store/hook helpers for [`ReactLoop`] (R-RCT-020..130).
+﻿//! Provider attempt + tool batch + store/hook helpers for [`ReactLoop`] (R-RCT-020..130).
 
 use std::thread;
 
@@ -32,7 +32,7 @@ impl ReactLoop {
             *replans += 1;
             // Emit compaction retry so TUI spinner shows honest phase (fix 4.2: emit after increment)
             self.bus.emit(Event::RetryAttempt { attempt: *replans, max: params.config.max_context_replans, error: "context_overflow".into(), delay_ms: 0, retry_kind: "compaction".into() });
-            self.bus.emit(Event::TurnStatus { phase: "retrying".into(), message: format!("context overflow — compaction replan {}/{}", *replans, params.config.max_context_replans) });
+            self.bus.emit(Event::TurnStatus { phase: "retrying".into(), message: format!("context overflow â€” compaction replan {}/{}", *replans, params.config.max_context_replans) });
             if *replans > params.config.max_context_replans {
                 return Err(ReactError::CompactionLoop);
             }
@@ -173,14 +173,14 @@ impl ReactLoop {
     /// R-RCT-130 / DESIGN sec.11.2: run one tool batch. `parallel_safe` tools may run on OS
     /// threads; unsafe tools run sequentially. Results are returned in the model's call
     /// order regardless of completion order. Each call passes before_tool_call (fail
-    /// closed) then policy.check, then executes, then after_tool_call.
+    /// closed) which decides allow/ask/deny, then executes, then after_tool_call.
     pub(crate) fn run_tool_batch(
         &self,
         params: &RunParams,
         calls: &[ToolCall],
         cancel: &Cancel,
     ) -> Vec<Content> {
-        // Decide each call up front (hooks + policy) preserving order; then execute.
+        // Decide each call up front (hooks, ADR-0008) preserving order; then execute.
         let mut plans: Vec<CallPlan> = Vec::with_capacity(calls.len());
         for call in calls {
             plans.push(self.authorize(params, call));
@@ -293,9 +293,16 @@ impl ReactLoop {
         }
     }
 
-    /// before_tool_call (first-deny-wins, fail closed) then policy.check.
+    /// ADR-0008 â€” the policy plugin decides, this routes. `before_tool_call` yields
+    /// `Allow`/`Ask`/`Deny`/`Replace` (strictest-wins across plugins, `composed.rs`) and
+    /// kn9t no longer re-derives a verdict of its own: there is no classifier and no
+    /// effects combiner left. `Ask` is handed to the `Approver`, which owns the prompt.
+    ///
+    /// Failure posture (DESIGN Â§13.5) is unchanged: a hook that errors or times out yields
+    /// `Deny` â€” a policy that cannot answer is not permission. That is distinct from *no
+    /// policy installed*, which yields `Allow` (ADR-0008 decision 5).
     fn authorize(&self, params: &RunParams, call: &ToolCall) -> CallPlan {
-        // §4.1 treats `args_json` as cache-critical verbatim provider bytes, so a parse
+        // Â§4.1 treats `args_json` as cache-critical verbatim provider bytes, so a parse
         // failure here is a real defect (provider sent malformed JSON, or the bytes were
         // corrupted in transit). Surface it instead of silently substituting Null, which
         // would present the tool with empty args and produce a confusing downstream error.
@@ -312,31 +319,42 @@ impl ReactLoop {
             }
         };
         match self.hook_before_tool_call(&call.name, &args, &params.cwd) {
-            HookVeto::Deny { reason } => return CallPlan::Deny(reason),
-            HookVeto::Replace { args: new_args } => {
-                return self.after_hook_policy(params, call, new_args)
-            }
-            HookVeto::Allow => {}
+            HookVeto::Allow => CallPlan::Execute { args },
+            HookVeto::Deny { reason } => CallPlan::Deny(reason),
+            HookVeto::Ask { reason } => self.request_approval(params, call, args, &reason),
+            // `Replace` permits the call with rewritten arguments. The plugin that rewrote
+            // them has already judged them, so this does not re-ask.
+            HookVeto::Replace { args: new_args } => CallPlan::Execute { args: new_args },
         }
-        self.after_hook_policy(params, call, args)
     }
 
-    fn after_hook_policy(
+    /// ADR-0008 â€” hand an `Ask` to the approval mechanism and translate the user's answer.
+    ///
+    /// The `Approver` blocks this thread until `POST /approve` arrives (or the scope cache
+    /// answers immediately), so no polling and no extra state machine here.
+    fn request_approval(
         &self,
         params: &RunParams,
         call: &ToolCall,
         args: serde_json::Value,
+        reason: &str,
     ) -> CallPlan {
+        // The approver echoes the call back to the user, so give it the arguments actually
+        // being dispatched (a `Replace` may have rewritten them). Local to this request and
+        // never persisted, so re-serializing here cannot disturb the cached prefix
+        // (R-CORE-062 concerns the durable `args_json`, not this view).
         let dispatch = ToolCall {
             id: call.id.clone(),
             name: call.name.clone(),
             args_json: args.to_string(),
         };
-        match self.policy.check(&dispatch, &params.cwd) {
+        match self.approver.request(&dispatch, &params.cwd, reason) {
             Decision::Allow => CallPlan::Execute { args },
             Decision::Deny { reason } => CallPlan::Deny(reason),
-            Decision::Ask => CallPlan::Deny("approval required".to_string()),
             Decision::HardDeny { reason } => CallPlan::Deny(reason),
+            // The approver resolves `Ask` internally; seeing it here means no answer could
+            // be obtained (no sink, non-interactive run). Fail closed.
+            Decision::Ask => CallPlan::Deny("approval required".to_string()),
         }
     }
 }

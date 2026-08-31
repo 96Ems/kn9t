@@ -1,7 +1,10 @@
 # ADR-0006: Policy is the single safety seam
 
 ## Status
-Accepted
+Superseded by ADR-0008 (2026-08-31) — the risk seam moved to the `before_tool_call` hook.
+The approval *mechanism* described below (`ApprovalRegistry`, `ApprovalCache`,
+`Event::ApprovalRequest`, `POST /approve`, `once|session|always`) survives unchanged; the
+*decision* no longer happens in the server.
 
 ## Date
 2026-08-31

@@ -2,7 +2,7 @@
 //!
 //! Composition classes:
 //! - pipeline: B sees A's output (before_request, after_tool_call, prepare_next_turn)
-//! - veto: first deny wins, short-circuit (before_tool_call)
+//! - veto: strictest wins (`Deny > Ask > Allow`), ADR-0008 (before_tool_call)
 //! - collect: concat in declared order, host-queue first (get_steering, get_followup)
 //! - any-says-stop: should_stop_after_turn
 //! - first-non-null: get_api_key
@@ -28,17 +28,26 @@ impl ComposedHookHost {
 }
 
 impl HookHost for ComposedHookHost {
-    /// Veto composition: first deny wins, short-circuit.
+    /// Veto composition: **strictest wins** (`Deny > Ask > Allow`), ADR-0008.
+    ///
+    /// Not first-deny-wins: with `Ask` in the vocabulary, short-circuiting would make the
+    /// outcome depend on plugin load order (an early `Ask` would mask a later `Deny`). Every
+    /// plugin is therefore consulted and the most restrictive reply wins.
+    ///
+    /// `Replace` is the exception that still short-circuits: it rewrites the arguments every
+    /// subsequent plugin would be judging, so continuing would consult them on stale input.
     fn before_tool_call(&self, tool: &str, args: &serde_json::Value, cwd: &Path) -> HookVeto {
+        let mut strictest = HookVeto::Allow;
         for plugin in &self.plugins {
             let result = plugin.before_tool_call(tool, args, cwd);
-            match &result {
-                HookVeto::Allow => continue,
-                HookVeto::Deny { .. } => return result,
-                HookVeto::Replace { .. } => return result,
+            if matches!(result, HookVeto::Replace { .. }) {
+                return result;
+            }
+            if result.severity() > strictest.severity() {
+                strictest = result;
             }
         }
-        HookVeto::Allow
+        strictest
     }
 
     /// Pipeline composition: each plugin sees the previous plugin's output.

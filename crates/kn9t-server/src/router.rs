@@ -205,6 +205,9 @@ fn route(
             let value = String::from_utf8_lossy(&body).to_string();
             routes::pref::set(state, key, &value).into()
         }
+        
+        // ── policy info (ADR-0008: plugin decides, server routes) ──
+        (Method::Get, ["policy"]) => routes::policy::get_state(state).into(),
 
         // ── server control ──
         (Method::Post, ["stop"]) => {

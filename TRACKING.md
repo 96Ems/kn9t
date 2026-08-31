@@ -12,11 +12,22 @@ Legend: `☐` pending · `▣` in progress · `☑` done (acceptance test passin
 
 **Stage:** PLAN.md post-v1 improvements (P1–P4 complete). Architecture cleanup 2026-08-30,
 Phase 0–2 done (docs scaffolding, classifier+approvals, schema-first API contract).
-**Last gate green:** stage 09 — R-CP-900 / R-ANTH-900 green. **G1 restored 2026-08-31** — the bash classifier lives in `crates/kn9t-server/src/classify.rs` (ADR-0001, 333 lines, two grammars, 7-rule pipeline), tests `cargo test -p kn9t-server --test classify` 3 passed (`classify_posix`, `classify_pwsh`, `classify_pipeline`) + `policy::*` 8 passed; R-TOOL-070/080/090/095 now green.
-`cargo test --workspace`: **398 passed, 0 failed**, plus the external `plugins/kn9t-custom-provider`
-crate: **26 passed, 0 failed** (run separately — it is no longer a workspace member;
-`cd plugins/kn9t-custom-provider && cargo test`). **424 total.**
-Verified 2026-08-31 via `cargo test --workspace` (398) + `cargo test -p kn9t-server --test classify` (3) + `check-gi1.sh` + `check-schema.sh`.
+**Last gate green:** stage 09 — R-CP-900 / R-ANTH-900 green. **ADR-0008 landed 2026-08-31** — policy
+judgement moved out of the server into a user-installed plugin. `crates/kn9t-server/src/classify.rs`
+(333 lines) and `tests/classify.rs` are **deleted**, superseding the "G1 restored" note that stood
+here: the classifier no longer exists, so R-TOOL-070/080/090/095 no longer describe the code and are
+**SPEC-STALE** pending rewrite (see CHANGELOG "Left undone" #1). The surviving mechanism
+(`ApprovalRegistry`, `ApprovalCache`, `POST /approve`, `once|session|always`) is covered by
+`policy::*` 11 passed + `srv::approve_*` 5 passed.
+`cargo test --workspace`: **387 passed, 1 failed** (`srv::plugin_reload` — hardcoded Windows-harness
+`panic!`, pre-existing). The count dropped from 398 because ADR-0008 deleted the classifier tests
+(3) and the judgement tests that exercised `[policy.bash]` / modes / `ToolPolicy` patterns; the
+approval-*mechanism* tests were rewritten, not dropped. Plus the external
+`plugins/kn9t-custom-provider` crate: **26 passed, 0 failed** (run separately — it is no longer a
+workspace member; `cd plugins/kn9t-custom-provider && cargo test`).
+Verified 2026-08-31 via `cargo test --workspace --no-fail-fast` + `cargo run -p xtask -- generate`
+(schema regenerated, Go/Python stubs committed) + GI-1 dependency check.
+Known flake, unrelated: `cancel::tests::test_wait_timeout_returns_false_on_timeout` fails ~1 run in 3.
 **v1 e2e fully verified:** `kn9t chat` → server → ReAct loop → `kn9t-tools` + `kn9t-custom-provider`. Date: 2026-08-27.
 **PLAN.md progress:**
 - P1-A bootstrap ☑ — `~/.kn9t/` auto-created on first run (config.toml template + token).

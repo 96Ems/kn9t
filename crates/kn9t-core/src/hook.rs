@@ -14,14 +14,34 @@ use crate::usage::{StopReason, Usage};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// R-RCT-100 — reply of the `before_tool_call` veto hook (DESIGN §13.3).
-/// `Replace` swaps the tool arguments before dispatch.
+/// R-RCT-100 — reply of the `before_tool_call` veto hook (DESIGN §13.3, ADR-0008).
+/// `Replace` swaps the tool arguments before dispatch; `Ask` escalates to the user via the
+/// server's approval mechanism (`Event::ApprovalRequest` + `POST /approve`).
+///
+/// ADR-0008 makes this the single risk seam: a policy plugin decides, the core routes. The
+/// variants are deliberately a superset of the retired `Decision`, so no judgement has to be
+/// re-derived inside kn9t.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum HookVeto {
     Allow,
+    Ask { reason: String },
     Deny { reason: String },
     Replace { args: serde_json::Value },
+}
+
+impl HookVeto {
+    /// ADR-0008 — strictest-wins ordering for composing replies from several plugins:
+    /// `Deny > Ask > Allow`. Deliberately not first-deny-wins, so plugin load order cannot
+    /// change the outcome. `Replace` ranks with `Allow` (it permits the call, with edited
+    /// arguments); a later `Ask`/`Deny` still overrides it.
+    pub fn severity(&self) -> u8 {
+        match self {
+            HookVeto::Allow | HookVeto::Replace { .. } => 0,
+            HookVeto::Ask { .. } => 1,
+            HookVeto::Deny { .. } => 2,
+        }
+    }
 }
 
 /// R-RCT-100 — reply of `prepare_next_turn`: an optional model / thinking patch applied

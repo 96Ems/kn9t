@@ -3,7 +3,7 @@
 //! For new files: creates the file and emits content as diff-style additions.
 //! For existing files: requires prior read (like edit) to prevent accidental overwrites.
 
-use kn9t_plugin_sdk::{ctx::ToolCallCtx, traits::{PluginTool, ToolOutput}, wire::{Effect, EffectKind, ToolSpec}};
+use kn9t_plugin_sdk::{ctx::ToolCallCtx, traits::{PluginTool, ToolOutput}, wire::{DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec}};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -31,6 +31,13 @@ impl PluginTool for Write {
             parallel_safe: false,
             hidden: false,
             effects: vec![Effect { field: "path".into(), kind: EffectKind::FsWrite }],
+            // Write requires approval — Ask by default
+            policy: ToolPolicy {
+                pattern_field: Some("path".into()),
+                default_policy: DefaultPolicy::Ask,
+                builtin_allow: vec![],
+                builtin_deny: vec![],
+            },
         }
     }
 

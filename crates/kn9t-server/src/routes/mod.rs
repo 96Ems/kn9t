@@ -6,6 +6,7 @@ pub mod blob;
 pub mod cost;
 pub mod models;
 pub mod plugin;
+pub mod policy;
 pub mod pref;
 pub mod session;
 pub mod tools;

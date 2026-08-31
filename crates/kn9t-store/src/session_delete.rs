@@ -50,7 +50,7 @@ impl SqliteStore {
             })?;
         }
 
-        for table in &["events", "messages", "usage", "live_messages"] {
+        for table in &["events", "messages", "usage", "live_messages", "live_tool_calls"] {
             conn.execute(
                 &format!("DELETE FROM {table} WHERE session_id=?1"),
                 params![sid],

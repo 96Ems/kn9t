@@ -1,13 +1,18 @@
-//! R-TOOL-070 / R-TOOL-090 / DESIGN §10 — ConfigPolicy + InteractivePolicy.
+//! DESIGN §10 → ADR-0008 — the approval **mechanism**.
 //!
-//! `AllowPolicy` (in `state.rs`) is the permissive wiring default. The real
-//! seam is three adapters:
-//! - `ConfigPolicy` — instant verdict from `BashPolicy`, no blocking.
-//! - `InteractivePolicy` — emits `Event::ApprovalRequest` to the session bus,
-//!   then blocks on a condvar until `POST /approve` resolves it (command path,
-//!   never the bus — DESIGN §10, Principle 3).
+//! This module used to decide risk (`ConfigPolicy`, `InteractivePolicy`, `dispatch_policy`,
+//! and a shell classifier). ADR-0008 moved that judgement to a user-installed policy plugin,
+//! which answers `before_tool_call` with `HookVeto::Allow|Ask|Deny|Replace`. Nothing here
+//! judges a tool call any more.
 //!
-//! The classifier lives in `classify.rs` (ADR-0001: server owns approval).
+//! What remains is the part a plugin subprocess cannot own, because it needs the session bus,
+//! the write lease and the user's config file:
+//! - `ApprovalRegistry` — id → slot, resolved by `POST /approve` (command path, never the
+//!   bus — DESIGN §10, Principle 3).
+//! - `ApprovalCache` — `once|session|always` scopes, `always` persisted to
+//!   `[policy.approvals]` in `~/.kn9t/config.toml`.
+//! - `InteractiveApprover` / `NonInteractiveApprover` — the two `Approver` adapters that
+//!   turn a plugin's `Ask` into a `Decision`.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -15,13 +20,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use kn9t_core::{ApprovalId, Decision, EffectKind, Event, EventSink, Policy, ToolCall, ToolRegistry};
-
-use crate::classify::{classify, BashPolicy, Classification, Shell};
+use kn9t_core::{ApprovalId, Approver, Decision, Event, EventSink, ToolCall};
 
 // ── Thread-local sink ────────────────────────────────────────────────────────
+// `Approver::request` has no session parameter (R-CORE-270), so the per-turn `SessionSink`
+// is threaded via TLS: the globally-shared approver emits to the correct session bus without
+// widening the trait. Set for the duration of `turn::spawn_turn`'s loop thread.
 // `Policy::check` is `(&self, call, cwd) -> Decision` with no session param
-// (DESIGN §10, R-CORE-270). The per-turn `SessionSink` is threaded via TLS so
+// (DESIGN Â§10, R-CORE-270). The per-turn `SessionSink` is threaded via TLS so
 // the globally-shared `InteractivePolicy` can emit to the correct session bus
 // without changing the trait signature. The value is set for the duration of
 // `turn::spawn_turn`'s loop thread.
@@ -73,7 +79,7 @@ where
     r
 }
 
-// ── Fingerprint ──────────────────────────────────────────────────────────────
+// â”€â”€ Fingerprint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /// Canonical fingerprint for a tool call, used for session/always caching.
 /// For `bash` we use the extracted `cmd` string; for other tools the raw args.
 pub fn fingerprint(call: &ToolCall) -> String {
@@ -85,7 +91,7 @@ pub fn fingerprint(call: &ToolCall) -> String {
     format!("{}:{}", call.name, call.args_json)
 }
 
-// ── ApprovalCache (session + persistent) ─────────────────────────────────────
+// â”€â”€ ApprovalCache (session + persistent) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// In-memory + on-disk cache for `scope=session` and `scope=always` approvals.
 /// `HardDeny` is never cached (see `InteractivePolicy::check`).
@@ -213,7 +219,7 @@ impl ApprovalCache {
     }
 }
 
-// ── Approval registry (command-path resolution) ─────────────────────────────
+// â”€â”€ Approval registry (command-path resolution) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 struct ApprovalSlot {
     decision: Mutex<Option<Decision>>,
@@ -309,7 +315,7 @@ impl ApprovalRegistry {
     }
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 static NEXT_APPROVAL_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -328,199 +334,104 @@ fn extract_cmd(args_json: &str) -> Option<String> {
     None
 }
 
-// ── Helpers for effects ───────────────────────────────────────────────────────
-fn extract_field(args_json: &str, field: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(args_json).ok()?;
-    // Support JSON pointer with leading "/" or bare top-level key
-    let key = field.strip_prefix('/').unwrap_or(field);
-    // For simplicity support only top-level key (no nested) and also handle
-    // JSON pointer with "/" splits for one level.
-    let first = key.split('/').next().unwrap_or(key);
-    v.get(first).and_then(|x| x.as_str()).map(|s| s.to_string())
-}
+// â”€â”€ Approver (ADR-0008) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-/// Evaluate a single effect kind for a tool call. Returns the Decision for that effect.
-fn eval_effect(kind: &EffectKind, args_json: &str, field: &str, bash: &BashPolicy) -> Decision {
-    match kind {
-        EffectKind::Shell => {
-            let cmd = match extract_field(args_json, field) {
-                Some(c) => c,
-                None => return Decision::Deny { reason: format!("missing field `{field}` for shell effect") },
-            };
-            match classify(&cmd, Shell::Posix, bash) {
-                Classification::AllowReadOnly => Decision::Allow,
-                Classification::Ask => Decision::Ask,
-                Classification::HardDeny(r) => Decision::HardDeny { reason: r },
-            }
-        }
-        EffectKind::FsRead => {
-            // Reads are safe by default; could add path allowlist later.
-            // For now, FsRead is Allow.
-            Decision::Allow
-        }
-        EffectKind::FsWrite => {
-            // Writes are gated as hard as bash (DESIGN §10). For now, any FsWrite is Ask.
-            // A missing field is treated as Ask (strict).
-            if extract_field(args_json, field).is_none() {
-                return Decision::Ask;
-            }
-            Decision::Ask
-        }
-        EffectKind::Network => Decision::Ask,
-    }
-}
-
-/// Core effects dispatch: look up tool spec via `tools` registry, evaluate each effect,
-/// and combine: HardDeny > Ask > Allow. Empty effects or unknown tool → strict Ask.
-fn dispatch_effects(call: &ToolCall, bash: &BashPolicy, tools: &ToolRegistry) -> Decision {
-    // If registry is empty (e.g., unit tests without tools), fallback to legacy bash-only logic
-    // so that `bash` still classifies correctly and non-bash is Allow. This keeps old tests green.
-    if tools.is_empty() {
-        if call.name == "bash" {
-            let cmd = match extract_cmd(&call.args_json) {
-                Some(c) => c,
-                None => return Decision::Deny { reason: "missing command".into() },
-            };
-            return match classify(&cmd, Shell::Posix, bash) {
-                Classification::AllowReadOnly => Decision::Allow,
-                Classification::Ask => Decision::Ask,
-                Classification::HardDeny(r) => Decision::HardDeny { reason: r },
-            };
-        } else {
-            return Decision::Allow;
-        }
-    }
-
-    // Non-empty registry: use declared effects
-    let spec = match tools.get(&call.name) {
-        Some(t) => t.spec(),
-        None => return Decision::Ask, // unknown tool → strict
-    };
-    if spec.effects.is_empty() {
-        // No effects declared → strictest default (ADR-0002)
-        return Decision::Ask;
-    }
-    let mut has_ask = false;
-    for eff in &spec.effects {
-        match eval_effect(&eff.kind, &call.args_json, &eff.field, bash) {
-            Decision::HardDeny { reason } => return Decision::HardDeny { reason },
-            Decision::Ask => has_ask = true,
-            Decision::Deny { reason } => return Decision::Deny { reason },
-            Decision::Allow => {}
-        }
-    }
-    if has_ask { Decision::Ask } else { Decision::Allow }
-}
-
-// ── ConfigPolicy ─────────────────────────────────────────────────────────────
-
-/// Instant, non-blocking policy. Used for `-p`/CI. A classifier `Ask` is
-/// mapped to a hard `Deny` (no prompt in non-interactive mode).
-pub struct ConfigPolicy {
-    pub bash: BashPolicy,
-    pub tools: ToolRegistry,
-}
-
-impl ConfigPolicy {
-    pub fn new(bash: BashPolicy) -> Self {
-        ConfigPolicy { bash, tools: ToolRegistry::default() }
-    }
-    pub fn with_tools(bash: BashPolicy, tools: ToolRegistry) -> Self {
-        ConfigPolicy { bash, tools }
-    }
-}
-
-impl Policy for ConfigPolicy {
-    fn check(&self, call: &ToolCall, _cwd: &Path) -> Decision {
-        match dispatch_effects(call, &self.bash, &self.tools) {
-            Decision::Ask => Decision::Deny { reason: "approval required".into() },
-            other => other,
-        }
-    }
-}
-
-// ── InteractivePolicy ────────────────────────────────────────────────────────
-
-/// Blocking policy: `Ask` emits `ApprovalRequest` and waits for
-/// `POST /approve` (command path), `HardDeny` never prompts.
+/// ADR-0008 â€” the approval **mechanism**. It does not decide anything.
 ///
-/// `scope=session` and `scope=always` approvals are cached in `ApprovalCache`
-/// (ADR-0001: server owns approval). `HardDeny` is never cached and never
-/// overridden, even by an always approval.
-pub struct InteractivePolicy {
-    pub bash: BashPolicy,
+/// Before ADR-0008 this type was `InteractivePolicy` and it did two jobs: judge the call
+/// (via `dispatch_policy`/`classify`) and, if the verdict was `Ask`, run the prompt. The
+/// judgement moved to a policy plugin (`HookVeto::Ask` on `before_tool_call`), so only the
+/// prompt remains â€” the part a subprocess cannot own, because it needs the session bus, the
+/// write lease and `~/.kn9t/config.toml`.
+///
+/// `request` is called only when a plugin already said "ask". It short-circuits on a cached
+/// approval (`once|session|always`), otherwise emits `Event::ApprovalRequest` and blocks the
+/// calling turn thread on a `Condvar` until `POST /approve` resolves it (command path, never
+/// the bus â€” DESIGN Â§10, Principle 3).
+pub struct InteractiveApprover {
     pub registry: Arc<ApprovalRegistry>,
     pub cache: Arc<ApprovalCache>,
-    pub tools: ToolRegistry,
 }
 
-impl InteractivePolicy {
-    pub fn new(bash: BashPolicy, registry: Arc<ApprovalRegistry>) -> Self {
+impl InteractiveApprover {
+    pub fn new(registry: Arc<ApprovalRegistry>) -> Self {
         let cache = Arc::new(ApprovalCache::new(crate::config::global_config_path()));
-        InteractivePolicy { bash, registry, cache, tools: ToolRegistry::default() }
+        InteractiveApprover { registry, cache }
     }
-    pub fn new_with_cache(bash: BashPolicy, registry: Arc<ApprovalRegistry>, cache: Arc<ApprovalCache>) -> Self {
-        InteractivePolicy { bash, registry, cache, tools: ToolRegistry::default() }
-    }
-    pub fn with_tools(bash: BashPolicy, registry: Arc<ApprovalRegistry>, cache: Arc<ApprovalCache>, tools: ToolRegistry) -> Self {
-        InteractivePolicy { bash, registry, cache, tools }
+
+    pub fn with_cache(registry: Arc<ApprovalRegistry>, cache: Arc<ApprovalCache>) -> Self {
+        InteractiveApprover { registry, cache }
     }
 }
 
-impl Policy for InteractivePolicy {
-    fn check(&self, call: &ToolCall, cwd: &Path) -> Decision {
-        let dispatch = dispatch_effects(call, &self.bash, &self.tools);
-        match dispatch {
-            Decision::HardDeny { reason } => return Decision::HardDeny { reason },
-            Decision::Allow => return Decision::Allow,
-            Decision::Deny { reason } => return Decision::Deny { reason },
-            Decision::Ask => {} // fall through to approval flow
-        }
-        // Ask — check caches before prompting.
+impl Approver for InteractiveApprover {
+    fn request(&self, call: &ToolCall, cwd: &Path, reason: &str) -> Decision {
+        // A previous `always`/`session` approval for the same fingerprint answers without
+        // troubling the user again.
         let fp = fingerprint(call);
         let session = get_policy_session();
         if self.cache.is_approved(session.as_deref(), &fp) {
             return Decision::Allow;
         }
-        // Not cached — emit ApprovalRequest and block.
+
         let id = NEXT_APPROVAL_ID.fetch_add(1, Ordering::SeqCst);
         let meta = ApprovalMeta {
-            fingerprint: fp.clone(),
-            session_id: session.clone().unwrap_or_default(),
+            fingerprint: fp,
+            session_id: session.unwrap_or_default(),
             tool: call.name.clone(),
         };
         let slot = self.registry.create(id, meta);
 
-        // Build the ApprovalRequest payload
         let args_val: serde_json::Value =
             serde_json::from_str(&call.args_json).unwrap_or(serde_json::Value::Null);
 
-        if let Some(sink) = get_policy_sink() {
-            sink.emit(Event::ApprovalRequest {
+        // No sink means nothing is listening (non-interactive run, or a turn outside
+        // `spawn_turn`): there is no one to ask, so fail closed rather than hang.
+        match get_policy_sink() {
+            Some(sink) => sink.emit(Event::ApprovalRequest {
                 id: ApprovalId(id),
                 tool: call.name.clone(),
                 args: args_val,
                 cwd: cwd.to_path_buf(),
-            });
-        } else {
-            self.registry.remove(id);
-            return Decision::Deny {
-                reason: "approval required (no sink)".into(),
-            };
+                reason: reason.to_string(),
+            }),
+            None => {
+                self.registry.remove(id);
+                return Decision::Deny { reason: "approval required (no sink)".into() };
+            }
         }
 
-        // Block until POST /approve resolves via ApprovalRegistry
+        // Blocks until `POST /approve` arrives. The human wait happens here, server-side,
+        // *after* the hook returned â€” so a user taking their time cannot trip the plugin's
+        // 30 s hook timeout (ADR-0008).
         let decision = self.registry.wait(slot);
         self.registry.remove(id);
         decision
     }
 }
 
-/// Always-deny policy for `mode = "deny_all"` (DESIGN §10.1).
-pub struct DenyAllPolicy;
-impl Policy for DenyAllPolicy {
-    fn check(&self, _call: &ToolCall, _cwd: &Path) -> Decision {
-        Decision::Deny { reason: "denied by policy mode deny_all".into() }
+/// ADR-0008 â€” the non-interactive approver: `-p` / CI, where no one can answer a prompt.
+/// A plugin's `Ask` becomes `Deny`, since an unanswerable question is not permission.
+/// Cached `always` approvals still apply, so a scripted run honours what the user already
+/// approved persistently.
+pub struct NonInteractiveApprover {
+    pub cache: Arc<ApprovalCache>,
+}
+
+impl NonInteractiveApprover {
+    pub fn new(cache: Arc<ApprovalCache>) -> Self {
+        NonInteractiveApprover { cache }
+    }
+}
+
+impl Approver for NonInteractiveApprover {
+    fn request(&self, call: &ToolCall, _cwd: &Path, reason: &str) -> Decision {
+        if self.cache.is_approved(get_policy_session().as_deref(), &fingerprint(call)) {
+            return Decision::Allow;
+        }
+        Decision::Deny {
+            reason: format!("approval required ({reason}) but session is non-interactive"),
+        }
     }
 }
 
@@ -548,178 +459,166 @@ mod tests {
         }
     }
 
-    #[test]
-    fn config_policy_allow_readonly() {
-        let p = ConfigPolicy::new(BashPolicy::default());
-        let d = p.check(&bash_call("ls"), Path::new("/"));
-        assert_eq!(d, Decision::Allow);
-    }
-
-    #[test]
-    fn config_policy_ask_maps_to_deny() {
-        let p = ConfigPolicy::new(BashPolicy::default());
-        // rm is in always_ask -> Ask -> Deny in ConfigPolicy
-        let d = p.check(&bash_call("rm -rf /"), Path::new("/"));
-        assert!(matches!(d, Decision::Deny { .. }));
-    }
-
-    #[test]
-    fn config_policy_hard_deny() {
-        let p = ConfigPolicy::new(BashPolicy::default());
-        let d = p.check(&bash_call("sudo rm -rf /"), Path::new("/"));
-        assert!(matches!(d, Decision::HardDeny { .. }));
-    }
-
-    #[test]
-    fn interactive_hard_deny_no_prompt() {
-        let reg = Arc::new(ApprovalRegistry::new());
-        let cache = Arc::new(ApprovalCache::new_empty());
-        let p = InteractivePolicy::new_with_cache(BashPolicy::default(), reg.clone(), cache);
-        let sink = Arc::new(RecordingSink::default());
-        // No need to set sink for HardDeny — should not emit
-        let d = with_policy_sink(sink.clone(), || p.check(&bash_call("sudo rm -rf /"), Path::new("/")));
-        assert!(matches!(d, Decision::HardDeny { .. }));
-        let evs = sink.events.lock().unwrap();
-        assert!(evs.is_empty(), "HardDeny must not emit ApprovalRequest, got {:?}", evs.len());
-    }
-
-    #[test]
-    fn interactive_ask_emits_and_blocks_until_resolved() {
-        let reg = Arc::new(ApprovalRegistry::new());
-        let cache = Arc::new(ApprovalCache::new_empty());
-        let p = Arc::new(InteractivePolicy::new_with_cache(BashPolicy::default(), reg.clone(), cache));
-        let sink = Arc::new(RecordingSink::default());
-
-        let sink_c = sink.clone();
-        let reg_c = reg.clone();
-        let p_c = p.clone();
-
-        // Spawn checker thread that will block on Ask
-        let handle = std::thread::spawn(move || {
-            with_policy_sink(sink_c, || p_c.check(&bash_call("rm -rf /"), Path::new("/")))
-        });
-
-        // Wait until ApprovalRequest appears (poll with timeout)
+    /// Poll until at least one event is recorded, or panic.
+    fn wait_for_event(sink: &RecordingSink, what: &str) -> u64 {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             {
                 let evs = sink.events.lock().unwrap();
-                if evs.iter().any(|e| matches!(e, Event::ApprovalRequest { .. })) {
-                    break;
+                if let Some(Event::ApprovalRequest { id, .. }) = evs.first() {
+                    return id.0;
                 }
             }
             if std::time::Instant::now() > deadline {
-                panic!("ApprovalRequest never emitted");
+                panic!("{what}: ApprovalRequest never emitted");
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-
-        // Resolve via registry (simulates POST /approve)
-        // Extract id from emitted event
-        let id = {
-            let evs = sink.events.lock().unwrap();
-            match &evs[0] {
-                Event::ApprovalRequest { id, .. } => id.0,
-                _ => panic!("wrong event"),
-            }
-        };
-        assert!(reg_c.resolve(id, Decision::Allow));
-
-        let decision = handle.join().unwrap();
-        assert_eq!(decision, Decision::Allow);
     }
 
+    // ── The mechanism: emit, block, resolve ──────────────────────────────────
+
+    /// ADR-0008 — an `Ask` from a policy plugin emits `ApprovalRequest`, blocks the calling
+    /// thread, and returns whatever `POST /approve` resolved (here: allow).
     #[test]
-    fn interactive_ask_resolves_to_deny() {
+    fn approver_emits_and_blocks_until_resolved() {
         let reg = Arc::new(ApprovalRegistry::new());
         let cache = Arc::new(ApprovalCache::new_empty());
-        let p = Arc::new(InteractivePolicy::new_with_cache(BashPolicy::default(), reg.clone(), cache));
+        let a = Arc::new(InteractiveApprover::with_cache(reg.clone(), cache));
         let sink = Arc::new(RecordingSink::default());
+
         let sink_c = sink.clone();
-        let reg_c = reg.clone();
-        let p_c = p.clone();
+        let a_c = a.clone();
         let handle = std::thread::spawn(move || {
-            with_policy_sink(sink_c, || p_c.check(&bash_call("sh -c 'rm -rf /'"), Path::new("/")))
+            with_policy_sink(sink_c, || {
+                a_c.request(&bash_call("rm -rf /"), Path::new("/"), "dangerous")
+            })
         });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            if !sink.events.lock().unwrap().is_empty() { break; }
-            if std::time::Instant::now() > deadline { panic!("no event"); }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let id = match &sink.events.lock().unwrap()[0] {
-            Event::ApprovalRequest { id, .. } => id.0,
-            _ => panic!(),
-        };
-        reg_c.resolve(id, Decision::Deny { reason: "nope".into() });
-        let d = handle.join().unwrap();
-        assert!(matches!(d, Decision::Deny { .. }));
+
+        let id = wait_for_event(&sink, "allow path");
+        assert!(reg.resolve(id, Decision::Allow));
+        assert_eq!(handle.join().unwrap(), Decision::Allow);
     }
 
+    /// The user's refusal is propagated verbatim, not softened.
     #[test]
-    fn interactive_allow_never_prompts() {
+    fn approver_propagates_deny() {
         let reg = Arc::new(ApprovalRegistry::new());
         let cache = Arc::new(ApprovalCache::new_empty());
-        let p = InteractivePolicy::new_with_cache(BashPolicy::default(), reg, cache);
+        let a = Arc::new(InteractiveApprover::with_cache(reg.clone(), cache));
         let sink = Arc::new(RecordingSink::default());
-        let d = with_policy_sink(sink.clone(), || p.check(&bash_call("cat foo.txt"), Path::new("/")));
-        assert_eq!(d, Decision::Allow);
-        assert!(sink.events.lock().unwrap().is_empty());
+
+        let sink_c = sink.clone();
+        let a_c = a.clone();
+        let handle = std::thread::spawn(move || {
+            with_policy_sink(sink_c, || {
+                a_c.request(&bash_call("rm -rf /"), Path::new("/"), "dangerous")
+            })
+        });
+
+        let id = wait_for_event(&sink, "deny path");
+        reg.resolve(id, Decision::Deny { reason: "nope".into() });
+        assert_eq!(handle.join().unwrap(), Decision::Deny { reason: "nope".into() });
     }
 
+    /// ADR-0008 — the plugin's `reason` reaches the prompt, so the user is told *why*.
+    #[test]
+    fn approver_forwards_plugin_reason() {
+        let reg = Arc::new(ApprovalRegistry::new());
+        let cache = Arc::new(ApprovalCache::new_empty());
+        let a = Arc::new(InteractiveApprover::with_cache(reg.clone(), cache));
+        let sink = Arc::new(RecordingSink::default());
+
+        let sink_c = sink.clone();
+        let a_c = a.clone();
+        let handle = std::thread::spawn(move || {
+            with_policy_sink(sink_c, || {
+                a_c.request(&bash_call("git push"), Path::new("/"), "not in ALLOW list")
+            })
+        });
+
+        let id = wait_for_event(&sink, "reason path");
+        let reason = match &sink.events.lock().unwrap()[0] {
+            Event::ApprovalRequest { reason, .. } => reason.clone(),
+            _ => panic!("wrong event"),
+        };
+        assert_eq!(reason, "not in ALLOW list");
+        reg.resolve(id, Decision::Allow);
+        let _ = handle.join();
+    }
+
+    /// With nobody listening there is no one to ask, so the call is denied rather than
+    /// hanging forever on a prompt no client will ever see.
+    #[test]
+    fn approver_without_sink_fails_closed() {
+        let reg = Arc::new(ApprovalRegistry::new());
+        let cache = Arc::new(ApprovalCache::new_empty());
+        let a = InteractiveApprover::with_cache(reg, cache);
+        // No `with_policy_sink` wrapper — TLS sink is unset.
+        let d = a.request(&bash_call("ls"), Path::new("/"), "because");
+        assert!(matches!(d, Decision::Deny { .. }), "no sink must deny, got {d:?}");
+    }
+
+    /// ADR-0008 — `-p`/CI cannot prompt, so an ask is denied outright. The reason is carried
+    /// through so the transcript explains the refusal.
+    #[test]
+    fn non_interactive_approver_denies_ask() {
+        let cache = Arc::new(ApprovalCache::new_empty());
+        let a = NonInteractiveApprover::new(cache);
+        match a.request(&bash_call("rm x"), Path::new("/"), "mutation") {
+            Decision::Deny { reason } => assert!(reason.contains("mutation")),
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    // ── Scope caching ────────────────────────────────────────────────────────
+
+    /// `scope=session`: the second identical call in the same session is not re-prompted,
+    /// but a different session still is.
     #[test]
     fn cache_session_allows_second_call_without_prompt() {
         let reg = Arc::new(ApprovalRegistry::new());
         let cache = Arc::new(ApprovalCache::new_empty());
-        let p = Arc::new(InteractivePolicy::new_with_cache(BashPolicy::default(), reg.clone(), cache.clone()));
+        let a = Arc::new(InteractiveApprover::with_cache(reg.clone(), cache.clone()));
         let sink = Arc::new(RecordingSink::default());
-        // First Ask
+
         let sink_c = sink.clone();
-        let p_c = p.clone();
-        let reg_c = reg.clone();
+        let a_c = a.clone();
         let handle = std::thread::spawn(move || {
-            with_policy_session_sink("sess1", sink_c, || p_c.check(&bash_call("rm -rf /tmp/x"), Path::new("/")))
+            with_policy_session_sink("sess1", sink_c, || {
+                a_c.request(&bash_call("rm -rf /tmp/x"), Path::new("/"), "mutation")
+            })
         });
-        // Wait for ApprovalRequest
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            if !sink.events.lock().unwrap().is_empty() { break; }
-            if std::time::Instant::now() > deadline { panic!("no event"); }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let id = match &sink.events.lock().unwrap()[0] { Event::ApprovalRequest { id, .. } => id.0, _ => panic!() };
-        // Simulate scope=session persistence
-        let meta = reg_c.get_meta(id).expect("meta must exist");
+        let id = wait_for_event(&sink, "first ask");
+        let meta = reg.get_meta(id).expect("meta must exist");
         cache.approve_session(meta.session_id, meta.fingerprint);
-        reg_c.resolve(id, Decision::Allow);
-        let d = handle.join().unwrap();
-        assert_eq!(d, Decision::Allow);
-        // Clear events
+        reg.resolve(id, Decision::Allow);
+        assert_eq!(handle.join().unwrap(), Decision::Allow);
+
+        // Same session, same call → answered from cache, no new event.
         sink.events.lock().unwrap().clear();
-        // Second call same session should be auto-allowed (no prompt)
-        let d2 = with_policy_session_sink("sess1", sink.clone(), || p.check(&bash_call("rm -rf /tmp/x"), Path::new("/")));
-        assert_eq!(d2, Decision::Allow);
-        assert!(sink.events.lock().unwrap().is_empty(), "session cached should not prompt");
-        // Different session should still prompt
-        sink.events.lock().unwrap().clear();
-        let handle2 = std::thread::spawn({
-            let p = p.clone();
-            let sink2 = sink.clone();
-            let reg2 = reg.clone();
-            move || with_policy_session_sink("sess2", sink2, || p.check(&bash_call("rm -rf /tmp/x"), Path::new("/")))
+        let d2 = with_policy_session_sink("sess1", sink.clone(), || {
+            a.request(&bash_call("rm -rf /tmp/x"), Path::new("/"), "mutation")
         });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            if !sink.events.lock().unwrap().is_empty() { break; }
-            if std::time::Instant::now() > deadline { panic!("second session should prompt"); }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        // Cleanup: resolve pending
-        let id2 = match &sink.events.lock().unwrap()[0] { Event::ApprovalRequest { id, .. } => id.0, _ => panic!() };
+        assert_eq!(d2, Decision::Allow);
+        assert!(sink.events.lock().unwrap().is_empty(), "session cache must not prompt");
+
+        // A different session is not covered by that approval.
+        sink.events.lock().unwrap().clear();
+        let a2 = a.clone();
+        let sink2 = sink.clone();
+        let handle2 = std::thread::spawn(move || {
+            with_policy_session_sink("sess2", sink2, || {
+                a2.request(&bash_call("rm -rf /tmp/x"), Path::new("/"), "mutation")
+            })
+        });
+        let id2 = wait_for_event(&sink, "second session must prompt");
         reg.resolve(id2, Decision::Deny { reason: "test".into() });
         let _ = handle2.join();
     }
 
+    /// `scope=always` survives the session *and* the process: it is written to
+    /// `[policy.approvals]` and re-read from disk.
     #[test]
     fn cache_persistent_allows_across_sessions() {
         let dir = tempfile::tempdir().unwrap();
@@ -727,154 +626,42 @@ mod tests {
         std::fs::write(&path, "").unwrap();
         let cache = Arc::new(ApprovalCache::new(path.clone()));
         let reg = Arc::new(ApprovalRegistry::new());
-        let p = Arc::new(InteractivePolicy::new_with_cache(BashPolicy::default(), reg.clone(), cache.clone()));
+        let a = Arc::new(InteractiveApprover::with_cache(reg.clone(), cache.clone()));
         let sink = Arc::new(RecordingSink::default());
-        // First Ask
+
         let sink_c = sink.clone();
-        let p_c = p.clone();
-        let reg_c = reg.clone();
+        let a_c = a.clone();
         let handle = std::thread::spawn(move || {
-            with_policy_session_sink("s1", sink_c, || p_c.check(&bash_call("rm -rf /tmp/persist"), Path::new("/")))
+            with_policy_session_sink("s1", sink_c, || {
+                a_c.request(&bash_call("rm -rf /tmp/persist"), Path::new("/"), "mutation")
+            })
         });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop { if !sink.events.lock().unwrap().is_empty() { break; } if std::time::Instant::now() > deadline { panic!("no event"); } std::thread::sleep(std::time::Duration::from_millis(10)); }
-        let id = match &sink.events.lock().unwrap()[0] { Event::ApprovalRequest { id, .. } => id.0, _ => panic!() };
-        let meta = reg_c.get_meta(id).unwrap();
+        let id = wait_for_event(&sink, "persist ask");
+        let meta = reg.get_meta(id).unwrap();
         cache.approve_persistent(meta.fingerprint.clone()).unwrap();
-        reg_c.resolve(id, Decision::Allow);
+        reg.resolve(id, Decision::Allow);
         assert_eq!(handle.join().unwrap(), Decision::Allow);
-        // New session should also be allowed via persistent
+
+        // A brand-new session is covered, because `always` is not session-scoped.
         sink.events.lock().unwrap().clear();
-        let d2 = with_policy_session_sink("different", sink.clone(), || p.check(&bash_call("rm -rf /tmp/persist"), Path::new("/")));
+        let d2 = with_policy_session_sink("different", sink.clone(), || {
+            a.request(&bash_call("rm -rf /tmp/persist"), Path::new("/"), "mutation")
+        });
         assert_eq!(d2, Decision::Allow);
         assert!(sink.events.lock().unwrap().is_empty());
-        // Verify file on disk
+
+        // Durable on disk, and reloadable.
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("rm -rf /tmp/persist"), "config should contain fingerprint, got {}", text);
-        // Reload cache from disk should still allow
+        assert!(text.contains("rm -rf /tmp/persist"), "config should contain fingerprint, got {text}");
         let cache2 = ApprovalCache::new(path);
         assert!(cache2.has_persistent("bash:rm -rf /tmp/persist"));
     }
 
+    /// The fingerprint is what makes caching meaningful: `bash` keys on the command text, so
+    /// approving `ls` does not silently approve `rm`.
     #[test]
-    fn hard_deny_never_cached() {
-        let reg = Arc::new(ApprovalRegistry::new());
-        let cache = Arc::new(ApprovalCache::new_empty());
-        let p = InteractivePolicy::new_with_cache(BashPolicy::default(), reg.clone(), cache.clone());
-        let sink = Arc::new(RecordingSink::default());
-        // sudo is HardDeny — should not emit and not be cacheable
-        let d = with_policy_sink(sink.clone(), || p.check(&bash_call("sudo rm -rf /"), Path::new("/")));
-        assert!(matches!(d, Decision::HardDeny { .. }));
-        assert!(sink.events.lock().unwrap().is_empty());
-        // Even if we try to cache it, check should still be HardDeny
-        cache.approve_session("sess1".into(), "bash:sudo rm -rf /".into());
-        cache.approve_persistent("bash:sudo rm -rf /".into()).unwrap_or(());
-        let d2 = with_policy_sink(sink.clone(), || p.check(&bash_call("sudo rm -rf /"), Path::new("/")));
-        assert!(matches!(d2, Decision::HardDeny { .. }), "HardDeny must not be overridden by cache");
-    }
-
-    #[test]
-    fn no_effects_is_ask_and_strict() {
-        // Tool with no effects → strictest (Ask for Interactive, Deny for Config)
-        use kn9t_core::{Effect, ToolRegistry, ToolSpec};
-        let reg = Arc::new(ApprovalRegistry::new());
-        let cache = Arc::new(ApprovalCache::new_empty());
-        let mut tools = ToolRegistry::default();
-        let spec = ToolSpec {
-            name: "mystery".into(),
-            description: "undeclared".into(),
-            schema: serde_json::json!({"type":"object"}),
-            hidden: false,
-            effects: vec![],
-        };
-        struct Mystery { spec: ToolSpec }
-        impl kn9t_core::Tool for Mystery {
-            fn spec(&self) -> &ToolSpec { &self.spec }
-            fn execute(&self, _a: &serde_json::Value, _c: &kn9t_core::ToolCtx, _k: &kn9t_core::Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> { unreachable!() }
-        }
-        tools.push(Arc::new(Mystery { spec }) as Arc<dyn kn9t_core::Tool>);
-        let p_interactive = InteractivePolicy::with_tools(BashPolicy::default(), reg.clone(), cache.clone(), tools.clone());
-        let p_config = ConfigPolicy::with_tools(BashPolicy::default(), tools);
-        let call = ToolCall { id: kn9t_core::CallId("c1".into()), name: "mystery".into(), args_json: r#"{"foo":"bar"}"#.into() };
-        let call_clone = call.clone();
-        let sink = Arc::new(RecordingSink::default());
-        // Interactive should be Ask (prompts)
-        let h = std::thread::spawn({
-            let p = Arc::new(p_interactive);
-            let sink = sink.clone();
-            let c = call_clone.clone();
-            move || with_policy_sink(sink, || p.check(&c, Path::new("/")))
-        });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            if !sink.events.lock().unwrap().is_empty() { break; }
-            if std::time::Instant::now() > deadline { panic!("mystery tool must prompt (Ask)"); }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let id = match &sink.events.lock().unwrap()[0] { Event::ApprovalRequest { id, .. } => id.0, _ => panic!() };
-        reg.resolve(id, Decision::Allow);
-        assert_eq!(h.join().unwrap(), Decision::Allow);
-        // Config should be Deny (no prompt, instant deny)
-        let d2 = p_config.check(&call, Path::new("/"));
-        assert!(matches!(d2, Decision::Deny { .. }), "no-effects in ConfigPolicy must be Deny, got {:?}", d2);
-    }
-
-    #[test]
-    fn fs_write_is_ask_and_read_is_allow() {
-        use kn9t_core::{Effect, EffectKind, ToolRegistry, ToolSpec};
-        let reg = Arc::new(ApprovalRegistry::new());
-        let cache = Arc::new(ApprovalCache::new_empty());
-        let mut tools = ToolRegistry::default();
-        let write_spec = ToolSpec {
-            name: "write".into(),
-            description: "write file".into(),
-            schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
-            hidden: false,
-            effects: vec![Effect { field: "path".into(), kind: EffectKind::FsWrite }],
-        };
-        let read_spec = ToolSpec {
-            name: "read".into(),
-            description: "read file".into(),
-            schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
-            hidden: false,
-            effects: vec![Effect { field: "path".into(), kind: EffectKind::FsRead }],
-        };
-        struct W { spec: ToolSpec } impl kn9t_core::Tool for W { fn spec(&self) -> &ToolSpec { &self.spec } fn execute(&self, _: &serde_json::Value, _: &kn9t_core::ToolCtx, _: &kn9t_core::Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> { unreachable!() } }
-        struct R { spec: ToolSpec } impl kn9t_core::Tool for R { fn spec(&self) -> &ToolSpec { &self.spec } fn execute(&self, _: &serde_json::Value, _: &kn9t_core::ToolCtx, _: &kn9t_core::Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> { unreachable!() } }
-        tools.push(Arc::new(W { spec: write_spec }) as Arc<dyn kn9t_core::Tool>);
-        tools.push(Arc::new(R { spec: read_spec }) as Arc<dyn kn9t_core::Tool>);
-        let p = InteractivePolicy::with_tools(BashPolicy::default(), reg.clone(), cache, tools);
-        let sink = Arc::new(RecordingSink::default());
-        // write must be Ask
-        let write_call = ToolCall { id: kn9t_core::CallId("c1".into()), name: "write".into(), args_json: r#"{"path":"/tmp/foo"}"#.into() };
-        let h = std::thread::spawn({
-            let p = Arc::new(p);
-            let sink = sink.clone();
-            let call = write_call.clone();
-            move || with_policy_sink(sink, || p.check(&call, Path::new("/tmp")))
-        });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop { if !sink.events.lock().unwrap().is_empty() { break; } if std::time::Instant::now() > deadline { panic!("write must be Ask"); } std::thread::sleep(std::time::Duration::from_millis(10)); }
-        let id = match &sink.events.lock().unwrap()[0] { Event::ApprovalRequest { id, .. } => id.0, _ => panic!() };
-        // need to resolve to not hang, but we need a new policy instance for read check (different p moved)
-        // Re-create for read check with fresh registry
-        let reg2 = Arc::new(ApprovalRegistry::new());
-        let cache2 = Arc::new(ApprovalCache::new_empty());
-        let mut tools2 = ToolRegistry::default();
-        tools2.push(Arc::new(R { spec: ToolSpec { name: "read".into(), description: "".into(), schema: serde_json::json!({}), hidden: false, effects: vec![Effect { field: "path".into(), kind: EffectKind::FsRead }] } }) as Arc<dyn kn9t_core::Tool>);
-        // Use original p for write, but we moved it; use reg to resolve
-        reg.resolve(id, Decision::Allow);
-        let _ = h.join();
-        // read must be Allow (no prompt)
-        let read_call = ToolCall { id: kn9t_core::CallId("c2".into()), name: "read".into(), args_json: r#"{"path":"/tmp/foo"}"#.into() };
-        let sink2 = Arc::new(RecordingSink::default());
-        let p2 = InteractivePolicy::with_tools(BashPolicy::default(), reg2, cache2, {
-            let mut t = ToolRegistry::default();
-            t.push(Arc::new(R { spec: ToolSpec { name: "read".into(), description: "".into(), schema: serde_json::json!({}), hidden: false, effects: vec![Effect { field: "path".into(), kind: EffectKind::FsRead }] } }) as Arc<dyn kn9t_core::Tool>);
-            t
-        });
-        let d = with_policy_sink(sink2.clone(), || p2.check(&read_call, Path::new("/tmp")));
-        assert_eq!(d, Decision::Allow);
-        assert!(sink2.events.lock().unwrap().is_empty(), "FsRead must be Allow without prompt");
+    fn fingerprint_distinguishes_commands() {
+        assert_eq!(fingerprint(&bash_call("ls")), "bash:ls");
+        assert_ne!(fingerprint(&bash_call("ls")), fingerprint(&bash_call("rm -rf /")));
     }
 }
