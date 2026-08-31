@@ -30,7 +30,9 @@ impl ReactLoop {
         loop {
             turn += 1;
             self.bus.emit(Event::TurnStarted { turn });
-            self.bus.emit(Event::TurnStatus { phase: "thinking".into(), message: String::new() });
+            // Phase "thinking" is emitted by one_attempt when the provider is actually contacted
+            // (exec.rs), not here — avoids flipping back to "thinking" immediately after a tool batch
+            // before the next provider round (fix 4.3).
             // R-RCT-040: use external cancel if provided (server abort), else fresh per turn.
             // The external cancel allows the server to abort the entire run when user presses ESC.
             let cancel = params.cancel.clone().unwrap_or_else(Cancel::new);
@@ -95,9 +97,8 @@ impl ReactLoop {
                     continue;
                 }
                 Attempt::ContextOverflow => {
-                    // Counted inside one_attempt's re-plan; a second compact is fatal there.
-                    self.bus.emit(Event::RetryAttempt { attempt: replans, max: params.config.max_context_replans, error: "context_overflow".into(), delay_ms: 0, retry_kind: "compaction".into() });
-                    self.bus.emit(Event::TurnStatus { phase: "retrying".into(), message: format!("context overflow — compaction replan {}/{}", replans, params.config.max_context_replans) });
+                    // Compaction retry is emitted inside one_attempt (exec.rs) after incrementing replans
+                    // (fix 4.2 off-by-one). Provider-overflow just loops to re-plan.
                     continue;
                 }
             }

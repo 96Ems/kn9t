@@ -1856,218 +1856,45 @@ impl App {
     }
 
     fn handle_sse(&mut self, frame: SseFrame) {
-        if let Some(seq) = frame.seq() {
-            self.session.state.last_seq = seq;
+        // Pure reducer owns the state machine — App is a thin shell that syncs
+        // tick_ctl/aborting on top (fix 4.5: live path now delegates to reducer).
+        let needs_tick_sync = matches!(frame, SseFrame::TurnStarted{..} | SseFrame::TurnEnded{..} | SseFrame::TurnStatus{..});
+        let was_streaming = self.streaming;
+        // Bridge App fields into pure State, delegate, then copy back.
+        let mut st = crate::reducer::State {
+            streaming: self.streaming,
+            turn_phase: self.turn_phase.clone(),
+            turn_status_msg: self.turn_status_msg.clone(),
+            last_seq: self.session.state.last_seq,
+            transcript: std::mem::replace(&mut self.transcript, crate::message_handler::Transcript::new()),
+            tokens: std::mem::replace(&mut self.tokens, crate::token_tracker::TokenTracker::new()),
+            active_approval_id: self.active_approval_id,
+            overlay: self.overlay.clone(),
+            session_id: self.session.state.session_id.clone(),
+            session_title: self.session.session_title().map(|s| s.to_string()),
+            sessions: self.session.sessions.clone(),
+            model_sel: self.model_sel.clone(),
+        };
+        crate::reducer::reduce(&mut st, frame);
+        // Copy back
+        self.streaming = st.streaming;
+        self.turn_phase = st.turn_phase;
+        self.turn_status_msg = st.turn_status_msg;
+        self.session.state.last_seq = st.last_seq;
+        self.transcript = st.transcript;
+        self.tokens = st.tokens;
+        self.active_approval_id = st.active_approval_id;
+        self.overlay = st.overlay;
+        self.session.state.session_id = st.session_id;
+        self.session.set_session_title(st.session_title);
+        self.session.sessions = st.sessions;
+        self.model_sel = st.model_sel;
+        // Aborting is App-only (not in State): clear on terminal phases
+        if matches!(self.turn_phase.as_str(), "aborted" | "idle" | "failed") {
+            self.aborting = false;
         }
-
-        match frame {
-            SseFrame::TurnStarted { .. } => {
-                self.streaming = true;
-                self.aborting = false;
-                // Sync server state machine — turn_started implies thinking phase
-                self.turn_phase = "thinking".into();
-                self.turn_status_msg.clear();
-                self.tick_ctl.set_streaming(true);
-                self.transcript.take_delta(); // clear live_delta
-                self.tokens.on_turn_started();
-            }
-            SseFrame::TurnEnded { stop, .. } => {
-                self.streaming = false;
-                self.aborting = false;
-                self.tick_ctl.set_streaming(false);
-                self.tokens.on_turn_ended();
-                if stop.to_ascii_lowercase().contains("abort") {
-                    self.turn_phase = "aborted".into();
-                    let partial = self.transcript.take_delta();
-                    if !partial.is_empty() {
-                        let preview: String = partial.chars().take(400).collect();
-                        self.transcript.push(Message::new("system", format!("Aborted — kept partial ({} chars): {}", partial.len(), preview)));
-                    } else {
-                        self.transcript.push(Message::new("system", "Aborted"));
-                    }
-                } else if stop.to_ascii_lowercase().contains("failed") || self.turn_phase == "failed" {
-                    self.turn_phase = "failed".into();
-                    // Error already pushed via Error frame; keep status
-                } else {
-                    self.turn_phase = "idle".into();
-                    self.turn_status_msg.clear();
-                }
-            }
-            SseFrame::TextDelta { delta, .. } => {
-                // Sync: text streaming means phase is streaming (not thinking)
-                if self.turn_phase == "thinking" {
-                    self.turn_phase = "streaming".into();
-                }
-                self.transcript.append_delta(&delta);
-            }
-            SseFrame::MessageAppended { msg, .. } => {
-                // Skip user messages - we already added them locally in send_prompt().
-                // Skip silent messages (e.g., AGENTS.md injection).
-                if msg.role == "user" || msg.silent {
-                    return;
-                }
-
-                let (text, tool_calls, tool_results, _) = Self::extract_message_content(&msg.content);
-
-                // Apply tool results to existing tool cards.
-                for (call_id, output, is_error) in &tool_results {
-                    self.transcript.update_tool(call_id, |tool| {
-                        tool.output = Some(output.clone());
-                        if *is_error {
-                            tool.status = "error".into();
-                        }
-                    });
-                }
-
-                // Use live_delta if we were streaming, otherwise use message content.
-                let final_content = if !self.transcript.live_delta().is_empty() {
-                    self.transcript.take_delta()
-                } else {
-                    text
-                };
-
-                // Create tool cards from tool calls.
-                let tools: Vec<ToolCard> = tool_calls.iter().map(|(id, name, args)| {
-                    ToolCard {
-                        call_id: id.clone(),
-                        name: name.clone(),
-                        args: args.clone(),
-                        status: "pending".into(),
-                        output: None,
-                        progress_lines: Vec::new(),
-                        expanded: false,
-                        active_tab: crate::message_handler::ToolTab::Input,
-                        scroll_offset: 0,
-                    }
-                }).collect();
-
-                // Add assistant message if there's content or tools.
-                if !final_content.is_empty() || !tools.is_empty() {
-                    self.transcript.push(Message::new(&msg.role, final_content).with_tools(tools));
-                }
-            }
-            SseFrame::UsageRecorded { tokens, cost_usd, usage_kind, .. } => {
-                // Delegate all token accounting to TokenTracker.
-                // It handles: session totals, last-turn accumulation, turn-reset flag,
-                // title filtering, and throughput token counting.
-                let counts = TokenCounts::new(
-                    tokens.input as usize,
-                    tokens.output as usize,
-                    tokens.cache_read as usize,
-                    tokens.cache_write as usize,
-                );
-                self.tokens.record_usage(counts, cost_usd, usage_kind == "title");
-            }
-            SseFrame::ToolStarted { call_id, .. } => {
-                self.turn_phase = "tool".into();
-                self.transcript.update_tool(&call_id, |tool| {
-                    tool.status = "running".into();
-                    tool.expanded = true;
-                    tool.active_tab = crate::message_handler::ToolTab::Progress;
-                });
-            }
-            SseFrame::ToolArgsDelta { .. } => {
-                // Ignored by TUI — args come complete in MessageAppended.
-            }
-            SseFrame::ToolProgress { call_id, note, .. } => {
-                // Accumulate progress lines and update status.
-                self.transcript.update_tool(&call_id, |tool| {
-                    tool.progress_lines.push(note.clone());
-                    tool.status = format!("running: {}", note);
-                });
-            }
-            SseFrame::ToolFinished { call_id, is_error, .. } => {
-                self.transcript.update_tool(&call_id, |tool| {
-                    tool.status = if is_error { "error".into() } else { "done".into() };
-                    tool.active_tab = crate::message_handler::ToolTab::Output;
-                    tool.expanded = false;  // Auto-collapse when done
-                    tool.scroll_offset = 0;
-                });
-            }
-            SseFrame::ApprovalRequest { id, tool, args, .. } => {
-                self.active_approval_id = Some(id);
-                self.overlay = Some(Overlay::Approval {
-                    tool,
-                    args: serde_json::to_string(&args).unwrap_or_default(),
-                    selected: 0,
-                });
-            }
-            SseFrame::Error { message } => {
-                // Mid-stream provider fail: mark failed phase so spinner doesn't lie about "thinking"
-                self.turn_phase = "failed".into();
-                self.turn_status_msg = message.clone();
-                self.transcript.push(Message::new("error", message));
-            }
-            SseFrame::RetryAttempt { attempt, max, error, delay_ms, retry_kind } => {
-                self.turn_phase = "retrying".into();
-                self.turn_status_msg = format!("retry {}/{} {} in {}ms: {}", attempt, max, retry_kind, delay_ms, error);
-                // Also show in transcript as system line (dedupe: append as progress under spinner, not persistent)
-                self.transcript.push(Message::new("system", format!("↻ retry {}/{} {} in {}ms: {}", attempt, max, retry_kind, delay_ms, error)));
-            }
-            SseFrame::TurnStatus { phase, message } => {
-                self.turn_phase = phase.clone();
-                self.turn_status_msg = message.clone();
-                // For failed phases, also surface as system line so user sees cause without opening logs
-                if phase == "failed" && !message.is_empty() {
-                    self.transcript.push(Message::new("error", format!("turn {}: {}", phase, message)));
-                } else if phase == "retrying" && !message.is_empty() {
-                    // retrying via TurnStatus already covered by RetryAttempt, but keep for truncation/compaction
-                    if !self.transcript.messages().last().map(|m| m.content.contains(&message)).unwrap_or(false) {
-                        self.transcript.push(Message::new("system", message));
-                    }
-                }
-                // Sync streaming flag from phase — ensures TUI can't be stuck streaming after server says idle/failed
-                match phase.as_str() {
-                    "idle" | "failed" | "aborted" => {
-                        self.streaming = false;
-                        self.aborting = false;
-                        self.tick_ctl.set_streaming(false);
-                    }
-                    "thinking" | "streaming" | "tool" | "retrying" => {
-                        self.streaming = true;
-                        self.tick_ctl.set_streaming(true);
-                    }
-                    _ => {}
-                }
-            }
-            SseFrame::TitleChanged { title } => {
-                // Update the current session title.
-                self.session.set_session_title(Some(title.clone()));
-                // Also update in the sessions list for sidebar display.
-                let session_id = self.session.state.session_id.clone();
-                if let Some(s) = self.session.sessions.iter_mut().find(|s| s.id == session_id) {
-                    s.name = title;
-                }
-            }
-            SseFrame::PluginNotification { plugin, message } => {
-                self.transcript.push(Message::new(&plugin, message));
-            }
-            SseFrame::HookFailed { plugin, hook, reason } => {
-                self.transcript.push(Message::new("system", format!("Hook failed {}:{} — {}", plugin, hook, reason)));
-            }
-            SseFrame::ThinkingDelta { delta, .. } => {
-                self.turn_phase = "thinking".into();
-                self.transcript.append_delta(&delta);
-            }
-            SseFrame::ModelChanged { model, .. } => {
-                // Phase 4: previously ignored. Update model selector if known and show notification.
-                let name = format!("{}:{}", model.provider, model.id);
-                crate::log!("SSE ModelChanged: {}", name);
-                // Try to select in ModelSelector if present.
-                if let Some(idx) = self.model_sel.models().iter().position(|m| m.provider == model.provider && m.id == model.id) {
-                    self.model_sel.set_selected(idx);
-                }
-                self.transcript.push(Message::new("system", format!("Model changed to {}", name)));
-            }
-            SseFrame::Compacted { replaced, summary, .. } => {
-                // Phase 4: previously ignored. Reflect compaction in transcript.
-                crate::log!("SSE Compacted: replaced {}..{} summary {}", replaced.start, replaced.end, summary.id);
-                let (text, _, _, _) = Self::extract_message_content(&summary.content);
-                let summary_text = if text.is_empty() { "Conversation compacted.".to_string() } else { text };
-                self.transcript.push(Message::new("system", format!("Compacted {}..{}: {}", replaced.start, replaced.end, summary_text.clone())));
-                // Also push summary as assistant message so transcript reflects new state.
-                self.transcript.push(Message::new(&summary.role, summary_text));
-            }
+        if needs_tick_sync || was_streaming != self.streaming {
+            self.tick_ctl.set_streaming(self.streaming);
         }
     }
 
@@ -2838,6 +2665,16 @@ impl App {
             }
             "diff_viewer" => {
                 self.open_git_diff();
+            }
+            "toggle_sidebar" => {
+                // Hide if visible, show if hidden/collapsed — flips right_enabled.
+                // When showing, ensure Expanded so it isn't stuck in Collapsed/Hidden state.
+                if self.layout.right_enabled && self.layout.right != crate::ui::layout::Sidebar::Hidden {
+                    self.layout.right_enabled = false;
+                } else {
+                    self.layout.right_enabled = true;
+                    self.layout.right = crate::ui::layout::Sidebar::Expanded;
+                }
             }
             
             // Tools

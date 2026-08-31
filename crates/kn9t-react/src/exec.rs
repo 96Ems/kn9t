@@ -30,6 +30,9 @@ impl ReactLoop {
         // R-RCT-020 step 3 / R-RCT-090: run the compaction sub-turn then re-plan once.
         if plan.compact.is_some() {
             *replans += 1;
+            // Emit compaction retry so TUI spinner shows honest phase (fix 4.2: emit after increment)
+            self.bus.emit(Event::RetryAttempt { attempt: *replans, max: params.config.max_context_replans, error: "context_overflow".into(), delay_ms: 0, retry_kind: "compaction".into() });
+            self.bus.emit(Event::TurnStatus { phase: "retrying".into(), message: format!("context overflow — compaction replan {}/{}", *replans, params.config.max_context_replans) });
             if *replans > params.config.max_context_replans {
                 return Err(ReactError::CompactionLoop);
             }

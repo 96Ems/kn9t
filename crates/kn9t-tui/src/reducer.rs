@@ -330,4 +330,74 @@ mod tests {
         reduce(&mut s, SseFrame::UsageRecorded { seq: 11, provider: "openai".into(), model: "gpt-4".into(), usage_kind: "main".into(), tokens: WireTokens { input: 10, output: 20, cache_read: 0, cache_write: 0, reasoning: 0 }, cost_usd: 0.001, estimated: false });
         assert_eq!(s.last_seq, 11);
     }
+
+    #[test]
+    fn retry_attempt_sets_phase_and_transcript() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::TurnStarted { turn: 1 });
+        assert_eq!(s.turn_phase, "thinking");
+        reduce(&mut s, SseFrame::RetryAttempt { attempt: 1, max: 3, error: "429".into(), delay_ms: 500, retry_kind: "provider".into() });
+        assert_eq!(s.turn_phase, "retrying");
+        assert!(s.turn_status_msg.contains("retry 1/3"));
+        assert!(s.transcript.messages().iter().any(|m| m.content.contains("retry 1/3")));
+        // streaming stays true during retry
+        assert!(s.streaming);
+    }
+
+    #[test]
+    fn turn_status_phases_sync_streaming() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::TurnStarted { turn: 1 });
+        reduce(&mut s, SseFrame::TurnStatus { phase: "thinking".into(), message: "".into() });
+        assert_eq!(s.turn_phase, "thinking");
+        assert!(s.streaming);
+        reduce(&mut s, SseFrame::TurnStatus { phase: "streaming".into(), message: "".into() });
+        assert_eq!(s.turn_phase, "streaming");
+        reduce(&mut s, SseFrame::TurnStatus { phase: "tool".into(), message: "running 1 tool(s)".into() });
+        assert_eq!(s.turn_phase, "tool");
+        reduce(&mut s, SseFrame::TurnStatus { phase: "retrying".into(), message: "retry".into() });
+        assert_eq!(s.turn_phase, "retrying");
+        reduce(&mut s, SseFrame::TurnStatus { phase: "idle".into(), message: "".into() });
+        assert_eq!(s.turn_phase, "idle");
+        assert!(!s.streaming);
+    }
+
+    #[test]
+    fn turn_status_failed_marks_failed_and_error() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::TurnStarted { turn: 1 });
+        reduce(&mut s, SseFrame::Error { message: "provider failed: 500".into() });
+        assert_eq!(s.turn_phase, "failed");
+        assert!(s.turn_status_msg.contains("500"));
+        assert!(s.transcript.messages().iter().any(|m| m.role == "error"));
+        // TurnStatus failed also pushes error if message present
+        let mut s2 = State::default();
+        reduce(&mut s2, SseFrame::TurnStatus { phase: "failed".into(), message: "mid-stream".into() });
+        assert_eq!(s2.turn_phase, "failed");
+        assert!(!s2.streaming);
+    }
+
+    #[test]
+    fn abort_keeps_partial_via_turn_ended() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::TurnStarted { turn: 1 });
+        reduce(&mut s, delta("partial content here"));
+        // live_delta holds partial
+        assert_eq!(s.transcript.live_delta(), "partial content here");
+        reduce(&mut s, SseFrame::TurnEnded { turn: 1, stop: "aborted".into() });
+        assert_eq!(s.turn_phase, "aborted");
+        assert!(!s.streaming);
+        // partial should be surfaced as system message with preview, and live_delta cleared
+        assert!(s.transcript.live_delta().is_empty());
+        assert!(s.transcript.messages().iter().any(|m| m.role == "system" && m.content.contains("Aborted")));
+    }
+
+    #[test]
+    fn truncation_retry_via_turn_status() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::RetryAttempt { attempt: 1, max: 4, error: "truncated".into(), delay_ms: 0, retry_kind: "truncation".into() });
+        assert_eq!(s.turn_phase, "retrying");
+        reduce(&mut s, SseFrame::TurnStatus { phase: "retrying".into(), message: "truncated — retry 1/4 with 150 lines".into() });
+        assert!(s.transcript.messages().iter().any(|m| m.content.contains("truncated")));
+    }
 }

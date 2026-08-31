@@ -40,7 +40,7 @@ impl ModelEntry {
 }
 
 /// Manages model list and selection.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ModelSelector {
     /// Available models from connected providers.
     models: Vec<ModelEntry>,
