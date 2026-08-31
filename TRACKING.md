@@ -73,7 +73,10 @@ A 4-phase cleanup is underway:
   drift gate + pre-commit hook, F5/F6/F7 reconciled. See CHANGELOG 2026-08-31.
 - Phase 3: all-plugins-external migration (also fixes F13 — react tests' binary
   lookup fragility determined by honest number: 3 fail on a fresh worktree,
-  12 pass once `target/debug/kn9t-tools` exists).
+  12 pass once `target/debug/kn9t-tools` exists). **Step 3.1 done** (plugins moved
+  to `plugins/`; workspace clean) **+ Step 3.2 done 2026-08-31** (auto-discovery of
+  `~/.kn9t/plugins/`, ADR-0004; server merges discovered + `[[plugin]]` tools;
+  project-relative `plugins/` never scanned, proven by test). Steps 3.3–3.5 pending.
 - Phase 4: TUI decomposition (app.rs god object).
 
 Five ADRs written in `docs/adr/`:
@@ -83,7 +86,8 @@ Five ADRs written in `docs/adr/`:
 - ADR-0004: plugin discovery scans ~/.kn9t/plugins/ only
 - ADR-0005: schema-first API contract
 
-**Next:** Phase 3 — all-plugins-external migration + auto-discovery (F13).
+**Next:** Phase 3 Step 3.3 — `[[plugin]]` config overrides discovery (disable/pin/env);
+then Step 3.4 spec rewrite of R-PLUG2-110.
 
 ---
 

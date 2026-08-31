@@ -6,7 +6,7 @@
 use kn9t_plugin_sdk::{
     ctx::ToolCallCtx,
     traits::{PluginTool, ToolOutput},
-    wire::ToolSpec,
+    wire::{Effect, EffectKind, ToolSpec},
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
@@ -78,6 +78,7 @@ impl PluginTool for Bash {
             }),
             parallel_safe: false,
             hidden: false,
+            effects: vec![Effect { field: "cmd".into(), kind: EffectKind::Shell }],
         }
     }
 

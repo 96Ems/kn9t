@@ -11,9 +11,81 @@ pointer current.
 
 ## ▶ Next session starts here
 
-**Next:** Phase 3 — all-plugins-external migration (move internal plugins out of the
-workspace; auto-discovery per F13). Phase 2 (schema-first API contract) is complete:
-see the 2026-08-31 session below.
+**Next:** Phase 3 Step 3.3 — `[[plugin]]` config overrides discovery (disable / pin
+path / inject env), keeping `plug::project_plugin_ignored` green. Step 3.2
+(auto-discovery of `~/.kn9t/plugins/`, ADR-0004) is complete — see the Phase 3 entry
+below.
+
+---
+
+## Session — 2026-08-31 — Phase 3 Step 3.2: plugin auto-discovery from `~/.kn9t/plugins/` (ADR-0004)
+
+### Summary
+
+Implemented `job/phase3.md` Step 3.2: the server now auto-discovers tool plugins by
+scanning `~/.kn9t/plugins/` at startup and handshaking every executable, then merging
+them with `[[plugin]]` config plugins into one `ToolRegistry`. Also fixed the F13 test
+harness to locate the moved `kn9t-tools` binary (now a standalone crate at
+`plugins/kn9t-tools`). No workspace deps added (GI-1 held).
+
+### What changed
+
+- **`crates/kn9t-server/src/tools.rs`** — discovery replaces the old hardcoded
+  `kn9t-tools` spawn (the sibling-of-exe / `KN9T_TOOLS_BIN` special-case was already
+  gone after the Phase 3.1 refactor; tools.rs held only `[[plugin]]` spawning):
+  - `plugin_dir()` = `<KN9T_HOME|~/.kn9t>/plugins`, derived from the canonical
+    `auth::kn9t_home()` — **the only directory scanned** (ADR-0004).
+  - `discover_plugin_binaries()` — regular files that are executable (Unix: exec bit
+    set; Windows: `.exe`), sorted for deterministic spawn order.
+  - `spawn_discovered_plugin()` — handshakes one binary via the existing
+    `spawn_with_cmd` (single-element cmd array, no env).
+  - `spawn_all_plugins()` merges discovered plugins with `[[plugin]]` config plugins;
+    soft-fails per plugin (warning + continue, same as existing user-plugin path);
+    **warns but does not fail** when the discovery dir is missing or empty — the
+    loud-fail decision is deliberately deferred to Step 3.4 per the job file.
+  - **Never scans a project-relative `plugins/` directory.**
+- **`crates/kn9t/src/bootstrap.rs`** — `ensure_home()` now creates `<home>/plugins/`
+  on first run; `install_default_tools()` copies the `kn9t-tools` binary there when
+  the dir is empty, trying sibling-of-exe first, then
+  `plugins/kn9t-tools/target/{debug,release}` located by walking up from the exe.
+  Not found → log + continue (server discovery must work regardless of bootstrap;
+  tests populate the dir manually). Config template gains a "Plugins" section.
+- **`crates/kn9t-react/tests/support/mod.rs` (F13)** — `locate_tools_binary()` now
+  searches, in order: (a) `plugins/kn9t-tools/target/{debug,release}/kn9t-tools`,
+  (b) legacy `target/{debug,release}/kn9t-tools`, (c) `~/.kn9t/plugins/kn9t-tools`.
+  Doc comment distinguishes **build-artifact location** (test harness — searching the
+  repo `plugins/` tree is fine) from **runtime discovery** (server never scans repo
+  `plugins/`). Panic message documents the build step
+  (`cd plugins/kn9t-tools && cargo build` — `-p kn9t-tools` no longer works).
+- **`crates/kn9t-plugin/tests/acceptance.rs`** — `plug::spawn_real` used the same
+  stale `../../target/debug` path; updated to the same 3-location search so it now
+  runs against the standalone build instead of silently skipping.
+
+### Verification
+
+- 5 new `tools::*` unit tests: candidate filter; positive discovery (dummy
+  `/bin/sh` handshake plugin registers its tool); **ADR-0004 negative** — a valid
+  handshake binary in a project-relative `plugins/` dir is never discovered; missing
+  dir is non-fatal; deterministic sorted spawn order.
+- Manual e2e: `kn9t-server` started with cwd containing `./plugins/evil.sh` (valid
+  handshake) and empty `KN9T_HOME` → log shows `total tools registered: 0`, evil
+  never spawned.
+- `cargo check --workspace` — clean, no new warnings.
+- `cargo test -p kn9t-server` — 26 lib (21 + 5 new) + 40 acceptance pass.
+- `cargo test -p kn9t-react` — 12 acceptance pass, **including F13's
+  `hook_posture` / `turn_sequence` / `parallel_order` after deleting the legacy
+  `target/debug/kn9t-tools`** (proves the standalone-build lookup works).
+- `cargo test -p kn9t-plugin` — 10 acceptance pass (spawn_real no longer skips).
+- `scripts/check-gi1.sh` — OK. `cargo run -p xtask -- generate` — no schema drift
+  (generated files byte-identical).
+
+### Notes / deferred
+
+- Step 3.4 must rewrite **R-PLUG2-110** (still mandates startup *fail* when the tools
+  binary is missing; this step intentionally only warns) and record the spec bug in
+  the Discovered-bugs table — Step 3.2 deliberately did not edit specs.
+- Discovery filter is deliberately permissive (any exec-bit regular file); the
+  handshake is the real gate, and mis-hits soft-fail with a warning.
 
 ---
 

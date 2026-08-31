@@ -168,17 +168,39 @@ mod plug {
     /// and the host can send Shutdown cleanly.
     #[test]
     fn spawn_real() {
-        // Locate the kn9t-tools binary built by cargo in the same target dir.
-        // CARGO_TARGET_TMPDIR is not available in integration tests, but the
-        // binary is always at target/{profile}/kn9t-tools[.exe].
+        // Build-time artifact location, NOT runtime plugin discovery (ADR-0004):
+        // the server scans only ~/.kn9t/plugins/; here we locate the cargo output.
+        // kn9t-tools is a standalone crate (plugins/kn9t-tools) — build it with
+        // `cd plugins/kn9t-tools && cargo build`.
         let ext = if cfg!(windows) { ".exe" } else { "" };
-        let bin_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/debug")
-            .join(format!("kn9t-tools{ext}"));
+        let name = format!("kn9t-tools{ext}");
+        // CARGO_MANIFEST_DIR = <repo>/crates/kn9t-plugin; ../.. = <repo>.
+        let workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+
+        let external = workspace.join("plugins/kn9t-tools").join("target").join(profile).join(&name);
+        let legacy = workspace.join("target").join(profile).join(&name);
+        let installed = {
+            let home = std::env::var("KN9T_HOME").map(std::path::PathBuf::from).ok()
+                .or_else(|| {
+                    std::env::var("HOME").ok()
+                        .map(|h| std::path::PathBuf::from(h).join(".kn9t"))
+                });
+            match home {
+                Some(h) => h.join("plugins").join(&name),
+                None => external.clone(),
+            }
+        };
+
+        let bin_path = [&external, &legacy, &installed]
+            .iter()
+            .find(|p| p.is_file())
+            .map(|p| (*p).clone())
+            .unwrap_or(external);
 
         if !bin_path.exists() {
             eprintln!("skip plug::spawn_real — binary not found at {}", bin_path.display());
-            eprintln!("run `cargo build -p kn9t-tools-plugin` first");
+            eprintln!("run `cd plugins/kn9t-tools && cargo build` first");
             return;
         }
 

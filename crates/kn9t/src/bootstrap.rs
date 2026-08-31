@@ -312,6 +312,23 @@ price_out = 0.40
 # [provider.custom.env]
 # CUSTOM_PROVIDER_URL = "https://your-gateway.example.com"
 
+# ── Plugins ────────────────────────────────────────────────────────────────────
+# Tool plugins are auto-discovered from ~/.kn9t/plugins/ at server startup
+# (ADR-0004): every executable file in that directory is handshaked as a plugin.
+# A project-relative plugins/ directory is NEVER scanned (clone-and-run safety).
+#
+# Default tools (bash/read/write/edit) are installed here on first run when a
+# build of plugins/kn9t-tools is found; you can also drop any plugin binary in
+# manually and restart the server.
+#
+# An explicit [[plugin]] entry (global config only) can override/discover pin a
+# plugin by name, path, or extra env vars:
+# [[plugin]]
+# name = "my-tools"
+# cmd  = ["/absolute/path/to/my-tools"]
+# [plugin.env]
+# FOO = "bar"
+
 # ── Server ────────────────────────────────────────────────────────────────────
 # Optional. Defaults shown — you usually do not need to change these.
 
@@ -455,6 +472,96 @@ pub fn ensure_home(home: &Path) {
             }
         }
     }
+
+    // Install default tool plugins into <home>/plugins on first run (ADR-0004).
+    install_default_tools(home);
+}
+
+/// Install the default tools plugin (`kn9t-tools`) into `<home>/plugins/`.
+///
+/// `kn9t-tools` is NOT a workspace member — it is a standalone crate at
+/// `plugins/kn9t-tools` in the repo, built separately (its output lands at
+/// `plugins/kn9t-tools/target/{debug,release}/`, not `target/`). At bootstrap we
+/// cannot assume the binary sits next to the kn9t executable or has been built
+/// at all, so we try, in order, and only when the plugins dir is empty (never
+/// overwrite something the user installed):
+///
+/// 1. `<exe dir>/kn9t-tools[.exe]` — a copy placed next to the kn9t binary.
+/// 2. `<repo root>/plugins/kn9t-tools/target/{debug,release}/kn9t-tools[.exe]`
+///    — the standalone crate's build output, located by walking up from the exe
+///    (`cargo run` puts the exe at `<repo>/target/{profile}/kn9t`).
+///
+/// If none is found we log and continue: server discovery must work regardless of
+/// bootstrap (the dir can be populated manually, and a missing plugin is a
+/// soft-fail at discovery, not a crash).
+fn install_default_tools(home: &Path) {
+    let plugins_dir = home.join("plugins");
+    if let Err(e) = fs::create_dir_all(&plugins_dir) {
+        eprintln!("[kn9t] warning: cannot create {}: {e}", plugins_dir.display());
+        return;
+    }
+
+    // Only populate an empty dir — never clobber user-installed plugins.
+    let empty = match fs::read_dir(&plugins_dir) {
+        Ok(mut it) => it.next().is_none(),
+        Err(_) => true,
+    };
+    if !empty {
+        return;
+    }
+
+    let bin_name = format!("kn9t-tools{}", std::env::consts::EXE_SUFFIX);
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Ok(exe) = std::env::current_exe() {
+        // 1. sibling of the kn9t executable.
+        if let Some(d) = exe.parent() {
+            candidates.push(d.join(&bin_name));
+        }
+        // 2. walk up from the exe dir toward the repo root, looking for the
+        //    standalone plugin's build output.
+        let mut dir = exe.parent().map(Path::to_path_buf);
+        for _ in 0..6 {
+            if let Some(d) = dir {
+                let base = d.join("plugins").join("kn9t-tools").join("target");
+                for profile in ["debug", "release"] {
+                    candidates.push(base.join(profile).join(&bin_name));
+                }
+                dir = d.parent().map(Path::to_path_buf);
+            }
+        }
+    }
+
+    for cand in &candidates {
+        if cand.is_file() {
+            let dest = plugins_dir.join(&bin_name);
+            match fs::copy(cand, &dest) {
+                Ok(_) => {
+                    eprintln!(
+                        "[kn9t] installed default tools plugin: {} → {}",
+                        cand.display(),
+                        dest.display()
+                    );
+                    return;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[kn9t] warning: cannot copy {} to {}: {e}",
+                        cand.display(),
+                        dest.display()
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "[kn9t] no default tools plugin found to install into {}.\n\
+         Build it with `cd plugins/kn9t-tools && cargo build`, then copy\n\
+         plugins/kn9t-tools/target/debug/kn9t-tools into that directory.",
+        plugins_dir.display()
+    );
 }
 
 // ── Public helper: home path from env ─────────────────────────────────────────
