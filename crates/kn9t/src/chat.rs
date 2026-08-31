@@ -51,6 +51,7 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
         }
     };
     let mut do_continue = false;
+    let mut json_output = false;
     let mut prompt_words: Vec<&str> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -71,6 +72,31 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
                 i += 2;
             }
             "--continue" => { do_continue = true; i += 1; }
+            "--json" => { json_output = true; i += 1; }
+            "--format" if i + 1 < args.len() => {
+                let fmt = args[i + 1].as_str();
+                if fmt == "json" { json_output = true; }
+                else if fmt == "text" { json_output = false; }
+                else {
+                    eprintln!("[kn9t chat] --format must be json|text (got '{fmt}')");
+                    std::process::exit(2);
+                }
+                i += 2;
+            }
+            "-h" | "--help" | "help" => {
+                // In-chat help — reachable as `kn9t chat --json --help`.
+                println!("kn9t chat — send a prompt or enter REPL");
+                println!();
+                println!("Usage: kn9t chat [OPTIONS] [PROMPT...]");
+                println!("Options: --model <provider/id>, --continue, --json, --format json|text, -h/--help");
+                println!("Examples: kn9t chat \"hi\" | kn9t chat --json \"hi\" | jq");
+                std::process::exit(0);
+            }
+            s if s.starts_with('-') => {
+                eprintln!("[kn9t chat] unknown option '{s}'");
+                eprintln!("Try: kn9t chat --help");
+                std::process::exit(2);
+            }
             _ => { prompt_words.push(&args[i]); i += 1; }
         }
     }
@@ -98,8 +124,19 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
     let prompt = prompt_words.join(" ");
 
     let session_id = create_session(&host, &auth, &model_provider, &model_id);
-    eprintln!("[kn9t chat] session: {session_id}");
-    eprintln!("[kn9t chat] model: {model_provider}:{model_id}");
+    if json_output {
+        // JSONL mode: machine-parseable stream on stdout; diagnostics on stderr.
+        // First line is session meta so `jq` can route without parsing stderr.
+        let meta = json!({
+            "kind": "session",
+            "session_id": session_id,
+            "model": { "provider": model_provider, "id": model_id }
+        });
+        json_emit(&meta);
+    } else {
+        eprintln!("[kn9t chat] session: {session_id}");
+        eprintln!("[kn9t chat] model: {model_provider}:{model_id}");
+    }
 
     let lease = acquire_lease_with_backoff(&host, &auth, &session_id);
 
@@ -108,13 +145,23 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
     let rx = subscribe_sse(&host, &auth, &session_id, 0);
     thread::sleep(Duration::from_millis(50));
 
-    eprintln!("[kn9t chat] prompt: {prompt}");
-    eprintln!("---");
+    if !json_output {
+        eprintln!("[kn9t chat] prompt: {prompt}");
+        eprintln!("---");
+    } else {
+        // Also emit the prompt as JSON so the stream is self-contained.
+        let prompt_ev = json!({ "kind": "prompt", "text": prompt, "session_id": session_id });
+        json_emit(&prompt_ev);
+    }
     post_json(&host, &auth,
         &format!("/session/{session_id}/prompt"),
         &json!({ "text": prompt }), Some(&lease));
 
-    stream_events(rx); // rx dropped here → SSE thread exits → server client_detached
+    if json_output {
+        stream_events_json(rx);
+    } else {
+        stream_events(rx); // rx dropped here → SSE thread exits → server client_detached
+    }
     release_lease(&host, &auth, &session_id, &lease);
 }
 
@@ -296,6 +343,68 @@ fn spawn_global_attach(host: &str, auth: &str) -> Arc<AtomicBool> {
 }
 
 // ── SSE event loops ───────────────────────────────────────────────────────────
+
+fn json_emit(v: &Value) -> bool {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    match writeln!(out, "{}", v) {
+        Ok(_) => { let _ = out.flush(); true }
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+            // Downstream closed (e.g. `| head`); exit quietly, as `jq` does.
+            std::process::exit(0);
+        }
+        Err(_) => false,
+    }
+}
+
+/// One-shot JSONL: emit each SSE `data:` JSON as a single line on stdout until TurnEnded.
+/// No human formatting — autonomous callers can `... | jq -c` and match on `kind`.
+/// Approval is still handled inline (selector on stderr) so interactive json still works;
+/// for headless runs the caller should pre-allow via policy or run with `allow_all`.
+fn stream_events_json(rx: mpsc::Receiver<String>) {
+    loop {
+        let raw = match rx.recv() {
+            Ok(r) => r,
+            Err(_) => break,
+        };
+        let line = raw.trim();
+        if !line.starts_with("data:") { continue; }
+        let data = line["data:".len()..].trim();
+        if data.is_empty() || data == "ping" { continue; }
+        let ev: Value = match serde_json::from_str(data) {
+            Ok(v) => v, Err(_) => continue,
+        };
+        // Emit raw event as one JSON line on stdout (machine stream).
+        if !json_emit(&ev) { break; }
+
+        // Approval still needs human handling even in json mode — emit to stderr
+        // and block on the selector so the server isn't left hanging.
+        if ev["kind"].as_str() == Some("approval_request") {
+            let req_id = ev["id"].to_string();
+            // Strip quotes if JSON number came as string — server sends u64.
+            let req_id = req_id.trim_matches('"').to_string();
+            let tool = ev["tool"].as_str().unwrap_or("?");
+            let args_val = &ev["args"];
+            eprintln!();
+            eprintln!("[kn9t chat:json] approval_request id={req_id} tool={tool}");
+            let decision = approval_selector(tool, args_val);
+            APPROVAL_CTX.with(|ctx| {
+                if let Some((host, auth)) = ctx.borrow().as_ref() {
+                    // req_id may be quoted number; try to keep JSON number form.
+                    // post_approval expects &str id — server coerces.
+                    post_approval(host, auth, &req_id, decision);
+                }
+            });
+            // Also emit decision as JSON so the log is complete.
+            let dec = json!({ "kind": "approval_decision", "id": req_id, "decision": if decision { "allow" } else { "deny" } });
+            if !json_emit(&dec) { break; }
+        }
+
+        if ev["kind"].as_str() == Some("turn_ended") {
+            break;
+        }
+    }
+}
 
 /// One-shot: drain rx until TurnEnded, then return. Consumes rx.
 fn stream_events(rx: mpsc::Receiver<String>) {

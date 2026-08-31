@@ -282,6 +282,7 @@ All commands go through the server — same path as the TUI. The launcher ensure
 ```
 kn9t                          # TUI (auto-starts server, passes KN9T_URL/TOKEN)
 kn9t chat [--model p/id] <prompt>   # one-shot: send prompt, stream, exit
+kn9t chat --json <prompt>     # one-shot JSONL: stdout is one JSON per line (jq-parseable)
 kn9t chat                     # REPL: new session, prompt loop (> ), Ctrl-D to exit
 kn9t chat --continue          # REPL: attach to latest session (highest head_seq), resume
 kn9t sessions                 # GET /session → table of sessions (id, name, model, age)
@@ -289,12 +290,25 @@ kn9t history [session-id]     # GET /session/{id} → full transcript (ANSI role
 kn9t history                  # latest session
 kn9t attach [session-id]      # observe + write via lease (backoff retry, serialised)
 kn9t attach                   # latest session
+kn9t status                   # GET /health + models/sessions summary
+kn9t models                   # GET /models → table
+kn9t cost [--since MS] [--group-by model|kind|session]  # GET /cost + GET /budget
+kn9t tools                    # GET /tools → registered tools
 kn9t stop                     # POST /stop → graceful server shutdown
+kn9t help | --help | -h       # help (no server start)
+kn9t --version                # version
 ```
 
 **REPL / attach** share `chat::repl_loop`: `> ` prompt, one line → `POST /session/{id}/prompt`, stream `TurnEnded`, re-prompt. Image paste in TUI sends `images: ["data:image/png;base64,..."]` — stored as `blobs` (`sha256:` refs), hydrated to data-URIs at `plan_request()` time.
 
-**Approval flow** (when bash classifier asks): inline crossterm selector on `ApprovalRequest` (`[ No ] / [ Yes ]`, `←/→`, `Enter`), then `POST /approve {id, decision, scope}`. See `PLAN.md P2-C`.
+**JSON mode** (`kn9t chat --json "prompt"`): autonomous-friendly. `stdout` is JSONL — one JSON object per line: `session` + `prompt` then raw SSE events (`text_delta`, `tool_started`, `tool_progress`, `tool_finished`, `message_appended`, `turn_status`, `turn_ended`, `approval_request`, `error`, … `snake_case` per `AGENTS.md §12`). `stderr` stays human. Broken-pipe safe (`| head` exits 0). `--format json|text` also accepted.
+
+```bash
+kn9t chat --json "list files" | jq -c 'select(.kind=="text_delta") | .delta'
+kn9t chat --json "list files" | jq -s 'map(select(.kind=="tool_started"))'
+```
+
+**Approval flow** (when bash classifier asks): inline crossterm selector on `ApprovalRequest` (`[ No ] / [ Yes ]`, `←/→`, `Enter`), then `POST /approve {id, decision, scope}`. In `--json` mode the request still blocks on the selector (stderr) and emits `approval_decision` on stdout. See `PLAN.md P2-C`.
 
 ---
 
