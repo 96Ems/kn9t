@@ -93,6 +93,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         description: "Restore input from stash (git-style)",
         args: "",
     },
+    SlashCommand {
+        name: "rename",
+        description: "Rename current session",
+        args: "<title>",
+    },
 ];
 
 /// State for slash command completion.

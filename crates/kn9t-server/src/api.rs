@@ -75,3 +75,11 @@ pub struct ApproveReq {
     pub scope: Option<String>,
 }
 
+/// Request body.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenameReq {
+    /// New human title for the session
+    pub name: String,
+}
+

@@ -12,12 +12,11 @@ Legend: `☐` pending · `▣` in progress · `☑` done (acceptance test passin
 
 **Stage:** PLAN.md post-v1 improvements (P1–P4 complete). Architecture cleanup 2026-08-30,
 Phase 0–2 done (docs scaffolding, classifier+approvals, schema-first API contract).
-**Last gate green:** stage 09 — R-CP-900 / R-ANTH-900 green. **But G1 is now RED for
-R-TOOL-070/080/090/095** — the bash classifier was deleted in 5b65819 and never restored.
-`cargo test --workspace`: **385 passed, 0 failed**, plus the external `plugins/kn9t-custom-provider`
+**Last gate green:** stage 09 — R-CP-900 / R-ANTH-900 green. **G1 restored 2026-08-31** — the bash classifier lives in `crates/kn9t-server/src/classify.rs` (ADR-0001, 333 lines, two grammars, 7-rule pipeline), tests `cargo test -p kn9t-server --test classify` 3 passed (`classify_posix`, `classify_pwsh`, `classify_pipeline`) + `policy::*` 8 passed; R-TOOL-070/080/090/095 now green.
+`cargo test --workspace`: **398 passed, 0 failed**, plus the external `plugins/kn9t-custom-provider`
 crate: **26 passed, 0 failed** (run separately — it is no longer a workspace member;
-`cd plugins/kn9t-custom-provider && cargo test`). **411 total.**
-Verified 2026-08-30 via `cmd.exe /c "cargo ..."` — see AGENTS.md §8.1.
+`cd plugins/kn9t-custom-provider && cargo test`). **424 total.**
+Verified 2026-08-31 via `cargo test --workspace` (398) + `cargo test -p kn9t-server --test classify` (3) + `check-gi1.sh` + `check-schema.sh`.
 **v1 e2e fully verified:** `kn9t chat` → server → ReAct loop → `kn9t-tools` + `kn9t-custom-provider`. Date: 2026-08-27.
 **PLAN.md progress:**
 - P1-A bootstrap ☑ — `~/.kn9t/` auto-created on first run (config.toml template + token).
@@ -83,7 +82,7 @@ A 4-phase cleanup is underway:
   DESIGN §16 + lib.rs doc updated; spec bug recorded) **+ Step 3.5 done 2026-08-31**
   (`POST /plugin/{name}/reload` hot-reload with 5-step cancel/shutdown/respawn;
   `plug2::hot_reload_cancels_inflight` green, `srv::plugin_reload` 41/41 acceptance).
-- Phase 4: TUI decomposition (app.rs god object).
+- Phase 4: TUI decomposition (app.rs god object) — **Step 4.1-4.3 done 2026-08-31** (`GET /tools`, `POST /session/{id}/rename|compact`, `GET /session/{id}/export`, `GET /tools` drives sidebar, `/compact`/`/export`/`/rename` real, `/diff` uses `session.state.cwd`), **Step 4.4a done** (`reducer.rs` pure `(State, SseFrame)->State`, 8 tests, `tui::sse_reconnect` green, `ThinkingDelta`/`ModelChanged`/`Compacted` handled, zero `pending_*` fields in `app.rs` via rename to `staged`/`active`/`queued`), **Step 4.4c done 2026-08-31** (`queued_*` eliminated — `handle_key`/`handle_welcome_key`/`handle_overlay_key`/`execute_action`/`execute_slash_command`/`execute_palette_command` now take `&Sender<Event>` and call `create_new_session`/`enter_session` immediately; `run` loop's deferred `queued_*` block deleted), **Step 4.4b pending** (Welcome vs Chat split — `App` still 2.7k lines, `Screen::Welcome` vs `Chat` share one struct, `Overlay` 7 variants; not in exit criteria, deferred as low ROI vs G1 classifier).
 
 Five ADRs written in `docs/adr/`:
 - ADR-0001: bash classifier lives in server
@@ -92,10 +91,7 @@ Five ADRs written in `docs/adr/`:
 - ADR-0004: plugin discovery scans ~/.kn9t/plugins/ only
 - ADR-0005: schema-first API contract
 
-**Next:** Phase 4 — TUI decomposition (app.rs god object: 53→32 fields done, but
-remaining handlers still inline). Phase 3 fully green (all exit criteria met, see
-job/phase3.md). `cargo test --workspace` 385 + 26 external = 411 (plus new
-`srv::plugin_reload`); `check-gi1.sh` OK; `xtask generate` no drift.
+**Next:** Phase 4.4b (Welcome vs Chat split) low ROI — `app.rs` 2.7k lines but pure `reducer.rs` + `queued_*` deletion already gives testable seam; next high-value is `R-TUI-220` SidebarWidget (schema addition) or G3 manual screenshot (3 TUIs, 1 server, 1 lease). Stage 03 G1 **now green** (classifier restored, 3 classify + 8 policy tests), Phase 4.1-4.3 + 4.4a/c/d green: `cargo test --workspace` 398 + 26 external = 424, `check-gi1.sh` OK, `xtask generate` no drift, `grep -rn queued_ app.rs` empty, `/diff` uses `session.state.cwd`, `reducer.rs` + `tui::sse_reconnect` green.
 
 ---
 
@@ -105,7 +101,7 @@ job/phase3.md). `cargo test --workspace` 385 + 26 external = 411 (plus new
 |---|---|---|---|---|
 | 01 | kn9t-core | 36 / 36 | R-CORE-900 | ☑ |
 | 02 | kn9t-provider-replay | 8 / 9 | R-RPLY-900 | ☑ |
-| 03 | kn9t-react, kn9t-tools | 20 / 25 | G1 | ✗ (classifier deleted) |
+| 03 | kn9t-react, kn9t-tools | 25 / 25 | G1 | ☑ (classifier restored in `kn9t-server/src/classify.rs`, 3 classify + `tool::`/`policy::*` green) |
 | 04 | kn9t-store | 18 / 18 | G2 | ☑ |
 | 05 | kn9t-provider-core, -openai | 22 / 22 | R-PCORE/OAI/NBED-900 | ☑ |
 | 06 | kn9t-server | 13 / 13 | R-SRV-900 | ☑ |
@@ -211,19 +207,13 @@ DB-02 resolved: assemble delegated to kn9t-provider-core (kn9t-react dep swapped
 | R-TOOL-040 | read parallel-safe, records hash | tool::read_records_hash | ☑ |
 | R-TOOL-050 | edit staleness guard | tool::edit_guard | ☑ |
 | R-TOOL-060 | write guard | tool::write_guard | ☑ |
-| R-TOOL-070 | bash defers to policy, kill on cancel | (impl; classify tests) | ✗ |
-| R-TOOL-080 | pwsh + POSIX classifiers | **DELETED** — tests do not exist | ✗ |
-| R-TOOL-090 | classifier decision pipeline | **DELETED** — tests do not exist | ✗ |
-| R-TOOL-095 | heuristic not sandbox | (doc/review) | ✗ |
-| **R-RCT-900 / R-TOOL-900** | **GATE G1** | full loop vs replay, no net/spend | ✗ |
+| R-TOOL-070 | bash defers to policy, kill on cancel | `kn9t-server --test classify` + `policy::*` | ☑ (restored in `kn9t-server/src/classify.rs`, ADR-0001) |
+| R-TOOL-080 | pwsh + POSIX classifiers | `classify_posix`, `classify_pwsh` | ☑ (`crates/kn9t-server/tests/classify.rs:18,28` 3 passed) |
+| R-TOOL-090 | classifier decision pipeline | `classify_pipeline` | ☑ (7-rule pipeline, `sh -c`/`iex` bypass Ask) |
+| R-TOOL-095 | heuristic not sandbox | (doc in `classify.rs:1`) | ☑ (R-TOOL-095 documented, not a sandbox) |
+| **R-RCT-900 / R-TOOL-900** | **GATE G1** | full loop vs replay, no net/spend | ☑ (`cargo test -p kn9t-react -p kn9t-server` green; replay + classifier green) |
 
-> **2026-08-30 arch review:** The bash safety classifier (`crates/kn9t-tools/src/classify.rs`,
-> 323 lines implementing the Ask/AllowReadOnly/HardDeny pipeline) was deleted in commit
-> 5b65819 during the tools-to-plugin migration. The named acceptance tests
-> (`tool::classify_posix`, `tool::classify_pwsh`, `tool::classify_pipeline`) **do not exist**.
-> `AllowPolicy::check()` returns `Allow` unconditionally; nothing emits `ApprovalRequest`;
-> the `sh -c 'rm -rf /'` bypass (R-TOOL-090 rule 5) is open. **GATE G1 is NO LONGER GREEN
-> for R-TOOL-070/080/090/095.** See ADR-0001.
+> **2026-08-31 update:** The classifier was restored to `crates/kn9t-server/src/classify.rs` (333 lines, per ADR-0001 server owns approval) with `BashPolicy` + `Shell::Posix|PowerShell` + `classify()` and 3 acceptance tests in `crates/kn9t-server/tests/classify.rs`. The `5b65819` deletion reference above was from the pre-restore review; gate G1 is now green again. Spec names `tool::classify_*` but real path is `cargo test -p kn9t-server --test classify` (`classify_posix`/`classify_pwsh`/`classify_pipeline`). `AllowPolicy` replaced by `ConfigPolicy`/`InteractivePolicy` which emit `ApprovalRequest` per DESIGN §10.
 
 ### Stage 04 — kn9t-store  (`spec/04-store.md`)  — DONE (gate G2 green)
 All 18 requirements implemented; 18 named `stor::*` acceptance tests pass (plus 1 debug helper); build clean; GI-1/GI-4 verified; no tokenizer dep.
@@ -295,13 +285,14 @@ All 22 requirements implemented; 25 acceptance tests pass (11 pcore + 14 oai/nbe
 | R-SRV-120 | budget reports both | srv::budget_reports_both | ☑ |
 | **R-SRV-900** | **stage gate** | all above | ☑ |
 
-### Stage 07 — kn9t-tui  (`spec/07-tui.md`)  — ▣ (G3 manual deferred)
+### Stage 07 — kn9t-tui  (`spec/07-tui.md`)  — ▣ (G3 manual deferred, Phase 4 in progress)
 
 > **2026-08-30 arch review:** The table below is realigned to spec/07-tui.md (R-TUI-010
 > through R-TUI-240). Previous table used obsolete IDs. Most TUI requirements have NO
 > acceptance test — app.rs, client.rs, ui/render.rs, wire.rs, event.rs, config.rs,
 > keybind.rs are entirely untested. The crate has 58 unit tests, but they cover managers
 > and helpers, not the core TUI logic.
+> **2026-08-31 Phase 4:** `GET /tools` + `rename`/`compact`/`export` added (schema-first, server is source of truth), hardcoded 4-tool list removed, dead `enabled` toggle removed (now refreshes from `GET /tools`), `/diff` fixed to use `session.state.cwd` (F9), `ThinkingDelta`/`ModelChanged`/`Compacted` now handled in `handle_sse` + `reducer.rs` pure reducer (8 tests, first real `app.rs` logic tests), `pending_*` eliminated (`staged`/`active`, zero `pending_` fields), `queued_*` eliminated 2026-08-31 (handlers now take `&Sender<Event>` and act immediately; `App::run` deferred block deleted; `grep -rn queued_ app.rs` empty), `tui::sse_reconnect` now passes (reconnect from `last_seq`). `reducer.rs` is the pure `(State, SseFrame)->State` seam for 4.4a.
 
 | req | subject | test | status |
 |---|---|---|---|
@@ -311,7 +302,7 @@ All 22 requirements implemented; 25 acceptance tests pass (11 pcore + 14 oai/nbe
 | R-TUI-020 | event architecture, zero polling | tui::event_loop_blocks | ☐ no test |
 | R-TUI-030 | 2-column layout, responsive | tui::layout_responsive | ☐ no test |
 | R-TUI-040 | session picker overlay | tui::session_switch | ☐ no test |
-| R-TUI-050 | right sidebar context panel | tui::tool_toggle | ☐ no test |
+| R-TUI-050 | right sidebar context panel | tui::tool_toggle | ▣ (Phase 4: `GET /tools` reflects discovered plugins, hardcoded list + dead toggle removed; `refresh_tools` in `app.rs:233`) |
 | R-TUI-060 | transcript, tool cards | tui::tool_card_lazy | ☐ no test |
 | R-TUI-070 | virtual scrolling | tui::virtual_scroll | ☐ no test |
 | R-TUI-080 | scroll behavior, auto-disengage | tui::scroll_auto_disengage | ☐ no test |
@@ -329,7 +320,7 @@ All 22 requirements implemented; 25 acceptance tests pass (11 pcore + 14 oai/nbe
 | R-TUI-200 | confirmations | tui::quit_confirm | ☐ no test |
 | R-TUI-210 | git integration sidebar | tui::git_sidebar | ☐ no test |
 | R-TUI-220 | plugin sidebar API (SidebarWidget) | tui::plugin_sidebar | ✗ (SidebarWidget type does not exist) |
-| R-TUI-230 | SSE reconnect | tui::sse_reconnect | ✗ (prints "reconnecting..." but never retries) |
+| R-TUI-230 | SSE reconnect | tui::sse_reconnect | ☑ (Phase 4: `app.rs:630` reconnects from `last_seq`, `reducer::tests::sse_reconnect_seq_tracking` + `tui::sse_reconnect` green) |
 | R-TUI-240 | server autostart | tui::server_autostart | ☐ no test |
 | **R-TUI-900** | **GATE G3** | 3 TUIs, 1 server, 1 lease, screenshot | — |
 

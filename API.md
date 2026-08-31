@@ -397,6 +397,73 @@ Write operations require an **X-Lease** header: the holder token minted by
 | `running_turns` | u64 |  |
 
 
+### `GET /tools` — List registered tools (from discovered + pinned plugins; reflects GET /tools for TUI sidebar, F9)
+
+- **Lease required:** no
+
+**Request body:** none
+
+**Response `200`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tools` | object[] |  |
+
+
+
+---
+### `POST /session/{id}/rename` — Rename a session (action endpoint, no PATCH; auto-title must not clobber a manual rename)
+
+- **Lease required:** no
+
+**Request body**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | New human title for the session |
+
+
+**Response `200`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string |  |
+| `name` | string |  |
+
+
+### `POST /session/{id}/compact` — Manually trigger compaction (engine already exists at kn9t-react exec.rs:139 run_compaction; previously unreachable via TUI /compact)
+
+- **Lease required:** yes
+
+**Request body:** none
+
+**Response `200`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `compacted` | bool |  |
+| `message` | string |  |
+| `seq` | u64 |  |
+
+
+
+---
+### `GET /session/{id}/export` — Export a session transcript (JSON, all messages + meta; replaces TUI /export placeholder)
+
+- **Lease required:** no
+
+**Request body:** none
+
+**Response `200`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `events` | object[] |  |
+| `id` | string |  |
+| `meta` | object |  |
+| `transcript` | object[] |  |
+
+
 
 ---
 ### `POST /plugin/{name}/reload` — Hot-reload a plugin by name: cancel in-flight, shutdown, respawn, re-handshake, re-register tools (R-PLUG2-100)

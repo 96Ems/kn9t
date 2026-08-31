@@ -66,6 +66,13 @@ class ApproveReq:
     scope: Optional[str] = None
 
 
+@dataclass
+class RenameReq:
+    """Request body."""
+
+    name: str
+
+
 # Plugin protocol definitions (schema/plugin.json).
 
 @dataclass

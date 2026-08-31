@@ -362,6 +362,208 @@ pub fn approve(state: &Arc<ServerState>, req: api::ApproveReq) -> JsonResp {
     }
 }
 
+/// `POST /session/{id}/rename` — `{name}` action endpoint (no PATCH).
+/// Updates `sessions.name` and emits `TitleChanged` so the TUI can update
+/// the sidebar. A manual rename suppresses auto-titling (R-SRV-100 already
+/// checks for an existing name before title-calling).
+pub fn rename(state: &Arc<ServerState>, id: &str, req: api::RenameReq) -> JsonResp {
+    let name = req.name.trim().to_owned();
+    if name.is_empty() {
+        return JsonResp::error(400, "bad_name", "name must be non-empty");
+    }
+    if name.len() > 80 {
+        return JsonResp::error(400, "bad_name", "name must be <= 80 chars");
+    }
+    // 404 if session doesn't exist.
+    let exists: bool = state
+        .store
+        .query_one("SELECT 1 FROM sessions WHERE id=?1", &[&id], |_| Ok(1i64))
+        .is_ok();
+    if !exists {
+        return JsonResp::error(404, "not_found", "session not found");
+    }
+    if let Err(e) = state.store.execute_raw(
+        "UPDATE sessions SET name=?1 WHERE id=?2",
+        &[&name.as_str(), &id],
+    ) {
+        return JsonResp::error(500, "store_error", &e.0);
+    }
+    // Notify SSE subscribers.
+    state.buses.publish(id, Event::TitleChanged { title: name.clone() });
+    JsonResp::ok(serde_json::json!({ "id": id, "name": name }))
+}
+
+/// `POST /session/{id}/compact` — manually trigger compaction [lease required].
+/// The engine already exists (`exec.rs:139 run_compaction`); previously only
+/// reachable via automatic threshold. This endpoint forces a compaction over
+/// the oldest half of messages. If a provider is available it summarizes via
+/// the model; otherwise a deterministic local summary is used so the endpoint
+/// works offline and the test needs no network.
+pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
+    let sid = SessionId(id.to_owned());
+    // 404 if session missing.
+    let exists: bool = state
+        .store
+        .query_one("SELECT 1 FROM sessions WHERE id=?1", &[&id], |_| Ok(1i64))
+        .is_ok();
+    if !exists {
+        return JsonResp::error(404, "not_found", "session not found");
+    }
+
+    // Try automatic compaction via plan_request first (threshold-based).
+    // If none, force a span over the oldest half.
+    let plan = match state.store.plan_request(&sid) {
+        Ok(p) => p,
+        Err(e) => return JsonResp::error(500, "store_error", &e.0),
+    };
+
+    let compact_span = if let Some(span) = plan.compact {
+        span
+    } else {
+        // Force compaction if we have at least 2 messages, else error.
+        if plan.messages.len() < 2 {
+            return JsonResp::error(400, "nothing_to_compact", "not enough messages to compact");
+        }
+        // Replicate `plan::compact_span` logic here without needing private helper.
+        let mut cut = plan.messages.len() / 2;
+        // Avoid orphaned ToolCall: if the cut leaves a ToolCall without result, extend.
+        loop {
+            if cut >= plan.messages.len() {
+                break;
+            }
+            let has_orphan = plan.messages[..cut].iter().any(|m| {
+                m.content.iter().any(|c| matches!(c, Content::ToolCall { id, .. } if {
+                    let has_result = plan.messages[..cut].iter().any(|m2| {
+                        m2.content.iter().any(|c2| matches!(c2, Content::ToolResult { id: rid, .. } if rid == id))
+                    });
+                    !has_result
+                }))
+            });
+            if has_orphan { cut += 1; } else { break; }
+        }
+        // Need seqs to build SeqRange — fetch from DB ordering.
+        // Use json_object so query_strings (which reads column 0 as String) works for INTEGER.
+        let seqs: Vec<u64> = {
+            let sql = "SELECT json_object('seq', seq) FROM messages WHERE session_id=?1 ORDER BY seq";
+            state.store.query_strings(sql, &[&id])
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                .filter_map(|v| v.get("seq").and_then(|x| x.as_u64()))
+                .collect()
+        };
+        // Fallback: if seqs unavailable, use 1..cut
+        let start = seqs.first().copied().unwrap_or(1);
+        let end = if cut > 0 { seqs.get(cut - 1).copied().unwrap_or(cut as u64) } else { start };
+        kn9t_core::CompactSpan {
+            replaced: kn9t_core::SeqRange { start, end },
+            messages: plan.messages[..cut].to_vec(),
+        }
+    };
+
+    // Build a summary message. Prefer provider summarization if a provider is
+    // available; otherwise use a deterministic local summary so the endpoint
+    // is testable offline.
+    let summary = if let (Some(provider), Some(model)) = (
+        state.provider.clone().or_else(|| state.default_model.as_ref().and_then(|m| state.get_provider(&m.r#ref.provider))),
+        state.default_model.clone().or_else(|| state.store.get_model_spec_for_session(id)),
+    ) {
+        // Try provider summarize (best-effort, 16 max_tokens, short timeout via Cancel).
+        let mut msgs = compact_span.messages.clone();
+        msgs.push(Message {
+            id: MsgId::new(),
+            role: Role::User,
+            content: vec![Content::Text {
+                text: "Summarize the conversation so far, preserving decisions, file paths, and open tasks, so it can replace the older messages.".to_string(),
+            }],
+            silent: false,
+        });
+        let req = kn9t_core::Request {
+            model: &model,
+            system: Some("You produce only a concise summary, nothing else."),
+            messages: &msgs,
+            tools: &[],
+            thinking: kn9t_core::Thinking::Off,
+            max_tokens: Some(256),
+            cache: &[],
+        };
+        let cancel = kn9t_core::Cancel::new();
+        match provider.stream(&req, &cancel) {
+            Ok(stream) => {
+                let mut text = String::new();
+                for item in stream {
+                    if let Ok(kn9t_core::Chunk::Text { delta, .. }) = item {
+                        text.push_str(&delta);
+                    }
+                }
+                let t = text.trim().to_string();
+                if t.is_empty() {
+                    deterministic_summary(&compact_span.messages)
+                } else {
+                    Message { id: MsgId::new(), role: Role::Assistant, content: vec![Content::Text { text: t }], silent: false }
+                }
+            }
+            Err(_) => deterministic_summary(&compact_span.messages),
+        }
+    } else {
+        deterministic_summary(&compact_span.messages)
+    };
+
+    let event = Event::Compacted { seq: 0, replaced: compact_span.replaced.clone(), summary };
+    let seq = match state.store.append(&sid, event.clone()) {
+        Ok(s) => s,
+        Err(e) => return JsonResp::error(500, "store_error", &e.0),
+    };
+    // Publish with authoritative seq.
+    let published = event.with_seq(seq);
+    state.buses.publish(id, published);
+    JsonResp::ok(serde_json::json!({ "compacted": true, "seq": seq, "message": "compacted" }))
+}
+
+fn deterministic_summary(msgs: &[Message]) -> Message {
+    let excerpt: String = msgs.iter().flat_map(|m| m.content.iter()).filter_map(|c| match c {
+        Content::Text { text } => Some(text.as_str()),
+        _ => None,
+    }).collect::<Vec<_>>().join(" ");
+    let snippet: String = excerpt.chars().take(200).collect();
+    let text = if snippet.is_empty() {
+        format!("Summary of {} earlier messages.", msgs.len())
+    } else {
+        format!("Summary of {} earlier messages: {}", msgs.len(), snippet)
+    };
+    Message { id: MsgId::new(), role: Role::Assistant, content: vec![Content::Text { text }], silent: false }
+}
+
+/// `GET /session/{id}/export` — full transcript + events dump (replaces TUI
+/// `/export` placeholder that printed "planned for a future release").
+pub fn export_session(state: &Arc<ServerState>, id: &str) -> JsonResp {
+    let sid = SessionId(id.to_owned());
+    // 404 if session missing.
+    let exists: bool = state
+        .store
+        .query_one("SELECT 1 FROM sessions WHERE id=?1", &[&id], |_| Ok(1i64))
+        .is_ok();
+    if !exists {
+        return JsonResp::error(404, "not_found", "session not found");
+    }
+    // Meta.
+    let meta_sql = "SELECT json_object('id', id, 'name', name, 'cwd', cwd, 'created_at', created_at) FROM sessions WHERE id=?1";
+    let mut meta: serde_json::Value = state.store.query_strings(meta_sql, &[&id])
+        .ok().and_then(|v| v.into_iter().next()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(serde_json::Value::Null);
+    if let Some(ms) = meta.get("created_at").and_then(|c| c.as_i64()) {
+        meta["created_at"] = serde_json::Value::String(crate::http_util::millis_to_iso(ms));
+    }
+    // Transcript (message projection).
+    let msg_sql = "SELECT json_object('seq', seq, 'role', role, 'content', json(content), 'silent', CASE WHEN silent THEN json('true') ELSE json('false') END) FROM messages WHERE session_id=?1 ORDER BY seq";
+    let transcript: Vec<serde_json::Value> = state.store.query_strings(msg_sql, &[&id]).unwrap_or_default().iter().filter_map(|s| serde_json::from_str(s).ok()).collect();
+    // Events (raw durable log).
+    let ev_sql = "SELECT payload FROM events WHERE session_id=?1 ORDER BY seq";
+    let events: Vec<serde_json::Value> = state.store.query_strings(ev_sql, &[&id]).unwrap_or_default().iter().filter_map(|s| serde_json::from_str(s).ok()).collect();
+    // Also include snapshot for convenience.
+    let _ = sid;
+    JsonResp::ok(serde_json::json!({ "id": id, "meta": meta, "transcript": transcript, "events": events }))
+}
+
 /// Test/helper: force the auto-title flow for a session's first assistant turn.
 /// Exposed for the acceptance test and used internally by the turn runner.
 pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {

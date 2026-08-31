@@ -65,7 +65,8 @@ pub enum Screen {
     Chat,
 }
 
-/// Pending action from welcome screen (needs event sender).
+/// Pending action from welcome screen (legacy — kept for compat, no longer queued).
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum WelcomeAction {
     Select,
@@ -125,7 +126,7 @@ pub struct App {
     prompt_stash: PromptStash,
 
     // Pending images (base64-encoded, to be sent with next prompt).
-    pub pending_images: Vec<String>,
+    pub staged_images: Vec<String>,
 
     // State.
     pub streaming: bool,
@@ -133,11 +134,7 @@ pub struct App {
     pub spinner_frame: usize,
     pub phrase_idx: usize,
     pub overlay: Option<Overlay>,
-    pub pending_approval_id: Option<u64>,
-    pub pending_welcome_action: Option<WelcomeAction>,
-    pub pending_session_click: Option<usize>,
-    pub pending_new_session: bool,
-    pub pending_first_message: Option<String>,
+    pub active_approval_id: Option<u64>,
     pub slash: SlashState,
     pub quit: bool,
 
@@ -185,12 +182,7 @@ impl App {
             model_sel: ModelSelector::new(),
             tokens: TokenTracker::new(),
             transcript: Transcript::new(),
-            tools: vec![
-                ToolEntry { name: "bash".into(), enabled: true },
-                ToolEntry { name: "read".into(), enabled: true },
-                ToolEntry { name: "write".into(), enabled: true },
-                ToolEntry { name: "edit".into(), enabled: true },
-            ],
+            tools: Vec::new(),
             input: String::new(),
             cursor_row: 0,
             cursor_col: 0,
@@ -198,17 +190,13 @@ impl App {
             kill_ring: KillRing::new(),
             prompt_history: PromptHistory::new(),
             prompt_stash: PromptStash::new(),
-            pending_images: Vec::new(),
+            staged_images: Vec::new(),
             streaming: false,
             aborting: false,
             spinner_frame: 0,
             phrase_idx: 0,
             overlay: None,
-            pending_approval_id: None,
-            pending_welcome_action: None,
-            pending_session_click: None,
-            pending_new_session: false,
-            pending_first_message: None,
+            active_approval_id: None,
             slash: SlashState::new(),
             quit: false,
             tool_mode: false,
@@ -235,6 +223,9 @@ impl App {
         // Load available models (auto-discovered from connected providers).
         let _ = self.model_sel.load_models(&client);
 
+        // Load tools from server (GET /tools — Phase 4, discovered plugins, not hardcoded).
+        self.refresh_tools(&client);
+
         // Start global attach thread to keep server alive.
         self.attach_handle = Some(spawn_attach_thread(
             self.config.base_url.clone(),
@@ -243,6 +234,19 @@ impl App {
 
         self.client = Some(client);
         Ok(())
+    }
+
+    /// Refresh tools sidebar from server (GET /tools — Phase 4).
+    pub fn refresh_tools(&mut self, client: &Client) {
+        match client.get_tools() {
+            Ok(names) => {
+                self.tools = names.into_iter().map(|n| ToolEntry { name: n, enabled: true }).collect();
+                crate::log!("TOOLS: refreshed {} tools", self.tools.len());
+            }
+            Err(e) => {
+                crate::log!("TOOLS: refresh failed: {:?}", e);
+            }
+        }
     }
 
     /// Get current model display name.
@@ -269,7 +273,7 @@ impl App {
 
         // Clear any pending UI state.
         self.overlay = None;
-        self.pending_approval_id = None;
+        self.active_approval_id = None;
 
         // Clear tool mode state.
         self.tool_mode = false;
@@ -423,6 +427,10 @@ impl App {
             Ok(detail) => {
                 crate::log!("Loading session: {} messages", detail.transcript.len());
                 self.tokens.set_cost(detail.cost_usd);
+                // Store session cwd from meta for /diff fix (Phase 4 — use session cwd, not env::current_dir).
+                if let Some(cwd) = detail.meta.get("cwd").and_then(|v| v.as_str()) {
+                    self.session.state.cwd = Some(cwd.to_string());
+                }
 
                 // Use TranscriptParser from message_handler to parse the transcript.
                 // Filter out silent messages (e.g., AGENTS.md injection).
@@ -490,95 +498,6 @@ impl App {
         let tx = event_loop.sender();
 
         loop {
-            // Handle pending welcome action (needs tx for SSE).
-            if let Some(action) = self.pending_welcome_action.take() {
-                crate::log!("WELCOME ACTION: {:?}", action);
-                match action {
-                    WelcomeAction::Select => {
-                        crate::log!("SELECT: selected={} sessions.len={}", self.session.selected, self.session.sessions.len());
-                        let result = if self.session.selected >= self.session.sessions.len() {
-                            // "New session" selected.
-                            self.create_new_session(tx.clone())
-                        } else {
-                            // Existing session selected.
-                            let session_id = self.session.sessions[self.session.selected].id.clone();
-                            self.enter_session(&session_id, tx.clone())
-                        };
-                        if let Err(e) = result {
-                            self.transcript.push(Message::new("error", format!("Failed to enter session: {}", e)));
-                        }
-                    }
-                    WelcomeAction::NewSession => {
-                        crate::log!("WelcomeAction::NewSession handler starting");
-                        match self.create_new_session(tx.clone()) {
-                            Ok(()) => {
-                                crate::log!("create_new_session OK, screen={:?}", self.screen);
-                                // Send first message if provided.
-                                if let Some(msg) = self.pending_first_message.take() {
-                                    crate::log!("Sending first message: {}", &msg);
-                                    let images = std::mem::take(&mut self.pending_images);
-                                    let image_count = images.len();
-                                    crate::log!("With {} images attached", image_count);
-
-                                    // Add user message locally.
-                                    self.transcript.push(Message::with_images("user", &msg, image_count));
-
-                                    let session_id = self.session.state.session_id.clone();
-                                    let lease = self.session.state.lease.clone().unwrap_or_default();
-                                    if let Some(client) = &self.client {
-                                        match client.prompt(&session_id, &lease, &msg, images) {
-                                            Ok(_) => {
-                                                crate::log!("prompt OK");
-                                                self.streaming = true;
-                                                self.tick_ctl.set_streaming(true);
-                                            }
-                                            Err(e) => {
-                                                crate::log!("prompt FAILED: {:?}", e);
-                                                self.transcript.push(Message::new("error", format!("Failed to send message: {}", e)));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                crate::log!("create_new_session FAILED: {:?}", e);
-                                self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Handle pending session click (switch session from sidebar).
-            if let Some(idx) = self.pending_session_click.take() {
-                if idx < self.session.sessions.len() {
-                    let new_session = self.session.sessions[idx].id.clone();
-                    crate::log!("SESSION SWITCH: -> {}", &new_session[..8.min(new_session.len())]);
-
-                    // Reset all session state first (uses OLD session_id for cleanup).
-                    self.reset_session_state();
-
-                    // Enter new session.
-                    if let Err(e) = self.enter_session(&new_session, tx.clone()) {
-                        self.transcript.push(Message::new("error", format!("Failed to switch session: {}", e)));
-                    }
-                }
-            }
-
-            // Handle pending new session (from /new command or keybind).
-            if self.pending_new_session {
-                self.pending_new_session = false;
-                crate::log!("NEW SESSION: creating...");
-
-                // Reset all session state first.
-                self.reset_session_state();
-
-                // Create new session.
-                if let Err(e) = self.create_new_session(tx.clone()) {
-                    self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
-                }
-            }
-
             // Render with CSI 2026 synchronized update (flicker-free).
             // Begin synchronized update - terminal buffers all output.
             let _ = execute!(terminal.backend_mut(), BeginSynchronizedUpdate);
@@ -600,7 +519,7 @@ impl App {
 
             // Handle event.
             match event {
-                Event::Key(key) => self.handle_key(key),
+                Event::Key(key) => self.handle_key(key, &tx),
                 Event::Mouse(mouse) => self.handle_mouse(mouse),
                 Event::Resize(_, _) => {} // Handled by ratatui
                 Event::Paste(text) => {
@@ -628,12 +547,16 @@ impl App {
                     }
                 }
                 Event::SseError(session_id, e) => {
-                    // Only show errors from current session.
+                    // Phase 4 fix: R-TUI-230 — reconnect from last_seq instead of lying.
                     if session_id == self.session.state.session_id {
-                        crate::log!("SSE error: {}", e);
-                        // Show transient reconnection message in transcript.
+                        crate::log!("SSE error: {} — reconnecting from seq {}", e, self.session.state.last_seq);
+                        // Show transient reconnection message in transcript (deduplicate).
                         if !self.transcript.messages().iter().rev().take(1).any(|m| m.role == "system" && m.content.contains("reconnecting")) {
                             self.transcript.push(Message::new("system", format!("Connection interrupted, reconnecting... ({})", e)));
+                        }
+                        // Reconnect: stop old handle (already dead) and start new from last_seq.
+                        if !session_id.is_empty() {
+                            self.session.start_sse(&self.config, &session_id, self.session.state.last_seq, tx.clone());
                         }
                     }
                 }
@@ -642,7 +565,7 @@ impl App {
             // Drain any additional events — handle ALL event types, not just SSE/Tick.
             for ev in event_loop.drain() {
                 match ev {
-                    Event::Key(key) => self.handle_key(key),
+                    Event::Key(key) => self.handle_key(key, &tx),
                     Event::Mouse(mouse) => self.handle_mouse(mouse),
                     Event::Resize(_, _) => {}
                     Event::Paste(text) => {
@@ -660,9 +583,12 @@ impl App {
                     Event::Tick => self.spinner_frame = self.spinner_frame.wrapping_add(1),
                     Event::SseError(session_id, e) => {
                         if session_id == self.session.state.session_id {
-                            crate::log!("SSE error: {}", e);
+                            crate::log!("SSE error: {} — reconnecting from seq {}", e, self.session.state.last_seq);
                             if !self.transcript.messages().iter().rev().take(1).any(|m| m.role == "system" && m.content.contains("reconnecting")) {
                                 self.transcript.push(Message::new("system", format!("Connection interrupted, reconnecting... ({})", e)));
+                            }
+                            if !session_id.is_empty() {
+                                self.session.start_sse(&self.config, &session_id, self.session.state.last_seq, tx.clone());
                             }
                         }
                     }
@@ -683,21 +609,21 @@ impl App {
         Ok(())
     }
 
-    fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
+    fn handle_key(&mut self, key: crossterm::event::KeyEvent, tx: &Sender<Event>) {
         crate::log!("KEY: {:?} mods={:?} screen={:?} overlay={:?} diff={:?} slash={}", 
             key.code, key.modifiers, self.screen, self.overlay.is_some(), self.diff_viewer.is_some(), self.slash.active);
         
         // Diff viewer handling (separate from overlay).
         if self.diff_viewer.is_some() {
             crate::log!("  -> diff_viewer handler");
-            self.handle_overlay_key(key);
+            self.handle_overlay_key(key, tx);
             return;
         }
         
         // Overlay handling.
         if self.overlay.is_some() {
             crate::log!("  -> overlay handler");
-            self.handle_overlay_key(key);
+            self.handle_overlay_key(key, tx);
             return;
         }
 
@@ -712,7 +638,7 @@ impl App {
         match self.screen {
             Screen::Welcome => {
                 crate::log!("  -> welcome handler");
-                self.handle_welcome_key(key);
+                self.handle_welcome_key(key, tx);
                 return;
             }
             Screen::Chat => {}
@@ -733,7 +659,7 @@ impl App {
                 KeyCode::Enter | KeyCode::Tab => {
                     // Execute selected command.
                     if let Some(cmd) = self.slash.selected_command() {
-                        self.execute_slash_command(cmd.name);
+                        self.execute_slash_command(cmd.name, tx);
                     }
                     self.slash.deactivate();
                     self.input.clear();
@@ -837,7 +763,7 @@ impl App {
         // Match keybind.
         if let Some(action) = self.keybinds.match_key(key) {
             crate::log!("  -> keybind action: {:?}", action);
-            self.execute_action(action);
+            self.execute_action(action, tx);
             return;
         }
 
@@ -957,7 +883,7 @@ impl App {
         }
     }
 
-    fn handle_overlay_key(&mut self, key: crossterm::event::KeyEvent) {
+    fn handle_overlay_key(&mut self, key: crossterm::event::KeyEvent, tx: &Sender<Event>) {
         // Handle diff viewer separately (not in Overlay enum)
         if let Some(ref mut viewer) = self.diff_viewer {
             if viewer.commenting {
@@ -1233,16 +1159,25 @@ impl App {
                     }
                     KeyCode::Enter => {
                         crate::log!("  SessionSelect: ENTER pressed, selected={}", *selected);
-                        if *selected == 0 {
-                            // "New session" selected — signal to create new session.
-                            self.pending_new_session = true;
-                            crate::log!("  SessionSelect: queued new session creation");
-                        } else if let Some(&session_idx) = filtered.get(*selected - 1) {
-                            // Switch to selected session from filtered list.
-                            self.pending_session_click = Some(session_idx);
-                            crate::log!("  SessionSelect: queued session switch to idx {}", session_idx);
-                        }
+                        let is_new = *selected == 0;
+                        let target_idx = if !is_new { filtered.get(*selected - 1).copied() } else { None };
                         self.overlay = None;
+                        if is_new {
+                            crate::log!("  SessionSelect: creating new session");
+                            self.reset_session_state();
+                            if let Err(e) = self.create_new_session(tx.clone()) {
+                                self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
+                            }
+                        } else if let Some(session_idx) = target_idx {
+                            if session_idx < self.session.sessions.len() {
+                                let new_session = self.session.sessions[session_idx].id.clone();
+                                crate::log!("SESSION SWITCH: -> {}", &new_session[..8.min(new_session.len())]);
+                                self.reset_session_state();
+                                if let Err(e) = self.enter_session(&new_session, tx.clone()) {
+                                    self.transcript.push(Message::new("error", format!("Failed to switch session: {}", e)));
+                                }
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -1270,7 +1205,7 @@ impl App {
                             let cmd_id = cmd.id;
                             self.command_palette.close();
                             self.overlay = None;
-                            self.execute_palette_command(cmd_id);
+                            self.execute_palette_command(cmd_id, tx);
                         }
                     }
                     _ => {}
@@ -1280,16 +1215,16 @@ impl App {
         }
     }
 
-    fn handle_welcome_key(&mut self, key: crossterm::event::KeyEvent) {
+    fn handle_welcome_key(&mut self, key: crossterm::event::KeyEvent, tx: &Sender<Event>) {
         // Handle diff viewer first (separate from overlay).
         if self.diff_viewer.is_some() {
-            self.handle_overlay_key(key);
+            self.handle_overlay_key(key, tx);
             return;
         }
         
         // Handle overlay (same logic as chat screen).
         if self.overlay.is_some() {
-            self.handle_overlay_key(key);
+            self.handle_overlay_key(key, tx);
             return;
         }
         
@@ -1326,7 +1261,7 @@ impl App {
                 }
                 KeyCode::Enter | KeyCode::Tab => {
                     if let Some(cmd) = self.slash.selected_command() {
-                        self.execute_slash_command(cmd.name);
+                        self.execute_slash_command(cmd.name, tx);
                     }
                     self.slash.deactivate();
                     self.input.clear();
@@ -1452,23 +1387,50 @@ impl App {
             }
             KeyCode::Enter => {
                 if self.input.is_empty() {
-                    // No input - create new empty session.
+                    // No input - create new empty session immediately (Phase 4.4c: no queued buffers).
                     crate::log!("ENTER: creating new session (empty input)");
-                    self.pending_welcome_action = Some(WelcomeAction::NewSession);
+                    if let Err(e) = self.create_new_session(tx.clone()) {
+                        self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
+                    }
                 } else {
-                    // Has input - create session and send message.
-                    crate::log!("ENTER: creating session with message: {}", &self.input);
-                    self.pending_first_message = Some(self.input.clone());
+                    // Has input - create session and send message immediately.
+                    let msg = self.input.clone();
+                    crate::log!("ENTER: creating session with message: {}", &msg);
                     self.input.clear();
                     self.cursor_col = 0;
-                    self.pending_welcome_action = Some(WelcomeAction::NewSession);
+                    match self.create_new_session(tx.clone()) {
+                        Ok(()) => {
+                            crate::log!("Sending first message: {}", &msg);
+                            let images = std::mem::take(&mut self.staged_images);
+                            let image_count = images.len();
+                            self.transcript.push(Message::with_images("user", &msg, image_count));
+                            let session_id = self.session.state.session_id.clone();
+                            let lease = self.session.state.lease.clone().unwrap_or_default();
+                            if let Some(client) = &self.client {
+                                match client.prompt(&session_id, &lease, &msg, images) {
+                                    Ok(_) => {
+                                        crate::log!("prompt OK");
+                                        self.streaming = true;
+                                        self.tick_ctl.set_streaming(true);
+                                    }
+                                    Err(e) => {
+                                        crate::log!("prompt FAILED: {:?}", e);
+                                        self.transcript.push(Message::new("error", format!("Failed to send message: {}", e)));
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
+                        }
+                    }
                 }
             }
             _ => {}
         }
     }
 
-    fn execute_action(&mut self, action: Action) {
+    fn execute_action(&mut self, action: Action, tx: &Sender<Event>) {
         match action {
             Action::Quit => self.quit = true,
             Action::Abort => {
@@ -1507,8 +1469,11 @@ impl App {
                 self.overlay = Some(Overlay::SessionSelect { selected: 0, filter: String::new() });
             }
             Action::NewSession => {
-                // Trigger new session (handled in run loop).
-                self.pending_new_session = true;
+                // Phase 4.4c: create immediately (no queued buffer).
+                self.reset_session_state();
+                if let Err(e) = self.create_new_session(tx.clone()) {
+                    self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
+                }
             }
             Action::ToolMode => {
                 if self.tool_mode {
@@ -1772,14 +1737,14 @@ impl App {
     }
     
     fn handle_click(&mut self, x: u16, y: u16) {
-        // Check if click is in right sidebar (tools toggle).
+        // Right sidebar: tools are now server-driven (GET /tools), not togglable locally.
+        // The previous dead `enabled` toggle (F9) has been removed — clicks here are no-ops
+        // (future: per-tool enable could be a server endpoint, but not a lying local flip).
         let right_start = self.term_width.saturating_sub(24); // RIGHT_EXPANDED width
         if x >= right_start {
-            // Calculate which tool was clicked.
-            // MODEL section ~4 lines, TOOLS header 1 line, then tools.
-            let tool_idx = y.saturating_sub(6) as usize;
-            if tool_idx < self.tools.len() {
-                self.tools[tool_idx].enabled = !self.tools[tool_idx].enabled;
+            // Sidebar click — refresh tools from server instead of toggling dead state.
+            if let Some(names) = self.client.as_ref().and_then(|c| c.get_tools().ok()) {
+                self.tools = names.into_iter().map(|n| ToolEntry { name: n, enabled: true }).collect();
             }
             return;
         }
@@ -1826,7 +1791,7 @@ impl App {
 
     /// Paste image from system clipboard (fallback when bracketed paste is empty).
     fn paste_image_from_clipboard(&mut self) {
-        crate::log!("PASTE IMAGE: starting, current pending_images.len={}", self.pending_images.len());
+        crate::log!("PASTE IMAGE: starting, current staged_images.len={}", self.staged_images.len());
         let mut clipboard = match arboard::Clipboard::new() {
             Ok(c) => c,
             Err(e) => {
@@ -1841,9 +1806,9 @@ impl App {
                 let height = image.height;
                 crate::log!("PASTE IMAGE: got image {}x{}", width, height);
                 if let Some(base64) = self.encode_image_as_base64_png(&image) {
-                    self.pending_images.push(base64);
-                    let img_num = self.pending_images.len();
-                    crate::log!("PASTE IMAGE: encoded, pending_images.len={}", img_num);
+                    self.staged_images.push(base64);
+                    let img_num = self.staged_images.len();
+                    crate::log!("PASTE IMAGE: encoded, staged_images.len={}", img_num);
                     
                     // Insert [imgN: WxH PNG] marker at cursor position.
                     let marker = format!("[img{}: {}x{} PNG]", img_num, width, height);
@@ -1894,7 +1859,7 @@ impl App {
                 self.tick_ctl.set_streaming(true);
                 self.transcript.take_delta(); // clear live_delta
                 // Delegate turn-start accounting to TokenTracker.
-                // This marks pending_turn_reset=true so last_turn stats stay visible during streaming.
+                // This marks turn-reset as pending so last_turn stats stay visible during streaming.
                 self.tokens.on_turn_started();
             }
             SseFrame::TurnEnded { .. } => {
@@ -1955,7 +1920,7 @@ impl App {
             }
             SseFrame::UsageRecorded { tokens, cost_usd, usage_kind, .. } => {
                 // Delegate all token accounting to TokenTracker.
-                // It handles: session totals, last-turn accumulation, pending_turn_reset,
+                // It handles: session totals, last-turn accumulation, turn-reset flag,
                 // title filtering, and throughput token counting.
                 let counts = TokenCounts::new(
                     tokens.input as usize,
@@ -1992,7 +1957,7 @@ impl App {
                 });
             }
             SseFrame::ApprovalRequest { id, tool, args, .. } => {
-                self.pending_approval_id = Some(id);
+                self.active_approval_id = Some(id);
                 self.overlay = Some(Overlay::Approval {
                     tool,
                     args: serde_json::to_string(&args).unwrap_or_default(),
@@ -2014,7 +1979,33 @@ impl App {
             SseFrame::PluginNotification { plugin, message } => {
                 self.transcript.push(Message::new(&plugin, message));
             }
-            _ => {}
+            SseFrame::HookFailed { plugin, hook, reason } => {
+                self.transcript.push(Message::new("system", format!("Hook failed {}:{} — {}", plugin, hook, reason)));
+            }
+            SseFrame::ThinkingDelta { delta, .. } => {
+                // Phase 4: previously ignored (only seq recorded). Now treat as streamed thinking.
+                self.transcript.append_delta(&delta);
+                // Also update thinking collapse state: ensure thinking blocks are expanded while streaming?
+            }
+            SseFrame::ModelChanged { model, .. } => {
+                // Phase 4: previously ignored. Update model selector if known and show notification.
+                let name = format!("{}:{}", model.provider, model.id);
+                crate::log!("SSE ModelChanged: {}", name);
+                // Try to select in ModelSelector if present.
+                if let Some(idx) = self.model_sel.models().iter().position(|m| m.provider == model.provider && m.id == model.id) {
+                    self.model_sel.set_selected(idx);
+                }
+                self.transcript.push(Message::new("system", format!("Model changed to {}", name)));
+            }
+            SseFrame::Compacted { replaced, summary, .. } => {
+                // Phase 4: previously ignored. Reflect compaction in transcript.
+                crate::log!("SSE Compacted: replaced {}..{} summary {}", replaced.start, replaced.end, summary.id);
+                let (text, _, _, _) = Self::extract_message_content(&summary.content);
+                let summary_text = if text.is_empty() { "Conversation compacted.".to_string() } else { text };
+                self.transcript.push(Message::new("system", format!("Compacted {}..{}: {}", replaced.start, replaced.end, summary_text.clone())));
+                // Also push summary as assistant message so transcript reflects new state.
+                self.transcript.push(Message::new(&summary.role, summary_text));
+            }
         }
     }
 
@@ -2077,14 +2068,14 @@ impl App {
 
     fn send_prompt(&mut self) {
         // Allow sending with just images (no text required).
-        if self.input.trim().is_empty() && self.pending_images.is_empty() {
+        if self.input.trim().is_empty() && self.staged_images.is_empty() {
             return;
         }
         let session_id = self.session.state.session_id.clone();
         let lease = self.session.state.lease.clone();
         if let (Some(client), Some(holder)) = (&self.client, lease) {
             let text = std::mem::take(&mut self.input);
-            let images = std::mem::take(&mut self.pending_images);
+            let images = std::mem::take(&mut self.staged_images);
             let image_count = images.len();
             self.cursor_row = 0;
             self.cursor_col = 0;
@@ -2106,9 +2097,9 @@ impl App {
     fn respond_approval(&mut self, decision: &str) {
         let session_id = self.session.state.session_id.clone();
         let lease = self.session.state.lease.clone();
-        if let (Some(client), Some(holder), Some(id)) = (&self.client, lease, self.pending_approval_id) {
+        if let (Some(client), Some(holder), Some(id)) = (&self.client, lease, self.active_approval_id) {
             let _ = client.approve(&session_id, &holder, id, decision);
-            self.pending_approval_id = None;
+            self.active_approval_id = None;
         }
     }
 
@@ -2604,7 +2595,7 @@ impl App {
         self.input.len()
     }
     
-    fn execute_slash_command(&mut self, cmd: &str) {
+    fn execute_slash_command(&mut self, cmd: &str, tx: &Sender<Event>) {
         match cmd {
             "session" => {
                 self.overlay = Some(Overlay::SessionSelect { selected: 0, filter: String::new() });
@@ -2613,7 +2604,10 @@ impl App {
                 self.overlay = Some(Overlay::ModelSelect { selected: self.model_sel.selected(), filter: String::new() });
             }
             "new" => {
-                self.pending_new_session = true;
+                self.reset_session_state();
+                if let Err(e) = self.create_new_session(tx.clone()) {
+                    self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
+                }
             }
             "clear" => {
                 // Disabled - users never want to clear conversation.
@@ -2636,14 +2630,45 @@ impl App {
                 }
             }
             "compact" => {
-                self.transcript.push(Message::new("system",
-                    "Compaction is automatic when context exceeds limits. \
-                     Manual compaction is planned for a future release."));
+                // Phase 4: POST /session/{id}/compact (lease required, engine at exec.rs:139).
+                let sid = self.session.state.session_id.clone();
+                let lease = self.session.state.lease.clone();
+                if sid.is_empty() {
+                    self.transcript.push(Message::new("system", "No active session to compact."));
+                } else if let (Some(client), Some(holder)) = (&self.client, lease) {
+                    match client.compact_session(&sid, &holder) {
+                        Ok(seq) => self.transcript.push(Message::new("system", format!("Compacted (seq={})", seq))),
+                        Err(e) => self.transcript.push(Message::new("system", format!("Compact failed: {}", e))),
+                    }
+                } else {
+                    self.transcript.push(Message::new("system", "No lease — cannot compact (acquire lease first)."));
+                }
             }
             "export" => {
-                self.transcript.push(Message::new("system",
-                    "Export is planned for a future release. \
-                     Session data is stored in SQLite at ~/.kn9t/store.db"));
+                // Phase 4: GET /session/{id}/export (replaces placeholder).
+                let sid = self.session.state.session_id.clone();
+                if sid.is_empty() {
+                    self.transcript.push(Message::new("system", "No active session to export."));
+                } else if let Some(client) = &self.client {
+                    // Support `/export <path>` args in raw input.
+                    let raw = self.input.clone();
+                    let arg_path = raw.trim_start_matches('/').trim_start_matches(cmd).trim();
+                    match client.export_session(&sid) {
+                        Ok(val) => {
+                            let out_path = if arg_path.is_empty() {
+                                format!("/tmp/kn9t-export-{}.json", &sid[..8.min(sid.len())])
+                            } else {
+                                arg_path.to_string()
+                            };
+                            let json = serde_json::to_string_pretty(&val).unwrap_or_else(|_| "{}".into());
+                            match std::fs::write(&out_path, json) {
+                                Ok(_) => self.transcript.push(Message::new("system", format!("Exported to {}", out_path))),
+                                Err(e) => self.transcript.push(Message::new("system", format!("Export write failed: {}", e))),
+                            }
+                        }
+                        Err(e) => self.transcript.push(Message::new("system", format!("Export failed: {}", e))),
+                    }
+                }
             }
             "search" => {
                 self.open_search();
@@ -2672,11 +2697,33 @@ impl App {
             "pop" | "unstash" | "stashpop" => {
                 self.unstash_prompt();
             }
+            "rename" => {
+                // Parse `/rename <title>` args from raw input before it was cleared.
+                let raw = self.input.clone();
+                let title = raw.trim_start_matches('/').trim_start_matches("rename").trim();
+                let sid = self.session.state.session_id.clone();
+                if sid.is_empty() {
+                    self.transcript.push(Message::new("system", "No active session to rename."));
+                } else if title.is_empty() {
+                    self.transcript.push(Message::new("system", "Usage: /rename <new title>"));
+                } else if let Some(client) = &self.client {
+                    match client.rename_session(&sid, title) {
+                        Ok(_) => {
+                            self.session.set_session_title(Some(title.to_string()));
+                            if let Some(s) = self.session.sessions.iter_mut().find(|s| s.id == sid) {
+                                s.name = title.to_string();
+                            }
+                            self.transcript.push(Message::new("system", format!("Renamed to '{}'", title)));
+                        }
+                        Err(e) => self.transcript.push(Message::new("system", format!("Rename failed: {}", e))),
+                    }
+                }
+            }
             _ => {}
         }
     }
 
-    fn execute_palette_command(&mut self, cmd_id: &str) {
+    fn execute_palette_command(&mut self, cmd_id: &str, tx: &Sender<Event>) {
         match cmd_id {
             // Navigation
             "scroll_up" => self.transcript.scroll_up(3),
@@ -2690,7 +2737,10 @@ impl App {
             
             // Session
             "new_session" => {
-                self.pending_new_session = true;
+                self.reset_session_state();
+                if let Err(e) = self.create_new_session(tx.clone()) {
+                    self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
+                }
             }
             "session_list" => {
                 self.overlay = Some(Overlay::SessionSelect { selected: 0, filter: String::new() });
@@ -2733,12 +2783,36 @@ impl App {
                 self.overlay = Some(Overlay::ModelSelect { selected: self.model_sel.selected(), filter: String::new() });
             }
             "compact" => {
-                self.transcript.push(Message::new("system",
-                    "Compaction is automatic when context exceeds limits."));
+                let sid = self.session.state.session_id.clone();
+                let lease = self.session.state.lease.clone();
+                if sid.is_empty() {
+                    self.transcript.push(Message::new("system", "No active session to compact."));
+                } else if let (Some(client), Some(holder)) = (&self.client, lease) {
+                    match client.compact_session(&sid, &holder) {
+                        Ok(seq) => self.transcript.push(Message::new("system", format!("Compacted (seq={})", seq))),
+                        Err(e) => self.transcript.push(Message::new("system", format!("Compact failed: {}", e))),
+                    }
+                } else {
+                    self.transcript.push(Message::new("system", "No lease — cannot compact."));
+                }
             }
             "export" => {
-                self.transcript.push(Message::new("system",
-                    "Export is planned for a future release."));
+                let sid = self.session.state.session_id.clone();
+                if sid.is_empty() {
+                    self.transcript.push(Message::new("system", "No active session to export."));
+                } else if let Some(client) = &self.client {
+                    match client.export_session(&sid) {
+                        Ok(val) => {
+                            let out_path = format!("/tmp/kn9t-export-{}.json", &sid[..8.min(sid.len())]);
+                            let json = serde_json::to_string_pretty(&val).unwrap_or_else(|_| "{}".into());
+                            match std::fs::write(&out_path, json) {
+                                Ok(_) => self.transcript.push(Message::new("system", format!("Exported to {}", out_path))),
+                                Err(e) => self.transcript.push(Message::new("system", format!("Export write failed: {}", e))),
+                            }
+                        }
+                        Err(e) => self.transcript.push(Message::new("system", format!("Export failed: {}", e))),
+                    }
+                }
             }
             
             // Settings
@@ -2759,8 +2833,10 @@ impl App {
     fn open_git_diff(&mut self) {
         use std::process::Command;
         
-        // Get the working directory from session or use current dir
-        let cwd = std::env::current_dir().unwrap_or_default();
+        // Phase 4 fix: use the session's cwd from snapshot (not env::current_dir which is the TUI process cwd).
+        let cwd = self.session.state.cwd.as_deref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         
         // Run git diff
         let output = Command::new("git")

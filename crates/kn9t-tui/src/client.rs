@@ -246,6 +246,44 @@ impl Client {
         crate::log!("[client.set_model] response status={}", resp.status());
         Ok(())
     }
+
+    /// List registered tools (GET /tools — F9, Phase 4). Returns tool names from discovered+ pinned plugins.
+    pub fn get_tools(&self) -> Result<Vec<String>, ClientError> {
+        let resp = self.request("GET", "/tools")
+            .call()
+            .map_err(|e| ClientError::Http(e.to_string()))?;
+        let body: serde_json::Value = resp.into_json().map_err(|e| ClientError::Json(e.to_string()))?;
+        let tools = body.get("tools").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let names: Vec<String> = tools.iter().filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())).collect();
+        Ok(names)
+    }
+
+    /// Rename a session (POST /session/{id}/rename — Phase 4 action endpoint, no PATCH).
+    pub fn rename_session(&self, session_id: &str, new_name: &str) -> Result<(), ClientError> {
+        let body = serde_json::json!({ "name": new_name });
+        self.request("POST", &format!("/session/{}/rename", session_id))
+            .send_json(&body)
+            .map_err(|e| ClientError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Trigger manual compaction (POST /session/{id}/compact — Phase 4, lease required, engine at exec.rs:139).
+    pub fn compact_session(&self, session_id: &str, lease: &str) -> Result<u64, ClientError> {
+        let resp = self.request("POST", &format!("/session/{}/compact", session_id))
+            .set("X-Lease", lease)
+            .call()
+            .map_err(|e| ClientError::Http(e.to_string()))?;
+        let body: serde_json::Value = resp.into_json().map_err(|e| ClientError::Json(e.to_string()))?;
+        Ok(body.get("seq").and_then(|v| v.as_u64()).unwrap_or(0))
+    }
+
+    /// Export a session transcript (GET /session/{id}/export — Phase 4, replaces placeholder).
+    pub fn export_session(&self, session_id: &str) -> Result<serde_json::Value, ClientError> {
+        let resp = self.request("GET", &format!("/session/{}/export", session_id))
+            .call()
+            .map_err(|e| ClientError::Http(e.to_string()))?;
+        resp.into_json().map_err(|e| ClientError::Json(e.to_string()))
+    }
 }
 
 use std::sync::Arc;

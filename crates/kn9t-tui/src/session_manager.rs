@@ -25,6 +25,8 @@ pub struct SessionState {
     pub session_title: Option<String>,
     pub lease: Option<String>,
     pub last_seq: u64,
+    /// Working directory for the current session (from server snapshot, used for /diff cwd fix).
+    pub cwd: Option<String>,
 }
 
 impl SessionState {
@@ -34,6 +36,7 @@ impl SessionState {
         self.session_title = None;
         self.lease = None;
         self.last_seq = 0;
+        self.cwd = None;
     }
 }
 
@@ -229,6 +232,7 @@ mod tests {
             session_title: Some("My Session".into()),
             lease: Some("holder-456".into()),
             last_seq: 42,
+            cwd: Some("/tmp".into()),
         };
 
         state.reset();

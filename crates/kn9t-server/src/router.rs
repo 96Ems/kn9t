@@ -32,7 +32,7 @@ fn segments(path: &str) -> Vec<&str> {
 fn is_lease_required(method: &Method, segs: &[&str]) -> bool {
     match (method, segs) {
         (Method::Post, ["session", _, action]) => {
-            matches!(*action, "prompt" | "steer" | "abort" | "model")
+            matches!(*action, "prompt" | "steer" | "abort" | "model" | "compact")
         }
         (Method::Post, ["approve"]) => true,
         _ => false,
@@ -175,6 +175,15 @@ fn route(
             Ok(body) => routes::session::approve(state, body).into(),
             Err(e) => e.into(),
         },
+        (Method::Post, ["session", id, "rename"]) => {
+            match parse_json::<api::RenameReq>(req) {
+                Ok(body) => routes::session::rename(state, id, body).into(),
+                Err(e) => e.into(),
+            }
+        }
+        (Method::Post, ["session", id, "compact"]) => routes::session::compact(state, id).into(),
+        (Method::Get, ["session", id, "export"]) => routes::session::export_session(state, id).into(),
+        (Method::Get, ["tools"]) => routes::tools::list(state).into(),
 
         // ── blobs ──
         (Method::Post, ["blob"]) => {

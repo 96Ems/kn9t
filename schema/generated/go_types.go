@@ -50,6 +50,11 @@ type ApproveReq struct {
 	Scope *string `json:"scope,omitempty"`
 }
 
+// RenameReq — request body.
+type RenameReq struct {
+	Name string `json:"name"`
+}
+
 // Plugin protocol definitions (schema/plugin.json).
 // ModelDecl.
 type ModelDecl struct {

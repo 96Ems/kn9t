@@ -8,3 +8,4 @@ pub mod models;
 pub mod plugin;
 pub mod pref;
 pub mod session;
+pub mod tools;

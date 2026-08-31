@@ -320,6 +320,68 @@
       "response": { "type": "object", "properties": { "ok": { "type": "boolean" }, "idle_secs": { "type": "integer" }, "attached_clients": { "type": "integer" }, "running_turns": { "type": "integer" } }, "required": ["ok"] }
     },
     {
+      "method": "GET",
+      "path": "/tools",
+      "lease": false,
+      "description": "List registered tools (from discovered + pinned plugins; reflects GET /tools for TUI sidebar, F9)",
+      "response": {
+        "type": "object",
+        "properties": {
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "hidden": { "type": "boolean" }
+              },
+              "required": ["name"]
+            }
+          }
+        },
+        "required": ["tools"]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/session/{id}/rename",
+      "lease": false,
+      "description": "Rename a session (action endpoint, no PATCH; auto-title must not clobber a manual rename)",
+      "request": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "New human title for the session" }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      },
+      "response": { "type": "object", "properties": { "id": { "type": "string" }, "name": { "type": "string" } }, "required": ["id", "name"] }
+    },
+    {
+      "method": "POST",
+      "path": "/session/{id}/compact",
+      "lease": true,
+      "description": "Manually trigger compaction (engine already exists at kn9t-react exec.rs:139 run_compaction; previously unreachable via TUI /compact)",
+      "response": { "type": "object", "properties": { "compacted": { "type": "boolean" }, "seq": { "type": "integer" }, "message": { "type": "string" } }, "required": ["compacted"] }
+    },
+    {
+      "method": "GET",
+      "path": "/session/{id}/export",
+      "lease": false,
+      "description": "Export a session transcript (JSON, all messages + meta; replaces TUI /export placeholder)",
+      "response": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "meta": { "type": "object" },
+          "transcript": { "type": "array", "items": { "type": "object" } },
+          "events": { "type": "array", "items": { "type": "object" } }
+        },
+        "required": ["id", "transcript"]
+      }
+    },
+    {
       "method": "POST",
       "path": "/plugin/{name}/reload",
       "lease": false,
