@@ -351,41 +351,65 @@ fn wrap_input_for_welcome(input: &str, width: usize, cursor_char_pos: usize) -> 
 
 fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     if app.layout.right == Sidebar::Collapsed {
-        // Thin indicator.
-        if area.height > 0 {
-            let buf = f.buffer_mut();
-            buf[(area.x, area.y)].set_char('▐').set_fg(theme.muted);
+        // Collapsed: full-height heavy border with distinct background.
+        let buf = f.buffer_mut();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                buf[(x, y)].set_bg(theme.tool_focus_bg);
+            }
+        }
+        for y in area.y..area.y + area.height {
+            buf[(area.x, y)].set_char('┃').set_style(Style::default().fg(theme.tool_focus_border).bg(theme.tool_focus_bg).add_modifier(Modifier::BOLD));
         }
         return;
     }
 
     let buf = f.buffer_mut();
+
+    // Fill sidebar background to distinguish from transcript.
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            buf[(x, y)].set_bg(theme.tool_focus_bg);
+        }
+    }
+
+    // Heavy left border in accent color.
+    for y in area.y..area.y + area.height {
+        buf[(area.x, y)].set_char('┃').set_style(Style::default().fg(theme.tool_focus_border).bg(theme.tool_focus_bg).add_modifier(Modifier::BOLD));
+    }
+
+    // Content is inset by one column so text doesn't overwrite the border.
+    let content_x = area.x + 1;
+    let content_w = (area.width as usize).saturating_sub(1);
+    if content_w == 0 {
+        return;
+    }
     let mut y = area.y;
-    let w = area.width as usize;
+    let w = content_w;
 
     // Session info at the top.
     if !app.session.state.session_id.is_empty() {
         // Show short session ID (first 8 chars).
         let sid = &app.session.state.session_id;
         let short_id = if sid.len() > 8 { &sid[..8] } else { sid.as_str() };
-        y = render_line_at(buf, area.x, y, w, &format!("#{}", short_id), Style::default().fg(theme.muted));
+        y = render_line_at(buf, content_x, y, w, &format!("#{}", short_id), Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
         // Show title if available.
         if let Some(title) = app.session.session_title() {
-            y = render_line_at(buf, area.x, y, w, title, Style::default().fg(theme.primary));
+            y = render_line_at(buf, content_x, y, w, title, Style::default().bg(theme.tool_focus_bg).fg(theme.primary));
         }
         y += 1;
     }
 
     // Model section.
-    y = render_line_at(buf, area.x, y, w, "MODEL", Style::default().fg(theme.fg).add_modifier(Modifier::BOLD));
-    y = render_line_at(buf, area.x, y, w, &app.current_model_name(), Style::default().fg(theme.primary));
-    y = render_line_at(buf, area.x, y, w, &format!("${:.4}", app.tokens.cost), Style::default().fg(theme.warning));
+    y = render_line_at(buf, content_x, y, w, "MODEL", Style::default().bg(theme.tool_focus_bg).fg(theme.fg).add_modifier(Modifier::BOLD));
+    y = render_line_at(buf, content_x, y, w, &app.current_model_name(), Style::default().bg(theme.tool_focus_bg).fg(theme.primary));
+    y = render_line_at(buf, content_x, y, w, &format!("${:.4}", app.tokens.cost), Style::default().bg(theme.tool_focus_bg).fg(theme.warning));
     y += 1;
 
     // Last turn stats - what matters for context window usage.
     // Anthropic: input = non-cached tokens, cache_read = cached tokens
     // Total context = input + cache_read; cache_hit% = cache_read / total
-    y = render_line_at(buf, area.x, y, w, "LAST TURN", Style::default().fg(theme.fg).add_modifier(Modifier::BOLD));
+    y = render_line_at(buf, content_x, y, w, "LAST TURN", Style::default().bg(theme.tool_focus_bg).fg(theme.fg).add_modifier(Modifier::BOLD));
     let lt_input = app.tokens.last_turn_input();
     let lt_output = app.tokens.last_turn_output();
     let lt_cache_read = app.tokens.last_turn_cache_read();
@@ -394,34 +418,34 @@ fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         let total_input = lt_input + lt_cache_read;
         if lt_cache_read > 0 && total_input > 0 {
             let hit_pct = (lt_cache_read as f64 / total_input as f64 * 100.0) as u32;
-            y = render_line_at(buf, area.x, y, w,
+            y = render_line_at(buf, content_x, y, w,
                 &format!("in: {} ({}%)", format_tokens(total_input), hit_pct),
-                Style::default().fg(theme.success));
+                Style::default().bg(theme.tool_focus_bg).fg(theme.success));
         } else {
-            y = render_line_at(buf, area.x, y, w,
+            y = render_line_at(buf, content_x, y, w,
                 &format!("in: {}", format_tokens(lt_input)),
-                Style::default().fg(theme.fg));
+                Style::default().bg(theme.tool_focus_bg).fg(theme.fg));
         }
-        y = render_line_at(buf, area.x, y, w,
+        y = render_line_at(buf, content_x, y, w,
             &format!("out: {}", format_tokens(lt_output)),
-            Style::default().fg(theme.muted));
+            Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
         if lt_cache_read > 0 || lt_cache_write > 0 {
-            y = render_line_at(buf, area.x, y, w,
+            y = render_line_at(buf, content_x, y, w,
                 &format!("r:{} w:{}", format_tokens(lt_cache_read), format_tokens(lt_cache_write)),
-                Style::default().fg(theme.muted));
+                Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
         }
     } else {
-        y = render_line_at(buf, area.x, y, w, "-", Style::default().fg(theme.muted));
+        y = render_line_at(buf, content_x, y, w, "-", Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
     }
 
     if let Some(tps) = app.tokens.last_toks_per_sec {
-        y = render_line_at(buf, area.x, y, w, &format!("{:.0} tok/s", tps), Style::default().fg(theme.muted));
+        y = render_line_at(buf, content_x, y, w, &format!("{:.0} tok/s", tps), Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
     }
     y += 1;
 
     // Session totals - cumulative for billing/cost.
     // tokens_in = non-cached tokens, cache_read = cached tokens, total = both
-    y = render_line_at(buf, area.x, y, w, "SESSION", Style::default().fg(theme.fg).add_modifier(Modifier::BOLD));
+    y = render_line_at(buf, content_x, y, w, "SESSION", Style::default().bg(theme.tool_focus_bg).fg(theme.fg).add_modifier(Modifier::BOLD));
     let s_in = app.tokens.tokens_in();
     let s_out = app.tokens.tokens_out();
     let s_cache_read = app.tokens.cache_read();
@@ -429,34 +453,34 @@ fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let session_total = s_in + s_cache_read;
     if s_cache_read > 0 && session_total > 0 {
         let session_hit_pct = (s_cache_read as f64 / session_total as f64 * 100.0) as u32;
-        y = render_line_at(buf, area.x, y, w,
+        y = render_line_at(buf, content_x, y, w,
             &format!("in: {} ({}%)", format_tokens(session_total), session_hit_pct),
-            Style::default().fg(theme.success));
+            Style::default().bg(theme.tool_focus_bg).fg(theme.success));
     } else {
-        y = render_line_at(buf, area.x, y, w,
+        y = render_line_at(buf, content_x, y, w,
             &format!("in: {}", format_tokens(s_in)),
-            Style::default().fg(theme.muted));
+            Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
     }
-    y = render_line_at(buf, area.x, y, w,
+    y = render_line_at(buf, content_x, y, w,
         &format!("out: {}", format_tokens(s_out)),
-        Style::default().fg(theme.muted));
+        Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
     if s_cache_read > 0 || s_cache_write > 0 {
-        y = render_line_at(buf, area.x, y, w,
+        y = render_line_at(buf, content_x, y, w,
             &format!("r:{} w:{}", format_tokens(s_cache_read), format_tokens(s_cache_write)),
-            Style::default().fg(theme.muted));
+            Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
     }
     y += 1;
 
     // Tools section.
     if y < area.y + area.height {
-        y = render_line_at(buf, area.x, y, w, "TOOLS", Style::default().fg(theme.fg).add_modifier(Modifier::BOLD));
+        y = render_line_at(buf, content_x, y, w, "TOOLS", Style::default().bg(theme.tool_focus_bg).fg(theme.fg).add_modifier(Modifier::BOLD));
         for tool in &app.tools {
             if y >= area.y + area.height {
                 break;
             }
             let check = if tool.enabled { "☑" } else { "☐" };
-            let style = if tool.enabled { Style::default().fg(theme.fg) } else { Style::default().fg(theme.muted) };
-            y = render_line_at(buf, area.x, y, w, &format!("{} {}", check, tool.name), style);
+            let style = if tool.enabled { Style::default().bg(theme.tool_focus_bg).fg(theme.fg) } else { Style::default().bg(theme.tool_focus_bg).fg(theme.muted) };
+            y = render_line_at(buf, content_x, y, w, &format!("{} {}", check, tool.name), style);
         }
     }
 }
@@ -884,6 +908,23 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
 
     match overlay {
         Overlay::Approval { tool, args, selected } => {
+            // Highly visible border — heavy box in warning color with bold.
+            let border_fg = theme.warning;
+            let border_style = Style::default().fg(border_fg).bg(Color::Black).add_modifier(Modifier::BOLD);
+            if overlay_w >= 2 && overlay_h >= 2 {
+                buf[(overlay_x, overlay_y)].set_char('┏').set_style(border_style);
+                buf[(overlay_x + overlay_w - 1, overlay_y)].set_char('┓').set_style(border_style);
+                buf[(overlay_x, overlay_y + overlay_h - 1)].set_char('┗').set_style(border_style);
+                buf[(overlay_x + overlay_w - 1, overlay_y + overlay_h - 1)].set_char('┛').set_style(border_style);
+                for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
+                    buf[(x, overlay_y)].set_char('━').set_style(border_style);
+                    buf[(x, overlay_y + overlay_h - 1)].set_char('━').set_style(border_style);
+                }
+                for y in (overlay_y + 1)..(overlay_y + overlay_h - 1) {
+                    buf[(overlay_x, y)].set_char('┃').set_style(border_style);
+                    buf[(overlay_x + overlay_w - 1, y)].set_char('┃').set_style(border_style);
+                }
+            }
             let mut y = overlay_y + 1;
             
             // Title.

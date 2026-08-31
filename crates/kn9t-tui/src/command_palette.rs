@@ -175,6 +175,13 @@ pub const COMMANDS: &[PaletteCommand] = &[
         category: Category::View,
     },
     PaletteCommand {
+        id: "toggle_sidebar",
+        label: "Toggle Sidebar",
+        description: "Show/hide right sidebar",
+        keybinding: None,
+        category: Category::View,
+    },
+    PaletteCommand {
         id: "keybindings",
         label: "Show Keybindings",
         description: "Display all keyboard shortcuts",
