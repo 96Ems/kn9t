@@ -9,8 +9,11 @@
 //! and the provider crates, naming the concrete `Store`/`Tool`/`Policy`/`Provider`
 //! types (DESIGN §2, §12).
 //!
-//! Tools are loaded from the `kn9t-tools` plugin subprocess (R-PLUG2-110), not
-//! from an in-process crate. This validates the full plugin code path.
+//! Tools are loaded from **external** plugin binaries auto-discovered in
+//! `<KN9T_HOME|~/.kn9t>/plugins/` (ADR-0004, R-PLUG2-110), plus any pinned
+//! `[[plugin]]` entries from the global config — never from a project-relative
+//! `plugins/` directory and not from an in-process crate. This validates the
+//! full plugin code path.
 //!
 //! The public API here is what the binary (`main.rs`) and the acceptance tests
 //! both drive: [`ServerHandle::spawn`] binds a listener on an ephemeral port and

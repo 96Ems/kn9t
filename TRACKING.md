@@ -78,7 +78,11 @@ A 4-phase cleanup is underway:
   `~/.kn9t/plugins/`, ADR-0004; server merges discovered + `[[plugin]]` tools;
   project-relative `plugins/` never scanned, proven by test) **+ Step 3.3 done
   2026-08-31** (config overrides discovery: pin / env-inject / disable; duplicate
-  `kn9t-tools` deduped, was 8 tools → 400, now 4). Steps 3.4–3.5 pending.
+  `kn9t-tools` deduped, was 8 tools → 400, now 4) **+ Step 3.4 done 2026-08-31**
+  (R-PLUG2-110 rewritten for discovery: soft-fail + warn, not startup fail; spec/README +
+  DESIGN §16 + lib.rs doc updated; spec bug recorded) **+ Step 3.5 done 2026-08-31**
+  (`POST /plugin/{name}/reload` hot-reload with 5-step cancel/shutdown/respawn;
+  `plug2::hot_reload_cancels_inflight` green, `srv::plugin_reload` 41/41 acceptance).
 - Phase 4: TUI decomposition (app.rs god object).
 
 Five ADRs written in `docs/adr/`:
@@ -88,9 +92,10 @@ Five ADRs written in `docs/adr/`:
 - ADR-0004: plugin discovery scans ~/.kn9t/plugins/ only
 - ADR-0005: schema-first API contract
 
-**Next:** Phase 3 Step 3.4 — spec rewrite of R-PLUG2-110 (was startup *fail* when
-tools missing; now discovery warns, Phase 3.2 intentionally did not edit specs)
-+ Step 3.5 `POST /plugin/{name}/reload` (`plug2::hot_reload_cancels_inflight`).
+**Next:** Phase 4 — TUI decomposition (app.rs god object: 53→32 fields done, but
+remaining handlers still inline). Phase 3 fully green (all exit criteria met, see
+job/phase3.md). `cargo test --workspace` 385 + 26 external = 411 (plus new
+`srv::plugin_reload`); `check-gi1.sh` OK; `xtask generate` no drift.
 
 ---
 

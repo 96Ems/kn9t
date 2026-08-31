@@ -211,6 +211,9 @@ fn route(
                 "running_turns": state.idle.running_turns(),
             })).into()
         }
+
+        // ── plugin hot-reload (R-PLUG2-100) ──
+        (Method::Post, ["plugin", name, "reload"]) => routes::plugin::reload(state, name),
         
         // ── unknown ──
         _ => JsonResp::error(404, "not_found", "no such route").into(),

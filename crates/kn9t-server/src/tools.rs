@@ -23,7 +23,8 @@
 //! Each discovered executable is treated as a plugin binary and handshaked (single-element
 //! command array). A plugin that fails to spawn or handshake is **soft-failed**: a warning is
 //! logged and startup continues with the remaining plugins. An empty or missing plugin dir is
-//! also a warning, not a crash (the loud-fail decision is deferred to Phase 3.4).
+//! also a warning, not a crash (R-PLUG2-110 as rewritten Phase 3.4: degraded but still serves;
+//! bootstrap installs `kn9t-tools` on first run).
 
 use crate::config::ResolvedPlugin;
 use kn9t_core::{PluginKv, Tool, ToolRegistry};
@@ -145,6 +146,11 @@ fn spawn_discovered_plugin(bin: &Path, env_vars: &[(&str, &str)], kv: Arc<dyn Pl
     Ok((host, tools))
 }
 
+/// Spawn a plugin subprocess from a command + args array — public for hot-reload (R-PLUG2-100).
+pub fn spawn_with_cmd_public(cmd: &[String], env_vars: &[(&str, &str)], kv: Arc<dyn PluginKv>) -> Result<PluginHost, String> {
+    spawn_with_cmd(cmd, env_vars, kv)
+}
+
 /// Spawn a plugin subprocess from a command + args array.
 fn spawn_with_cmd(cmd: &[String], env_vars: &[(&str, &str)], kv: Arc<dyn PluginKv>) -> Result<PluginHost, String> {
     use std::io::{BufRead, BufReader, Write};
@@ -214,6 +220,11 @@ fn spawn_with_cmd(cmd: &[String], env_vars: &[(&str, &str)], kv: Arc<dyn PluginK
     Ok(PluginHost::from_io(read, writer, declaration, kv))
 }
 
+/// Extract RemoteTool wrappers from a PluginHost — public for hot-reload.
+pub fn extract_tools_public(host: &Arc<PluginHost>) -> Vec<Arc<dyn Tool>> {
+    extract_tools(host)
+}
+
 /// Extract RemoteTool wrappers from a PluginHost.
 fn extract_tools(host: &Arc<PluginHost>) -> Vec<Arc<dyn Tool>> {
     host.declaration.tools.iter()
@@ -249,7 +260,19 @@ pub fn spawn_all_plugins(
     user_plugins: &[ResolvedPlugin],
     kv: Arc<dyn PluginKv>,
 ) -> Result<(Vec<Arc<PluginHost>>, ToolRegistry), String> {
-    spawn_all_plugins_in_dir(user_plugins, &plugin_dir(), kv)
+    // Production uses the canonical user plugin dir. Spawn info is captured separately
+    // in `spawn_all_plugins_with_info`; this wrapper keeps the old 2-tuple API for tests.
+    let (hosts, reg, _info) = spawn_all_plugins_in_dir_with_info(user_plugins, &plugin_dir(), kv)?;
+    Ok((hosts, reg))
+}
+
+/// Like [`spawn_all_plugins`] but also returns the spawn recipe map for hot-reload
+/// (R-PLUG2-100): `declared_name -> (cmd, env)`. Production populates `ServerState::plugin_spawn`.
+pub fn spawn_all_plugins_with_info(
+    user_plugins: &[ResolvedPlugin],
+    kv: Arc<dyn PluginKv>,
+) -> Result<(Vec<Arc<PluginHost>>, ToolRegistry, HashMap<String, (Vec<String>, Vec<(String, String)>)>), String> {
+    spawn_all_plugins_in_dir_with_info(user_plugins, &plugin_dir(), kv)
 }
 
 /// Like [`spawn_all_plugins`] but with an explicit discovery directory.
@@ -261,8 +284,18 @@ fn spawn_all_plugins_in_dir(
     discovery_dir: &Path,
     kv: Arc<dyn PluginKv>,
 ) -> Result<(Vec<Arc<PluginHost>>, ToolRegistry), String> {
+    let (hosts, reg, _info) = spawn_all_plugins_in_dir_with_info(user_plugins, discovery_dir, kv)?;
+    Ok((hosts, reg))
+}
+
+fn spawn_all_plugins_in_dir_with_info(
+    user_plugins: &[ResolvedPlugin],
+    discovery_dir: &Path,
+    kv: Arc<dyn PluginKv>,
+) -> Result<(Vec<Arc<PluginHost>>, ToolRegistry, HashMap<String, (Vec<String>, Vec<(String, String)>)>), String> {
     let mut all_hosts: Vec<Arc<PluginHost>> = Vec::new();
     let mut all_tools: Vec<Arc<dyn Tool>> = Vec::new();
+    let mut spawn_info: HashMap<String, (Vec<String>, Vec<(String, String)>)> = HashMap::new();
     // For dedup: track tool names already registered (first wins, duplicate warns).
     let mut seen_tools: HashSet<String> = HashSet::new();
 
@@ -297,11 +330,13 @@ fn spawn_all_plugins_in_dir(
     for cfg in pinned_plugins {
         match spawn_user_plugin(cfg, Arc::clone(&kv)) {
             Ok((host, tools)) => {
-                pinned_declared_names.insert(host.declaration.name.clone());
-                if let Some(cmd) = &cfg.cmd {
-                    if let Some(first) = cmd.first() {
-                        pinned_paths.insert(PathBuf::from(first));
-                    }
+                let declared = host.declaration.name.clone();
+                pinned_declared_names.insert(declared.clone());
+                let cmd = cfg.cmd.clone().expect("pinned has cmd");
+                let env = cfg.env.clone();
+                spawn_info.insert(declared.clone(), (cmd.clone(), env.clone()));
+                if let Some(first) = cmd.first() {
+                    pinned_paths.insert(PathBuf::from(first));
                 }
                 // Dedup tools by name (config wins, but pinned are first so they win naturally).
                 let mut filtered = Vec::new();
@@ -383,6 +418,10 @@ fn spawn_all_plugins_in_dir(
                     if env_overrides.contains_key(&declared) && !env_overrides.contains_key(&file_stem) {
                         crate::log!("warning: discovered plugin '{}' ({}) matches env override for '{}' but file name '{}' did not — env not injected (rename binary to match config name or use pinned cmd)", declared, bin.display(), declared, file_stem);
                     }
+                    // Record spawn info for reload (binary path + injected env).
+                    let cmd = vec![bin.to_string_lossy().into_owned()];
+                    let env_owned: Vec<(String, String)> = env_for_bin.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+                    spawn_info.insert(declared.clone(), (cmd, env_owned));
                     // Dedup tools by name.
                     let mut filtered = Vec::new();
                     for t in tools {
@@ -410,7 +449,7 @@ fn spawn_all_plugins_in_dir(
     let registry = ToolRegistry::from_tools(all_tools);
     crate::log!("total tools registered: {}", registry.len());
 
-    Ok((all_hosts, registry))
+    Ok((all_hosts, registry, spawn_info))
 }
 
 #[cfg(test)]

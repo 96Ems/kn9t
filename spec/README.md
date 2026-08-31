@@ -26,8 +26,8 @@ stage's acceptance gate depends on the previous stage existing.
 | `06-server.md` | `kn9t-server` | §12 | v1 |
 | `07-tui.md` | `kn9t-tui` | §12.8 | v1 |
 | `08-plugin.md` | `kn9t-plugin` | §13, §18.2 | v1 |
-| `08b-plugin-redesign.md` | `kn9t-plugin` (updated), `kn9t-plugin-sdk`, `internal-plugins/kn9t-tools` | §13.7–13.9 | v1 |
-| `09-anthropic.md` | `internal-plugins/kn9t-anthropic` (bundled) | §8.5, §8.4.4 | v1 |
+| `08b-plugin-redesign.md` | `kn9t-plugin` (updated), `kn9t-plugin-sdk`, `plugins/kn9t-tools` (external, auto-discovered) | §13.7–13.9 | v1 |
+| `09-anthropic.md` | `plugins/kn9t-anthropic` (external, standalone) | §8.5, §8.4.4 | v1 |
 | `10-bedrock-native-v2.md` | `kn9t-provider-bedrock`, `kn9t-provider-gemini` | §8.5, §8.4.4 | v2 |
 
 ---

@@ -11,11 +11,111 @@ pointer current.
 
 ## ▶ Next session starts here
 
-**Next:** Phase 3 Step 3.4 — rewrite R-PLUG2-110 for discovery (was startup *fail*
-when tools missing) + `spec/README` + `DESIGN §16` + `lib.rs` doc, recording the
-spec bug per AGENTS.md §9. Then Step 3.5 `POST /plugin/{name}/reload`
-(`plug2::hot_reload_cancels_inflight`). Step 3.3 (config overrides) is complete —
-see the Phase 3 entry below.
+**Next:** Phase 4 — TUI decomposition (Phase 3 done: discovery + overrides +
+spec rewrite + hot-reload all green; see Phase 3 entries below). No pending spec
+bugs; next work is app.rs handler extraction per job/phase4.md.
+
+---
+
+## Session — 2026-08-31 — Phase 3 Steps 3.4 & 3.5: spec rewrite + hot reload
+
+### Summary
+
+Completed `job/phase3.md` Steps 3.4 and 3.5: rewrote **R-PLUG2-110** for discovery
+(the spec bug per AGENTS.md §9) and implemented `POST /plugin/{name}/reload`
+with the 5-step cancel/shutdown/respawn sequence (R-PLUG2-100). Also fixed two
+doctest regressions in `kn9t-plugin-sdk` (`effects: vec![]` missing) and re-ran the
+generator so the new route is born schema-conformant (ADR-0005).
+
+### What changed
+
+- **Specs (3.4):**
+  - `spec/08b-plugin-redesign.md` §1 crate layout: `internal-plugins/kn9t-tools` →
+    `plugins/kn9t-tools` (external, standalone) + `plugins/kn9t-custom-provider` +
+    `plugins/kn9t-anthropic`; clarified repo `plugins/` = build source vs
+    `~/.kn9t/plugins/` = install target; bootstrap note. R-PLUG2-020 now
+    requires `plugins/kn9t-tools` depend only on `kn9t-plugin-sdk` and be
+    installed to `~/.kn9t/plugins/`.
+  - `spec/08b-plugin-redesign.md` §6: `Internal plugin: kn9t-tools` → `External
+    plugin: kn9t-tools (auto-discovered)`; rewrote **R-PLUG2-110** from "MUST
+    auto-spawn sibling of exe, fail if missing" to "MUST discover via scanning
+    `<KN9T_HOME|~/.kn9t>/plugins/` (ADR-0004, never project-relative), merge with
+    pinned `[[plugin]]` (config wins), `enabled=false`/`disabled=true` suppress,
+    `env` injects, duplicate tool names dedup (first wins), soft-fail per plugin,
+    empty/missing dir is warning not startup fail; bootstrap installs when found.
+    Accept: `plug2::autostart_tools_plugin` + `tools::discovery_*` (positive,
+    ADR-0004 negative, missing, sorted, disabled/pinned/env/dedup inc.
+    regression) + live `total tools registered: 4`.
+  - `spec/README.md:29`: stage 08b+09 crate columns now `plugins/kn9t-tools`
+    (external, auto-discovered) and `plugins/kn9t-anthropic`.
+  - `DESIGN.md` §16 mermaid: S8b node now `plugins/kn9t-tools (external,
+    auto-discovered)` with build-source→install-target note; S9 now both external;
+    Q25 (tools as external + bootstrap) and Q31 (both providers external,
+    Phase 3 note) updated.
+  - `crates/kn9t-server/src/lib.rs:12`, `state.rs:145`, `main.rs:61`,
+    `tools.rs:26` doc comments: "sibling of exe" → discovery + ADR-0004.
+- **Hot reload (3.5):**
+  - `crates/kn9t-plugin/src/host.rs:688` — added `pending_count()` +
+    `pending_ids()` for reload's step 1 (cancel every in-flight).
+  - `crates/kn9t-server/src/tools.rs` — exposed `spawn_with_cmd_public` +
+    `extract_tools_public`, added `spawn_all_plugins_with_info` /
+    `spawn_all_plugins_in_dir_with_info` that also return `spawn_info:
+    HashMap<declared_name, (cmd, env)>` (pinned cmd/env, discovered binary +
+    injected env) for `ServerState::plugin_spawn`.
+  - `crates/kn9t-server/src/state.rs` — made `tools` + `plugin_hosts` `Mutex`
+    for hot-reload interior mutability; added `plugin_spawn: Mutex<...>` and
+    helpers `tools_snapshot`/`hosts_snapshot`/`set_plugin_spawn`; implemented
+    `reload_plugin(name)` per R-PLUG2-100: (1) cancel all pending, (2) wait up
+    to `before_tool_call` 30s for `done`, (3) `shutdown` + 50 ms grace,
+    (4) `spawn_with_cmd_public` from same `cmd`, (5) swap host + rebuild
+    `ToolRegistry` (dedup first wins). `turn.rs:181` now uses snapshots.
+  - `crates/kn9t-server/src/main.rs:62` — now calls
+    `spawn_all_plugins_with_info` and populates `state.plugin_spawn`.
+  - `schema/http.json:324` — new `POST /plugin/{name}/reload` (lease false,
+    response `{reloaded, tools}`), `xtask generate` re-ran → `API.md` + stubs.
+  - `crates/kn9t-server/src/router.rs:214` — route `POST /plugin/{name}/reload`.
+  - `crates/kn9t-server/src/routes/plugin.rs` — new handler; 404 if not found,
+    500 on respawn failure.
+  - `crates/kn9t-plugin-sdk/src/lib.rs:31` + `traits.rs:31` — added missing
+    `effects: vec![]` in doc examples (doctests were failing: E0063).
+  - `crates/kn9t-server/tests/acceptance.rs:2250` — new `srv::plugin_reload`:
+    creates a dummy `reload-tools` plugin binary (shell handshake), spawns via
+    `PluginHost::spawn`, builds `ServerState` with `set_plugin_spawn`,
+    starts `ServerHandle`, POSTs `reload` twice (both 200, `tools:1`) and checks
+    unknown → 404. `srv` suite now 41 tests (was 40).
+- **Generator / docs:**
+  - `cargo run -p xtask -- generate` — `crates/kn9t-server/src/api.rs` unchanged
+    (reload has no JSON request body, so no new struct), `API.md` now lists
+    `POST /plugin/{name}/reload`, Go/Python stubs regenerated, idempotent.
+
+### Verification
+
+- `cargo check --workspace` — clean (only pre-existing `kn9t-tui` dead-code warnings).
+- `cargo test -p kn9t-plugin-sdk` — 13 doc + 11 unit passed (2 doctest fixes).
+- `cargo test -p kn9t-server --lib` — **38 passed** (6 config + 11 tools inc. discovery).
+- `cargo test -p kn9t-server --test acceptance` — **41 passed** (40 existing + new `plugin_reload`).
+- `cargo test -p kn9t-react` — 12 passed; `kn9t-plugin` 10 passed.
+- `scripts/check-gi1.sh` — OK; `cargo run -p xtask -- generate` — no drift; `API.md` diff shows new route.
+- Live: `kn9t chat hello` still `stop: stop` with `total tools registered: 4`.
+
+### Discovered bugs
+
+| bug | where | status |
+|-----|-------|--------|
+| R-PLUG2-110 spec contradicted the new design (required sibling-of-exe spawn + startup fail) while the implementation (Phase 3.2/3.3) intentionally warns and uses discovery per ADR-0004 | `spec/08b-plugin-redesign.md:710` + `spec/README:29` + `DESIGN:16` + `lib.rs:12` | **Fixed** — spec rewritten, design updated, change recorded here per AGENTS.md §9 |
+| SDK doc examples omitted `effects: vec![]` after `ToolSpec` gained `effects` (commit 0d731dc); `cargo test -p kn9t-plugin-sdk --doc` failed (E0063) | `kn9t-plugin-sdk/src/lib.rs:31`, `traits.rs:31` | **Fixed** — added field, 13 doc tests green |
+
+### Notes / deferred
+
+- Policy re-registration on reload: `ServerState::tools` is rebuilt, but
+  `InteractivePolicy`/`ConfigPolicy` still hold the *original* `ToolRegistry`
+  snapshot from startup, so new tools with changed `effects` are classified as
+  unknown → `Ask` until restart. This is safe (fail closed) and acceptable for
+  v1; full policy hot-swap is tracked for Phase 4.
+- Provider plugins (`kind="plugin"` providers) are spawned via `config.rs` and
+  are not yet in `plugin_spawn` / `plugin_hosts`, so `POST /plugin/{name}/reload`
+  currently 404s for them. Tool plugins are the common case; provider reload is
+  a follow-up.
 
 ---
 

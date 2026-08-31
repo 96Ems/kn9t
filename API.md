@@ -397,6 +397,22 @@ Write operations require an **X-Lease** header: the holder token minted by
 | `running_turns` | u64 |  |
 
 
+
+---
+### `POST /plugin/{name}/reload` — Hot-reload a plugin by name: cancel in-flight, shutdown, respawn, re-handshake, re-register tools (R-PLUG2-100)
+
+- **Lease required:** no
+
+**Request body:** none
+
+**Response `200`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `reloaded` | string |  |
+| `tools` | u64 | total tools after reload |
+
+
 ---
 
 ## 3. SSE Event Stream

@@ -318,6 +318,13 @@
       "lease": false,
       "description": "Server health + attach/turn counters",
       "response": { "type": "object", "properties": { "ok": { "type": "boolean" }, "idle_secs": { "type": "integer" }, "attached_clients": { "type": "integer" }, "running_turns": { "type": "integer" } }, "required": ["ok"] }
+    },
+    {
+      "method": "POST",
+      "path": "/plugin/{name}/reload",
+      "lease": false,
+      "description": "Hot-reload a plugin by name: cancel in-flight, shutdown, respawn, re-handshake, re-register tools (R-PLUG2-100)",
+      "response": { "type": "object", "properties": { "reloaded": { "type": "string" }, "tools": { "type": "integer", "description": "total tools after reload" } }, "required": ["reloaded"] }
     }
   ],
   "sse": {

@@ -33,6 +33,7 @@
 //!             schema: json!({"type":"object","properties":{"msg":{"type":"string"}},"required":["msg"]}),
 //!             parallel_safe: true,
 //!             hidden: false,
+//!             effects: vec![],
 //!         }
 //!     }
 //!     fn execute(&self, args: &Value, _ctx: &ToolCallCtx) -> ToolOutput {

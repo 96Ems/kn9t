@@ -50,11 +50,20 @@ crates.io so the community can build and share kn9t plugins as ordinary Rust cra
 
 ```
 crates/
-  kn9t-plugin-sdk/              # NEW — zero workspace deps; publishable
-  kn9t-plugin/                  # host side — updated for protocol v2
-  internal-plugins/
-    kn9t-tools/                 # NEW — bash + read + edit as a plugin binary
+  kn9t-plugin-sdk/              # zero workspace deps; publishable
+  kn9t-plugin/                  # host side — protocol v2
+
+plugins/                        # EXTERNAL standalone crates (outside workspace)
+  kn9t-tools/                   # bash + read + write + edit as a plugin binary (auto-discovered)
+  kn9t-custom-provider/         # example external provider plugin
+  kn9t-anthropic/               # anthropic provider plugin
 ```
+
+All plugins are **external** standalone crates with an empty `[workspace]` and a
+`path = "../../crates/kn9t-plugin-sdk"` dependency only. The repo's `plugins/`
+directory is **build source**; `~/.kn9t/plugins/` is the **install target**
+(ADR-0004). Bootstrap copies `plugins/kn9t-tools` into `~/.kn9t/plugins/` on first
+run when a build artifact is found.
 
 > **R-PLUG2-010**
 > `kn9t-plugin-sdk` MUST have zero workspace member dependencies. Its only external deps
@@ -63,11 +72,13 @@ crates/
 > **Accept:** `cargo tree -p kn9t-plugin-sdk` contains no path to any `kn9t-*` crate.
 
 > **R-PLUG2-020**
-> `internal-plugins/kn9t-tools` MUST depend only on `kn9t-plugin-sdk`. It MUST compile to
-> a binary (`[[bin]]`) named `kn9t-tools`. It MUST NOT link `kn9t-tools` (the old library
-> crate, now integration-test-only).
-> **Accept:** `cargo tree -p kn9t-tools-plugin` contains no path to any `kn9t-*` crate
-> except `kn9t-plugin-sdk`.
+> `plugins/kn9t-tools` (the default tools plugin) MUST depend only on
+> `kn9t-plugin-sdk`. It MUST compile to a binary (`[[bin]]`) named `kn9t-tools`.
+> It MUST NOT link the old `kn9t-tools` library crate (now removed). Its binary is
+> installed to `~/.kn9t/plugins/` (the user plugin dir), not shipped as a
+> sibling of the server executable.
+> **Accept:** `cargo tree -p kn9t-tools` (run as `cd plugins/kn9t-tools && cargo tree`) contains no path to any `kn9t-*` crate
+> except `kn9t-plugin-sdk`; `ls ~/.kn9t/plugins/kn9t-tools` exists after bootstrap or `cd plugins/kn9t-tools && cargo build` + install.
 
 > **R-PLUG2-030**
 > `kn9t-plugin` (host side) retains `kn9t-core` as its single workspace dep (GI-1).
@@ -701,17 +712,42 @@ first-class deliverable, not an afterthought.
 
 ---
 
-## 6. Internal plugin: `kn9t-tools`
+## 6. External plugin: `kn9t-tools` (auto-discovered)
 
-The default tools (`bash`, `read`, `edit`) ship as a subprocess plugin binary that kn9t
-auto-spawns at startup. This validates the full subprocess path under realistic conditions
-and makes the tool set hot-reloadable and replaceable.
+The default tools (`bash`, `read`, `write`, `edit`) ship as an **external** subprocess
+plugin binary (`plugins/kn9t-tools`) that kn9t **discovers** at startup. This validates
+the full subprocess path under realistic conditions and makes the tool set
+hot-reloadable and replaceable. The repo's `plugins/` is build source;
+`~/.kn9t/plugins/` is the install target (ADR-0004).
 
-> **R-PLUG2-110**
-> kn9t MUST auto-spawn `kn9t-tools` at server startup before accepting any session
-> requests. The binary path MUST be resolved relative to the kn9t executable (same
-> directory). If the binary is not found, startup MUST fail with a clear error.
-> **Accept:** `cargo test plug2::autostart_tools_plugin`
+> **R-PLUG2-110** *(rewritten Phase 3.4 — was "auto-spawn sibling of exe, fail if missing"; now discovery)*
+> At server startup, before accepting any session requests, kn9t MUST discover tool
+> plugins by scanning the **user plugin directory** `<KN9T_HOME|~/.kn9t>/plugins/`
+> (ADR-0004) — the **only** directory scanned, **never** a project-relative
+> `plugins/` directory (`git clone` then `kn9t` must not be code execution;
+> R-PLUG-100) — and handshaking every executable found (Unix: regular file with
+> an execute bit; Windows: `.exe`), merging the resulting tools with any pinned
+> `[[plugin]]` entries from the **global** config `~/.kn9t/config.toml` into one
+> `ToolRegistry` (config wins on conflict). Specifically:
+> - A pinned entry with `cmd = [...]` is spawned as a user plugin; a discovered
+>   plugin with the **same declared `name`** or the **same binary path** is suppressed.
+> - A config entry with `enabled = false` or `disabled = true` suppresses the
+>   discovered plugin with that `name` (file-stem heuristic pre-handshake, declared
+>   name post-handshake) and is not itself spawned.
+> - A config entry with `cmd` omitted but `env` set injects those env vars into the
+>   discovered spawn for the matching name.
+> - Duplicate tool names across plugins are deduped (first wins, warning logged).
+> - A plugin that fails to spawn or handshake is **soft-failed** with a warning;
+>   startup continues with the remaining plugins. An empty or missing plugin
+>   directory is a **warning, not a startup failure** (a server with zero tools is
+>   degraded but still serves; bootstrap installs `kn9t-tools` on first run when a
+>   build artifact is found, so the common case is never empty).
+> **Accept:** `cargo test plug2::autostart_tools_plugin` (SDK publishability) +
+> `cargo test -p kn9t-server tools::discovery_*` (positive, ADR-0004 negative
+> `discovery_ignores_project_relative_plugins`, missing-dir, sorted order,
+> `disabled`/`pinned`/`env`/`dedup` including `kn9t-tools` regression) all green;
+> live `kn9t chat` starts with `total tools registered: 4` when
+> `~/.kn9t/plugins/kn9t-tools` is present.
 
 > **R-PLUG2-120**
 > `kn9t-tools` MUST declare `capabilities: ["streaming", "cancelable"]`.

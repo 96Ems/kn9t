@@ -689,6 +689,16 @@ impl PluginHost {
         let mut w = self.writer.lock().unwrap();
         let _ = write_host_msg(&mut **w, &HostMsg::Shutdown);
     }
+
+    /// Number of in-flight calls (pending responses) for this plugin.
+    pub fn pending_count(&self) -> usize {
+        self.pending_calls.lock().unwrap().len()
+    }
+
+    /// Snapshot of in-flight call ids, for cancel during reload (R-PLUG2-100 step 1).
+    pub fn pending_ids(&self) -> Vec<u64> {
+        self.pending_calls.lock().unwrap().keys().cloned().collect()
+    }
 }
 
 // ── response parsers ──────────────────────────────────────────────────────────

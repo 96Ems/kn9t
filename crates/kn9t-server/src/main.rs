@@ -58,16 +58,20 @@ fn run() -> std::io::Result<()> {
     let token = auth::generate_token();
     auth::write_token(&auth::token_path(), &token)?;
 
-    // ── Spawn tools plugins (R-PLUG2-110 + user plugins) ──────────────────────
-    let (plugin_hosts, tools) = kn9t_server::tools::spawn_all_plugins(&resolved.plugins, store.clone())
+    // ── Spawn tool plugins (R-PLUG2-110: auto-discovered in ~/.kn9t/plugins/ + pinned [[plugin]]) ──
+    let (plugin_hosts, tools, spawn_info) = kn9t_server::tools::spawn_all_plugins_with_info(&resolved.plugins, store.clone())
         .map_err(|e| std::io::Error::other(format!("tools plugin: {e}")))?;
 
     // ── Build ServerState ─────────────────────────────────────────────────────
     let mut state = ServerState::new(store.clone(), token, tools, plugin_hosts);
+    // Record spawn recipes for hot-reload (R-PLUG2-100).
+    for (name, (cmd, env)) in spawn_info {
+        state.set_plugin_spawn(name, cmd, env);
+    }
     // Apply [policy] config — DESIGN §10.1 (global only). This replaces the
     // default AskOnMutation/InteractivePolicy if the user configured a mode.
     {
-        let tools = state.tools.clone();
+        let tools = state.tools_snapshot();
         let policy = ServerState::policy_from_config_with_cache_and_tools(&resolved.policy_mode, resolved.bash_policy.clone(), &state.approval_registry, &state.approval_cache, tools);
         state = state.with_policy(policy);
         kn9t_server::log!("policy: mode={:?} bash.allow_read={} always_ask={} never={} allow_read_sub={}",

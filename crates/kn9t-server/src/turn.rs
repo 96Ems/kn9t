@@ -178,22 +178,23 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
 
         // Compose hooks from all plugins (R-PLUG-060).
         // Each plugin host gets a reference to the bus and session for emitting events.
-        let hooks: Arc<dyn HookHost> = if state.plugin_hosts.is_empty() {
+        let hosts = state.hosts_snapshot();
+        let hooks: Arc<dyn HookHost> = if hosts.is_empty() {
             Arc::new(kn9t_core::NoopHookHost)
         } else {
             // Set the bus and session on each plugin host
-            for host in &state.plugin_hosts {
+            for host in &hosts {
                 host.set_bus(sink.clone());
                 host.set_session(&session.0);
             }
-            Arc::new(ComposedHookHost::new(state.plugin_hosts.clone()))
+            Arc::new(ComposedHookHost::new(hosts))
         };
 
         let loop_ = ReactLoop {
             provider: provider.clone(),
             store: state.store.clone(),
             policy: state.policy.clone(),
-            tools: state.tools.clone(),  // R-PLUG2-110: tools from plugin subprocess
+            tools: state.tools_snapshot(),  // R-PLUG2-110: tools from plugin subprocess
             hooks,
             bus: sink.clone(),
         };

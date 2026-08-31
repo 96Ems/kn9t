@@ -2247,4 +2247,61 @@ fn abort_then_prompt_race() {
     h.handle.shutdown();
 }
 
+#[test]
+fn plugin_reload() {
+    // Build a dummy plugin that declares one tool and replies instantly.
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("reload-tools");
+    write_dummy_plugin(&bin, "reload-tools", "reload_tool");
+
+    let (store, _tmp_store) = temp_store();
+    let token = kn9t_server::auth::generate_token();
+    let kv: Arc<dyn kn9t_core::PluginKv> = store.clone() as Arc<dyn kn9t_core::PluginKv>;
+    let host = kn9t_plugin::PluginHost::spawn(&bin, &[], kv).expect("spawn dummy plugin for reload test");
+    let host = Arc::new(host);
+    let tools = {
+        let t = kn9t_server::tools::extract_tools_public(&host);
+        kn9t_core::ToolRegistry::from_tools(t)
+    };
+    let mut state = ServerState::new(store.clone(), token.clone(), tools, vec![host.clone()]);
+    state.set_plugin_spawn("reload-tools".to_string(), vec![bin.to_string_lossy().into_owned()], vec![]);
+    state.model_registry = vec![model_spec()];
+    let state = Arc::new(state);
+    let h = start(state);
+
+    // First reload — no in-flight, should re-handshake and re-register.
+    let r = req_auth(&h, "POST", "/plugin/reload-tools/reload", &[], serde_json::Value::Null);
+    assert_eq!(r.status, 200, "first reload: {}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.json()["reloaded"].as_str().unwrap(), "reload-tools");
+    // Tools count after reload should still be 1 (the same plugin re-registered).
+    assert_eq!(r.json()["tools"].as_u64().unwrap(), 1);
+
+    // Second reload should also succeed (idempotent).
+    let r2 = req_auth(&h, "POST", "/plugin/reload-tools/reload", &[], serde_json::Value::Null);
+    assert_eq!(r2.status, 200, "second reload: {}", String::from_utf8_lossy(&r2.body));
+
+    // Unknown plugin → 404.
+    let r3 = req_auth(&h, "POST", "/plugin/unknown/reload", &[], serde_json::Value::Null);
+    assert_eq!(r3.status, 404, "unknown plugin reload should 404");
+
+    h.handle.shutdown();
+}
+
+// helper for plugin_reload — writes a minimal handshake plugin as a shell script (unix only)
+// For windows, the test is skipped (requires .exe).
+#[cfg(unix)]
+fn write_dummy_plugin(path: &std::path::Path, name: &str, tool: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = format!(
+        "#!/bin/sh\nIFS= read -r _host_hello\nprintf '%s\\n' '{{\"t\":\"hello\",\"name\":\"{name}\",\"capabilities\":[\"streaming\",\"cancelable\"],\"tools\":[{{\"name\":\"{tool}\",\"description\":\"dummy\",\"schema\":{{\"type\":\"object\"}},\"parallel_safe\":false}}]}}'\nwhile IFS= read -r _line; do :; done\n"
+    );
+    std::fs::write(path, script).expect("write dummy plugin");
+    let mode = std::fs::metadata(path).unwrap().permissions().mode();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o111)).unwrap();
+}
+#[cfg(windows)]
+fn write_dummy_plugin(_path: &std::path::Path, _name: &str, _tool: &str) {
+    panic!("plugin_reload test not supported on Windows in this harness");
+}
+
 } // mod srv

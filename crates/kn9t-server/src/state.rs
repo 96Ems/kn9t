@@ -8,6 +8,7 @@
 //! The provider used for turns and auto-titling is injected as `Arc<dyn Provider>`
 //! so tests drive the server fully offline.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -142,10 +143,17 @@ pub struct ServerState {
     pub provider_reported_budget: Mutex<Option<f64>>,
     /// All model specs loaded from config (GET /models registry, DESIGN §8.2).
     pub model_registry: Vec<ModelSpec>,
-    /// Tools registry — populated from the kn9t-tools plugin subprocess (R-PLUG2-110).
-    pub tools: ToolRegistry,
-    /// Plugin hosts — for composing hooks from all plugins.
-    pub plugin_hosts: Vec<Arc<PluginHost>>,
+    /// Tools registry — populated from external auto-discovered plugins in
+    /// `~/.kn9t/plugins/` plus pinned `[[plugin]]` entries (R-PLUG2-110, ADR-0004).
+    /// Wrapped in a Mutex for hot-reload (R-PLUG2-100): `POST /plugin/{name}/reload`
+    /// swaps the host and rebuilds the registry without restarting the server.
+    pub tools: Mutex<ToolRegistry>,
+    /// Plugin hosts — for composing hooks from all plugins (discovered + pinned).
+    /// Mutex for hot-reload.
+    pub plugin_hosts: Mutex<Vec<Arc<PluginHost>>>,
+    /// Spawn recipe per plugin declared name — used to respawn on reload (R-PLUG2-100).
+    /// `cmd` is the exact argv (binary + args) and `env` the injected vars.
+    pub plugin_spawn: Mutex<HashMap<String, (Vec<String>, Vec<(String, String)>)>>,
 }
 
 impl ServerState {
@@ -181,8 +189,123 @@ impl ServerState {
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             provider_reported_budget: Mutex::new(None),
             model_registry: Vec::new(),
-            tools,
-            plugin_hosts,
+            tools: Mutex::new(tools),
+            plugin_hosts: Mutex::new(plugin_hosts),
+            plugin_spawn: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Snapshot the current tool registry (clone under lock) — used by turns.
+    pub fn tools_snapshot(&self) -> ToolRegistry {
+        self.tools.lock().expect("tools poisoned").clone()
+    }
+
+    /// Snapshot the current plugin hosts (clone under lock).
+    pub fn hosts_snapshot(&self) -> Vec<Arc<PluginHost>> {
+        self.plugin_hosts.lock().expect("hosts poisoned").clone()
+    }
+
+    /// Record the spawn recipe for a plugin (called once at startup after discovery).
+    pub fn set_plugin_spawn(&self, name: String, cmd: Vec<String>, env: Vec<(String, String)>) {
+        self.plugin_spawn.lock().expect("spawn poisoned").insert(name, (cmd, env));
+    }
+
+    /// Hot-reload a plugin by declared name (R-PLUG2-100).
+    ///
+    /// Steps, per spec:
+    /// 1. `cancel` for every in-flight call on that plugin.
+    /// 2. wait up to `before_tool_call` timeout for `done` replies.
+    /// 3. `shutdown`, close write pipe.
+    /// 4. respawn from the same `cmd`.
+    /// 5. re-handshake; re-register tools, provider, hooks, event subscriptions.
+    ///
+    /// In-flight calls that miss step 3 get a synthetic error result at the call site
+    /// (the pending channel is dropped / returns `disconnected`).
+    pub fn reload_plugin(&self, name: &str) -> Result<(String, usize), String> {
+        // 0. Lookup host and spawn recipe (hold lock briefly).
+        let (old_host, cmd, env) = {
+            let hosts = self.plugin_hosts.lock().expect("hosts poisoned");
+            let idx = hosts.iter().position(|h| h.declaration.name == name)
+                .ok_or_else(|| format!("plugin {name:?} not found"))?;
+            let host = hosts[idx].clone();
+            let spawn = self.plugin_spawn.lock().expect("spawn poisoned");
+            let (cmd, env) = spawn.get(name)
+                .cloned()
+                .ok_or_else(|| format!("plugin {name:?} has no spawn recipe (was it a provider plugin? not reloadable via this route)"))?;
+            (host, cmd, env)
+        };
+
+        crate::log!("hot-reload: plugin '{}' cancel/shutdown ({} in-flight)", name, old_host.pending_count());
+
+        // 1. cancel every in-flight call.
+        for id in old_host.pending_ids() {
+            old_host.cancel_call(id);
+        }
+
+        // 2. wait up to before_tool_call timeout (30s) for done replies.
+        let deadline = std::time::Instant::now() + kn9t_plugin::host::default_timeout(kn9t_core::HookName::BeforeToolCall);
+        while std::time::Instant::now() < deadline {
+            if old_host.pending_count() == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if old_host.pending_count() != 0 {
+            crate::log!("hot-reload: plugin '{}' still has {} in-flight after timeout — proceeding to shutdown", name, old_host.pending_count());
+        }
+
+        // 3. shutdown and close write pipe.
+        old_host.shutdown();
+        // Give the child a moment to observe shutdown and exit; the reader thread will close.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // 4. respawn from the same cmd.
+        let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        crate::log!("hot-reload: respawning plugin '{}' from {:?}", name, cmd);
+        let new_host = crate::tools::spawn_with_cmd_public(&cmd, &env_refs, self.store.clone() as Arc<dyn kn9t_core::PluginKv>)
+            .map_err(|e| format!("respawn failed: {e}"))?;
+        let new_decl_name = new_host.declaration.name.clone();
+        if new_decl_name != name {
+            crate::log!("hot-reload: warning: plugin declared name '{}' differs from requested '{}' — using declared name for registry", new_decl_name, name);
+        }
+        let new_host = Arc::new(new_host);
+        let new_tools = crate::tools::extract_tools_public(&new_host);
+
+        // 5. swap host and rebuild registry (dedup, first wins, same as startup).
+        {
+            let mut hosts = self.plugin_hosts.lock().expect("hosts poisoned");
+            if let Some(pos) = hosts.iter().position(|h| h.declaration.name == name) {
+                hosts[pos] = new_host.clone();
+            } else {
+                // Should not happen (we found it earlier), but push for safety.
+                hosts.push(new_host.clone());
+            }
+
+            // Rebuild tool registry from all current hosts (dedup first wins).
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut all_tools: Vec<Arc<dyn kn9t_core::Tool>> = Vec::new();
+            // Pinned order is already in hosts vec (pinned first, then discovered sorted).
+            // Respect that order for dedup.
+            for h in hosts.iter() {
+                let tools_for_host = if h.declaration.name == new_decl_name {
+                    new_tools.clone()
+                } else {
+                    crate::tools::extract_tools_public(h)
+                };
+                for t in tools_for_host {
+                    let n = t.spec().name.clone();
+                    if seen.contains(&n) {
+                        continue;
+                    }
+                    seen.insert(n);
+                    all_tools.push(t);
+                }
+            }
+            let registry = ToolRegistry::from_tools(all_tools);
+            let n = registry.len();
+            *self.tools.lock().expect("tools poisoned") = registry;
+            crate::log!("hot-reload: plugin '{}' re-registered, total tools now {}", name, n);
+            return Ok((new_decl_name, n));
         }
     }
 
