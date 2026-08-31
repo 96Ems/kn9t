@@ -2,7 +2,9 @@
 /target
 **/target
 *.pdb
-# Cargo.lock IS committed (this is an application with binaries)
+# Cargo.lock IS committed for the workspace app (root Cargo.lock)
+# Plugin crates are standalone (not workspace members) — their locks stay local
+plugins/*/Cargo.lock
 
 # kn9t runtime state
 ~/.kn9t/
