@@ -65,6 +65,51 @@ fn pcore_assemble_verbatim_args() {
     }
 }
 
+// ── pcore::assemble_rejects_incomplete_args (R-PCORE-050) ────────────────────
+
+/// R-PCORE-050 — a stream cut mid-`ToolArgs` leaves an unparseable concat. It must be
+/// reported as `Truncated` (which the loop retries, R-RCT-070) rather than returned as a
+/// `Message`: once persisted, `events` is append-only (GI-4) so every later `plan_request`
+/// replays the same broken bytes and the provider rejects the turn forever.
+#[test]
+fn pcore_assemble_rejects_incomplete_args() {
+    use kn9t_provider_core::assemble;
+
+    let bus = Bus::new();
+    let chunks: Vec<Result<Chunk, ProvErr>> = vec![
+        Ok(Chunk::ToolCall { idx: 0, id: CallId("c1".into()), name: "edit".into() }),
+        // Cut in the middle of a JSON string value — exactly the observed failure.
+        Ok(Chunk::ToolArgs { idx: 0, delta: r#"{"path":"a.rs","new_string":"fn main("#.into() }),
+    ];
+
+    let err = assemble(chunks.into_iter(), &bus).err();
+    assert!(
+        matches!(err, Some(ProvErr::Truncated)),
+        "an unterminated args concat must surface as Truncated, got {err:?}"
+    );
+}
+
+/// R-PCORE-050 — the guard must not fire on a tool that legitimately takes no arguments:
+/// the empty concat is normalised to `{}`, which parses.
+#[test]
+fn pcore_assemble_accepts_argless_call() {
+    use kn9t_provider_core::assemble;
+
+    let bus = Bus::new();
+    let chunks: Vec<Result<Chunk, ProvErr>> = vec![
+        Ok(Chunk::ToolCall { idx: 0, id: CallId("c1".into()), name: "status".into() }),
+        Ok(Chunk::Stop(StopReason::ToolUse)),
+    ];
+
+    let res = assemble(chunks.into_iter(), &bus).expect("an argless call is complete");
+    let tool_call = res.message.content.iter().find(|c| matches!(c, Content::ToolCall { .. }));
+    if let Some(Content::ToolCall { args_json, .. }) = tool_call {
+        assert_eq!(args_json, "{}", "no streamed args means an empty object");
+    } else {
+        panic!("no ToolCall content found");
+    }
+}
+
 #[test]
 fn pcore_assemble_midstream_error_fatal() {
     use kn9t_provider_core::assemble;

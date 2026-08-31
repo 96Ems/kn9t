@@ -93,6 +93,16 @@ pub fn assemble(
         // If no arguments were streamed, use empty JSON object.
         // Some providers (custom provider) reject empty string as invalid JSON.
         let args = if t.args_json.is_empty() { "{}".to_string() } else { t.args_json };
+        // R-PCORE-050 — parse the accumulated args once, here, as the gate that decides
+        // whether this message may exist at all. A stream cut mid-`ToolArgs` yields a
+        // syntactically incomplete concat; persisting it bricks the session for good,
+        // because `events` is append-only (GI-4) and every later `plan_request` replays
+        // the same unparseable bytes to the provider. `ProvErr::Truncated` is exactly
+        // this condition, and the loop already knows how to retry it (R-RCT-070).
+        // The parse result is discarded: `args_json` stays the verbatim concat (R-CORE-062).
+        if serde_json::from_str::<serde_json::Value>(&args).is_err() {
+            return Err(ProvErr::Truncated);
+        }
         content.push(Content::ToolCall {
             id:        t.id,
             name:      t.name,

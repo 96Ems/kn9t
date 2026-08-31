@@ -71,8 +71,19 @@ retry. A concrete provider is expected to be ~250 lines (§2.1).
 > ```
 > A mid-stream `Err` MUST propagate (fatal to the turn, §8.1). The assembled
 > `Content::ToolCall.args_json` MUST be the raw concatenation of `ToolArgs` deltas.
+> The end-of-stream parse is a **gate, not a transformation**: if the accumulated concat for
+> any tool call does not parse, `assemble` MUST return `Err(ProvErr::Truncated)` rather than a
+> `Message` — that is precisely "stream ended with unfinished tool calls" (R-CORE-130), and
+> the loop already retries it with the write-size ladder (R-RCT-070). Returning the message
+> instead would persist bytes no provider can accept, and since `events` is append-only (GI-4)
+> the session would fail on every subsequent turn forever (see R-STOR-117). The parsed value
+> MUST be discarded: `args_json` keeps the verbatim concat (R-CORE-062). A call with no
+> streamed args normalises to `{}` and MUST NOT trip the gate.
 > **Accept:** `cargo test pcore::assemble_verbatim_args` — non-sorted-key arg fragments
-> concatenate byte-identically into the message.
+> concatenate byte-identically into the message; `cargo test
+> pcore_assemble_rejects_incomplete_args` — a concat cut inside a JSON string yields
+> `ProvErr::Truncated`; `cargo test pcore_assemble_accepts_argless_call` — an argless call
+> still assembles, with `args_json == "{}"`.
 
 ## A.3 Retry
 
