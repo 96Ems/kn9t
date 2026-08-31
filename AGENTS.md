@@ -266,3 +266,29 @@ Enforce this with `#[serde(rename_all = "snake_case")]` on all enums that serial
 Rust code uses `PascalCase` for enum variants internally; serde handles the conversion.
 
 This is a **global invariant** — any mismatch between server and client casing breaks SSE parsing.
+
+---
+
+## 13. Schema-first generation — API contract is committed, not built
+
+`schema/http.json` + `schema/plugin.json` are the single source of truth (ADR-0005, DESIGN §15).
+
+Generated outputs are **committed**:
+
+* `crates/kn9t-server/src/api.rs` — typed request structs (`deny_unknown_fields`)
+* `crates/kn9t-tui/src/wire.rs` — GI-6-clean serde mirrors (no `kn9t-*` dep)
+* `API.md` — human-readable contract
+* `schema/generated/go_types.go` + `schema/generated/python_types.py` — polyglot plugin stubs
+
+Generation is **manual, not at `cargo build`**:
+
+```bash
+cargo run -p xtask -- generate   # after any schema/*.json edit
+```
+
+Do **not** add a `build.rs` that regenerates on build — it would leak `preserve_order` (IndexMap) into every runtime crate via feature unification (`GI-3` `preserve_order off`, `xtask/Cargo.toml:8`), bloat the `DESIGN §15` budget, and hide API breaks from diff review. Drift is enforced at commit/CI, not at build:
+
+* `scripts/check-schema.sh` — `xtask --check` byte-identical compare; fails on drift
+* `.git/hooks/pre-commit` — runs `check-gi1.sh` + `check-schema.sh`; a drifted `wire.rs`/`api.rs` blocks the commit
+
+`cargo build` passes even drifted; only the hook/CI blocks. If `check-schema.sh` fails, run `generate` and commit both schema and regenerated files together.
