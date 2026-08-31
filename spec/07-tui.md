@@ -2,6 +2,23 @@
 
 > Implements the terminal user interface for kn9t.
 > See `docs/TUI-DESIGN.md` for design rationale and grill session output.
+>
+> **Reconciliation note (Phase 5, 2026-08-31):** Many R-TUI-* requirements have no acceptance test and some
+> describe behavior not yet built. Per AGENTS.md §9, an unimplementable MUST is a spec bug. Status:
+> - **R-TUI-012** was stale — wire uses `snake_case` per AGENTS.md §12 (`rename_all = "snake_case"`), not
+>   PascalCase; amended below and verified by `cargo test -p xtask` + `check-schema.sh` (`wire.rs`/`api.rs` generated).
+> - **R-TUI-050** amended — `GET /tools` (Phase 4) drives the sidebar from the server's `ToolRegistry`
+>   (discovered `~/.kn9t/plugins/` + pinned `[[plugin]]`); the local `enabled` toggle was dead code (`app.rs:1789`)
+>   and now refreshes from `GET /tools` instead of lying.
+> - **R-TUI-110** amended — `pending_images` renamed to `staged_images` (`app.rs:128`) per AGENTS.md §10
+>   patch-smell fix; multiple `queued_*` buffers eliminated Phase 4.4c.
+> - **R-TUI-220** deferred to v2 per `job/phase4.md:9` user decision — "Do not add an extensibility seam to a
+>   2,814-line god object. Decompose first (4.4), then revisit widgets (4.5)". Spec shape (`SidebarWidget` enum)
+>   is correct and will be populated from server data once the TUI is decomposed; `tui::plugin_sidebar` will remain
+>   `✗` until then.
+> - **R-TUI-230** built Phase 4 — `app.rs:630` reconnects from `last_seq` (`session_manager.rs:115 ?from=`), honestly
+>   shows "reconnecting..." (`reducer::sse_reconnect_seq_tracking` + `tui::sse_reconnect` green).
+> - Remaining R-TUI-01x–21x/24x without tests are honest `☐`/`▣` in `TRACKING.md`; no silent `☑`.
 
 ## 1. Crate Structure
 
@@ -25,18 +42,15 @@
 
 ## 1.2 API Compliance
 
-> **R-TUI-012**
-> The TUI wire types (`wire.rs`) MUST match the server API as documented in `API.md`:
-> - SSE events use `#[serde(tag = "kind")]` discriminator (not `"type"`)
-> - Event variant names are PascalCase (e.g., `TextDelta`, `MessageAppended`)
+> **R-TUI-012 (amended Phase 5)**
+> The TUI wire types (`wire.rs`) MUST match the server API as generated from `schema/http.json`:
+> - SSE events use `#[serde(rename_all = "snake_case")]` → `text_delta`, `message_appended`, etc. (AGENTS.md §12; previous spec incorrectly said PascalCase)
 > - Lease response reads `body["lease"]` (not `body["holder"]`)
-> - All request/response payloads match `API.md` schemas exactly
+> - All request/response payloads match the generated `api.rs`/`wire.rs`/`API.md` schemas exactly (ADR-0005, `cargo run -p xtask -- generate` + `check-schema.sh`)
 >
-> If a discrepancy is found between server behavior and `API.md`, update `API.md`
-> to document the actual server behavior (server is authoritative).
+> If a discrepancy is found between server behavior and `schema/http.json`, update `schema/http.json` (schema is authoritative).
 >
-> **Accept:** Manual verification — TUI successfully connects, receives SSE events,
-> and displays streaming responses.
+> **Accept:** `cargo run -p xtask -- generate` idempotent + `check-schema.sh` OK + `cargo test -p kn9t-tui --lib` wire decode green.
 
 ## 2. Event Architecture
 
@@ -94,18 +108,17 @@
 
 ## 5. Right Sidebar — Context Panel
 
-> **R-TUI-050 → TUI-DESIGN §4**
+> **R-TUI-050 → TUI-DESIGN §4 (amended Phase 4)**
 > The right sidebar MUST display collapsible sections:
 > - MODEL: name, cost, tokens (in/out)
-> - TOOLS/PLUGINS: toggleable list (checkbox per tool)
+> - TOOLS/PLUGINS: list from `GET /tools` (server is source of truth, ADR-0005; discovered `~/.kn9t/plugins/` + pinned `[[plugin]]` merged, first-wins dedup). The previous "toggleable checkbox per tool" was dead code (`app.rs:1789` flipped `enabled` and nothing read it) and has been removed; clicking refreshes from `GET /tools` (future per-tool enable would be a server endpoint, not a lying local flip, per AGENTS.md §11).
 > - GIT: branch, uncommitted count, changed files list
 >
-> Clicking a tool checkbox MUST enable/disable it live.
 > Clicking a git file MUST open the diff viewer overlay.
 >
 > Configurable via `[tui] right_sidebar = true|false`.
 >
-> **Accept:** `cargo test tui::tool_toggle` — toggling tool updates agent capabilities.
+> **Accept:** `cargo test -p kn9t-tui` `refresh_tools` path (`app.rs:233` `GET /tools` → `ToolEntry`) + `cargo test -p kn9t-server --test acceptance` `srv::tools_*` (hardcoded list gone).
 
 ## 6. Transcript
 
@@ -174,17 +187,17 @@
 
 ## 11. Image Paste
 
-> **R-TUI-110 → TUI-DESIGN §6.3**
+> **R-TUI-110 → TUI-DESIGN §6.3 (amended Phase 4.4c)**
 > Pasting an image MUST:
 > - Insert inline marker at cursor: `[imgN: WxH PNG]` (e.g., `[img1: 982x414 PNG]`)
-> - Store image as base64 data URI in `pending_images`
+> - Store image as base64 data URI in `staged_images` (renamed from `pending_images` per AGENTS.md §10 patch-smell; `queued_*` buffers eliminated, handlers now take `&Sender<Event>` and act immediately)
 > - On send: server stores blob (SHA-256), resolves to data URI before provider call
 >
 > Multiple images supported: `[img1: ...] text [img2: ...]` allows inline references.
 > User message added locally (no SSE round-trip for display).
 > Image MUST NOT be rendered in terminal.
 >
-> **Accept:** `cargo test tui::image_paste` — marker inserted, image stored, sent to model.
+> **Accept:** `cargo test tui::image_paste` — marker inserted, image stored, sent to model (impl exists; test is overlay render but is `▣` until `tui::image_paste` is wired).
 
 ## 12. Status Bar
 
@@ -336,7 +349,7 @@
 
 ## 22. Plugin Sidebar API
 
-> **R-TUI-220 → TUI-DESIGN §4.4**
+> **R-TUI-220 → TUI-DESIGN §4.4 (deferred to v2 per job/phase4.md:9)**
 > Plugins MUST be able to contribute sidebar widgets via structured data:
 >
 > ```rust
@@ -351,8 +364,9 @@
 > ```
 >
 > No custom rendering — plugins return data, TUI renders.
+> Deferred per user decision: "Do not add an extensibility seam to a 2,814-line god object. Decompose first (4.4), then revisit widgets (4.5)". Once widgets arrive as server data (like `GET /tools`), plugin-contributed UI is a schema addition, not a TUI rewrite. `tui::plugin_sidebar` remains `✗` until then.
 >
-> **Accept:** `cargo test tui::plugin_sidebar` — plugin widget renders.
+> **Accept:** `cargo test tui::plugin_sidebar` — plugin widget renders (deferred).
 
 ## 23. SSE Connection
 

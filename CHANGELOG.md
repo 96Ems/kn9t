@@ -11,7 +11,35 @@ pointer current.
 
 ## ▶ Next session starts here
 
-**Next:** Phase 4.4b (Welcome vs Chat split) if high ROI, otherwise Stage 03 G1 classifier restore (R-TOOL-070/080/090/095 — `classify.rs` still deleted, `cargo test -p kn9t-tools` would fail; gate G1 red) or `R-TUI-220` SidebarWidget. `queued_*` elimination done 2026-08-31 — `handle_key`/`handle_welcome_key`/`handle_overlay_key`/`execute_action`/`execute_slash_command`/`execute_palette_command` now take `&Sender<Event>` and act immediately; `App::run`'s `queued_*` block deleted; `grep -rn queued_ app.rs` empty. Remaining 4.4b screen split is not in exit criteria (`job/phase4.md:106`).
+**Next:** G3 manual verification (3 TUIs, 1 server, 1 lease, screenshot paste) or Stage 10 bedrock-native/gemini (v2) or `R-TUI-220` SidebarWidget (v2). Phase 4 + Phase 5 done 2026-08-31 — 424 tests (398 workspace + 26 external), DESIGN §11/§15 §15 trigger fired→schema-first, §10 effects + Policy as single seam (ADR-0006), §16 `plugins/` not `internal-plugins`, ADRs 0006/0007, `.gitattributes * text=auto`, `spec/07-tui.md` R-TUI-012/050/110/220/230 reconciliation, TRACKING honest, G1 green.
+
+---
+
+## Session — 2026-08-31 — Phase 5: revise DESIGN, record outcomes (job/phase5.md)
+
+### Summary
+
+Phase 5 — the user's "design was the FIRST document" position is legitimate but the strongest argument is DESIGN's own trigger conditions. Revised DESIGN on fired triggers, not taste; reconciled `spec/07-tui.md` per AGENTS.md §9 spec-bug discipline; recorded 7 ADRs. `cargo test --workspace` 398 + `plugins/kn9t-custom-provider` 26 = 424, `check-gi1.sh` OK, `check-schema.sh` OK.
+
+### What changed
+
+- **DESIGN §11** — rewrote "accepted cost" paragraph: cost was *realized* not hypothetical; F5 (year 57668 ms vs seconds) + F7 (`CreateSessionReq.model` wrong type silently ignored) + F11 hit the §11/§15 trigger; mitigation is schema-first (`schema/http.json` + `schema/plugin.json` + `xtask generate` → `api.rs`/`wire.rs`/`API.md`/Go/Python stubs, `deny_unknown_fields`→400, `check-schema.sh` + `check-gi1.sh` drift gates). Generator is dev-time `xtask`, zero runtime deps, so §15 budget survives with better justification than "dep budget". Kept `schemars` rejected, now on direction + polyglot grounds.
+- **DESIGN §15** — rejection list: `schemars` now "still rejected after Phase 2: wrong direction (types→schema) and polyglot Go/Python need one `schema/*.json` source; `xtask` is dev-time, zero runtime deps".
+- **DESIGN §10** — expanded `Decision` to `Allow|Deny{reason}|Ask|HardDeny{reason}`; scope is on `POST /approve {id, decision, scope}` not the decision; `ApprovalCache` (session in-memory, always persisted under `[policy.approvals]`). Added "Policy is the single safety seam" paragraph (ADR-0006: all risk via `Policy::check`, never duplicated in tool/plugin). `ConfigPolicy` `Ask→Deny` vs `InteractivePolicy` `HardDeny` never prompts/never cached, `Ask` checks always→session→prompt (bus `ApprovalRequest` + condvar).
+- **DESIGN §10.1** — renamed to "Effects + command allowlist for `bash`"; added effects paragraph (ADR-0002): `ToolSpec.effects Vec<Effect{field,kind}>` where `kind` `Shell|FsRead|FsWrite|Network`; `dispatch_effects`/`eval_effect` mapping (`Shell`→`classify`, `FsRead`→Allow, `FsWrite`/`Network`→Ask, unknown/empty→Ask strict, `HardDeny>Ask>Allow`); built-in mapping `bash:Shell:cmd`, `read:FsRead:path`, `write`/`edit:FsWrite:path`; classifier lives in `crates/kn9t-server/src/classify.rs` (ADR-0001).
+- **DESIGN §16** — already `plugins/kn9t-tools` (external, auto-discovered `~/.kn9t/plugins/`), no `internal-plugins/` remains; decision log Q25/Q31 retain historical `internal-plugins` in rejected alternative (legit).
+- **spec/07-tui.md** — added reconciliation note + amended R-TUI-012 (snake_case, ADR-0005), R-TUI-050 (`GET /tools` server truth, dead toggle removed), R-TUI-110 (`staged_images` rename, `queued_*` eliminated), R-TUI-220 (deferred v2 per `job/phase4.md:9`, 2,814-line god object), R-TUI-230 (built Phase 4, `last_seq` reconnect). Remaining R-TUI without tests stay honest `☐`/`▣` in `TRACKING.md`, no silent `☑`.
+- **ADRs** — `docs/adr/0006-policy-as-safety-seam.md` (Policy single seam, `grep classify` only in `policy.rs`), `docs/adr/0007-crlf-normalization.md` (`* text=auto`, fixtures `-text`, `git add --renormalize .` one-time).
+- **.gitattributes** — added `* text=auto` (was only fixtures `-text`).
+- **TRACKING** — Phase 4 line updated to "intentionally deferred" 4.4b, Phase 5 done, 7 ADRs, 424 tests, G1 green, Next = G3 manual or Stage 10 or R-TUI-220.
+
+### Discovered bugs
+
+- None new in Phase 5. F5/F7/F11 already recorded as the fired §11/§15 trigger; classifier's `sh -c`/`iex` bypass now Ask per R-TOOL-090 rule 5 (was open when `AllowPolicy` replaced `ConfigPolicy`).
+
+### Next session starts here above.
+
+---
 
 ---
 

@@ -1515,20 +1515,28 @@ filesystem mutated with no record of why.
 ## 10. Permissions
 
 ```rust
-pub enum Decision { Allow, Deny(String) }
-
+pub enum Decision {
+    Allow,
+    Deny { reason: String },       // immediate deny (e.g. ConfigPolicy's Ask→Deny)
+    Ask,                           // needs human; InteractivePolicy will prompt
+    HardDeny { reason: String },   // never prompt, never cached (e.g. `never = ["sudo"]`)
+}
 pub trait Policy: Send + Sync {
     fn check(&self, call: &ToolCall, cwd: &Path) -> Decision;
 }
+// Scope (once|session|always) is on the approve command, not the decision.
+// ApprovalCache (session: in-memory, always: persisted under [policy.approvals]) is checked before prompting.
 ```
 
 The loop calls `policy.check(...)` and blocks. It has no idea whether that consulted a
-TOML allowlist or blocked 90 seconds on a human.
+TOML allowlist or blocked 90 seconds on a human. `Policy` is the **single safety seam** — all risk
+decisions funnel through `Policy::check()` and must never be duplicated in a tool or plugin (ADR-0002:
+plugins declare `ToolSpec.effects`, server decides).
 
 | impl | behavior |
 |---|---|
-| `ConfigPolicy` | allow/deny rules from config, returns instantly. Used in `-p` and CI mode |
-| `InteractivePolicy` | emits `ApprovalRequest` to the bus (a *fact*: "I am waiting"), blocks on a condvar until an `approve{id, scope}` **command** arrives |
+| `ConfigPolicy` | `dispatch_effects` → `Ask` becomes `Deny` (no prompt in `-p`/CI), `HardDeny` stays `HardDeny`, `Allow` stays `Allow`. Returns instantly. |
+| `InteractivePolicy` | `dispatch_effects` → `HardDeny` returns immediately (never prompts, never cached); `Allow` returns immediately; `Ask` checks `ApprovalCache` (always → session → prompt): emits `ApprovalRequest` to the bus (a *fact*: "I am waiting"), blocks on condvar until an `approve{id, decision, scope}` **command** arrives (`scope=session` caches in-memory, `scope=always` persists to `~/.kn9t/config.toml` under `[policy.approvals]`). `HardDeny` can never be overridden by a cached `always`. |
 
 ```mermaid
 sequenceDiagram
@@ -1558,7 +1566,9 @@ exactly as hard as `bash` — a model rewriting `~/.ssh/authorized_keys` needs n
 Rejected: allow-all by default. A prompt-injected model would force-push or rewrite
 dotfiles with no confirmation.
 
-### 10.1 Command allowlist for `bash`
+### 10.1 Effects + command allowlist for `bash`
+
+**Effects (ADR-0002):** tools declare `ToolSpec { name, description, schema, effects: Vec<Effect{field, kind}> }` where `EffectKind` is `Shell | FsRead | FsWrite | Network`. The server's `dispatch_effects` (`crates/kn9t-server/src/policy.rs`) maps each effect via `eval_effect`: `Shell` on `field="cmd"` → `classify(cmd, Shell::Posix, &bash_policy)`, `FsRead` → `Allow`, `FsWrite`/`Network` → `Ask`, unknown tool or empty `effects` → `Ask` (strict, per ADR-0002). Combined `HardDeny > Ask > Allow`. Built-in mapping: `bash` is `Effect{field:"cmd", kind:Shell}`, `read` is `FsRead:path`, `write`/`edit` are `FsWrite:path`. Classification lives in `crates/kn9t-server/src/classify.rs` (ADR-0001: server owns approval — a plugin cannot self-approve).
 
 `bash` covers both `rg pattern` and `rm -rf /`, so "auto-allow reads" needs
 command-level classification. This applies **even if** dedicated `grep`/`glob`/`find`
@@ -1664,9 +1674,9 @@ bounded. Pi truncates and discards.
 v1 tool set: `read`, `write`, `edit`, `bash`. Search goes through `bash` plus `rg`,
 which is why §10.1 exists.
 
-Schemas are hand-written `json!({...})` literals — zero deps. **Accepted cost:**
-renaming a param field silently breaks the schema until an integration test catches it.
-Rejected `schemars` (~10 crates) on dep-budget grounds; revisit if this bites.
+Schemas are hand-written `json!({...})` literals — zero runtime deps. **Accepted cost (realized, §15 trigger fired):** renaming a param field silently breaks the schema until an integration test catches it — and there was no such test. This bit twice: F5 (`created_at` ms vs seconds, year 57668, store→wire drift) and F7 (`CreateSessionReq.model` wrong type, silently ignored by server via `Value`). F11 (`KvClient` pub field with non-pub constructor) is the same class: a hand-written schema/template with no schema-first gate. The cost was not hypothetical.
+**Mitigation (Phase 2, ADR-0005, schema-first):** `schema/http.json` + `schema/plugin.json` are the single source of truth; `xtask generate` emits `crates/kn9t-server/src/api.rs` (typed, `deny_unknown_fields` → 400), `crates/kn9t-tui/src/wire.rs`, `API.md`, and Go/Python stubs. Drift is a CI failure (`scripts/check-schema.sh` + `check-gi1.sh` pre-commit). The §15 budget survives because the generator is a **dev-time** `xtask` tool, not a runtime dep.
+Rejected `schemars` (~10 crates) remains rejected — but on stronger grounds than dep budget: it generates schema **from** Rust types, the wrong direction for a polyglot system (Go/Python plugins cannot consume it), and `deny_unknown_fields` on hand-written types would not have caught F5/F7's wire-vs-store drift without a single schema artifact. Schema-first fixes the trigger that §15 named.
 
 ### 11.1 `edit` staleness guard
 
@@ -2144,7 +2154,7 @@ Every addition needs justification against Principle 5.
 | `tracing`, `tracing-subscriber` | all | forensics to stderr, per §4.2 |
 
 Explicitly rejected: `tokio` (Principle 1), `axum`/`hyper` (pulls tokio),
-`tiktoken`/`tokenizers` (§7.4), `schemars` (§11), `abi_stable`/`wasmtime` (§13.1), a
+`tiktoken`/`tokenizers` (§7.4), `schemars` (§11 — still rejected after Phase 2: wrong direction (types→schema) and polyglot Go/Python plugins need one `schema/*.json` source; `xtask generate` is dev-time, zero runtime deps), `abi_stable`/`wasmtime` (§13.1), a
 generated model catalog (§8.2), CBOR (plain JSON is inspectable with `curl` and shares
 one codec with the plugin protocol).
 

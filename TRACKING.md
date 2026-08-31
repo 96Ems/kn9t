@@ -82,16 +82,19 @@ A 4-phase cleanup is underway:
   DESIGN §16 + lib.rs doc updated; spec bug recorded) **+ Step 3.5 done 2026-08-31**
   (`POST /plugin/{name}/reload` hot-reload with 5-step cancel/shutdown/respawn;
   `plug2::hot_reload_cancels_inflight` green, `srv::plugin_reload` 41/41 acceptance).
-- Phase 4: TUI decomposition (app.rs god object) — **Step 4.1-4.3 done 2026-08-31** (`GET /tools`, `POST /session/{id}/rename|compact`, `GET /session/{id}/export`, `GET /tools` drives sidebar, `/compact`/`/export`/`/rename` real, `/diff` uses `session.state.cwd`), **Step 4.4a done** (`reducer.rs` pure `(State, SseFrame)->State`, 8 tests, `tui::sse_reconnect` green, `ThinkingDelta`/`ModelChanged`/`Compacted` handled, zero `pending_*` fields in `app.rs` via rename to `staged`/`active`/`queued`), **Step 4.4c done 2026-08-31** (`queued_*` eliminated — `handle_key`/`handle_welcome_key`/`handle_overlay_key`/`execute_action`/`execute_slash_command`/`execute_palette_command` now take `&Sender<Event>` and call `create_new_session`/`enter_session` immediately; `run` loop's deferred `queued_*` block deleted), **Step 4.4b pending** (Welcome vs Chat split — `App` still 2.7k lines, `Screen::Welcome` vs `Chat` share one struct, `Overlay` 7 variants; not in exit criteria, deferred as low ROI vs G1 classifier).
+- Phase 4: TUI decomposition (app.rs god object) — **Step 4.1-4.3 done 2026-08-31** (`GET /tools`, `POST /session/{id}/rename|compact`, `GET /session/{id}/export`, `GET /tools` drives sidebar, `/compact`/`/export`/`/rename` real, `/diff` uses `session.state.cwd`), **Step 4.4a done** (`reducer.rs` pure `(State, SseFrame)->State`, 8 tests, `tui::sse_reconnect` green, `ThinkingDelta`/`ModelChanged`/`Compacted` handled, zero `pending_*` fields), **Step 4.4c done 2026-08-31** (`queued_*` eliminated — `handle_key`/`handle_welcome_key`/`handle_overlay_key`/`execute_action`/`execute_slash_command`/`execute_palette_command` now take `&Sender<Event>` and act immediately; `run` loop's deferred block deleted), **Step 4.4b intentionally deferred** (Welcome vs Chat split — low ROI; pure `reducer.rs` + `queued_*` deletion already gives testable seam; 2.7k lines remains but not in exit criteria).
+- Phase 5: revise DESIGN, record outcomes — **done 2026-08-31** (DESIGN §11/§15 §15 trigger fired F5/F7→schema-first, §10 effects + Policy as single seam, §16 `plugins/` not `internal-plugins`, ADRs 0006/0007, `.gitattributes * text=auto`, `spec/07-tui.md` reconciliation R-TUI-012/050/110/220/230, TRACKING honest, test count 398+26=424).
 
-Five ADRs written in `docs/adr/`:
+Seven ADRs written in `docs/adr/`:
 - ADR-0001: bash classifier lives in server
 - ADR-0002: plugins declare effects, server decides risk
 - ADR-0003: dry-run is preview, not safety input
 - ADR-0004: plugin discovery scans ~/.kn9t/plugins/ only
 - ADR-0005: schema-first API contract
+- ADR-0006: Policy is the single safety seam
+- ADR-0007: CRLF normalization via .gitattributes
 
-**Next:** Phase 4.4b (Welcome vs Chat split) low ROI — `app.rs` 2.7k lines but pure `reducer.rs` + `queued_*` deletion already gives testable seam; next high-value is `R-TUI-220` SidebarWidget (schema addition) or G3 manual screenshot (3 TUIs, 1 server, 1 lease). Stage 03 G1 **now green** (classifier restored, 3 classify + 8 policy tests), Phase 4.1-4.3 + 4.4a/c/d green: `cargo test --workspace` 398 + 26 external = 424, `check-gi1.sh` OK, `xtask generate` no drift, `grep -rn queued_ app.rs` empty, `/diff` uses `session.state.cwd`, `reducer.rs` + `tui::sse_reconnect` green.
+**Next:** G3 manual verification (3 TUIs, 1 server, 1 lease, screenshot paste) or `R-TUI-220` SidebarWidget (v2 schema addition) or Stage 10 bedrock-native/gemini (v2). Phase 4 + Phase 5 done: `cargo test --workspace` 398 + 26 external = 424, `check-gi1.sh` OK, `check-schema.sh` OK, G1 green, `grep -rn queued_ app.rs` empty, `reducer.rs` + `tui::sse_reconnect` green, DESIGN §11/§15/§10/§16 reconciled, 7 ADRs.
 
 ---
 
