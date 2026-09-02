@@ -1114,6 +1114,176 @@ fn p1_96e6_parallel_safe_after_tool_call_must_run() {
     }
 }
 
+// ── P1 96E-8: malformed tool JSON must not reach Tool::execute ──────────────
+#[test]
+fn p1_96e8_malformed_json_never_reaches_tool() {
+    use kn9t_core::{Content, HookHost, Message, ModelRef, Tool, ToolCtx, Cancel, ToolSpec};
+    use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
+
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let hook_calls = Arc::new(AtomicUsize::new(0));
+    let seen_args = Arc::new(Mutex::new(Vec::<String>::new()));
+    let tool_seen = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    struct CountingTool { calls: Arc<AtomicUsize>, seen: Arc<Mutex<Vec<String>>> }
+    impl Tool for CountingTool {
+        fn spec(&self) -> &ToolSpec {
+            Box::leak(Box::new(ToolSpec {
+                name: "counting".into(),
+                description: "counts execute".into(),
+                schema: serde_json::json!({"type":"object","properties":{"x":{"type":"string"}}}),
+                hidden: false, effects: vec![], policy: Default::default(),
+            }))
+        }
+        fn parallel_safe(&self) -> bool { false }
+        fn execute(&self, args: &serde_json::Value, _ctx: &ToolCtx, _cancel: &Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.seen.lock().unwrap().push(args.to_string());
+            Ok(kn9t_core::ToolOutput { content: vec![Content::Text { text: "ok".into() }], details: None, is_error: false })
+        }
+    }
+    struct CountingHook { calls: Arc<AtomicUsize>, seen: Arc<Mutex<Vec<String>>> }
+    impl HookHost for CountingHook {
+        fn before_tool_call(&self, _tool: &str, args: &serde_json::Value, _cwd: &std::path::Path) -> kn9t_core::HookVeto {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.seen.lock().unwrap().push(args.to_string());
+            kn9t_core::HookVeto::Allow
+        }
+        fn after_tool_call(&self, _tool: &str, _args: &serde_json::Value, result: Vec<Content>) -> Vec<Content> { result }
+        fn before_request(&self, msgs: Vec<Message>, _model: &ModelRef, _system: Option<&str>) -> Vec<Message> { msgs }
+        fn should_stop_after_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage, _turn: u32) -> bool { false }
+        fn prepare_next_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage) -> kn9t_core::NextTurnPatch { Default::default() }
+        fn get_steering(&self) -> Vec<Message> { vec![] }
+        fn get_followup(&self) -> Vec<Message> { vec![] }
+        fn get_api_key(&self, _provider: &str) -> Option<String> { None }
+    }
+
+    // Provider emits syntactically valid but semantically invalid JSON for a tool:
+    // `null` is valid JSON but not a JSON object, so a tool expecting `{"x": ...}` must not
+    // be executed. Before fix, tool received `null` and hook was asked with `null`.
+    // After fix, both are short-circuited to ToolResult(error).
+    let bad_args = "null";
+    let body1 = format!(
+        "data: {{\"chunk\":\"tool_call\",\"idx\":0,\"id\":\"c1\",\"name\":\"counting\"}}\n\n\
+         data: {{\"chunk\":\"tool_args\",\"idx\":0,\"delta\":{}}}\n\n\
+         data: {{\"chunk\":\"usage\",\"tokens\":{{\"input\":5,\"output\":3,\"cache_read\":0,\"cache_write\":0,\"reasoning\":0}},\"model\":{{\"provider\":\"replay\",\"id\":\"t\"}}}}\n\n\
+         data: {{\"chunk\":\"stop\",\"tool_use\":null}}\n\n\
+         data: [DONE]\n\n",
+        serde_json::to_string(bad_args).unwrap()
+    );
+    let body2 = concat!(
+        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"done\"}\n\n",
+        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        StreamScript::Fixture(fixture_from_body(&body1)),
+        StreamScript::Fixture(fixture_from_body(body2)),
+    ]));
+    let store = Arc::new(StubStore::new(PlanScript::plain(vec![])));
+    let bus = Arc::new(RecordingBus::new());
+    let mut tools = ToolRegistry::new();
+    tools.push(Arc::new(CountingTool { calls: tool_calls.clone(), seen: tool_seen.clone() }) as Arc<dyn Tool>);
+    let hooks = Arc::new(CountingHook { calls: hook_calls.clone(), seen: seen_args.clone() });
+    let looop = ReactLoop { provider, store: store.clone(), approver: Arc::new(AllowAll), tools, hooks, bus: bus.clone() };
+    looop.run(run_params(&store)).expect("loop ran");
+
+    // Assertions per 96E-8 acceptance:
+    assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "Invalid JSON never reaches Tool::execute");
+    assert_eq!(hook_calls.load(Ordering::SeqCst), 0, "Policy plugins must not be asked to authorize malformed arguments as valid");
+    // The model must receive an explicit tool error
+    let appended = store.appended.lock().unwrap();
+    let tool_result = appended.iter().find_map(|e| {
+        if let Event::MessageAppended { msg, .. } = e {
+            if msg.role == kn9t_core::Role::Tool {
+                for c in &msg.content {
+                    if let Content::ToolResult { id, content, is_error } = c {
+                        if id.0 == "c1" { return Some((content.clone(), *is_error)); }
+                    }
+                }
+            }
+        }
+        None
+    }).expect("tool result c1 must be appended");
+    assert!(tool_result.1, "malformed args must produce ToolResult(is_error=true)");
+    let text = tool_result.0.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("");
+    assert!(text.to_lowercase().contains("malformed") || text.to_lowercase().contains("invalid") || text.to_lowercase().contains("parse") || text.to_lowercase().contains("object"),
+        "tool error must be explicit about malformed JSON, got: {text:?}");
+    // Bus must have an Error event about malformed
+    assert!(bus.kinds().iter().any(|k| k == "Error"), "must emit Error event for malformed args_json");
+}
+
+#[test]
+fn p1_96e8_malformed_json_parallel_safe_also_blocked() {
+    // Same guarantee for parallel_safe tools
+    use kn9t_core::{Content, HookHost, Message, ModelRef, Tool, ToolCtx, Cancel, ToolSpec};
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    struct ParallelCountingTool { calls: Arc<AtomicUsize> }
+    impl Tool for ParallelCountingTool {
+        fn spec(&self) -> &ToolSpec {
+            Box::leak(Box::new(ToolSpec {
+                name: "p_count".into(),
+                description: "parallel".into(),
+                schema: serde_json::json!({"type":"object","properties":{}}),
+                hidden: false, effects: vec![], policy: Default::default(),
+            }))
+        }
+        fn parallel_safe(&self) -> bool { true }
+        fn execute(&self, _args: &serde_json::Value, _ctx: &ToolCtx, _cancel: &Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(kn9t_core::ToolOutput { content: vec![Content::Text { text: "ok".into() }], details: None, is_error: false })
+        }
+    }
+    struct NoopHook;
+    impl HookHost for NoopHook {
+        fn before_tool_call(&self, _t: &str, _a: &serde_json::Value, _c: &std::path::Path) -> kn9t_core::HookVeto { kn9t_core::HookVeto::Allow }
+        fn after_tool_call(&self, _t: &str, _a: &serde_json::Value, r: Vec<Content>) -> Vec<Content> { r }
+        fn before_request(&self, m: Vec<Message>, _model: &ModelRef, _s: Option<&str>) -> Vec<Message> { m }
+        fn should_stop_after_turn(&self, _s: kn9t_core::StopReason, _u: &kn9t_core::Usage, _t: u32) -> bool { false }
+        fn prepare_next_turn(&self, _s: kn9t_core::StopReason, _u: &kn9t_core::Usage) -> kn9t_core::NextTurnPatch { Default::default() }
+        fn get_steering(&self) -> Vec<Message> { vec![] }
+        fn get_followup(&self) -> Vec<Message> { vec![] }
+        fn get_api_key(&self, _p: &str) -> Option<String> { None }
+    }
+    let bad_args = "null";
+    let body1 = format!(
+        "data: {{\"chunk\":\"tool_call\",\"idx\":0,\"id\":\"c1\",\"name\":\"p_count\"}}\n\n\
+         data: {{\"chunk\":\"tool_args\",\"idx\":0,\"delta\":{}}}\n\n\
+         data: {{\"chunk\":\"usage\",\"tokens\":{{\"input\":5,\"output\":3,\"cache_read\":0,\"cache_write\":0,\"reasoning\":0}},\"model\":{{\"provider\":\"replay\",\"id\":\"t\"}}}}\n\n\
+         data: {{\"chunk\":\"stop\",\"tool_use\":null}}\n\n\
+         data: [DONE]\n\n",
+        serde_json::to_string(bad_args).unwrap()
+    );
+    let body2 = concat!(
+        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"done\"}\n\n",
+        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        StreamScript::Fixture(fixture_from_body(&body1)),
+        StreamScript::Fixture(fixture_from_body(body2)),
+    ]));
+    let store = Arc::new(StubStore::new(PlanScript::plain(vec![])));
+    let bus = Arc::new(RecordingBus::new());
+    let mut tools = ToolRegistry::new();
+    tools.push(Arc::new(ParallelCountingTool { calls: tool_calls.clone() }) as Arc<dyn Tool>);
+    let looop = ReactLoop { provider, store: store.clone(), approver: Arc::new(AllowAll), tools, hooks: Arc::new(NoopHook), bus };
+    looop.run(run_params(&store)).expect("loop ran");
+    assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "parallel_safe tool must also not execute on malformed JSON");
+    let appended = store.appended.lock().unwrap();
+    let is_err = appended.iter().find_map(|e| {
+        if let Event::MessageAppended { msg, .. } = e {
+            for c in &msg.content {
+                if let Content::ToolResult { id, is_error, .. } = c { if id.0=="c1" { return Some(*is_error); } }
+            }
+        }
+        None
+    }).unwrap();
+    assert!(is_err, "must be is_error");
+}
+
 #[test]
 fn p1_96e6_sequential_after_tool_call_still_runs() {
     use kn9t_core::{HookHost, Tool, ToolCtx, Cancel, Content, Message, ModelRef, ToolSpec};

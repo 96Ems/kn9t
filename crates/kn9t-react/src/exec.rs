@@ -324,6 +324,8 @@ impl ReactLoop {
         // failure here is a real defect (provider sent malformed JSON, or the bytes were
         // corrupted in transit). Surface it instead of silently substituting Null, which
         // would present the tool with empty args and produce a confusing downstream error.
+        // 96E-8 fix: invalid args must short-circuit to ToolResult(error) and must not
+        // reach Tool::execute or policy hooks. Emit Error for observability, then deny.
         let args: serde_json::Value = match serde_json::from_str(&call.args_json) {
             Ok(v) => v,
             Err(e) => {
@@ -333,9 +335,18 @@ impl ReactLoop {
                         call.name, call.id.0
                     ),
                 });
-                serde_json::Value::Null
+                return CallPlan::Deny(format!("malformed tool args_json: {e}"));
             }
         };
+        if !args.is_object() {
+            self.bus.emit(Event::Error {
+                message: format!(
+                    "tool '{}' (call {}): args_json is not a JSON object: {}",
+                    call.name, call.id.0, call.args_json
+                ),
+            });
+            return CallPlan::Deny(format!("tool args must be a JSON object, got: {}", args));
+        }
         match self.hook_before_tool_call(&call.name, &args, &params.cwd) {
             HookVeto::Allow => CallPlan::Execute { args },
             HookVeto::Deny { reason } => CallPlan::Deny(reason),
@@ -440,6 +451,108 @@ fn estimated_assembled(model: &ModelRef) -> Assembled {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 96E-8: malformed JSON must not reach Tool::execute ────────────────
+    #[test]
+    fn p1_96e8_authorize_malformed_json_is_deny() {
+        use kn9t_core::{Content, HookHost, Message, ModelRef, Tool, ToolCtx, Cancel, ToolSpec, Store, StoreErr, SessionId, SessionSnapshot, RequestPlan, EventSink, Event, ToolRegistry, Approver, Decision, ToolCall, CallId};
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
+        use crate::loop_::RunParams;
+        use kn9t_core::{ModelSpec, Price, CacheMode, Quirks, Thinking};
+
+        struct DummyStore;
+        impl Store for DummyStore {
+            fn plan_request(&self, _s: &SessionId) -> Result<RequestPlan, StoreErr> { unreachable!() }
+            fn append(&self, _s: &SessionId, _e: Event) -> Result<u64, StoreErr> { Ok(1) }
+            fn snapshot(&self, _s: &SessionId) -> Result<SessionSnapshot, StoreErr> { unreachable!() }
+        }
+        struct DummyProvider;
+        impl kn9t_core::Provider for DummyProvider {
+            fn name(&self) -> &str { "dummy" }
+            fn stream(&self, _r: &kn9t_core::Request, _c: &Cancel) -> Result<Box<dyn Iterator<Item=Result<kn9t_core::Chunk, kn9t_core::ProvErr>>+Send>, kn9t_core::ProvErr> { unreachable!() }
+        }
+        struct DummyBus(Arc<Mutex<Vec<Event>>>);
+        impl EventSink for DummyBus { fn emit(&self, e: Event) { self.0.lock().unwrap().push(e); } }
+        struct AllowAllApprover;
+        impl Approver for AllowAllApprover { fn request(&self, _c: &ToolCall, _cwd: &std::path::Path, _r: &str) -> Decision { Decision::Allow } }
+        struct CountingTool(Arc<AtomicUsize>);
+        impl Tool for CountingTool {
+            fn spec(&self) -> &ToolSpec { Box::leak(Box::new(ToolSpec { name: "x".into(), description: "".into(), schema: serde_json::json!({}), hidden: false, effects: vec![], policy: Default::default() })) }
+            fn execute(&self, _a: &serde_json::Value, _c: &ToolCtx, _cancel: &Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(kn9t_core::ToolOutput { content: vec![Content::Text { text: "ok".into() }], details: None, is_error: false })
+            }
+        }
+        struct CountingHook(Arc<AtomicUsize>);
+        impl HookHost for CountingHook {
+            fn before_tool_call(&self, _t: &str, _a: &serde_json::Value, _c: &std::path::Path) -> kn9t_core::HookVeto { self.0.fetch_add(1, Ordering::SeqCst); kn9t_core::HookVeto::Allow }
+            fn after_tool_call(&self, _t: &str, _a: &serde_json::Value, r: Vec<Content>) -> Vec<Content> { r }
+            fn before_request(&self, m: Vec<Message>, _model: &ModelRef, _s: Option<&str>) -> Vec<Message> { m }
+            fn should_stop_after_turn(&self, _s: kn9t_core::StopReason, _u: &kn9t_core::Usage, _t: u32) -> bool { false }
+            fn prepare_next_turn(&self, _s: kn9t_core::StopReason, _u: &kn9t_core::Usage) -> kn9t_core::NextTurnPatch { Default::default() }
+            fn get_steering(&self) -> Vec<Message> { vec![] }
+            fn get_followup(&self) -> Vec<Message> { vec![] }
+            fn get_api_key(&self, _p: &str) -> Option<String> { None }
+        }
+
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let hook_calls = Arc::new(AtomicUsize::new(0));
+        let bus_events = Arc::new(Mutex::new(Vec::new()));
+        let mut tools = ToolRegistry::new();
+        tools.push(Arc::new(CountingTool(tool_calls.clone())) as Arc<dyn Tool>);
+        let looop = ReactLoop {
+            provider: Arc::new(DummyProvider),
+            store: Arc::new(DummyStore),
+            approver: Arc::new(AllowAllApprover),
+            tools,
+            hooks: Arc::new(CountingHook(hook_calls.clone())),
+            bus: Arc::new(DummyBus(bus_events.clone())),
+        };
+        let params = RunParams {
+            session: SessionId::new(),
+            model: ModelSpec { r#ref: ModelRef { provider: "test".into(), id: "m".into() }, api_id: "test".into(), ctx_window: 100000, max_out: 8000, price: Price { input: 1.0, output: 1.0, cache_read: 1.0, cache_write: 1.0 }, cache: CacheMode::None, streaming: true, quirks: Quirks::default() },
+            thinking: Thinking::Off,
+            max_tokens: None,
+            cwd: std::env::temp_dir(),
+            config: crate::ReactConfig::default(),
+            read_map: Arc::new(Mutex::new(HashMap::new())),
+            system: None,
+            cancel: None,
+        };
+        // Case 1: syntactically invalid JSON
+        let call_bad = ToolCall { id: CallId("c1".into()), name: "x".into(), args_json: "{not valid json".into() };
+        let plan = looop.authorize(&params, &call_bad);
+        assert!(matches!(plan, CallPlan::Deny(_)), "malformed JSON must be Deny, got {:?}", match plan { CallPlan::Deny(ref s) => s, _ => "Execute" });
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "tool must not be called for malformed");
+        assert_eq!(hook_calls.load(Ordering::SeqCst), 0, "hook must not be called for malformed");
+        // Also check that run_tool_batch produces is_error ToolResult and does not call tool
+        let batch = looop.run_tool_batch(&params, &[call_bad.clone()], &Cancel::new());
+        assert_eq!(batch.len(), 1);
+        match &batch[0] {
+            Content::ToolResult { id, is_error, content } => {
+                assert_eq!(id.0, "c1");
+                assert!(*is_error, "must be is_error");
+                let txt = content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("");
+                assert!(txt.to_lowercase().contains("malformed"), "error must mention malformed, got {txt:?}");
+            }
+            _ => panic!("expected ToolResult"),
+        }
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "run_tool_batch must not call tool for malformed");
+        // Case 2: valid JSON but not object (null)
+        let call_null = ToolCall { id: CallId("c2".into()), name: "x".into(), args_json: "null".into() };
+        let plan2 = looop.authorize(&params, &call_null);
+        assert!(matches!(plan2, CallPlan::Deny(_)), "null must be Deny");
+        let batch2 = looop.run_tool_batch(&params, &[call_null], &Cancel::new());
+        match &batch2[0] {
+            Content::ToolResult { is_error, .. } => assert!(*is_error),
+            _ => panic!("expected ToolResult"),
+        }
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "null must not reach tool");
+        // Bus must have Error events
+        let evs = bus_events.lock().unwrap();
+        assert!(evs.iter().any(|e| matches!(e, Event::Error { .. })), "must emit Error");
+    }
 
     #[test]
     fn test_synth_error_creates_tool_result() {
