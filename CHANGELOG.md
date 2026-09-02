@@ -9,7 +9,27 @@ pointer current.
 
 ---
 
+## Session — 2026-09-02 (6) — Deadlock spawn_session révélé en live : fix protocole client (96E-17)
+
+Utilisateur : le tool spawn_session hang sans réponse. Diagnose via DB (session parent 01M1H856... + enfant 01M1H8Z6F... fork_reason=subagent) :
+- L'enfant a hérité du transcript complet du parent (saturé de tentatives spawn) + du toolset complet, spawn_session inclus → le LLM a re-spawn dans l'enfant (seq 81, usage 284/326).
+- **Vrai bug** : le client protocole du plugin, en attente d'un api_result (hostRequest), lisait et **avalait** les hook entrants — le tool_call de l'enfant n'a jamais reçu de réponse → deadlock mutuel (parent attend le plugin, plugin attend l'enfant, enfant attend le plugin). Le « forward compatibility : ignore » était une perte de messages, pas de l'ignorance.
+
+### Fix — évènement pump (choix d'implémentation du plugin)
+
+- `kn9t-subagent` : le client host_api est un **pump** mono-thread — un seul reader, un **buffer de réponses partagé par id** (une réponse pour un request externe n'est jamais perdue par un pump interne), et **dispatch inline des hooks** pendant l'attente → la récursion fonctionne (child → spawn_session servi pendant que le parent attend).
+- **Récursion = choix du plugin/end user** : env `KN9T_SUBAGENT_RECURSION` (défaut allow ; deny → toolset enfant calculé via `tool_list` moins `spawn_session`). Pas de hardblock host.
+- Budget par défaut 0.5 $ par spawn (filet anti-chaîne infinie, configurable par args).
+- Nudge soft dans la tâche enfant (« Complete this task yourself ») contre la délégation mimétique.
+- Nouvelle op host_api **`tool_list`** (noms du registre — utile pour composer les toolsets, validée par l'utilisateur).
+- Test : simulate.mjs scénario 1 = re-entrance réelle (hook imbriqué servi inline, grandchild), scénario 2 = deny (toolset exclut spawn_session). Serveur : assertion tool_list dans `srv::p1_96e17_host_api_ops_*`.
+
+### À faire par l'utilisateur
+- Restart du serveur (l'instance live tourne avec l'ancien binaire/plugin ; le turn deadlocké finira par son timeout 300 s ou ESC).
+
+---
 ## ▶ Next session starts here
+
 
 **Next:** rebâtir `kn9t-compactor` sur les primitives session (session_fork + session_prompt + toolset compactor fourni par le plugin) pour que la compaction soit un vrai sous-agent session (transcript/TUI visible, budget ForkSnapshot) — puis SDK Rust parity request/reply, ADR-0008 spec rewrite, puis E2E live compaction.
 

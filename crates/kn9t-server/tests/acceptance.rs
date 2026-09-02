@@ -2239,6 +2239,13 @@ fn p1_96e17_host_api_ops_session_read_provider_complete_tool_execute() {
     assert!(api
         .handle("plug", Some(&sid_str), "tool_execute", &serde_json::json!({"name": "nope"}))
         .is_err());
+
+    // ── tool_list (child toolset composition) ────────────────────────────────
+    let r = api
+        .handle("plug", Some(&sid_str), "tool_list", &serde_json::json!({}))
+        .unwrap();
+    let tools = r["tools"].as_array().unwrap();
+    assert!(tools.iter().any(|t| t == "echo_tool"), "registry names listed, got {tools:?}");
 }
 
 #[test]

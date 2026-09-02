@@ -175,6 +175,19 @@ impl ServerHostApi {
     }
 
 
+    /// `tool_list` — 96E-17: registry tool names (for composing child toolsets).
+    /// Reply: `{"tools":["bash","read",...]}`.
+    fn tool_list(&self, _session: Option<&str>, _payload: &Value) -> Result<Value, String> {
+        let names: Vec<String> = self
+            .state
+            .tools_snapshot()
+            .specs()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        Ok(json!({ "tools": names }))
+    }
+
     /// `provider_complete` — one real provider call with the session's model.
     /// Reply: `{"content":[...],"stop":"...","usage":{"input":..,"output":..}}`.
     fn provider_complete(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
@@ -314,6 +327,7 @@ impl HostApi for ServerHostApi {
             "tool_execute" => self.tool_execute(session, payload),
             "session_fork" => self.session_fork(session, payload),
             "session_prompt" => self.session_prompt(session, payload),
+            "tool_list" => self.tool_list(session, payload),
             other => Err(format!("unknown host API op {other:?}")),
         }
     }

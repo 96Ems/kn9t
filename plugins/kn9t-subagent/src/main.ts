@@ -3,8 +3,7 @@
  *
  * A "sub-agent" is NOT a kn9t concept: it is a forked session running a turn
  * (fork_reason=subagent, budget captured in the ForkSnapshot). This plugin
- * proves the open primitives by exposing a `spawn_session` tool that the main
- * agent can call:
+ * exposes a `spawn_session` tool that the main agent can call:
  *
  *   1. session_fork   {copy_events:true, budget_usd, model} → child session
  *                     (inherits the parent transcript → full context)
@@ -12,12 +11,18 @@
  *                     its own ReAct turn with its own model/tools/hooks,
  *                     usage recorded in the CHILD session under its own budget
  *
- * The child transcript stays inspectable (session_read / TUI picker).
+ * Recursion is ALLOWED (a sub-agent may spawn sub-agents — legitimate task
+ * decomposition). This plugin MUST therefore service incoming hooks WHILE a
+ * host request is pending: the single-threaded client uses an event pump —
+ * one line reader, a shared reply buffer keyed by id, and inline hook
+ * dispatch — mirroring the host's reader-thread + per-call demux. Without it,
+ * a child's tool call arriving mid-wait would deadlock the whole chain.
+ *
  * Everything goes through the host_api RPC — no keys, no HTTP.
  */
 import * as fs from "node:fs";
 
-// ── stdio NdJSON (sequential: this plugin only hears hello / tool_call / shutdown) ──
+// ── stdio NdJSON ────────────────────────────────────────────────────────────
 
 class LineReader {
   private buf = Buffer.alloc(0);
@@ -49,20 +54,77 @@ interface ApiResult {
   error?: string;
 }
 
+interface HookMsg {
+  t: string;
+  id: number;
+  payload: Record<string, unknown>;
+}
+
 let requestId = 1000;
 const reader = new LineReader();
+
+/** Replies that arrived for requests we were not pumping at that moment
+ *  (e.g. an outer request completing while an inner pump runs). */
+const replies = new Map<number, ApiResult>();
+
+/** Default spend cap per spawned session when the caller gives none — the
+ *  recursion safety net (a chain of children sharing one budget dies out). */
+const DEFAULT_BUDGET_USD = 0.5;
+const SPAWN_TOOL = "spawn_session";
+
+/**
+ * Recursion policy — an END-USER/plugin choice, not a host rule:
+ * `KN9T_SUBAGENT_RECURSION` env (inherited by the plugin process):
+ *   - unset or "allow" (default): a sub-agent may spawn sub-agents
+ *     (the child inherits the full toolset, spawn_session included);
+ *   - "deny": the child's toolset is computed via `tool_list` minus
+ *     spawn_session — a sub-agent cannot spawn further sub-agents.
+ */
+const RECURSION_ALLOWED =
+  (process.env["KN9T_SUBAGENT_RECURSION"] ?? "allow").toLowerCase() !== "deny";
+
+/** Child toolset when recursion is denied: everything minus spawn_session. */
+function noSpawnToolset(session: string): Array<string> | undefined {
+  const r = hostRequest("tool_list", { session });
+  if (!r.ok || !Array.isArray(r.result?.["tools"])) return undefined;
+  return (r.result!["tools"] as Array<string>).filter((n) => n !== SPAWN_TOOL);
+}
+
+/**
+ * Event pump: read lines until the reply for `awaitId` arrives. Incoming
+ * hooks are dispatched INLINE (recursive spawn_session is served while we
+ * wait — this is what makes re-entrancy/deadlock-free recursion possible);
+ * api_results are buffered by id so a reply for an outer request is never
+ * lost to an inner pump.
+ */
+function pumpUntil(awaitId: number): ApiResult {
+  for (;;) {
+    const hit = replies.get(awaitId);
+    if (hit !== undefined) {
+      replies.delete(awaitId);
+      return hit;
+    }
+    const line = reader.readLine();
+    if (line === null) throw new Error("host closed stdin");
+    const msg = JSON.parse(line) as { t?: string; id?: number } & Record<string, unknown>;
+    if (msg.t === "api_result" && typeof msg.id === "number") {
+      replies.set(msg.id, msg as unknown as ApiResult);
+      continue;
+    }
+    if (msg.t === "hook" && typeof msg.id === "number") {
+      handleHook(msg.id, (msg.payload as Record<string, unknown>) ?? {});
+      continue;
+    }
+    if (msg.t === "shutdown") throw new Error("host shutdown during request");
+    // Events and anything else: fire-and-forget, drop.
+  }
+}
 
 /** Send a plugin → host API request and await the api_result reply. */
 function hostRequest(op: string, payload: unknown): ApiResult {
   const id = requestId++;
   writeMsg({ t: "request", id, op, payload });
-  while (true) {
-    const line = reader.readLine();
-    if (line === null) throw new Error("host closed stdin");
-    const msg = JSON.parse(line) as ApiResult;
-    if (msg.t === "api_result" && msg.id === id) return msg;
-    // Ignore anything else (forward compatibility).
-  }
+  return pumpUntil(id);
 }
 
 function textBlocks(content: unknown): string {
@@ -77,6 +139,10 @@ function textBlocks(content: unknown): string {
  * Handle one `spawn_session` tool call: fork a child session and run the task
  * synchronously inside it. The result returns to the calling agent together
  * with the child session id (so it can be inspected afterwards).
+ *
+ * Soft anti-delegation nudge: the child is told to complete the task itself
+ * (it MAY still spawn, but pointless delegation is discouraged — the child
+ * otherwise tends to mimic spawn-heavy parent transcripts).
  */
 function spawnSession(args: Record<string, unknown>, session: string): {
   content: Array<Record<string, unknown>>;
@@ -87,10 +153,14 @@ function spawnSession(args: Record<string, unknown>, session: string): {
     return { content: [{ type: "text", text: "spawn_session requires \"task\"" }], is_error: true };
   }
   const model = typeof args["model"] === "string" ? args["model"] : undefined;
-  const budget = typeof args["budget_usd"] === "number" ? args["budget_usd"] : undefined;
+  const budget = typeof args["budget_usd"] === "number" ? args["budget_usd"] : DEFAULT_BUDGET_USD;
+  // Recursion policy is this plugin's (end-user's) choice: explicit tools win;
+  // otherwise inherit the parent toolset, except when recursion is denied.
   const tools = Array.isArray(args["tools"])
     ? (args["tools"] as unknown[]).filter((t): t is string => typeof t === "string")
-    : undefined;
+    : RECURSION_ALLOWED
+      ? undefined
+      : noSpawnToolset(session);
 
   // 1. Fork: the child inherits the parent transcript (full context) and the
   //    budget is captured in the ForkSnapshot (R-PLUG-130).
@@ -99,7 +169,8 @@ function spawnSession(args: Record<string, unknown>, session: string): {
   const child = String(fork.result?.["session"] ?? "");
 
   // 2. Prompt: the child runs its own turn (model at fork, tool subset, hooks).
-  const prompt = hostRequest("session_prompt", { session: child, text: task, tools });
+  const childTask = `You are a sub-agent session. Complete this task yourself: ${task}`;
+  const prompt = hostRequest("session_prompt", { session: child, text: childTask, tools });
   if (!prompt.ok) return { content: [{ type: "text", text: `session_prompt: ${prompt.error}` }], is_error: true };
 
   const raw = prompt.result?.["result"];
@@ -113,6 +184,23 @@ function spawnSession(args: Record<string, unknown>, session: string): {
     ],
     is_error: false,
   };
+}
+
+function handleHook(id: number, payload: Record<string, unknown>): void {
+  const name = String(payload["tool"] ?? ""); // canonical tool_call field (SDK contract)
+  const args = (payload["args"] as Record<string, unknown>) ?? {};
+  const session = String(payload["session"] ?? ""); // added by the host (96E-17)
+  if (name === "spawn_session") {
+    const out = spawnSession(args, session);
+    writeMsg({ t: "result", id, content: out.content, is_error: out.is_error });
+  } else {
+    writeMsg({
+      t: "result",
+      id,
+      content: [{ type: "text", text: `kn9t-subagent: unknown tool ${name}` }],
+      is_error: true,
+    });
+  }
 }
 
 function main(): void {
@@ -130,7 +218,7 @@ function main(): void {
     capabilities: ["host_api"],
     tools: [
       {
-        name: "spawn_session",
+        name: SPAWN_TOOL,
         description:
           "Spawn a sub-agent session (a forked kn9t session, R-PLUG-110): it inherits " +
           "the current transcript, runs the task synchronously as its own turn, and " +
@@ -140,8 +228,8 @@ function main(): void {
           properties: {
             task: { type: "string", description: "Task for the sub-agent session." },
             model: { type: "string", description: "Optional model id (default: parent model)." },
-            budget_usd: { type: "number", description: "Optional spend cap for the child." },
-            tools: { type: "array", items: { type: "string" }, description: "Optional tool subset for the child." },
+            budget_usd: { type: "number", description: `Optional spend cap (default ${DEFAULT_BUDGET_USD} USD).` },
+            tools: { type: "array", items: { type: "string" }, description: "Optional tool subset for the child (default: inherit)." },
           },
           required: ["task"],
         },
@@ -153,33 +241,14 @@ function main(): void {
   while (true) {
     const line = reader.readLine();
     if (line === null) break;
-    const msg = JSON.parse(line) as {
-      t?: string;
-      id?: number;
-      hook?: string;
-      payload?: Record<string, unknown>;
-    };
+    const msg = JSON.parse(line) as { t?: string; id?: number } & Record<string, unknown>;
     if (msg.t === "shutdown") break;
-    if (msg.t === "hook" && msg.hook === "tool_call") {
-      const id = msg.id ?? 0;
-      const payload = msg.payload ?? {};
-      const name = String(payload["tool"] ?? ""); // canonical tool_call field (SDK contract)
-      const args = (payload["args"] as Record<string, unknown>) ?? {};
-      const session = String(payload["session"] ?? ""); // added by the host (96E-17)
-      if (name === "spawn_session") {
-        const out = spawnSession(args, session);
-        writeMsg({ t: "result", id, content: out.content, is_error: out.is_error });
-      } else {
-        writeMsg({
-          t: "result",
-          id,
-          content: [{ type: "text", text: `kn9t-subagent: unknown tool ${name}` }],
-          is_error: true,
-        });
-      }
-    } else {
-      writeMsg({ t: "result", id: msg.id ?? 0, error: `kn9t-subagent: unhandled hook ${msg.hook ?? "?"}` });
+    if (msg.t === "hook" && typeof msg.id === "number") {
+      handleHook(msg.id, (msg.payload as Record<string, unknown>) ?? {});
+    } else if (msg.t === "hook") {
+      writeMsg({ t: "result", id: (msg.id as number) ?? 0, error: `kn9t-subagent: unhandled hook` });
     }
+    // api_result without a waiter: ignore (stale).
   }
 }
 

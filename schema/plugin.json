@@ -58,7 +58,7 @@
     "Done": { "type": "object", "properties": { "t": { "const": "done" }, "id": { "type": "integer" } }, "required": ["t", "id"] },
     "Request": {
       "type": "object",
-      "description": "Plugin → host API request (host_api capability). Ops: provider_complete, session_read, tool_execute, session_fork, session_prompt.",
+      "description": "Plugin → host API request (host_api capability). Ops: provider_complete, session_read, tool_execute, session_fork, session_prompt, tool_list.",
       "properties": {
         "t": { "const": "request" },
         "id": { "type": "integer" },
