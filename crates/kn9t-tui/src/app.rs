@@ -26,7 +26,7 @@ use crate::event::{Event, EventLoop, TickControl};
 use crate::keybind::{Action, Keybinds};
 use crate::message_handler::Transcript;
 use crate::model_selector::ModelSelector;
-use crate::session_manager::SessionManager;
+use crate::session_manager::{session_matches, SessionManager};
 use crate::slash::{fuzzy_match, SlashState};
 use crate::token_tracker::{TokenCounts, TokenTracker};
 use crate::ui::layout::LayoutState;
@@ -1113,7 +1113,7 @@ impl App {
                 // Selection index 0 = "New session", 1+ = filtered sessions.
                 let filtered: Vec<usize> = self.session.sessions.iter()
                     .enumerate()
-                    .filter(|(_, s)| fuzzy_match(&s.name, filter) || fuzzy_match(&s.id, filter))
+                    .filter(|(_, s)| session_matches(s, filter))
                     .map(|(i, _)| i)
                     .collect();
                 let total_selectable = 1 + filtered.len(); // "New session" + filtered sessions
@@ -1139,11 +1139,20 @@ impl App {
                     }
                     KeyCode::Backspace => {
                         filter.pop();
-                        *selected = 0; // Reset selection on filter change.
+                        // 96E-19: when the filter matches, highlight the FIRST match
+                        // (not "New session") so Enter opens it — previously typing a
+                        // filter then Enter always created a new session.
+                        let matches = self.session.sessions.iter().any(|s| {
+                            session_matches(s, filter)
+                        });
+                        *selected = if matches { 1 } else { 0 };
                     }
                     KeyCode::Char(c) => {
                         filter.push(c);
-                        *selected = 0; // Reset selection on filter change.
+                        let matches = self.session.sessions.iter().any(|s| {
+                            session_matches(s, filter)
+                        });
+                        *selected = if matches { 1 } else { 0 };
                     }
                     KeyCode::Delete => {
                         // Delete selected session (not "New session" which is index 0).

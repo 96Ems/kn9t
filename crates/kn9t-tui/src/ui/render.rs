@@ -1274,10 +1274,10 @@ fn render_session_select(f: &mut Frame, app: &App, selected: usize, filter: &str
         }
     }
     
-    // Filter sessions by fuzzy match.
+    // Filter sessions (names fuzzy, ids substring — see session_matches).
     let filtered: Vec<(usize, &crate::session_manager::SessionEntry)> = app.session.sessions.iter()
         .enumerate()
-        .filter(|(_, s)| fuzzy_match(&s.name, filter) || fuzzy_match(&s.id, filter))
+        .filter(|(_, s)| crate::session_manager::session_matches(s, filter))
         .collect();
     
     // Build rows with date headers.

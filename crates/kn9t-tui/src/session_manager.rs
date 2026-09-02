@@ -18,6 +18,20 @@ pub struct SessionEntry {
     pub created_at: Option<String>,
 }
 
+/// 96E-19 — session filter used by the picker (render + key handler MUST agree).
+/// Names match fuzzily (subsequence); IDs match by case-insensitive SUBSTRING —
+/// fuzzy-matching random ULID-style ids matches nearly everything (every long id
+/// contains most letters somewhere), which made the session filter useless.
+pub fn session_matches(s: &SessionEntry, filter: &str) -> bool {
+    if filter.is_empty() {
+        return true;
+    }
+    crate::slash::fuzzy_match(&s.name, filter)
+        || s.id
+            .to_ascii_lowercase()
+            .contains(&filter.to_ascii_lowercase())
+}
+
 /// Session state that can be reset when switching sessions.
 #[derive(Debug, Default)]
 pub struct SessionState {
@@ -224,6 +238,28 @@ impl Default for SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(id: &str, name: &str) -> SessionEntry {
+        SessionEntry {
+            id: id.into(),
+            name: name.into(),
+            running: false,
+            created_at: None,
+        }
+    }
+
+    /// 96E-19 — id filtering must be substring, not fuzzy: every long random id
+    /// contains most letters somewhere, so fuzzy matching made the picker useless.
+    #[test]
+    fn session_filter_matches_id_by_substring_only() {
+        let e = entry("01M1GXZDENG6JTD9C5NRK1CZXX", "hello");
+        assert!(session_matches(&e, "01M1GXZ"), "prefix matches");
+        assert!(!session_matches(&e, "01M1GVZZ"), "foreign suffix must NOT fuzzy-match");
+        // Fuzzy still applies to names.
+        let e2 = entry("abcdef", "review commit");
+        assert!(session_matches(&e2, "rvw"));
+        assert!(session_matches(&e2, ""));
+    }
 
     #[test]
     fn test_session_state_reset() {

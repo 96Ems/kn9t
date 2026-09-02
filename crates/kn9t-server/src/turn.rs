@@ -273,8 +273,15 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
         return;
     }
 
-    let (Some(provider), Some(model)) = (state.provider.clone(), state.default_model.clone())
-    else {
+    // Auto-title with the SESSION's model (same resolution as spawn_turn), falling
+    // back to the default model. Using the default unconditionally fired an extra
+    // provider call (and a silent 400 when that model had no credentials) on every
+    // turn of a flash-based session.
+    let model = state
+        .store
+        .get_model_spec_for_session(&session.0)
+        .or_else(|| state.default_model.clone());
+    let (Some(provider), Some(model)) = (state.provider.clone(), model) else {
         return;
     };
 

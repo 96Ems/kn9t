@@ -11,7 +11,55 @@ pointer current.
 
 ## ▶ Next session starts here
 
-**Next:** verify tool-calling after today's P1/96E-8..16 batch (the 400 was masked by empty-body error), G3 or Stage 10.
+**Next:** ADR-0008 spec rewrite (R-CORE-270/R-RCT-100/R-TOOL-07x) + `plugins/kn9t-policy.py` fail-open → then G3 or Stage 10. The 400/TUI breakage that dominated the previous sessions is fixed and live-verified (below).
+
+---
+
+## Session — 2026-09-02 (2) — TUI live breakage root-caused & fixed (96E-18, 96E-19)
+
+### Summary
+
+User report: "je n'arrive plus à utiliser kn9t" — LLM text appears then disappears, tool calls never visible, provider 400 on tool calls, session picker unusable. All five reproduced live via `tui-testing` MCP (buffer mode) and fixed at the root. No masking, no `expanded:true` band-aid survived review — the architectural cause was found and fixed.
+
+### Root cause #1 (the big one) — durable events never reached the SSE bus
+
+`062f5d0` (96E-12) made `EventSink::emit(LiveEvent)` transient-only and moved durable events to `Store::append` — with the comment "or the server's `SessionBuses::publish` for SSE echo after store commit". **That server-side echo never existed.** Consequence: the TUI live transcript never received `MessageAppended`/`UsageRecorded`/`ModelChanged`/`Compacted` from the loop or routes. It only saw the snapshot at attach + transient frames:
+
+- Tool cards are created by the reducer **only** in `MessageAppended` (assistant with `tool_call`) → none ever appeared live;
+- Streamed text stayed in `live_delta` forever (never committed) and vanished at the next `TurnStarted` (`take_delta`) → "le texte apparaît/disparaît";
+- Usage/tokens never updated live.
+
+**Fix (96E-18):** the store now has a single after-commit observer — `SqliteStore::set_after_append(Option<Arc<dyn Fn(&SessionId, &Event)>>)`, invoked in `session::append` after `COMMIT`, outside the conn lock. `ServerState::new` installs it once and it publishes every appended event (seq-stamped by the store) onto the session bus. The four manual `buses.publish` after durable appends in `routes/session.rs` (prompt, steer, model, compact) were removed — one publisher, no duplicates. `SessionBuses` became `Arc<SessionBuses>` so the closure can capture it. No ReactLoop change: 96E-12's compile-time guarantee stays intact (the loop still cannot emit durable events).
+
+Tests: `srv::p1_96e18_durable_appends_echo_on_sse_bus` (acceptance: prompt → bus receives exactly one `MessageAppended` with the store seq and the payload); `reducer::live_tool_call_roundtrip_creates_card` (full live tool round-trip leaves a visible card with `done` status + output, and the tool-result message does not become a transcript message).
+
+### Root cause #2 — provider 400 "empty content"
+
+A genuinely empty tool result (`bash: grep` no-match, `bash: true`) encodes as `"content": ""` — the gateway 400s. Live repro before the fix: `tool_result` rows with `''`. Fixed at the **encode seam** (AGENTS.md §10): `encode_messages`/`encode_message` replace empty/whitespace-only tool text with `"(no output)"` wire form. The TUI still renders no output under the card (nothing is masked; the DB keeps `''`). Tests: `encode::tests::tool_result_empty_content_is_nonempty_on_wire` + `tool_result_keeps_real_output`.
+
+### Root cause #3 — session picker filter useless + Enter stuck on "New session"
+
+`fuzzy_match` was applied to session **ids**: every long random id contains most letters somewhere → any filter matched nearly every session, and `selected` stayed 0 ("New session") so Enter always created a new session. Fixed: new `session_matches` (names fuzzy, ids **substring**), used by both the renderer and the key handler; typing a filter now selects the first match so Enter opens it. Test: `session_filter_matches_id_by_substring_only`.
+
+### Root cause #4 — auto-title used the wrong model
+
+`maybe_autotitle` used `state.default_model` (deepseek-v4-pro) instead of the session model (deepseek-v4-flash) → an extra provider call and a silent 400 (no credentials for pro) after **every** turn, so titles were never set. Now resolves the session model exactly like `spawn_turn` (fallback to default).
+
+### Diagnostics kept (from `9fbfe98`)
+
+`http.rs` `http_status_as_error(false)` + provider 400-body logging (truncated 4k) — without these the 400 body stayed empty. `message_handler.rs` `expanded:true` on DB-reloaded cards (kept: reload shows tool output by default; live running tools stay expanded, done tools collapse to `[+]` header — now actually visible because root cause #1 is fixed).
+
+### Live verification (buffer-mode TUI against the real server)
+
+- `bash: ls /tmp | head -2` → card `[+] ✓ bash cmd=ls /tmp | head -2` appears live, answer committed, status `idle`;
+- second prompt → first turn stays on screen (no more disappearance);
+- `bash: true` (empty output) → card `[+] ✓ bash cmd=true` + `DONE`, **no 400**;
+- `/session` → filter `01M1GXZ` → only `01M1GXZD` listed → Enter opens it, transcript reloads with card **expanded** showing the real output (`1: backup-carousel.tsx …`) + `Progress/Output/Input` tabs.
+- `cargo test --workspace` 432 passed / 0 failed (was 427).
+
+### Spec/design notes
+
+The 96E-12 commit message said the server published durable echoes; the code did not. That is a **fix-the-architecture** correction (AGENTS.md §10) — the observer is the single seam, matching DESIGN §12.4 ("the bus is the wire for observers"). No `SPEC-OPEN` entry existed for it; recorded here because it contradicts nothing in the spec but the spec's intent was unfulfilled.
 
 ---
 
