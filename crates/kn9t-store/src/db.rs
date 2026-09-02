@@ -1,4 +1,10 @@
 //! R-STOR-010, R-STOR-020, R-STOR-030 — open, pragmas, schema.
+//! Concurrency model (96E-13): intentionally single `Mutex<Connection>`.
+//! WAL is for crash safety and external `sqlite3` readers, not for
+//! in-process concurrency. All ops serialize through the Mutex; there is
+//! no pool and no separate reader connection. `read_attach_snapshot` holds
+//! the Mutex across payloads+head_seq to avoid the interleaving bug fixed
+//! in 96E-7. Separate reader/writer connections only if benchmarks justify it.
 
 use kn9t_core::{Event, ModelRef, ModelSpec, PluginKv, RequestPlan, SessionId, SessionSnapshot, Store, StoreErr};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -10,7 +16,10 @@ use std::sync::{Mutex, RwLock};
 pub const PROJECTION_VERSION: &str = "2";
 
 pub struct SqliteStore {
-    /// Single writer connection; WAL allows concurrent readers on separate connections.
+    /// Single Mutex-serialized connection. WAL is enabled for crash safety and to allow
+    /// external readers (e.g. `sqlite3` CLI) while the server runs, not for in-process
+    /// concurrency. Every application-level operation serializes through this Mutex;
+    /// there is no connection pool and no concurrent in-process readers.
     pub(crate) conn: Mutex<Connection>,
     pub(crate) path: PathBuf,
     /// Runtime model specs by `ModelRef` provider+id key — not stored in DB.
@@ -187,6 +196,8 @@ impl SqliteStore {
 }
 
 fn apply_pragmas(conn: &Connection) -> Result<(), StoreErr> {
+    // WAL for crash safety (atomic commit, survives kill -9) and external readers;
+    // not for in-process concurrency — we still serialize via Mutex (96E-13).
     let stmts = [
         "PRAGMA journal_mode = WAL",
         "PRAGMA synchronous = NORMAL",
