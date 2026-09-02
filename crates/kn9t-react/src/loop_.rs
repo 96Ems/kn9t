@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use kn9t_provider_core::{
-    Approver, EventSink, HookHost, ModelSpec, Provider, Sha256, Store, Thinking, ToolRegistry,
+    Approver, Compactor, EventSink, HookHost, ModelSpec, Provider, Sha256, Store, Thinking,
+    ToolRegistry,
 };
 
 /// SPEC-OPEN (DESIGN sec.18.9) -- truncation give-up count and reminder ladder. Values,
@@ -79,4 +80,7 @@ pub struct ReactLoop {
     pub tools: ToolRegistry,
     pub hooks: Arc<dyn HookHost>,
     pub bus: Arc<dyn EventSink>,
+    /// 96E-16 — optional pluggable compactor. `None` keeps the hardcoded inline prompt
+    /// as fallback (same fail-open posture as the rest of the plugin system).
+    pub compactor: Option<Arc<dyn Compactor>>,
 }

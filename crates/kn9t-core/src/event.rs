@@ -77,6 +77,34 @@ pub struct ForkSnapshot {
     pub cwd_at_fork: PathBuf,
 }
 
+/// 96E-16 — one entry of a structured handoff summarization.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffSummary {
+    pub id: CallId,
+    pub summary: String,
+}
+
+/// Validate that every `CallId` cited in a `Handoff` exists in `known`.
+/// Host-side validation (96E-16 § gaps → open question): prevents a buggy/malicious
+/// compactor plugin from citing hallucinated IDs. Called by the store/host before
+/// persisting a `Handoff` produced by a compactor.
+pub fn validate_handoff(event: &Event, known: &[CallId]) -> Result<(), String> {
+    if let Event::Handoff { keep, summarize, drop_ids, .. } = event {
+        let known_set: std::collections::HashSet<&CallId> = known.iter().collect();
+        for id in keep.iter().chain(drop_ids.iter()) {
+            if !known_set.contains(id) {
+                return Err(format!("Handoff cites unknown CallId in keep/drop: {}", id.0));
+            }
+        }
+        for s in summarize {
+            if !known_set.contains(&s.id) {
+                return Err(format!("Handoff cites unknown CallId in summarize: {}", s.id.0));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// R-CORE-140 — the one `Event` enum. A variant is **durable** iff it carries a
 /// `seq: u64` field; **transient** otherwise. Durable variants folded in `seq`
 /// order reconstruct a session exactly (§5).
@@ -103,6 +131,18 @@ pub enum Event {
         seq: u64,
         replaced: SeqRange,
         summary: Message,
+    },
+    /// 96E-16 — structured handoff between sessions (ID-based keep/summarize/drop
+    /// plus resume actions). Durable, append-only, but not projected into
+    /// `messages` (like `ModelChanged`); the resumed session reconstructs from it
+    /// explicitly. Distinct from `Compacted` which is in-session reduction.
+    Handoff {
+        seq: u64,
+        keep: Vec<CallId>,
+        summarize: Vec<HandoffSummary>,
+        #[serde(rename = "drop")]
+        drop_ids: Vec<CallId>,
+        resume_actions: Vec<String>,
     },
     UsageRecorded {
         seq: u64,
@@ -221,6 +261,7 @@ impl Event {
             | Event::MessageAppended { seq, .. }
             | Event::ModelChanged { seq, .. }
             | Event::Compacted { seq, .. }
+            | Event::Handoff { seq, .. }
             | Event::UsageRecorded { seq, .. } => Some(*seq),
             _ => None,
         }
@@ -243,6 +284,7 @@ impl Event {
             | Event::MessageAppended { seq, .. }
             | Event::ModelChanged { seq, .. }
             | Event::Compacted { seq, .. }
+            | Event::Handoff { seq, .. }
             | Event::UsageRecorded { seq, .. } => *seq = new_seq,
             _ => {}
         }

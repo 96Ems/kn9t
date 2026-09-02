@@ -205,8 +205,7 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             approver: state.approver_snapshot(),
             tools: state.tools_snapshot(),  // R-PLUG2-110: tools from plugin subprocess
             hooks,
-            bus: sink.clone(),
-        };
+            bus: sink.clone(), compactor: None };
 
         let params = RunParams {
             session: session.clone(),

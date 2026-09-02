@@ -36,6 +36,7 @@ fn event_name(e: &Event) -> &'static str {
         Event::MessageAppended { .. } => "message_appended",
         Event::ModelChanged { .. } => "model_changed",
         Event::Compacted { .. } => "compacted",
+        Event::Handoff { .. } => "handoff",
         Event::UsageRecorded { .. } => "usage_recorded",
         Event::TurnStarted { .. } => "turn_started",
         Event::TextDelta { .. } => "text_delta",

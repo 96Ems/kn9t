@@ -57,6 +57,7 @@ pub fn event_tag(e: &Event) -> String {
         Event::MessageAppended { .. } => "MessageAppended",
         Event::ModelChanged { .. } => "ModelChanged",
         Event::Compacted { .. } => "Compacted",
+        Event::Handoff { .. } => "Handoff",
         Event::UsageRecorded { .. } => "UsageRecorded",
         Event::TurnStarted { .. } => "TurnStarted",
         Event::TextDelta { .. } => "TextDelta",

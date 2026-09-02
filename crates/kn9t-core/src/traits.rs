@@ -120,6 +120,39 @@ pub trait PluginKv: Send + Sync {
     fn kv_del_scope(&self, plugin: &str, scope: &str) -> Result<(), StoreErr>;
 }
 
+// -- 96E-16: pluggable compaction --
+
+/// 96E-16 — data for a structured handoff (ID-based keep/summarize/drop + resume actions).
+/// This is the *data* half of `Event::Handoff` without the `seq`; `Compactor` returns it
+/// and the host stamps `seq` via `Event::Handoff { seq, .. }`.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffPlanData {
+    pub keep: Vec<CallId>,
+    pub summarize: Vec<crate::event::HandoffSummary>,
+    #[serde(rename = "drop")]
+    pub drop_ids: Vec<CallId>,
+    pub resume_actions: Vec<String>,
+}
+
+/// 96E-16 — result of a compaction delegation.
+#[derive(Clone)]
+pub struct CompactionPlan {
+    pub summary: Message,
+    pub handoff: Option<HandoffPlanData>,
+}
+
+/// 96E-16 — pluggable compaction delegate, analogous to `PluginProvider`.
+///
+/// The host keeps the current hardcoded inline logic as the default/fallback when no
+/// compactor plugin is installed (same fail-open posture as the rest of the plugin system).
+/// When set, `ReactLoop::run_compaction` delegates to this trait instead of calling the
+/// provider with the fixed prompt; `validate_handoff` is applied host-side before any
+/// `Handoff` is persisted (host-side is safer — cannot be bypassed by a buggy/malicious
+/// compactor).
+pub trait Compactor: Send + Sync {
+    fn compact(&self, span: CompactSpan, history: &[Message]) -> Result<CompactionPlan, String>;
+}
+
 // -- R-CORE-270: approval (ADR-0008) --
 
 /// R-CORE-270 -- the dispatch-time view (fully accumulated args, no `Content`

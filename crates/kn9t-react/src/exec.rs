@@ -159,6 +159,74 @@ impl ReactLoop {
         cancel: &Cancel,
         span: kn9t_provider_core::CompactSpan,
     ) -> Result<Attempt, ReactError> {
+        // 96E-16: pluggable delegation — if a compactor is set, use it (host fallback when None).
+        if let Some(compactor) = &self.compactor {
+            if cancel.cancelled() {
+                self.bus.emit(LiveEvent::TurnStatus { phase: "aborted".into(), message: String::new() });
+                return Ok(Attempt::AbortedInStream(estimated_assembled(&params.model.r#ref)));
+            }
+            let history = span.messages.clone();
+            match compactor.compact(span.clone(), &history) {
+                Ok(plan) => {
+                    if let Some(handoff) = &plan.handoff {
+                        let known: Vec<kn9t_provider_core::CallId> = span
+                            .messages
+                            .iter()
+                            .flat_map(|m| &m.content)
+                            .filter_map(|c| match c {
+                                Content::ToolCall { id, .. } => Some(id.clone()),
+                                _ => None,
+                            })
+                            .collect();
+                        let ev = Event::Handoff {
+                            seq: 0,
+                            keep: handoff.keep.clone(),
+                            summarize: handoff.summarize.clone(),
+                            drop_ids: handoff.drop_ids.clone(),
+                            resume_actions: handoff.resume_actions.clone(),
+                        };
+                        if let Err(e) = kn9t_provider_core::validate_handoff(&ev, &known) {
+                            self.bus.emit(LiveEvent::Error { message: format!("compactor handoff validation failed: {e}") });
+                            return Err(ReactError::Provider(format!("compactor handoff validation failed: {e}")));
+                        }
+                    }
+                    self.append(
+                        params,
+                        Event::Compacted {
+                            seq: 0,
+                            replaced: span.replaced,
+                            summary: plan.summary.clone(),
+                        },
+                    )?;
+                    if let Some(handoff) = plan.handoff {
+                        self.append(
+                            params,
+                            Event::Handoff {
+                                seq: 0,
+                                keep: handoff.keep,
+                                summarize: handoff.summarize,
+                                drop_ids: handoff.drop_ids,
+                                resume_actions: handoff.resume_actions,
+                            },
+                        )?;
+                    }
+                    let assembled = Assembled {
+                        message: plan.summary,
+                        usage: kn9t_provider_core::Usage {
+                            tokens: Tokens::default(),
+                            model: params.model.r#ref.clone(),
+                        },
+                        stop: StopReason::Stop,
+                        usage_reported: false,
+                    };
+                    return Ok(Attempt::Completed(assembled));
+                }
+                Err(e) => {
+                    self.bus.emit(LiveEvent::Error { message: format!("compactor failed: {e}") });
+                    return Err(ReactError::Provider(format!("compactor failed: {e}")));
+                }
+            }
+        }
         // Interim compaction prompt (SPEC-OPEN sec.18.1). Wording not frozen.
         let mut msgs = span.messages.clone();
         msgs.push(Message {
@@ -546,8 +614,7 @@ mod tests {
             approver: Arc::new(AllowAllApprover),
             tools,
             hooks: Arc::new(CountingHook(hook_calls.clone())),
-            bus: Arc::new(DummyBus(bus_events.clone())),
-        };
+            bus: Arc::new(DummyBus(bus_events.clone())), compactor: None };
         let params = RunParams {
             session: SessionId::new(),
             model: ModelSpec { r#ref: ModelRef { provider: "test".into(), id: "m".into() }, api_id: "test".into(), ctx_window: 100000, max_out: 8000, price: Price { input: 1000000, output: 1000000, cache_read: 1000000, cache_write: 1000000 }, cache: CacheMode::None, streaming: true, quirks: Quirks::default() },

@@ -74,8 +74,7 @@ fn turn_sequence() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(),
-    };
+        bus: bus.clone(), compactor: None };
     let mut params = run_params(&store);
     params.cwd = dir;
 
@@ -134,8 +133,7 @@ fn cancel_boundary() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus,
-    };
+        bus, compactor: None };
     let stop = looop.run(run_params(&store)).expect("loop ran");
     assert_stop(stop, StopReason::Aborted);
 
@@ -174,8 +172,7 @@ fn abort_in_stream() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus,
-    };
+        bus, compactor: None };
     let params = run_params(&store);
     let stop = looop.run(params).expect("loop ran");
     assert_stop(stop, StopReason::Aborted);
@@ -247,8 +244,7 @@ fn abort_in_tools() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus,
-    };
+        bus, compactor: None };
     let params = run_params(&store);
     let stop = looop.run(params).expect("loop ran");
     assert_stop(stop, StopReason::Aborted);
@@ -342,8 +338,7 @@ fn external_cancel_during_tool_execution() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(),
-    };
+        bus: bus.clone(), compactor: None };
     let params = run_params(&store);
     let stop = looop.run(params).expect("loop ran");
     assert_stop(stop, StopReason::Aborted);
@@ -479,8 +474,7 @@ fn truncation_ladder() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus,
-    };
+        bus, compactor: None };
     let stop = looop.run(run_params(&store)).expect("loop ran");
     assert_stop(stop, StopReason::Stop);
     // Four provider calls: three truncated + one success.
@@ -503,8 +497,7 @@ fn truncation_gives_up() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(),
-    };
+        bus: bus.clone(), compactor: None };
     let mut params = run_params(&store);
     params.config.truncation_attempts = 2;
     let res = looop.run(params);
@@ -540,8 +533,7 @@ fn compaction_replan_once() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(),
-    };
+        bus: bus.clone(), compactor: None };
     let res = looop.run(run_params(&store));
     assert!(res.is_err(), "second compact demand must be a hard error");
     // Exactly one provider call (the single summarize).
@@ -592,8 +584,7 @@ fn hook_posture() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(PanicHooks),
-        bus: bus.clone(),
-    };
+        bus: bus.clone(), compactor: None };
     let _ = looop.run(run_params(&store));
 
     // before_tool_call failed closed: the tool result must be an error "fail closed".
@@ -720,8 +711,7 @@ fn parallel_order() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus,
-    };
+        bus, compactor: None };
     let mut params = run_params(&store);
     params.cwd = dir;
     let _ = looop.run(params).expect("loop ran");
@@ -814,8 +804,7 @@ fn tool_result_not_double_wrapped() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus,
-    };
+        bus, compactor: None };
     looop.run(run_params(&store)).expect("loop ran");
 
     // The third appended event is the tool-result message (assistant, usage, tool-result).
@@ -955,8 +944,7 @@ fn tool_output_reaches_second_provider_call() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus,
-    };
+        bus, compactor: None };
 
     let mut params = RunParams {
         session: SessionId::new(),
@@ -1083,8 +1071,7 @@ fn p1_96e6_parallel_safe_after_tool_call_must_run() {
         approver: Arc::new(AllowAll),
         tools,
         hooks,
-        bus,
-    };
+        bus, compactor: None };
     looop.run(run_params(&store)).expect("loop ran");
 
     // Hook must have been called for parallel tool
@@ -1185,7 +1172,7 @@ fn p1_96e8_malformed_json_never_reaches_tool() {
     let mut tools = ToolRegistry::new();
     tools.push(Arc::new(CountingTool { calls: tool_calls.clone(), seen: tool_seen.clone() }) as Arc<dyn Tool>);
     let hooks = Arc::new(CountingHook { calls: hook_calls.clone(), seen: seen_args.clone() });
-    let looop = ReactLoop { provider, store: store.clone(), approver: Arc::new(AllowAll), tools, hooks, bus: bus.clone() };
+    let looop = ReactLoop { provider, store: store.clone(), approver: Arc::new(AllowAll), tools, hooks, bus: bus.clone(), compactor: None };
     looop.run(run_params(&store)).expect("loop ran");
 
     // Assertions per 96E-8 acceptance:
@@ -1269,7 +1256,7 @@ fn p1_96e8_malformed_json_parallel_safe_also_blocked() {
     let bus = Arc::new(RecordingBus::new());
     let mut tools = ToolRegistry::new();
     tools.push(Arc::new(ParallelCountingTool { calls: tool_calls.clone() }) as Arc<dyn Tool>);
-    let looop = ReactLoop { provider, store: store.clone(), approver: Arc::new(AllowAll), tools, hooks: Arc::new(NoopHook), bus };
+    let looop = ReactLoop { provider, store: store.clone(), approver: Arc::new(AllowAll), tools, hooks: Arc::new(NoopHook), bus, compactor: None };
     looop.run(run_params(&store)).expect("loop ran");
     assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "parallel_safe tool must also not execute on malformed JSON");
     let appended = store.appended.lock().unwrap();
@@ -1346,8 +1333,7 @@ fn p1_96e6_sequential_after_tool_call_still_runs() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(MutatingHook),
-        bus,
-    };
+        bus, compactor: None };
     looop.run(run_params(&store)).expect("loop ran");
     let appended = store.appended.lock().unwrap();
     let tool_result = appended.iter().find_map(|e| {
@@ -1407,8 +1393,7 @@ fn p1_96e11_compaction_cancel_does_not_commit() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(),
-    };
+        bus: bus.clone(), compactor: None };
     // Pre-cancelled Cancel — compaction must be considered cancelled
     let cancel = Cancel::new();
     cancel.cancel();
@@ -1468,8 +1453,7 @@ fn p1_96e11_compaction_cancel_usage_accounted() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus,
-    };
+        bus, compactor: None };
     let cancel = Cancel::new();
     cancel.cancel();
     let mut params = run_params(&store);
@@ -1521,8 +1505,7 @@ fn p1_96e11_compaction_malformed_truncated_not_committed() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus,
-    };
+        bus, compactor: None };
     let res = looop.run(run_params(&store));
     let appended = store.appended.lock().unwrap();
     // Malformed-incomplete must NOT be committed as successful Compacted
@@ -1570,8 +1553,7 @@ fn p1_96e11_compaction_cancel_is_deterministic() {
             approver: Arc::new(AllowAll),
             tools: ToolRegistry::new(),
             hooks: Arc::new(kn9t_react::NoopHookHost),
-            bus,
-        };
+            bus, compactor: None };
         let cancel = Cancel::new();
         cancel.cancel();
         let mut params = run_params(&store);
@@ -1583,4 +1565,191 @@ fn p1_96e11_compaction_cancel_is_deterministic() {
             "deterministic: cancelled compaction must never commit Compacted"
         );
     }
+}
+
+// ── 96E-16: pluggable compaction + handoff ───────────────────────────────
+
+#[test]
+fn p1_96e16_default_compaction_still_uses_provider() {
+    // No compactor set => fallback to provider (hardcoded prompt) must still work.
+    let store = Arc::new(
+        StubStore::new(PlanScript::plain(vec![])).script(vec![
+            PlanScript::compacting(),
+            PlanScript::plain(vec![]),
+            PlanScript::plain(vec![]),
+        ]),
+    );
+    let summary = concat!(
+        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"fallback summary\"}\n\n",
+        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let main = concat!(
+        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"main\"}\n\n",
+        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        StreamScript::Fixture(fixture_from_body(summary)),
+        StreamScript::Fixture(fixture_from_body(main)),
+    ]));
+    let bus = Arc::new(RecordingBus::new());
+    let looop = ReactLoop {
+        provider: provider.clone(),
+        store: store.clone(),
+        approver: Arc::new(AllowAll),
+        tools: ToolRegistry::new(),
+        hooks: Arc::new(kn9t_react::NoopHookHost),
+        bus: bus.clone(), compactor: None };
+    let res = looop.run(run_params(&store));
+    assert!(res.is_ok(), "fallback compaction should succeed");
+    let appended = store.appended.lock().unwrap();
+    assert!(appended.iter().any(|e| matches!(e, Event::Compacted { .. })), "fallback must have Compacted");
+    assert_eq!(*provider.calls.lock().unwrap(), 2, "fallback compaction + main = 2 provider calls");
+}
+
+#[test]
+fn p1_96e16_custom_compactor_overrides_provider_and_validates_ids() {
+    use kn9t_core::{CallId, CompactionPlan, Compactor, CompactSpan, Content, HandoffPlanData, HandoffSummary, Message, MsgId, Role, SeqRange};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Store's compaction span will contain one ToolCall with id "tool-1"
+    let tool_call_msg = Message {
+        id: MsgId::new(),
+        role: Role::Assistant,
+        content: vec![Content::ToolCall { id: CallId("tool-1".into()), name: "bash".into(), args_json: "{}".into() }],
+        silent: false,
+    };
+    let store = Arc::new(
+        StubStore::new(PlanScript::plain(vec![])).script(vec![
+            PlanScript { messages: vec![tool_call_msg.clone()], tools: vec![], compact: true },
+            PlanScript::plain(vec![]),
+            PlanScript::plain(vec![]),
+        ]),
+    );
+
+    struct CountingCompactor {
+        calls: Arc<AtomicUsize>,
+    }
+    impl Compactor for CountingCompactor {
+        fn compact(&self, span: CompactSpan, _history: &[Message]) -> Result<CompactionPlan, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            // Must cite a known CallId
+            let summary = Message {
+                id: MsgId::new(),
+                role: Role::Assistant,
+                content: vec![Content::Text { text: "custom summary".into() }],
+                silent: false,
+            };
+            let handoff = HandoffPlanData {
+                keep: vec![CallId("tool-1".into())],
+                summarize: vec![HandoffSummary { id: CallId("tool-1".into()), summary: "did X".into() }],
+                drop_ids: vec![],
+                resume_actions: vec!["resume_action_1".into()],
+            };
+            // Also assert span contains the tool call (host passes correct span)
+            assert!(span.messages.iter().any(|m| m.content.iter().any(|c| matches!(c, Content::ToolCall { id, .. } if id.0=="tool-1"))), "span must contain tool-1");
+            Ok(CompactionPlan { summary, handoff: Some(handoff) })
+        }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let compactor = Arc::new(CountingCompactor { calls: calls.clone() });
+    // Provider would need to be called if fallback, but custom path should NOT call it
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        // Provide a main fixture for the post-compaction turn; compaction itself will be hijacked
+        StreamScript::Fixture(fixture_from_body(concat!(
+            "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"main after custom\"}\n\n",
+            "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+            "data: [DONE]\n\n",
+        ))),
+    ]));
+    // Need 2 scripts: but custom compactor skips first provider call, so only main will be consumed.
+    // To avoid out-of-scripts panic, provide same fixture twice but first should not be consumed.
+    let bus = Arc::new(RecordingBus::new());
+    let looop = ReactLoop {
+        provider: provider.clone(),
+        store: store.clone(),
+        approver: Arc::new(AllowAll),
+        tools: ToolRegistry::new(),
+        hooks: Arc::new(kn9t_react::NoopHookHost),
+        bus: bus.clone(), compactor: Some(compactor) };
+
+    let res = looop.run(run_params(&store));
+    assert!(res.is_ok(), "custom compactor should succeed");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "compactor must have been called exactly once");
+    let appended = store.appended.lock().unwrap();
+    // Must have Compacted with custom summary and Handoff with validated IDs
+    let compacted = appended.iter().find(|e| matches!(e, Event::Compacted { .. })).expect("Compacted missing");
+    if let Event::Compacted { summary, .. } = compacted {
+        let txt = summary.content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("");
+        assert!(txt.contains("custom summary"), "compacted summary must be from compactor, got {txt:?}");
+    }
+    let handoff = appended.iter().find(|e| matches!(e, Event::Handoff { .. })).expect("Handoff missing");
+    if let Event::Handoff { keep, summarize, resume_actions, .. } = handoff {
+        assert!(keep.iter().any(|id| id.0=="tool-1"));
+        assert!(summarize.iter().any(|s| s.id.0=="tool-1" && s.summary=="did X"));
+        assert!(resume_actions.contains(&"resume_action_1".to_string()));
+        // Validate host-side: known ids should contain tool-1
+        let known = vec![CallId("tool-1".into())];
+        assert!(kn9t_core::validate_handoff(handoff, &known).is_ok());
+    }
+    // Provider should have been called only for the post-compaction main turn, not for compaction itself
+    assert_eq!(*provider.calls.lock().unwrap(), 1, "custom compaction must not call provider for summarization, provider calls={}", *provider.calls.lock().unwrap());
+}
+
+#[test]
+fn p1_96e16_handoff_validation_rejects_hallucinated_id() {
+    use kn9t_core::{CallId, CompactionPlan, Compactor, CompactSpan, Content, HandoffPlanData, Message, MsgId, Role};
+
+    let tool_call_msg = Message {
+        id: MsgId::new(),
+        role: Role::Assistant,
+        content: vec![Content::ToolCall { id: CallId("real-id".into()), name: "bash".into(), args_json: "{}".into() }],
+        silent: false,
+    };
+    let store = Arc::new(
+        StubStore::new(PlanScript::plain(vec![])).script(vec![
+            PlanScript { messages: vec![tool_call_msg], tools: vec![], compact: true },
+            PlanScript::plain(vec![]),
+        ]),
+    );
+
+    struct HallucinatingCompactor;
+    impl Compactor for HallucinatingCompactor {
+        fn compact(&self, _span: CompactSpan, _history: &[Message]) -> Result<CompactionPlan, String> {
+            let summary = Message { id: MsgId::new(), role: Role::Assistant, content: vec![Content::Text { text: "bad".into() }], silent: false };
+            let handoff = HandoffPlanData {
+                keep: vec![CallId("hallucinated-id".into())],
+                summarize: vec![],
+                drop_ids: vec![],
+                resume_actions: vec![],
+            };
+            Ok(CompactionPlan { summary, handoff: Some(handoff) })
+        }
+    }
+
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        StreamScript::Fixture(fixture_from_body(concat!(
+            "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"main\"}\n\n",
+            "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+            "data: [DONE]\n\n",
+        ))),
+    ]));
+    let bus = Arc::new(RecordingBus::new());
+    let looop = ReactLoop {
+        provider,
+        store: store.clone(),
+        approver: Arc::new(AllowAll),
+        tools: ToolRegistry::new(),
+        hooks: Arc::new(kn9t_react::NoopHookHost),
+        bus: bus.clone(), compactor: Some(Arc::new(HallucinatingCompactor)) };
+    let res = looop.run(run_params(&store));
+    // Host validation must reject hallucinated CallId
+    assert!(res.is_err(), "hallucinated handoff must be rejected");
+    let appended = store.appended.lock().unwrap();
+    assert!(!appended.iter().any(|e| matches!(e, Event::Handoff { .. })), "rejected handoff must not be persisted");
+    assert!(!appended.iter().any(|e| matches!(e, Event::Compacted { .. })), "rejected compaction must not persist Compacted");
+    // Error should have been emitted on live bus
+    assert!(bus.kinds().iter().any(|k| k=="Error"), "must emit Error on validation failure, got {:?}", bus.kinds());
 }

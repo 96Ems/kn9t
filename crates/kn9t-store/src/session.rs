@@ -181,6 +181,7 @@ fn event_kind_name(event: &Event) -> &'static str {
         Event::MessageAppended { .. } => "MessageAppended",
         Event::ModelChanged { .. }    => "ModelChanged",
         Event::Compacted { .. }       => "Compacted",
+        Event::Handoff { .. }         => "Handoff",
         Event::UsageRecorded { .. }   => "UsageRecorded",
         Event::TurnStarted { .. }     => "TurnStarted",
         Event::TextDelta { .. }       => "TextDelta",
