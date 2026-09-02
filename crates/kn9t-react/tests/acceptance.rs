@@ -1000,3 +1000,200 @@ fn tool_output_reaches_second_provider_call() {
          but got: {tool_result_content:?}"
     );
 }
+
+// ── P1 96E-6: parallel_safe must still run after_tool_call ─────────────────
+// Red test for 96E-6: parallel path currently skips hook_after_tool_call.
+// This test must FAIL before fix (proving bug) and PASS after fix.
+#[test]
+fn p1_96e6_parallel_safe_after_tool_call_must_run() {
+    use kn9t_core::{HookHost, Tool, ToolCtx, Cancel, Content, Message, ModelRef, ToolSpec};
+    use std::sync::{Arc, Mutex};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    struct ParallelEchoTool;
+    impl Tool for ParallelEchoTool {
+        fn spec(&self) -> &ToolSpec {
+            Box::leak(Box::new(ToolSpec {
+                name: "p_echo".into(),
+                description: "parallel echo".into(),
+                schema: serde_json::json!({"type":"object","properties":{}}),
+                hidden: false, effects: vec![], policy: Default::default(),
+            }))
+        }
+        fn parallel_safe(&self) -> bool { true }
+        fn execute(&self, _args: &serde_json::Value, _ctx: &ToolCtx, _cancel: &Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+            Ok(kn9t_core::ToolOutput {
+                content: vec![Content::Text { text: "original".into() }],
+                details: None, is_error: false,
+            })
+        }
+    }
+
+    struct MutatingHook {
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+    impl HookHost for MutatingHook {
+        fn before_tool_call(&self, _tool: &str, _args: &serde_json::Value, _cwd: &std::path::Path) -> kn9t_core::HookVeto {
+            kn9t_core::HookVeto::Allow
+        }
+        fn after_tool_call(&self, tool: &str, _args: &serde_json::Value, _result: Vec<Content>) -> Vec<Content> {
+            self.calls.lock().unwrap().push(tool.to_string());
+            // mutate to prove hook ran
+            vec![Content::Text { text: "hooked".into() }]
+        }
+        fn before_request(&self, msgs: Vec<Message>, _model: &ModelRef, _system: Option<&str>) -> Vec<Message> { msgs }
+        fn should_stop_after_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage, _turn: u32) -> bool { false }
+        fn prepare_next_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage) -> kn9t_core::NextTurnPatch { Default::default() }
+        fn get_steering(&self) -> Vec<Message> { vec![] }
+        fn get_followup(&self) -> Vec<Message> { vec![] }
+        fn get_api_key(&self, _provider: &str) -> Option<String> { None }
+    }
+
+    // One turn: assistant calls p_echo, then idle
+    let body1 = concat!(
+        "data: {\"chunk\":\"tool_call\",\"idx\":0,\"id\":\"c1\",\"name\":\"p_echo\"}\n\n",
+        "data: {\"chunk\":\"tool_args\",\"idx\":0,\"delta\":\"{}\"}\n\n",
+        "data: {\"chunk\":\"usage\",\"tokens\":{\"input\":5,\"output\":3,\"cache_read\":0,\"cache_write\":0,\"reasoning\":0},\"model\":{\"provider\":\"replay\",\"id\":\"t\"}}\n\n",
+        "data: {\"chunk\":\"stop\",\"tool_use\":null}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let body2 = concat!(
+        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"done\"}\n\n",
+        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        StreamScript::Fixture(fixture_from_body(body1)),
+        StreamScript::Fixture(fixture_from_body(body2)),
+    ]));
+    let store = Arc::new(StubStore::new(PlanScript::plain(vec![])));
+    let bus = Arc::new(RecordingBus::new());
+
+    let mut tools = ToolRegistry::new();
+    tools.push(Arc::new(ParallelEchoTool) as Arc<dyn Tool>);
+
+    let hook_calls = Arc::new(Mutex::new(Vec::new()));
+    let hooks = Arc::new(MutatingHook { calls: hook_calls.clone() });
+
+    let looop = kn9t_react::ReactLoop {
+        provider,
+        store: store.clone(),
+        approver: Arc::new(AllowAll),
+        tools,
+        hooks,
+        bus,
+    };
+    looop.run(run_params(&store)).expect("loop ran");
+
+    // Hook must have been called for parallel tool
+    let calls = hook_calls.lock().unwrap();
+    assert_eq!(calls.len(), 1, "after_tool_call must be called once for parallel tool, got {:?}", *calls);
+    assert_eq!(calls[0], "p_echo");
+
+    // Persisted ToolResult must be mutated
+    let appended = store.appended.lock().unwrap();
+    let tool_result = appended.iter().find_map(|e| {
+        if let Event::MessageAppended { msg, .. } = e {
+            if msg.role == kn9t_core::Role::Tool {
+                for c in &msg.content {
+                    if let Content::ToolResult { content, .. } = c {
+                        return Some(content.clone());
+                    }
+                }
+            }
+        }
+        None
+    }).expect("tool result must be appended");
+
+    assert!(!tool_result.is_empty(), "tool result content empty");
+    match &tool_result[0] {
+        Content::Text { text } => assert_eq!(text, "hooked", "parallel tool result must be mutated by after_tool_call (bug 96E-6: was 'original' before fix)"),
+        _ => panic!("expected Text"),
+    }
+}
+
+#[test]
+fn p1_96e6_sequential_after_tool_call_still_runs() {
+    use kn9t_core::{HookHost, Tool, ToolCtx, Cancel, Content, Message, ModelRef, ToolSpec};
+
+    struct SeqEchoTool;
+    impl Tool for SeqEchoTool {
+        fn spec(&self) -> &ToolSpec {
+            Box::leak(Box::new(ToolSpec {
+                name: "s_echo".into(),
+                description: "seq echo".into(),
+                schema: serde_json::json!({"type":"object","properties":{}}),
+                hidden: false, effects: vec![], policy: Default::default(),
+            }))
+        }
+        fn parallel_safe(&self) -> bool { false }
+        fn execute(&self, _args: &serde_json::Value, _ctx: &ToolCtx, _cancel: &Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+            Ok(kn9t_core::ToolOutput {
+                content: vec![Content::Text { text: "original".into() }],
+                details: None, is_error: false,
+            })
+        }
+    }
+    struct MutatingHook;
+    impl HookHost for MutatingHook {
+        fn before_tool_call(&self, _tool: &str, _args: &serde_json::Value, _cwd: &std::path::Path) -> kn9t_core::HookVeto { kn9t_core::HookVeto::Allow }
+        fn after_tool_call(&self, _tool: &str, _args: &serde_json::Value, _result: Vec<Content>) -> Vec<Content> {
+            vec![Content::Text { text: "hooked".into() }]
+        }
+        fn before_request(&self, msgs: Vec<Message>, _model: &ModelRef, _system: Option<&str>) -> Vec<Message> { msgs }
+        fn should_stop_after_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage, _turn: u32) -> bool { false }
+        fn prepare_next_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage) -> kn9t_core::NextTurnPatch { Default::default() }
+        fn get_steering(&self) -> Vec<Message> { vec![] }
+        fn get_followup(&self) -> Vec<Message> { vec![] }
+        fn get_api_key(&self, _provider: &str) -> Option<String> { None }
+    }
+
+    let body1 = concat!(
+        "data: {\"chunk\":\"tool_call\",\"idx\":0,\"id\":\"c1\",\"name\":\"s_echo\"}\n\n",
+        "data: {\"chunk\":\"tool_args\",\"idx\":0,\"delta\":\"{}\"}\n\n",
+        "data: {\"chunk\":\"usage\",\"tokens\":{\"input\":5,\"output\":3,\"cache_read\":0,\"cache_write\":0,\"reasoning\":0},\"model\":{\"provider\":\"replay\",\"id\":\"t\"}}\n\n",
+        "data: {\"chunk\":\"stop\",\"tool_use\":null}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let body2 = concat!(
+        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"done\"}\n\n",
+        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        StreamScript::Fixture(fixture_from_body(body1)),
+        StreamScript::Fixture(fixture_from_body(body2)),
+    ]));
+    let store = Arc::new(StubStore::new(PlanScript::plain(vec![])));
+    let bus = Arc::new(RecordingBus::new());
+    let mut tools = ToolRegistry::new();
+    tools.push(Arc::new(SeqEchoTool) as Arc<dyn Tool>);
+    let looop = kn9t_react::ReactLoop {
+        provider,
+        store: store.clone(),
+        approver: Arc::new(AllowAll),
+        tools,
+        hooks: Arc::new(MutatingHook),
+        bus,
+    };
+    looop.run(run_params(&store)).expect("loop ran");
+    let appended = store.appended.lock().unwrap();
+    let tool_result = appended.iter().find_map(|e| {
+        if let Event::MessageAppended { msg, .. } = e {
+            if msg.role == kn9t_core::Role::Tool {
+                for c in &msg.content {
+                    if let Content::ToolResult { content, .. } = c {
+                        return Some(content.clone());
+                    }
+                }
+            }
+        }
+        None
+    }).expect("tool result must be appended");
+    match &tool_result[0] {
+        Content::Text { text } => assert_eq!(text, "hooked", "sequential tool must be hooked"),
+        _ => panic!("expected Text"),
+    }
+}

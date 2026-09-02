@@ -658,4 +658,149 @@ mod plug {
         );
     }
 
+    /// P1 96E-5: PluginHost session context must be isolated per concurrent session.
+    /// Before fix: `current_session` is a single Mutex, so session B overwrites A.
+    /// After fix: per-call/per-thread context, each hook sees its own session.
+    #[test]
+    fn p1_96e5_session_context_isolation() {
+        use std::sync::Barrier;
+
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+        let host = PluginHost::from_io(h_read, h_write, decl("test", vec![HookName::BeforeToolCall]), Arc::new(NoOpPluginKv));
+
+        let seen_sessions = Arc::new(Mutex::new(Vec::new()));
+        let seen_clone = seen_sessions.clone();
+
+        // Mock plugin: record session_id from each Hook payload
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(p_read);
+            let mut writer = p_write;
+            for _ in 0..2 {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 { break; }
+                let msg: HostMsg = serde_json::from_str(line.trim_end()).unwrap();
+                if let HostMsg::Hook { id, payload, .. } = msg {
+                    let sess = payload.get("session_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "none".to_string());
+                    // Also handle case where session_id is nested as Option<String> -> null
+                    // The host sends `session_id: Option<String>` which serializes to null when None
+                    // and to "session-A" when Some. So check for null vs string.
+                    seen_clone.lock().unwrap().push(sess);
+                    let reply = PluginMsg::Result { id, body: json!({"action": "allow"}) };
+                    write_plugin_msg(&mut writer, &reply).unwrap();
+                }
+            }
+        });
+
+        let host = Arc::new(host);
+        let barrier = Arc::new(Barrier::new(2));
+
+        let h1 = Arc::clone(&host);
+        let b1 = Arc::clone(&barrier);
+        let t1 = std::thread::spawn(move || {
+            h1.set_session("session-A");
+            b1.wait(); // wait for both to have set session
+            // Small sleep to ensure the other thread's set_session has definitely run
+            std::thread::sleep(Duration::from_millis(10));
+            h1.before_tool_call("bash", &json!({}), Path::new("/"))
+        });
+
+        let h2 = Arc::clone(&host);
+        let b2 = Arc::clone(&barrier);
+        let t2 = std::thread::spawn(move || {
+            h2.set_session("session-B");
+            b2.wait();
+            std::thread::sleep(Duration::from_millis(10));
+            h2.before_tool_call("bash", &json!({}), Path::new("/"))
+        });
+
+        let _ = t1.join().unwrap();
+        let _ = t2.join().unwrap();
+
+        // Give plugin time to process
+        std::thread::sleep(Duration::from_millis(50));
+        let seen = seen_sessions.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "plugin should have seen 2 hook calls, got {:?}", seen);
+        // Before fix: both will be "session-B" (last writer wins) -> fails
+        // After fix: one "session-A", one "session-B" (in any order) -> passes
+        assert!(seen.contains(&"session-A".to_string()), "should have seen session-A, got {:?}", seen);
+        assert!(seen.contains(&"session-B".to_string()), "should have seen session-B, got {:?}", seen);
+        // Also ensure they are distinct
+        assert_ne!(seen[0], seen[1], "concurrent sessions must not share context, both saw {:?}", seen[0]);
+    }
+
+    /// P1 96E-5: bus isolation — plugin HookFailed and events must go to correct session's bus
+    #[test]
+    fn p1_96e5_bus_isolation() {
+        use kn9t_core::{Bus, Event};
+        use std::sync::Barrier;
+
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+        // Use GetSteering which has 500ms timeout (vs 30s for BeforeToolCall) so test is fast
+        let host = PluginHost::from_io(h_read, h_write, decl("test", vec![HookName::GetSteering]), Arc::new(NoOpPluginKv));
+
+        // Plugin that never replies -> will timeout and trigger HookFailed (500ms)
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(p_read);
+            let _writer = p_write;
+            // Read one hook and never reply (let it timeout). Need to handle 2 calls.
+            for _ in 0..2 {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 { break; }
+            }
+            std::thread::sleep(Duration::from_millis(600));
+        });
+
+        let bus_a = Arc::new(Bus::new());
+        let bus_b = Arc::new(Bus::new());
+        let sub_a = bus_a.subscribe(16);
+        let sub_b = bus_b.subscribe(16);
+
+        let host = Arc::new(host);
+        let barrier = Arc::new(Barrier::new(2));
+
+        let h1 = Arc::clone(&host);
+        let b1 = Arc::clone(&barrier);
+        let bus_a_clone = bus_a.clone();
+        let t1 = std::thread::spawn(move || {
+            h1.set_bus(bus_a_clone);
+            h1.set_session("session-A");
+            b1.wait();
+            std::thread::sleep(Duration::from_millis(10));
+            // This will timeout (500ms) and emit HookFailed to bus_a
+            let _ = h1.get_steering();
+        });
+
+        let h2 = Arc::clone(&host);
+        let b2 = Arc::clone(&barrier);
+        let bus_b_clone = bus_b.clone();
+        let t2 = std::thread::spawn(move || {
+            h2.set_bus(bus_b_clone);
+            h2.set_session("session-B");
+            b2.wait();
+            std::thread::sleep(Duration::from_millis(10));
+            let _ = h2.get_steering();
+        });
+
+        let _ = t1.join().unwrap();
+        let _ = t2.join().unwrap();
+
+        // Give time for HookFailed to be emitted
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Before fix: both HookFailed would go to the same bus (last set, B), so A would have 0, B would have 2
+        // After fix: each bus gets exactly 1 HookFailed for its session
+        let a_events: Vec<_> = std::iter::from_fn(|| sub_a.try_recv()).collect();
+        let b_events: Vec<_> = std::iter::from_fn(|| sub_b.try_recv()).collect();
+
+        let a_failed = a_events.iter().filter(|e| matches!(e, Event::HookFailed { .. })).count();
+        let b_failed = b_events.iter().filter(|e| matches!(e, Event::HookFailed { .. })).count();
+
+        // We expect exactly one HookFailed per bus (the timeout). Before fix, one bus will have 0.
+        assert_eq!(a_failed, 1, "bus A should have exactly 1 HookFailed, got {}", a_failed);
+        assert_eq!(b_failed, 1, "bus B should have exactly 1 HookFailed, got {}", b_failed);
+    }
+
 } // mod plug

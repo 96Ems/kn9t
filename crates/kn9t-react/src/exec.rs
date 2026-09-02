@@ -191,7 +191,16 @@ impl ReactLoop {
         let mut results: Vec<Option<Content>> = vec![None; calls.len()];
 
         // Launch parallel-safe authorized calls on threads.
-        let mut handles = Vec::new();
+        // Fix 96E-6: parallel path now returns raw inner content + is_error;
+        // after_tool_call is applied after join in sequential order, so both
+        // paths share the identical before/execute/after lifecycle.
+        let mut handles: Vec<(
+            usize,
+            String,
+            serde_json::Value,
+            kn9t_provider_core::CallId,
+            thread::JoinHandle<(Vec<Content>, bool)>,
+        )> = Vec::new();
         for (i, plan) in plans.iter().enumerate() {
             if let CallPlan::Execute { args } = plan {
                 let call = &calls[i];
@@ -211,6 +220,9 @@ impl ReactLoop {
                         let bus = self.bus.clone();
                         handles.push((
                             i,
+                            name.clone(),
+                            args.clone(),
+                            id.clone(),
                             thread::spawn(move || {
                                 bus.emit(Event::ToolStarted { call_id: id.clone(), name: name.clone() });
                                 let out = tool.execute(&args, &ctx, &cancel);
@@ -219,7 +231,7 @@ impl ReactLoop {
                                     Err(e) => (vec![Content::Text { text: e.0 }], true),
                                 };
                                 bus.emit(Event::ToolFinished { call_id: id.clone(), is_error });
-                                Content::ToolResult { id, content: inner, is_error }
+                                (inner, is_error)
                             }),
                         ));
                     }
@@ -228,7 +240,7 @@ impl ReactLoop {
         }
 
         // Sequential pass for everything not launched on a thread.
-        let launched: std::collections::HashSet<usize> = handles.iter().map(|(i, _)| *i).collect();
+        let launched: std::collections::HashSet<usize> = handles.iter().map(|(i, _, _, _, _)| *i).collect();
         for (i, call) in calls.iter().enumerate() {
             if launched.contains(&i) {
                 continue;
@@ -236,9 +248,15 @@ impl ReactLoop {
             results[i] = Some(self.execute_one(params, call, &plans[i], cancel));
         }
 
-        // Join parallel handles in call order.
-        for (i, h) in handles {
-            let content = h.join().unwrap_or_else(|_| synth_error(&calls[i].id, "tool thread panicked"));
+        // Join parallel handles in call order and apply after_tool_call sequentially.
+        for (i, name, args, id, h) in handles {
+            let content = match h.join() {
+                Ok((inner, is_error)) => {
+                    let patched = self.hook_after_tool_call(&name, &args, inner);
+                    Content::ToolResult { id, content: patched, is_error }
+                }
+                Err(_) => synth_error(&id, "tool thread panicked"),
+            };
             results[i] = Some(content);
         }
 

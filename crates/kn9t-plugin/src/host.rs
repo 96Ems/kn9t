@@ -22,6 +22,7 @@ use kn9t_core::{
     NextTurnPatch, PluginKv, Role, StopReason, Usage,
 };
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -29,6 +30,11 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
+
+thread_local! {
+    static TL_SESSION: RefCell<Option<String>> = RefCell::new(None);
+    static TL_BUS: RefCell<Option<Arc<dyn EventSink>>> = RefCell::new(None);
+}
 
 /// Per-call channel registration. Shared between main thread and reader thread.
 type PendingCalls = Arc<Mutex<HashMap<u64, mpsc::SyncSender<ReaderMsg>>>>;
@@ -78,10 +84,9 @@ pub struct PluginHost {
     /// Monotonic call-id counter — also used by `RemoteProvider`.
     pub(crate) next_id: AtomicU64,
     event_state: Mutex<EventState>,
-    /// Bus sink for emitting HookFailed and plugin events. Shared with event forwarder thread.
-    bus: SharedBus,
-    /// Current session ID — set before each turn, included in hook payloads.
-    current_session: Mutex<Option<String>>,
+    /// 96E-5 fix: per-session bus map for async event routing; hook calls use
+    /// thread-local TL_SESSION/TL_BUS for isolation under concurrency.
+    session_buses: Arc<Mutex<HashMap<String, Arc<dyn EventSink>>>>,
     /// Persistent KV store — namespaced by this plugin's name in the host.
     kv: Arc<dyn PluginKv>,
 }
@@ -187,14 +192,36 @@ impl PluginHost {
             }
         });
 
-        // Spawn event forwarder thread — forwards plugin events to the bus.
-        // This runs separately so events don't block on any specific call.
-        let bus_for_events: SharedBus = Arc::new(Mutex::new(None));
-        let bus_for_thread = Arc::clone(&bus_for_events);
+        // 96E-5 fix: per-session event routing. The plugin's Event may contain
+        // a `session_id` field; if so, route only to that session's bus. Otherwise
+        // broadcast to all known session buses. This ensures concurrent sessions
+        // don't have their events misrouted via the old single SharedBus.
+        let session_buses: Arc<Mutex<HashMap<String, Arc<dyn EventSink>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let session_buses_for_thread = Arc::clone(&session_buses);
         std::thread::spawn(move || {
             while let Ok(event) = event_rx.recv() {
-                if let Some(bus) = bus_for_thread.lock().unwrap().as_ref() {
-                    bus.emit(Event::PluginNotification { payload: event });
+                // Try to extract session_id from the event payload for per-session routing
+                let sid_opt = event.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    .or_else(|| event.get("sessionId").and_then(|v| v.as_str()).map(|s| s.to_string()));
+                if let Some(sid) = sid_opt {
+                    if let Some(bus) = session_buses_for_thread.lock().unwrap().get(&sid) {
+                        bus.emit(Event::PluginNotification { payload: event });
+                    }
+                } else {
+                    // No session_id: broadcast to all known session buses
+                    let buses = session_buses_for_thread.lock().unwrap().clone();
+                    if buses.is_empty() {
+                        // Fallback to thread-local bus if no session buses registered
+                        TL_BUS.with(|c| {
+                            if let Some(bus) = c.borrow().as_ref() {
+                                bus.emit(Event::PluginNotification { payload: event.clone() });
+                            }
+                        });
+                    } else {
+                        for bus in buses.values() {
+                            bus.emit(Event::PluginNotification { payload: event.clone() });
+                        }
+                    }
                 }
             }
         });
@@ -208,27 +235,39 @@ impl PluginHost {
                 consecutive_failures: 0,
                 unsubscribed: false,
             }),
-            bus: bus_for_events,
-            current_session: Mutex::new(None),
+            session_buses,
             kv,
         }
     }
 
     /// Set the event bus for forwarding plugin events.
-    /// Called by the server before each turn.
+    /// Called by the server before each turn. Uses thread-local for isolation
+    /// under concurrent sessions (96E-5 fix).
     pub fn set_bus(&self, bus: Arc<dyn EventSink>) {
-        *self.bus.lock().unwrap() = Some(bus);
+        TL_BUS.with(|c| *c.borrow_mut() = Some(bus.clone()));
+        // If session already set on this thread, register in the per-session map
+        TL_SESSION.with(|c| {
+            if let Some(sid) = c.borrow().as_ref() {
+                self.session_buses.lock().unwrap().insert(sid.clone(), bus);
+            }
+        });
     }
 
     /// Set the current session ID. Called by the server before each turn.
-    /// All hook payloads will include this session_id.
+    /// All hook payloads will include this session_id. Thread-local for isolation.
     pub fn set_session(&self, session_id: &str) {
-        *self.current_session.lock().unwrap() = Some(session_id.to_string());
+        TL_SESSION.with(|c| *c.borrow_mut() = Some(session_id.to_string()));
+        // If bus already set on this thread, register in the per-session map
+        TL_BUS.with(|c| {
+            if let Some(bus) = c.borrow().as_ref() {
+                self.session_buses.lock().unwrap().insert(session_id.to_string(), bus.clone());
+            }
+        });
     }
 
-    /// Get the current session ID (if set).
+    /// Get the current session ID (if set) — thread-local.
     fn session_id(&self) -> Option<String> {
-        self.current_session.lock().unwrap().clone()
+        TL_SESSION.with(|c| c.borrow().clone())
     }
 
     /// Spawn a plugin subprocess at `binary`, perform the hello/hello handshake,
@@ -304,7 +343,12 @@ impl PluginHost {
 
     /// Attach a bus sink for HookFailed events (builder pattern).
     pub fn with_bus(self, bus: Arc<dyn EventSink>) -> Self {
-        *self.bus.lock().unwrap() = Some(bus);
+        TL_BUS.with(|c| *c.borrow_mut() = Some(bus.clone()));
+        TL_SESSION.with(|c| {
+            if let Some(sid) = c.borrow().as_ref() {
+                self.session_buses.lock().unwrap().insert(sid.clone(), bus);
+            }
+        });
         self
     }
 
@@ -524,13 +568,15 @@ impl PluginHost {
     }
 
     fn emit_hook_failed(&self, hook: HookName, reason: &str) {
-        if let Some(bus) = self.bus.lock().unwrap().as_ref() {
-            bus.emit(Event::HookFailed {
-                plugin: self.declaration.name.clone(),
-                hook,
-                reason: reason.to_string(),
-            });
-        }
+        TL_BUS.with(|c| {
+            if let Some(bus) = c.borrow().as_ref() {
+                bus.emit(Event::HookFailed {
+                    plugin: self.declaration.name.clone(),
+                    hook,
+                    reason: reason.to_string(),
+                });
+            }
+        });
     }
 
     // ── public hook methods ───────────────────────────────────────────────────

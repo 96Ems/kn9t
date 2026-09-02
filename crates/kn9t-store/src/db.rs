@@ -125,6 +125,45 @@ impl SqliteStore {
         }
         Ok(out)
     }
+
+    /// 96E-7 fix: atomic snapshot of durable payloads + head_seq.
+    /// Holds the connection lock across both queries so a concurrent `append`
+    /// cannot commit between them and cause a lost event during SSE attach.
+    pub fn read_attach_snapshot(&self, session: &str, from: u64) -> Result<(Vec<String>, u64), StoreErr> {
+        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+        // 1. durable payloads
+        let payloads: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT payload FROM events WHERE session_id=?1 AND seq>?2 ORDER BY seq")
+                .map_err(|e| StoreErr(format!("prepare: {e}")))?;
+            let mut rows = stmt
+                .query(params![session, from as i64])
+                .map_err(|e| StoreErr(format!("query: {e}")))?;
+            let mut out = Vec::new();
+            while let Some(r) = rows.next().map_err(|e| StoreErr(format!("row: {e}")))? {
+                out.push(r.get::<_, String>(0).unwrap_or_default());
+            }
+            out
+        };
+        // TEST HOOK: sleep while still holding the lock so concurrent writers block.
+        // This makes the race deterministic for the 96E-7 regression test.
+        if let Ok(val) = std::env::var("KN9T_SSE_TEST_DELAY_MS") {
+            if let Ok(ms) = val.parse::<u64>() {
+                if ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
+            }
+        }
+        // 2. head_seq from same snapshot (same lock, no interleaving)
+        let head_seq: i64 = conn
+            .query_row(
+                "SELECT head_seq FROM sessions WHERE id=?1",
+                params![session],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        Ok((payloads, head_seq as u64))
+    }
     
     /// Get a preference value from the meta table.
     pub fn get_pref(&self, key: &str) -> Option<String> {
