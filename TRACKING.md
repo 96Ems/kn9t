@@ -27,6 +27,13 @@ approval-*mechanism* tests were rewritten, not dropped. Plus the external
 workspace member; `cd plugins/kn9t-custom-provider && cargo test`).
 Verified 2026-08-31 via `cargo test --workspace --no-fail-fast` + `cargo run -p xtask -- generate`
 (schema regenerated, Go/Python stubs committed) + GI-1 dependency check.
+**2026-09-02 (post-batch):** 12 commits landed (P1 `76205ff`, 96E-8..16 `72f5ef6..735e7f2`, TUI
+hardening `9fbfe98`, and live-breakage fixes `40a3088`/`1b97a90` = 96E-18 durable SSE echo +
+96E-19 empty tool content / picker / autotitle). `cargo test --workspace`: **432 passed, 0 failed**
+(`srv::plugin_reload` excluded on Linux — Windows-harness-only by design, documented). Live TUI
+verified via `tui-testing` MCP against the real server: tool cards visible live + on reload,
+streamed text committed (no more disappear), empty tool output no longer 400s, `/session` picker
+filter opens the first match. Details in CHANGELOG "Session — 2026-09-02 (2)".
 Known flake, unrelated: `cancel::tests::test_wait_timeout_returns_false_on_timeout` fails ~1 run in 3.
 **v1 e2e fully verified:** `kn9t chat` → server → ReAct loop → `kn9t-tools` + `kn9t-custom-provider`. Date: 2026-08-27.
 **PLAN.md progress:**
@@ -105,7 +112,29 @@ Seven ADRs written in `docs/adr/`:
 - ADR-0006: Policy is the single safety seam
 - ADR-0007: CRLF normalization via .gitattributes
 
-**Next:** G3 manual verification (3 TUIs, 1 server, 1 lease, screenshot paste) or `R-TUI-220` SidebarWidget (v2 schema addition) or Stage 10 bedrock-native/gemini (v2). Phase 4 + Phase 5 done: `cargo test --workspace` 398 + 26 external = 424, `check-gi1.sh` OK, `check-schema.sh` OK, G1 green, `grep -rn queued_ app.rs` empty, `reducer.rs` + `tui::sse_reconnect` green, DESIGN §11/§15/§10/§16 reconciled, 7 ADRs.
+**Next:** ADR-0008 spec rewrite (R-CORE-270/R-RCT-100/R-TOOL-070/080/090/095 still SPEC-STALE; `plugins/kn9t-policy.py` fail-open + `allow`-means-`ask` left undone) — then G3 manual verification (3 TUIs, 1 server, 1 lease, screenshot paste) or Stage 10 (v2). Phase 4 + Phase 5 done: `cargo test --workspace` 432/0 (2026-09-02), `check-gi1.sh` OK, `check-schema.sh` OK, G1 green, TUI live breakage fixed (96E-18/19, see CHANGELOG), 7 ADRs.
+
+---
+
+## 96E issue register (post-PLAN fixes)
+
+The P1/96E batch and later live-breakage fixes are tracked here (they are not spec requirements, so they have no per-requirement row in the tables above).
+
+| issue | fix commit | summary | verified |
+|---|---|---|---|
+| P1 | `76205ff` | PluginHost thread-local session/bus isolation, parallel after_tool_call, atomic SSE read_attach_snapshot | tests + live |
+| 96E-8 | `72f5ef6` | malformed tool args_json → Deny before execution | tests |
+| 96E-9 | `ba2cf4e` | plugin event forwarding try_send (no RPC stall on flood) | tests |
+| 96E-10 | `fb9d04b` | host poison on protocol corruption + check_healthy() | tests |
+| 96E-11/12 | `062f5d0` | compaction shares provider-attempt classification; EventSink::emit(LiveEvent) transient-only | tests (but see 96E-18 — the durable-echo half was missing) |
+| 96E-13 | `a100904` | single-connection serialized SQLite doc | docs |
+| 96E-14 | `07f645c` | integer micros cost accounting | tests |
+| 96E-15 | `d612c0a` | mojibake byte-level repair | tests |
+| 96E-16 | `efe897d` + `735e7f2` | Event::Handoff + Compactor trait + SDK PluginCompactor | tests |
+| 96E-18 | `40a3088` | **durable SSE echo via store after-append observer** — 96E-12 removed durable events from the live bus but the promised server-side echo never existed; TUI got no MessageAppended → no tool cards live, streamed text dropped at next TurnStarted | `srv::p1_96e18_durable_appends_echo_on_sse_bus` + live TUI |
+| 96E-19 | `1b97a90` | empty tool content wire form `"(no output)"` (400 fix), session picker substring filter + first-match select, autotitle uses session model | unit tests + live TUI |
+
+---
 
 ---
 
@@ -317,9 +346,9 @@ All 22 requirements implemented; 25 acceptance tests pass (11 pcore + 14 oai/nbe
 | R-TUI-012 | wire types match server API | manual | ▣ (drift exists; see ADR-0005) |
 | R-TUI-020 | event architecture, zero polling | tui::event_loop_blocks | ☐ no test |
 | R-TUI-030 | 2-column layout, responsive | tui::layout_responsive | ☐ no test |
-| R-TUI-040 | session picker overlay | tui::session_switch | ☐ no test |
+| R-TUI-040 | session picker overlay | tui::session_switch | ▣ (96E-19: `session_filter_matches_id_by_substring_only` + live `/session` filter→Enter verified; named test still absent) |
 | R-TUI-050 | right sidebar context panel | tui::tool_toggle | ▣ (Phase 4: `GET /tools` reflects discovered plugins, hardcoded list + dead toggle removed; `refresh_tools` in `app.rs:233`) |
-| R-TUI-060 | transcript, tool cards | tui::tool_card_lazy | ☐ no test |
+| R-TUI-060 | transcript, tool cards | tui::tool_card_lazy | ▣ (96E-18/19: `reducer::live_tool_call_roundtrip_creates_card` + TranscriptParser tests + live TUI (cards visible live & on reload); named test still absent) |
 | R-TUI-070 | virtual scrolling | tui::virtual_scroll | ☐ no test |
 | R-TUI-080 | scroll behavior, auto-disengage | tui::scroll_auto_disengage | ☐ no test |
 | R-TUI-090 | input box multiline | tui::input_multiline | ☐ no test |
