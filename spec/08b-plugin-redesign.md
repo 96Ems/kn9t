@@ -360,6 +360,12 @@ Ops (`kn9t-server` implements them; a conforming host MUST support at least):
 | `provider_complete` | `session`, optional `model` (id), `messages` (list), optional `system` | `{"content":[...],"stop":"...","usage":{input,output,cache_read,cache_write}}` — usage recorded in the session as `UsageKind::Subagent` |
 | `session_read` | `session`, optional `start`/`end` (seq range, default whole transcript) | `{"messages":[{"seq":N,"role":"...","content":[...]}]}` |
 | `tool_execute` | `session`, `name`, `args` | `{"content":[...],"is_error":bool}` — routed through the normal approval path |
+| `session_fork` | `session`, `copy_events` (default true), optional `budget_usd`, optional `model` | `{"session":"<new-id>"}` — forks with `fork_reason=subagent`, budget captured in the `ForkSnapshot`; `copy_events:false` = bare child (compactor: no transcript inheritance) |
+| `session_prompt` | `session`, `text`, optional `tools` (subset), optional `timeout_s` | `{"session":"...","result":"final assistant text"}` — one full synchronous turn; watchdog cancel; fork budget enforced |
+
+A sub-agent is just a forked session running a turn — spawned via `session_fork` +
+`session_prompt` (or the built-in `spawn_session` tool). The child keeps its own
+transcript/usage/bus and is inspectable like any session.
 
 **`api_result`** — host's reply to a plugin `request`.
 
@@ -509,9 +515,9 @@ Reply:
 
 **`tool_call`**
 
-Payload:
+Payload (96E-17: `session` added so plugin tools can fork/spawn sessions):
 ```json
-{ "name": "bash", "args": { "cmd": "ls" } }
+{ "name": "spawn_session", "args": { "task": "..." }, "session": "01..." }
 ```
 Atomic reply:
 ```json

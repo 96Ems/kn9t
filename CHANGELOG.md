@@ -11,7 +11,38 @@ pointer current.
 
 ## ▶ Next session starts here
 
-**Next:** E2E live compaction (grosse session ~80 % ctx avec `kn9t-compactor` branché, via TUI-testing) — puis SDK Rust parity pour le RPC request/reply (`kn9t-plugin-sdk`), puis ADR-0008 spec rewrite + `kn9t-policy.py` fail-open, puis G3. Le 96E-17 (fail-closed + host API + compactor) est implémenté et testé (437/0), reste la vérification live de la compaction réelle.
+**Next:** rebâtir `kn9t-compactor` sur les primitives session (session_fork + session_prompt + toolset compactor fourni par le plugin) pour que la compaction soit un vrai sous-agent session (transcript/TUI visible, budget ForkSnapshot) — puis SDK Rust parity request/reply, ADR-0008 spec rewrite, puis E2E live compaction.
+
+---
+
+## Session — 2026-09-02 (4) — Sous-agent = session forkée : primitives ouvertes + plugins pilotes
+
+### Décision (utilisateur)
+
+« Les sous-agents seraient des sessions branchées au serveur kn9t directement » + « pas de subagent.rs, on a déjà le spawn sessions — un plugin peut spawn une nouvelle session qui serait un subagent par défaut, c'est un concept abstrait ». Appliqué : **un sous-agent est une session forkée qui tourne un turn — rien d'autre**. Le module `subagent.rs` esquisé est supprimé ; aucune abstraction « sub-agent » n'est ajoutée.
+
+### Primitives ajoutées (`d63554b`)
+
+- `turn.rs` : `compose_loop()` — **point de composition unique** (bus/sink, hooks, tools, provider, compactor), désormais utilisé par `spawn_turn` ET les ops ; `run_session_turn()` — turn synchrone (append durable + loop + watchdog cancel + **budget du ForkSnapshot enforce** + texte final).
+- ops host_api `session_fork` (copy_events true/false -> fork `ForkReason::Subagent`, budget dans le ForkSnapshot) et `session_prompt` (turn synchrone, tool subset optionnel).
+- tool intégré `spawn_session` (R-PLUG-110) enregistré par `install_builtin_tools()` — son exécuteur production = les deux ops.
+- core : `ToolRegistry::filter_names` (toolset sous-agent) ; `ToolCtx.session` ; fork.rs : `fork_begin` extrait + `fork_session_empty` (child bare).
+
+### Plugin pilote `kn9t-subagent` (`b4dbf7f`) — la preuve des primitives
+
+Expose le tool `spawn_session` {task, model?, budget_usd?, tools?} : `session_fork`(copy_events=true) → `session_prompt` → résultat + id de la session enfant (inspectable ensuite). `npm test` = harness hôte simulé (hello → tool_call → fork → prompt → résultat). Connecté au serveur réel (smoke : `kn9t-subagent: 1 tools declared`).
+
+### Primitives manquantes découvertes par le plugin pilote (l'objet de l'exercice)
+
+1. **`tool_call` ne portait pas la session** — un tool plugin ne pouvait pas forker sa propre session. Ajouté au payload (`remote_tool.rs`, depuis le TLS du turn).
+2. **`session_fork` n'existait pas pour les plugins** (seul le fork HTTP existait).
+3. **`session_prompt`** — le serveur n'avait que `spawn_turn` async (background SSE) ; il manquait le turn synchrone avec résultat (watchdog + budget).
+4. Résultat de `session_prompt` = string (texte final assistant) — documenté.
+
+### Encore ouvert
+
+- `kn9t-compactor` tourne encore en « plugin-loop » (provider_complete ×2) : à rebâtir sur `session_fork`(bare) + `session_prompt` + toolset compactor fourni par le plugin → la compaction devient une vraie session enfant (auditable, TUI, budget).
+- SDK Rust request/reply (parity), ADR-0008, E2E live compaction.
 
 ---
 
