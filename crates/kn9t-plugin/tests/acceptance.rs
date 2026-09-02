@@ -968,4 +968,130 @@ mod plug {
         assert!(got <= 150, "count {got} should not exceed sent");
     }
 
+    /// 96E-10: malformed protocol message must poison the host.
+    /// Before fix: reader `continue`s after parse error, host stays healthy and
+    /// next call can still succeed (reader still alive). After fix: host becomes
+    /// unhealthy, pending calls fail, new calls fail fast.
+    #[test]
+    fn p1_96e10_protocol_corruption_marks_unhealthy() {
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+        let host = PluginHost::from_io(h_read, h_write, decl("test", vec![HookName::GetSteering]), Arc::new(NoOpPluginKv));
+
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(p_read);
+            let mut writer = p_write;
+            // First hook
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 { return; }
+            let msg: HostMsg = serde_json::from_str(line.trim_end()).expect("hook parse");
+            let _id = match msg { HostMsg::Hook { id, .. } => id, _ => panic!() };
+            // Send malformed line instead of a valid Result
+            writer.write_all(b"not json at all\n").unwrap();
+            writer.flush().unwrap();
+            // Keep pipe alive a bit so reader can see the corruption
+            std::thread::sleep(Duration::from_millis(300));
+            // Try to handle a second hook if host still alive (should not happen after fix)
+            let mut line2 = String::new();
+            // Non-blocking attempt: host may send second hook; we read with short timeout via try?
+            // Use read_line with the same blocking reader - if host sends, we'll reply.
+            if reader.read_line(&mut line2).unwrap_or(0) > 0 {
+                if let Ok(HostMsg::Hook { id: id2, .. }) = serde_json::from_str(line2.trim_end()) {
+                    let reply = PluginMsg::Result { id: id2, body: json!({"messages":[]}) };
+                    let _ = write_plugin_msg(&mut writer, &reply);
+                }
+            }
+        });
+
+        let host = Arc::new(host);
+        // First call: will see parse error broadcast, returns failure posture (empty)
+        let start = Instant::now();
+        let r1 = host.get_steering();
+        let elapsed1 = start.elapsed();
+        // Before fix: this times out at 500ms (parse error -> Err on pending but continue, so pending gets Err quickly? Actually before fix pending does get Err, so elapsed <450ms even before fix. So we can't assert timeout. But health flag is the discriminator.)
+        // We just ensure it returned (empty) and did not hang
+        assert!(r1.is_empty(), "first call should return failure posture");
+        assert!(elapsed1 < Duration::from_millis(600), "first call should not hang, took {:?}", elapsed1);
+
+        // After corruption, host must be unhealthy
+        assert!(!host.is_healthy(), "host should be unhealthy after protocol corruption, but is_healthy==true");
+        let reason = host.poison_reason().unwrap_or_default();
+        assert!(
+            reason.contains("protocol") || reason.contains("malformed") || reason.contains("parse") || reason.contains("violation"),
+            "poison reason should mention protocol violation/parse, got {:?}", reason
+        );
+
+        // New call must fail deterministically / fast, not via 500ms timeout
+        let start2 = Instant::now();
+        let r2 = host.get_steering();
+        let elapsed2 = start2.elapsed();
+        assert!(r2.is_empty(), "poisoned host should return failure posture");
+        assert!(
+            elapsed2 < Duration::from_millis(100),
+            "new call after poison should fail fast (<100ms), took {:?}", elapsed2
+        );
+    }
+
+    /// 96E-10: pending call fails correctly on corruption and new calls remain poisoned
+    #[test]
+    fn p1_96e10_new_calls_fail_deterministically_after_corruption() {
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+        let host = PluginHost::from_io(h_read, h_write, decl("test", vec![HookName::GetSteering]), Arc::new(NoOpPluginKv));
+
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(p_read);
+            let mut writer = p_write;
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            // Immediately corrupt
+            writer.write_all(b"{bad json}\n").unwrap();
+            writer.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+
+        let host = Arc::new(host);
+        let _ = host.get_steering(); // triggers corruption
+        assert!(!host.is_healthy(), "should be poisoned");
+
+        // Multiple subsequent calls all fail fast with same poison reason
+        for _ in 0..3 {
+            let s = Instant::now();
+            let r = host.get_steering();
+            let e = s.elapsed();
+            assert!(r.is_empty());
+            assert!(e < Duration::from_millis(100), "subsequent poisoned call should fail fast, took {:?}", e);
+            assert!(!host.is_healthy());
+        }
+    }
+
+    /// 96E-10: a fresh host after poisoning has a clean stream (restart semantics)
+    #[test]
+    fn p1_96e10_restarted_host_has_clean_stream() {
+        // First host gets poisoned
+        {
+            let (h_read, h_write, p_read, p_write) = make_pipes();
+            let host = PluginHost::from_io(h_read, h_write, decl("test", vec![HookName::GetSteering]), Arc::new(NoOpPluginKv));
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(p_read);
+                let mut writer = p_write;
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                writer.write_all(b"!!! not json !!!\n").unwrap();
+                writer.flush().unwrap();
+                std::thread::sleep(Duration::from_millis(200));
+            });
+            let _ = host.get_steering();
+            assert!(!host.is_healthy(), "first host should be poisoned");
+        }
+        // Second host with fresh pipes must be healthy and able to serve
+        {
+            let (h_read, h_write, p_read, p_write) = make_pipes();
+            let host = PluginHost::from_io(h_read, h_write, decl("test", vec![HookName::GetSteering]), Arc::new(NoOpPluginKv));
+            spawn_plugin_responder(p_read, p_write, json!({"messages":[]}));
+            assert!(host.is_healthy(), "fresh host should be healthy");
+            let r = host.get_steering();
+            assert!(r.is_empty(), "fresh host should serve normally");
+            assert!(host.is_healthy(), "fresh host should stay healthy after clean call");
+        }
+    }
+
 } // mod plug

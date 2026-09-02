@@ -89,6 +89,10 @@ pub struct PluginHost {
     session_buses: Arc<Mutex<HashMap<String, Arc<dyn EventSink>>>>,
     /// Persistent KV store — namespaced by this plugin's name in the host.
     kv: Arc<dyn PluginKv>,
+    /// 96E-10: protocol health — once a malformed message is seen the connection
+    /// is poisoned; new calls fail fast and the reader terminates.
+    unhealthy: Arc<std::sync::atomic::AtomicBool>,
+    poison_reason: Arc<Mutex<Option<String>>>,
 }
 
 impl PluginHost {
@@ -111,6 +115,12 @@ impl PluginHost {
         let plugin_name = declaration.name.clone();
         let kv_for_reader = Arc::clone(&kv);
 
+        // 96E-10: health flag shared with reader thread
+        let unhealthy: Arc<std::sync::atomic::AtomicBool> = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let poison_reason: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let unhealthy_for_reader = Arc::clone(&unhealthy);
+        let poison_for_reader = Arc::clone(&poison_reason);
+
         // Spawn reader thread — dispatches to per-call channels by ID.
         // KV requests (KvGet/KvSet/KvDel/KvDelScope) are handled inline here;
         // they never touch the pending_calls map.
@@ -123,15 +133,24 @@ impl PluginHost {
                     Ok(_) => {}
                 }
                 let trimmed = line.trim_end();
+                // Empty lines are not protocol; ignore (codec ensures one JSON per line)
+                if trimmed.is_empty() {
+                    continue;
+                }
                 let msg = match serde_json::from_str::<PluginMsg>(trimmed) {
                     Ok(m) => m,
                     Err(e) => {
-                        // Broadcast parse error to all pending calls.
+                        // 96E-10 fix: malformed output is a connection-level protocol
+                        // violation. Fail all pending calls, mark unhealthy, stop
+                        // accepting new calls, and terminate the reader (poisoned).
+                        let reason = format!("protocol violation: malformed message: {e}");
+                        *poison_for_reader.lock().unwrap() = Some(reason.clone());
+                        unhealthy_for_reader.store(true, Ordering::SeqCst);
                         let pending = pending_for_reader.lock().unwrap();
                         for tx in pending.values() {
-                            let _ = tx.send(ReaderMsg::Err { reason: format!("parse: {e}") });
+                            let _ = tx.send(ReaderMsg::Err { reason: reason.clone() });
                         }
-                        continue;
+                        break;
                     }
                 };
                 match msg {
@@ -241,7 +260,27 @@ impl PluginHost {
             }),
             session_buses,
             kv,
+            unhealthy,
+            poison_reason,
         }
+    }
+
+    /// Whether the host is still healthy (no protocol violation seen).
+    pub fn is_healthy(&self) -> bool {
+        !self.unhealthy.load(Ordering::SeqCst)
+    }
+
+    /// Reason for poisoning, if unhealthy.
+    pub fn poison_reason(&self) -> Option<String> {
+        self.poison_reason.lock().unwrap().clone()
+    }
+
+    fn check_healthy(&self) -> Result<(), String> {
+        if self.unhealthy.load(Ordering::SeqCst) {
+            let r = self.poison_reason.lock().unwrap().clone().unwrap_or_else(|| "protocol violation".to_string());
+            return Err(format!("plugin '{}' unhealthy: {r}", self.declaration.name));
+        }
+        Ok(())
     }
 
     /// Set the event bus for forwarding plugin events.
@@ -379,6 +418,7 @@ impl PluginHost {
         payload: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
+        self.check_healthy()?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let msg = HostMsg::Hook {
             id,
@@ -403,6 +443,7 @@ impl PluginHost {
         payload: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
+        self.check_healthy()?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let msg = HostMsg::Hook {
             id,
@@ -427,6 +468,7 @@ impl PluginHost {
         timeout: Duration,
         on_chunk: impl FnMut(serde_json::Value),
     ) -> Result<Value, String> {
+        self.check_healthy()?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let msg = HostMsg::Hook {
             id,
@@ -452,6 +494,7 @@ impl PluginHost {
         cancel: &Cancel,
         on_chunk: impl FnMut(serde_json::Value),
     ) -> Result<Value, String> {
+        self.check_healthy()?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let msg = HostMsg::Hook {
             id,
