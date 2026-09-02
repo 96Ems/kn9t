@@ -246,6 +246,38 @@ mod tests {
         SseFrame::ThinkingDelta { msg_id: "m1".into(), idx: 0, delta: text.into() }
     }
 
+    fn tool_call_msg(seq: u64, call_id: &str) -> SseFrame {
+        SseFrame::MessageAppended {
+            seq,
+            msg: WireMessage {
+                id: format!("m{}", seq),
+                role: "assistant".into(),
+                content: vec![WireContent::ToolCall {
+                    id: call_id.into(),
+                    name: "bash".into(),
+                    args_json: "{\"cmd\": \"ls\"}".into(),
+                }],
+                silent: false,
+            },
+        }
+    }
+
+    fn tool_result_msg(seq: u64, call_id: &str, output: &str) -> SseFrame {
+        SseFrame::MessageAppended {
+            seq,
+            msg: WireMessage {
+                id: format!("m{}", seq),
+                role: "tool".into(),
+                content: vec![WireContent::ToolResult {
+                    id: call_id.into(),
+                    content: vec![WireContent::Text { text: output.into() }],
+                    is_error: false,
+                }],
+                silent: false,
+            },
+        }
+    }
+
     #[test]
     fn turn_sequence() {
         let mut s = State::default();
@@ -399,5 +431,32 @@ mod tests {
         assert_eq!(s.turn_phase, "retrying");
         reduce(&mut s, SseFrame::TurnStatus { phase: "retrying".into(), message: "truncated — retry 1/4 with 150 lines".into() });
         assert!(s.transcript.messages().iter().any(|m| m.content.contains("truncated")));
+    }
+
+    /// 96E-18/96E-19 — the full live tool round-trip must leave a visible tool card:
+    /// MessageAppended(assistant+tool_call) creates it, ToolStarted/ToolFinished drive
+    /// its status, MessageAppended(tool results) fills the output. Regression: with
+    /// durable events never reaching the SSE bus, no card was ever created live.
+    #[test]
+    fn live_tool_call_roundtrip_creates_card() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::TurnStarted { turn: 1 });
+        reduce(&mut s, tool_call_msg(1, "call-1"));
+        // Card exists, pending.
+        assert_eq!(s.transcript.tool_count(), 1, "tool card must be created from MessageAppended");
+        assert_eq!(s.transcript.messages()[0].tools[0].status, "pending");
+        // ToolStarted → running + expanded.
+        reduce(&mut s, SseFrame::ToolStarted { call_id: "call-1".into(), name: "bash".into() });
+        let t = &s.transcript.messages()[0].tools[0];
+        assert_eq!(t.status, "running");
+        assert!(t.expanded, "running tools are expanded");
+        // ToolFinished → done, collapsed, output filled by the results message.
+        reduce(&mut s, SseFrame::ToolFinished { call_id: "call-1".into(), is_error: false });
+        reduce(&mut s, tool_result_msg(2, "call-1", "file1\nfile2"));
+        let t = &s.transcript.messages()[0].tools[0];
+        assert_eq!(t.status, "done");
+        assert_eq!(t.output.as_deref(), Some("file1\nfile2"));
+        // The tool results message must NOT become a transcript message.
+        assert_eq!(s.transcript.message_count(), 1);
     }
 }

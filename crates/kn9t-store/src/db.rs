@@ -10,7 +10,7 @@ use kn9t_core::{Event, ModelRef, ModelSpec, PluginKv, RequestPlan, SessionId, Se
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Current projection version — bump when `project()` semantics change.
 pub const PROJECTION_VERSION: &str = "2";
@@ -24,9 +24,25 @@ pub struct SqliteStore {
     pub(crate) path: PathBuf,
     /// Runtime model specs by `ModelRef` provider+id key — not stored in DB.
     pub(crate) model_specs: RwLock<HashMap<String, ModelSpec>>,
+    /// After-commit observer (96E-18): called once per durable append, outside the
+    /// connection lock, with the seq-stamped event. The server installs this to echo
+    /// durable events onto the SSE bus after `Store::append` commits — the live
+    /// `EventSink` is transient-only (96E-12), so without this the SSE bus never sees
+    /// `MessageAppended`/`UsageRecorded`/`ModelChanged`/`Compacted` emitted by the loop
+    /// or the routes.
+    pub(crate) after_append: Mutex<Option<Arc<dyn Fn(&SessionId, &Event) + Send + Sync>>>,
 }
 
 impl SqliteStore {
+    /// Install the after-append observer. `None` (default) disables echo — used by
+    /// tests that publish to the bus manually.
+    pub fn set_after_append(
+        &self,
+        f: Option<Arc<dyn Fn(&SessionId, &Event) + Send + Sync>>,
+    ) {
+        *self.after_append.lock().unwrap() = f;
+    }
+
     pub fn register_model_spec(&self, spec: ModelSpec) {
         let key = format!("{}:{}", spec.r#ref.provider, spec.r#ref.id);
         self.model_specs.write().unwrap().insert(key, spec);
@@ -87,6 +103,7 @@ impl SqliteStore {
             conn: Mutex::new(conn),
             path: path.to_owned(),
             model_specs: RwLock::new(HashMap::new()),
+            after_append: Mutex::new(None),
         })
     }
 

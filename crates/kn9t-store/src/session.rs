@@ -70,6 +70,15 @@ pub fn append(store: &SqliteStore, session: &SessionId, event: Event) -> Result<
     ).map_err(|e| { let _ = conn.execute_batch("ROLLBACK"); StoreErr(format!("update head_seq: {e}")) })?;
 
     conn.execute_batch("COMMIT").map_err(|e| StoreErr(format!("commit: {e}")))?;
+
+    // 96E-18: notify the after-append observer (SSE echo) OUTSIDE the connection
+    // lock — the callback must never block or deadlock other store users.
+    drop(conn);
+    if let Ok(guard) = store.after_append.lock() {
+        if let Some(f) = guard.as_ref() {
+            f(session, &event);
+        }
+    }
     Ok(seq)
 }
 

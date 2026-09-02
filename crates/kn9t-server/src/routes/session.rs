@@ -283,10 +283,8 @@ pub fn prompt(state: &Arc<ServerState>, id: &str, req: api::PromptReq) -> JsonRe
             return JsonResp::error(404, "not_found", &e.0);
         }
     };
-    // Echo the durable event on the bus for attached observers.
-    state
-        .buses
-        .publish(id, Event::MessageAppended { seq, msg });
+    // 96E-18: the durable SSE echo happens in the store after-append observer
+    // (ServerState::new), not here — one publisher, no duplicates.
 
     // Run the turn asynchronously (background OS thread; GI-5: no async runtime).
     turn::spawn_turn(state.clone(), sid);
@@ -307,7 +305,7 @@ pub fn steer(state: &Arc<ServerState>, id: &str, req: api::SteerReq) -> JsonResp
     };
     match state.store.append(&sid, Event::MessageAppended { seq: 0, msg: msg.clone() }) {
         Ok(seq) => {
-            state.buses.publish(id, Event::MessageAppended { seq, msg });
+            // 96E-18: SSE echo via the store after-append observer.
             JsonResp::ok(serde_json::json!({ "steered": true, "seq": seq }))
         }
         Err(e) => JsonResp::error(404, "not_found", &e.0),
@@ -332,7 +330,7 @@ pub fn set_model(state: &Arc<ServerState>, id: &str, req: api::SetModelReq) -> J
     {
         Ok(seq) => {
             crate::log!("[set_model] success seq={seq}");
-            state.buses.publish(id, Event::ModelChanged { seq, model });
+            // 96E-18: SSE echo via the store after-append observer.
             JsonResp::ok(serde_json::json!({ "model_set": true, "seq": seq }))
         }
         Err(e) => {
@@ -514,9 +512,7 @@ pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
         Ok(s) => s,
         Err(e) => return JsonResp::error(500, "store_error", &e.0),
     };
-    // Publish with authoritative seq.
-    let published = event.with_seq(seq);
-    state.buses.publish(id, published);
+    // 96E-18: SSE echo via the store after-append observer (seq-stamped there).
     JsonResp::ok(serde_json::json!({ "compacted": true, "seq": seq, "message": "compacted" }))
 }
 

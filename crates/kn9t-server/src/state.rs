@@ -116,7 +116,7 @@ impl IdleTracker {
 /// it through an `Arc`.
 pub struct ServerState {
     pub store: Arc<SqliteStore>,
-    pub buses: SessionBuses,
+    pub buses: Arc<SessionBuses>,
     pub leases: LeaseMap,
     pub idle: IdleTracker,
     pub token: String,
@@ -179,9 +179,20 @@ impl ServerState {
             approval_registry.clone(),
             approval_cache.clone(),
         ));
+        let buses = Arc::new(SessionBuses::new());
+        // 96E-18: durable-event SSE echo. 96E-12 made the live `EventSink` transient-only;
+        // durable events reach the bus only through this observer, installed once per
+        // server. Called after every `Store::append` commit, outside the conn lock, with
+        // the seq-stamped event (see kn9t-store session::append).
+        {
+            let buses_for_echo = buses.clone();
+            store.set_after_append(Some(Arc::new(move |session, event| {
+                buses_for_echo.publish(&session.0, event.clone());
+            })));
+        }
         ServerState {
             store,
-            buses: SessionBuses::new(),
+            buses,
             leases: LeaseMap::new(DEFAULT_LEASE_IDLE),
             idle: IdleTracker::new(DEFAULT_IDLE_EXIT),
             token,

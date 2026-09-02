@@ -246,6 +246,65 @@ fn routes() {
     h.handle.shutdown();
 }
 
+/// 96E-18 — durable appends echo on the SSE bus after commit, exactly once.
+///
+/// Regression guard for 96E-12: `EventSink` is transient-only, so `MessageAppended`
+/// emitted by the loop/routes reach SSE observers solely through the store
+/// after-append observer installed in `ServerState::new`. Without it the TUI never
+/// sees assistant/tool messages live (no tool cards, streamed text dropped on the
+/// next turn start). The prompt route previously published manually; now the
+/// observer is the single publisher — this test fails if either side regresses
+/// (missing echo, or duplicate echo).
+#[test]
+fn p1_96e18_durable_appends_echo_on_sse_bus() {
+    let (state, _tmp) = fresh_state();
+    let h = start(state.clone());
+    let id = make_session(&h);
+    let lease = acquire_lease(&h, &id);
+
+    // Subscribe BEFORE the prompt so the echo lands in our ring.
+    let sub = state.buses.subscribe(&id, 1024);
+
+    let lease_hdr: [(&str, &str); 1] = [("X-Lease", &lease)];
+    let r = req_auth(&h, "POST", &format!("/session/{id}/prompt"), &lease_hdr, serde_json::json!({ "text": "hello bus" }));
+    assert_eq!(r.status, 200, "prompt: {}", String::from_utf8_lossy(&r.body));
+    let expected_seq = r.json()["seq"].as_u64().expect("prompt returns seq");
+
+    // Drain what the bus delivered (prompt echo is synchronous with the HTTP
+    // response: the observer publishes before the route returns).
+    let mut frames = Vec::new();
+    while let Some(ev) = sub.try_recv() {
+        frames.push(ev);
+    }
+
+    let echoed: Vec<_> = frames
+        .iter()
+        .filter(|e| matches!(e, Event::MessageAppended { .. }))
+        .map(|e| e.seq())
+        .collect();
+    assert_eq!(
+        echoed,
+        vec![Some(expected_seq)],
+        "MessageAppended echo must appear exactly once with the store seq, got {} frames: {:?}",
+        frames.len(),
+        frames.iter().map(|e| e.seq()).collect::<Vec<_>>()
+    );
+    let Event::MessageAppended { seq, msg } = &frames
+        .iter()
+        .find(|e| matches!(e, Event::MessageAppended { .. }))
+        .expect("echo present")
+    else {
+        unreachable!()
+    };
+    assert!(*seq == expected_seq, "echo must carry the store seq, got {seq}");
+    let has_text = msg.content.iter().any(|c| {
+        matches!(c, Content::Text { text } if text.contains("hello bus"))
+    });
+    assert!(has_text, "echo must carry the appended message");
+
+    h.handle.shutdown();
+}
+
 // ── srv::auth_required (R-SRV-020) ────────────────────────────────────────────
 
 #[test]
