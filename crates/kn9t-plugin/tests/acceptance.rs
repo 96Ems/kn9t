@@ -803,4 +803,169 @@ mod plug {
         assert_eq!(b_failed, 1, "bus B should have exactly 1 HookFailed, got {}", b_failed);
     }
 
+    /// P1 96E-9: plugin event backlog must not block RPC response processing.
+    /// Reader thread must use non-blocking try_send for transient events, so a
+    /// noisy plugin cannot stall unrelated hook calls. Before fix, burst of events
+    /// fills the bounded channel (64) and reader blocks on `send`, delaying the
+    /// subsequent hook Result beyond the hook timeout.
+    #[test]
+    fn p1_96e9_event_backlog_does_not_block_rpc() {
+        use kn9t_core::{Event, EventSink};
+
+        struct SlowSink {
+            events: Mutex<Vec<Event>>,
+            delay: Duration,
+        }
+        impl EventSink for SlowSink {
+            fn emit(&self, e: Event) {
+                // Only slow down transient plugin notifications so HookFailed path stays fast
+                if matches!(e, Event::PluginNotification { .. }) {
+                    std::thread::sleep(self.delay);
+                }
+                self.events.lock().unwrap().push(e);
+            }
+        }
+
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+        let host = PluginHost::from_io(
+            h_read,
+            h_write,
+            decl("test", vec![HookName::GetSteering]),
+            Arc::new(NoOpPluginKv),
+        );
+        let slow = Arc::new(SlowSink {
+            events: Mutex::new(Vec::new()),
+            delay: Duration::from_millis(30),
+        });
+        host.set_session("sess-9");
+        host.set_bus(slow.clone());
+
+        // Plugin: waits for hook, then floods 200 transient events before replying.
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(p_read);
+            let mut writer = p_write;
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return;
+            }
+            let msg: HostMsg = serde_json::from_str(line.trim_end()).expect("hook parse");
+            let id = match msg {
+                HostMsg::Hook { id, .. } => id,
+                _ => panic!("expected Hook"),
+            };
+            for i in 0..200 {
+                let ev = PluginMsg::Event {
+                    event: json!({"plugin":"test","message":format!("ev {i}"),"session_id":"sess-9"}),
+                };
+                let _ = write_plugin_msg(&mut writer, &ev);
+            }
+            // Give reader a moment to start filling channel, then answer the hook.
+            std::thread::sleep(Duration::from_millis(20));
+            let reply = PluginMsg::Result {
+                id,
+                body: json!({"messages":[]}),
+            };
+            let _ = write_plugin_msg(&mut writer, &reply);
+            // Keep pipes alive a bit so host can drain
+            std::thread::sleep(Duration::from_millis(300));
+        });
+
+        let host = Arc::new(host);
+        let start = Instant::now();
+        let result = host.get_steering();
+        let elapsed = start.elapsed();
+
+        // With try_send fix: hook completes quickly (<500 ms timeout) even though event
+        // consumer is slow. Before fix: reader blocks on bounded channel, hook times out
+        // at 500 ms and returns via failure posture; elapsed >=500 ms.
+        assert!(
+            elapsed < Duration::from_millis(450),
+            "RPC should complete while event consumer slow; took {:?} (expected <450 ms, timeout is 500 ms)",
+            elapsed
+        );
+        assert!(result.is_empty(), "expected empty steering on success");
+        // HookFailed would be emitted on timeout; check immediately (HookFailed path does not go through event channel)
+        {
+            let evs = slow.events.lock().unwrap().clone();
+            let hook_failed = evs.iter().filter(|e| matches!(e, Event::HookFailed { .. })).count();
+            assert_eq!(
+                hook_failed, 0,
+                "hook should not have timed out; HookFailed count={}, elapsed={:?}, events={} (dropped is OK)",
+                hook_failed,
+                elapsed,
+                evs.len()
+            );
+        }
+        // Transient events may be dropped under pressure — give event thread time to drain
+        // some of the buffered 64 before asserting.
+        std::thread::sleep(Duration::from_millis(400));
+        let evs2 = slow.events.lock().unwrap().clone();
+        let notif = evs2.iter().filter(|e| matches!(e, Event::PluginNotification { .. })).count();
+        assert!(notif > 0, "at least some notifications should arrive, got {notif}");
+        assert!(notif <= 200, "cannot exceed sent");
+        // And ensure RPC still completed (no late HookFailed appeared)
+        let hook_failed2 = evs2.iter().filter(|e| matches!(e, Event::HookFailed { .. })).count();
+        assert_eq!(hook_failed2, 0, "no HookFailed should appear after drain");
+    }
+
+    /// 96E-9: saturation — transient events may be dropped, RPC still completes.
+    #[test]
+    fn p1_96e9_transient_events_may_be_dropped_under_pressure() {
+        use kn9t_core::{Event, EventSink};
+
+        struct CountingSink {
+            count: Mutex<usize>,
+        }
+        impl EventSink for CountingSink {
+            fn emit(&self, e: Event) {
+                if matches!(e, Event::PluginNotification { .. }) {
+                    // Simulate slow consumer without sleeping too long: just count, but we
+                    // will fill channel by not draining fast enough via sleep in event thread?
+                    // Instead we use a bus that never drains fast? Simpler: use a channel bus
+                    // that blocks? But current fix should drop, so count <=200.
+                    *self.count.lock().unwrap() += 1;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+        let host = PluginHost::from_io(
+            h_read,
+            h_write,
+            decl("test", vec![HookName::GetSteering]),
+            Arc::new(NoOpPluginKv),
+        );
+        let sink = Arc::new(CountingSink { count: Mutex::new(0) });
+        host.set_session("sess-9b");
+        host.set_bus(sink.clone());
+
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(p_read);
+            let mut writer = p_write;
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let msg: HostMsg = serde_json::from_str(line.trim_end()).unwrap();
+            let id = match msg { HostMsg::Hook { id, .. } => id, _ => panic!() };
+            for i in 0..150 {
+                let ev = PluginMsg::Event {
+                    event: json!({"plugin":"t","message":format!("x{i}"),"session_id":"sess-9b"}),
+                };
+                let _ = write_plugin_msg(&mut writer, &ev);
+            }
+            let reply = PluginMsg::Result { id, body: json!({"messages":[]}) };
+            let _ = write_plugin_msg(&mut writer, &reply);
+            std::thread::sleep(Duration::from_millis(200));
+        });
+
+        let host = Arc::new(host);
+        let start = Instant::now();
+        let _ = host.get_steering();
+        let elapsed = start.elapsed();
+        assert!(elapsed < Duration::from_millis(450), "RPC must complete even under event flood, took {:?}", elapsed);
+        let got = *sink.count.lock().unwrap();
+        // Dropped is allowed, so just check not panicked and RPC completed; got may be <150
+        assert!(got <= 150, "count {got} should not exceed sent");
+    }
+
 } // mod plug

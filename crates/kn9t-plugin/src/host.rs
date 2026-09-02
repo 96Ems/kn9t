@@ -148,7 +148,11 @@ impl PluginHost {
                         }
                     }
                     PluginMsg::Event { event } => {
-                        let _ = event_tx.send(event);
+                        // 96E-9 fix: transient plugin events must not block the reader.
+                        // The same reader demultiplexes RPC responses; a bounded blocking
+                        // send would stall unrelated hook calls when a noisy plugin floods
+                        // events. Drop under pressure — transient, safe to lose.
+                        let _ = event_tx.try_send(event);
                     }
                     PluginMsg::Hello { .. } => continue, // ignore late hellos
                     // ── KV requests: handle inline, reply immediately ──────────
