@@ -80,6 +80,7 @@ impl SqliteStore {
             .map_err(|e| StoreErr(format!("open db: {e}")))?;
         apply_pragmas(&conn)?;
         create_schema(&conn)?;
+        migrate_96e14(&conn)?;
         truncate_live_messages(&conn)?;
         check_projection_version(&conn)?;
         Ok(Self {
@@ -243,6 +244,35 @@ fn check_projection_version(conn: &Connection) -> Result<(), StoreErr> {
     Ok(())
 }
 
+fn migrate_96e14(conn: &Connection) -> Result<(), StoreErr> {
+    // 96E-14: add integer micros columns; keep REAL for reading old DBs.
+    // Ignore duplicate-column errors (already migrated).
+    let alters = [
+        "ALTER TABLE sessions ADD COLUMN inherited_cost_micros INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE sessions ADD COLUMN budget_remaining_micros INTEGER",
+        "ALTER TABLE usage ADD COLUMN price_in_micros INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE usage ADD COLUMN price_out_micros INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE usage ADD COLUMN price_cache_read_micros INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE usage ADD COLUMN price_cache_write_micros INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE usage ADD COLUMN cost_micros INTEGER NOT NULL DEFAULT 0",
+    ];
+    for sql in &alters {
+        let _ = conn.execute_batch(sql);
+    }
+    // Backfill micros from REAL where micros is still 0/default and REAL !=0
+    let _ = conn.execute_batch(
+        "UPDATE usage SET price_in_micros = CAST(round(price_in_snapshot * 1000000) AS INTEGER) WHERE price_in_micros = 0 AND price_in_snapshot != 0;
+         UPDATE usage SET price_out_micros = CAST(round(price_out_snapshot * 1000000) AS INTEGER) WHERE price_out_micros = 0 AND price_out_snapshot != 0;
+         UPDATE usage SET price_cache_read_micros = CAST(round(price_cache_read_snapshot * 1000000) AS INTEGER) WHERE price_cache_read_micros = 0 AND price_cache_read_snapshot != 0;
+         UPDATE usage SET price_cache_write_micros = CAST(round(price_cache_write_snapshot * 1000000) AS INTEGER) WHERE price_cache_write_micros = 0 AND price_cache_write_snapshot != 0;
+         UPDATE usage SET cost_micros = CAST(round(cost_usd * 1000000) AS INTEGER) WHERE cost_micros = 0 AND cost_usd != 0;
+         UPDATE sessions SET inherited_cost_micros = CAST(round(inherited_cost_usd * 1000000) AS INTEGER) WHERE inherited_cost_micros = 0 AND inherited_cost_usd != 0;
+         UPDATE sessions SET budget_remaining_micros = CAST(round(budget_remaining_usd * 1000000) AS INTEGER) WHERE budget_remaining_micros IS NULL AND budget_remaining_usd IS NOT NULL;
+        ",
+    );
+    Ok(())
+}
+
 // ── trait impls ──────────────────────────────────────────────────────────────
 
 impl PluginKv for SqliteStore {
@@ -321,10 +351,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   origin_seq           INTEGER,
   fork_reason          TEXT,
   inherited_cost_usd   REAL    NOT NULL DEFAULT 0,
+  inherited_cost_micros INTEGER NOT NULL DEFAULT 0,
   inherited_tokens_in  INTEGER NOT NULL DEFAULT 0,
   inherited_tokens_out INTEGER NOT NULL DEFAULT 0,
   inherited_ctx_tokens INTEGER NOT NULL DEFAULT 0,
   budget_remaining_usd REAL,
+  budget_remaining_micros INTEGER,
   model_at_fork        TEXT,
   head_seq             INTEGER NOT NULL DEFAULT 0
 );
@@ -364,7 +396,12 @@ CREATE TABLE IF NOT EXISTS usage (
   price_out_snapshot         REAL    NOT NULL,
   price_cache_read_snapshot  REAL    NOT NULL,
   price_cache_write_snapshot REAL    NOT NULL,
+  price_in_micros            INTEGER NOT NULL DEFAULT 0,
+  price_out_micros           INTEGER NOT NULL DEFAULT 0,
+  price_cache_read_micros    INTEGER NOT NULL DEFAULT 0,
+  price_cache_write_micros   INTEGER NOT NULL DEFAULT 0,
   cost_usd                   REAL    NOT NULL,
+  cost_micros                INTEGER NOT NULL DEFAULT 0,
   estimated                  INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, seq)
 );

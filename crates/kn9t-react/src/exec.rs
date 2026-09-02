@@ -550,7 +550,7 @@ mod tests {
         };
         let params = RunParams {
             session: SessionId::new(),
-            model: ModelSpec { r#ref: ModelRef { provider: "test".into(), id: "m".into() }, api_id: "test".into(), ctx_window: 100000, max_out: 8000, price: Price { input: 1.0, output: 1.0, cache_read: 1.0, cache_write: 1.0 }, cache: CacheMode::None, streaming: true, quirks: Quirks::default() },
+            model: ModelSpec { r#ref: ModelRef { provider: "test".into(), id: "m".into() }, api_id: "test".into(), ctx_window: 100000, max_out: 8000, price: Price { input: 1000000, output: 1000000, cache_read: 1000000, cache_write: 1000000 }, cache: CacheMode::None, streaming: true, quirks: Quirks::default() },
             thinking: Thinking::Off,
             max_tokens: None,
             cwd: std::env::temp_dir(),

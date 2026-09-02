@@ -42,7 +42,7 @@ fn model_spec() -> ModelSpec {
         api_id: "m1".into(),
         ctx_window: 128_000,
         max_out: 4096,
-        price: Price { input: 1.0, output: 2.0, cache_read: 0.5, cache_write: 0.0 },
+        price: Price { input: 1000000, output: 2000000, cache_read: 500000, cache_write: 0 },
         cache: CacheMode::Automatic,
         streaming: true,
         quirks: Quirks::default(),
@@ -845,9 +845,10 @@ fn usage_event(provider: &str, model: &str, tin: u32, tout: u32, _cost_ignored: 
         model: model.into(),
         kind: kn9t_core::UsageKind::Main,
         tokens: Tokens { input: tin, output: tout, ..Default::default() },
-        price_snapshot: Price { input: 1.0, output: 2.0, cache_read: 0.0, cache_write: 0.0 },
+        price_snapshot: Price { input: 1000000, output: 2000000, cache_read: 0, cache_write: 0 },
         // The store recomputes cost from tokens × price (R-STOR-070); this field is
         // intentionally ignored by the projection.
+        cost_micros: 0,
         cost_usd: 0.0,
         estimated: false,
     }

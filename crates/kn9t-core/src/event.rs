@@ -58,13 +58,20 @@ pub struct ForkSnapshot {
     pub origin_session: SessionId,
     pub origin_seq: u64,
     pub reason: ForkReason,
+    #[serde(default)]
     pub inherited_cost_usd: f64,
+    /// 96E-14: integer micros, source of truth.
+    #[serde(default)]
+    pub inherited_cost_micros: i64,
     pub inherited_tokens_in: u64,
     pub inherited_tokens_out: u64,
     pub inherited_cache_read: u64,
     pub inherited_messages: u32,
     pub inherited_ctx_tokens: u32,
+    #[serde(default)]
     pub budget_remaining_usd: Option<f64>,
+    #[serde(default)]
+    pub budget_remaining_micros: Option<i64>,
     pub model_at_fork: ModelRef,
     pub thinking_at_fork: Thinking,
     pub cwd_at_fork: PathBuf,
@@ -108,6 +115,13 @@ pub enum Event {
         kind: UsageKind,
         tokens: Tokens,
         price_snapshot: Price,
+        /// 96E-14: deterministic integer micros (1_000_000 micros = 1 USD).
+        /// New writes populate `cost_micros`; `cost_usd` is kept for reading old rows
+        /// (migration) and written as well for wire compat, but `cost_micros` is the
+        /// source of truth for budget/comparison.
+        #[serde(default)]
+        cost_micros: i64,
+        #[serde(default)]
         cost_usd: f64,
         /// R-CORE-142 — `true` when inferred after an abort cut the stream before
         /// usage arrived (§9.1), `false` when provider-reported.

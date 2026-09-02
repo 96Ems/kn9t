@@ -65,10 +65,10 @@ fn parse_pricing_toml(toml_str: &str) -> Vec<PriceEntry> {
             Some(PriceEntry {
                 pattern,
                 price: Price {
-                    input: m.input,
-                    output: m.output,
-                    cache_read: m.cache_read,
-                    cache_write: m.cache_write,
+                    input: (m.input * 1_000_000.0).round() as i64,
+                    output: (m.output * 1_000_000.0).round() as i64,
+                    cache_read: (m.cache_read * 1_000_000.0).round() as i64,
+                    cache_write: (m.cache_write * 1_000_000.0).round() as i64,
                 },
             })
         })
@@ -96,38 +96,38 @@ mod tests {
     #[test]
     fn test_claude_haiku_4() {
         let p = lookup_price("us.anthropic.claude-haiku-4-5-20251001-v1:0").unwrap();
-        assert_eq!(p.input, 1.0);
-        assert_eq!(p.output, 5.0);
+        assert_eq!(p.input, 1_000_000);
+        assert_eq!(p.output, 5_000_000);
     }
 
     #[test]
     fn test_claude_sonnet_4() {
         let p = lookup_price("us.anthropic.claude-sonnet-4-5-20250929-v1:0").unwrap();
-        assert_eq!(p.input, 3.0);
+        assert_eq!(p.input, 3_000_000);
     }
 
     #[test]
     fn test_nemotron_nano() {
         let p = lookup_price("nvidia.nemotron-nano-12b-v2").unwrap();
-        assert_eq!(p.input, 0.15);
+        assert_eq!(p.input, 150_000);
     }
 
     #[test]
     fn test_nova_micro() {
         let p = lookup_price("amazon.nova-micro-v1:0").unwrap();
-        assert_eq!(p.input, 0.035);
+        assert_eq!(p.input, 35_000);
     }
     
     #[test]
     fn test_gpt4o() {
         let p = lookup_price("gpt-4o-2024-08-06").unwrap();
-        assert_eq!(p.input, 2.50);
+        assert_eq!(p.input, 2_500_000);
     }
     
     #[test]
     fn test_gpt4o_mini() {
         let p = lookup_price("gpt-4o-mini").unwrap();
-        assert_eq!(p.input, 0.15);
+        assert_eq!(p.input, 150_000);
     }
 
     #[test]
@@ -145,21 +145,21 @@ mod tests {
     fn test_custom_provider_claude_sonnet() {
         // custom provider plugin model ID format
         let p = lookup_price("anthropic::2024-10-22::claude-sonnet-4-5-thinking-latest").unwrap();
-        assert_eq!(p.input, 3.0);
-        assert_eq!(p.output, 15.0);
+        assert_eq!(p.input, 3_000_000);
+        assert_eq!(p.output, 15_000_000);
     }
     
     #[test]
     fn test_custom_provider_claude_opus() {
         let p = lookup_price("anthropic::2024-10-22::claude-opus-4-5-latest").unwrap();
-        assert_eq!(p.input, 5.0);
-        assert_eq!(p.output, 25.0);
+        assert_eq!(p.input, 5_000_000);
+        assert_eq!(p.output, 25_000_000);
     }
     
     #[test]
     fn test_custom_provider_claude_haiku() {
         let p = lookup_price("anthropic::2024-10-22::claude-haiku-4-5-latest").unwrap();
-        assert_eq!(p.input, 1.0);
-        assert_eq!(p.output, 5.0);
+        assert_eq!(p.input, 1_000_000);
+        assert_eq!(p.output, 5_000_000);
     }
 }

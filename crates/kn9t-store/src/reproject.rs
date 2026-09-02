@@ -39,7 +39,12 @@ pub fn reproject(conn: &Connection) -> Result<(), StoreErr> {
            price_out_snapshot REAL NOT NULL,
            price_cache_read_snapshot REAL NOT NULL,
            price_cache_write_snapshot REAL NOT NULL,
+           price_in_micros INTEGER NOT NULL DEFAULT 0,
+           price_out_micros INTEGER NOT NULL DEFAULT 0,
+           price_cache_read_micros INTEGER NOT NULL DEFAULT 0,
+           price_cache_write_micros INTEGER NOT NULL DEFAULT 0,
            cost_usd REAL NOT NULL,
+           cost_micros INTEGER NOT NULL DEFAULT 0,
            estimated INTEGER NOT NULL DEFAULT 0,
            PRIMARY KEY (session_id, seq)
          );
@@ -75,7 +80,9 @@ pub fn reproject_check(conn: &Connection) -> Result<Vec<String>, StoreErr> {
            reasoning INTEGER,
            price_in_snapshot REAL, price_out_snapshot REAL,
            price_cache_read_snapshot REAL, price_cache_write_snapshot REAL,
-           cost_usd REAL, estimated INTEGER,
+           price_in_micros INTEGER, price_out_micros INTEGER,
+           price_cache_read_micros INTEGER, price_cache_write_micros INTEGER,
+           cost_usd REAL, cost_micros INTEGER, estimated INTEGER,
            PRIMARY KEY (session_id, seq)
          );
          DELETE FROM temp.chk_messages;
@@ -181,19 +188,23 @@ fn write_rows_temp(conn: &Connection, rows: Vec<project::Row>) -> Result<(), Sto
             }
             project::Row::Usage { session_id, seq, ts, provider, model, kind,
                 tokens_in, tokens_out, cache_read, cache_write, reasoning,
-                price_in, price_out, price_cache_read, price_cache_write, cost_usd, estimated } => {
+                price_in, price_out, price_cache_read, price_cache_write,
+                price_in_micros, price_out_micros, price_cache_read_micros, price_cache_write_micros,
+                cost_usd, cost_micros, estimated } => {
                 conn.execute(
                     "INSERT OR REPLACE INTO temp.chk_usage(\
                        session_id,seq,ts,provider,model,kind,\
                        tokens_in,tokens_out,cache_read,cache_write,reasoning,\
                        price_in_snapshot,price_out_snapshot,\
                        price_cache_read_snapshot,price_cache_write_snapshot,\
-                       cost_usd,estimated)\
-                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                       price_in_micros,price_out_micros,price_cache_read_micros,price_cache_write_micros,\
+                       cost_usd,cost_micros,estimated)\
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
                     params![session_id, seq as i64, ts, provider, model, kind,
                         tokens_in, tokens_out, cache_read, cache_write, reasoning,
                         price_in, price_out, price_cache_read, price_cache_write,
-                        cost_usd, estimated],
+                        price_in_micros, price_out_micros, price_cache_read_micros, price_cache_write_micros,
+                        cost_usd, cost_micros, estimated],
                 ).map_err(|e| StoreErr(format!("insert temp usage: {e}")))?;
             }
             project::Row::Compacted { session_id, seq, replaced_start, replaced_end,

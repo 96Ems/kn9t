@@ -46,7 +46,8 @@ fn usage(seq: u64, tok_in: u32, tok_out: u32) -> Event {
         model: "model".into(),
         kind: UsageKind::Main,
         tokens: Tokens { input: tok_in, output: tok_out, ..Tokens::default() },
-        price_snapshot: Price { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
+        price_snapshot: Price { input: 3_000_000, output: 15_000_000, cache_read: 300_000, cache_write: 3_750_000 },
+        cost_micros: 0,
         cost_usd: 0.0,
         estimated: false,
     }
@@ -146,7 +147,8 @@ fn stor_cost_tiered() {
         model: "model".into(),
         kind: UsageKind::Main,
         tokens: Tokens { input: 100, output: 0, cache_read: 10_000, cache_write: 0, reasoning: 0 },
-        price_snapshot: Price { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
+        price_snapshot: Price { input: 3_000_000, output: 15_000_000, cache_read: 300_000, cache_write: 3_750_000 },
+        cost_micros: 0,
         cost_usd: 0.0,
         estimated: false,
     };

@@ -33,10 +33,10 @@ pub fn fork_session(
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(|e| StoreErr(format!("begin fork: {e}")))?;
 
-    // Inherited totals up to origin_seq
-    let (inh_cost, inh_tok_in, inh_tok_out, inh_cache_read): (f64, i64, i64, i64) = conn
+    // Inherited totals up to origin_seq — 96E-14: use micros for determinism
+    let (inh_cost_micros, inh_tok_in, inh_tok_out, inh_cache_read): (i64, i64, i64, i64) = conn
         .query_row(
-            "SELECT COALESCE(SUM(cost_usd),0), COALESCE(SUM(tokens_in),0),
+            "SELECT COALESCE(SUM(cost_micros),0), COALESCE(SUM(tokens_in),0),
                     COALESCE(SUM(tokens_out),0), COALESCE(SUM(cache_read),0)
              FROM usage WHERE session_id=?1 AND seq<=?2",
             params![origin_sid, origin_seq as i64],
@@ -80,17 +80,20 @@ pub fn fork_session(
         ForkReason::Tree     => "tree",
     };
 
+    let budget_remaining_micros = budget_remaining_usd.map(|d| (d * 1_000_000.0).round() as i64);
     let fork_snap = ForkSnapshot {
         origin_session: origin.clone(),
         origin_seq,
         reason,
-        inherited_cost_usd:   inh_cost,
+        inherited_cost_usd:   inh_cost_micros as f64 / 1_000_000.0,
+        inherited_cost_micros: inh_cost_micros,
         inherited_tokens_in:  inh_tok_in  as u64,
         inherited_tokens_out: inh_tok_out as u64,
         inherited_cache_read: inh_cache_read as u64,
         inherited_messages:   inh_messages as u32,
         inherited_ctx_tokens: inh_ctx      as u32,
         budget_remaining_usd,
+        budget_remaining_micros,
         model_at_fork: model_at_fork.clone(),
         thinking_at_fork: Thinking::Off,
         cwd_at_fork: cwd.into(),
@@ -100,12 +103,12 @@ pub fn fork_session(
 
     conn.execute(
         "INSERT INTO sessions(id,created_at,cwd,origin_session,origin_seq,fork_reason,
-          inherited_cost_usd,inherited_tokens_in,inherited_tokens_out,inherited_ctx_tokens,
-          budget_remaining_usd,model_at_fork,head_seq)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0)",
+          inherited_cost_usd,inherited_cost_micros,inherited_tokens_in,inherited_tokens_out,inherited_ctx_tokens,
+          budget_remaining_usd,budget_remaining_micros,model_at_fork,head_seq)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,0)",
         params![new_sid, ts, cwd, origin_sid, origin_seq as i64, fork_reason_str,
-                inh_cost, inh_tok_in, inh_tok_out, inh_ctx,
-                budget_remaining_usd, model_json],
+                inh_cost_micros as f64 / 1_000_000.0, inh_cost_micros, inh_tok_in, inh_tok_out, inh_ctx,
+                budget_remaining_usd, budget_remaining_micros, model_json],
     ).map_err(|e| StoreErr(format!("create fork session: {e}")))?;
 
     // seq=0 SessionForked event

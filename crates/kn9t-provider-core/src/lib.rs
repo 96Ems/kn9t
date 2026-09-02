@@ -22,9 +22,9 @@ pub use sse::sse_lines;
 pub use kn9t_core::{
     Approver, Bus, Cache, CallId, Cancel, CacheMode, Chunk, CompactSpan, Content, Decision,
     Effort, Event, EventSink, ForkReason, ForkSnapshot, HookHost, HookName, HookVeto, LiveEvent,
-    MsgId, Message, ModelRef, ModelSpec, NextTurnPatch, NoopHookHost,
+    MoneyMicros, MsgId, Message, ModelRef, ModelSpec, NextTurnPatch, NoopHookHost,
     Price, ProvErr, Provider, Request, RequestPlan, Role, SeqRange, SessionId,
     SessionSnapshot, Sha256, StopReason, Store, StoreErr, Thinking, Tokens,
     Tool, ToolCall, ToolCtx, ToolErr, ToolOutput, ToolRegistry, ToolSpec,
-    Usage, UsageKind,
+    Usage, UsageKind, cost_micros,
 };

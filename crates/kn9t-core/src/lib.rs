@@ -29,7 +29,7 @@ pub use event::{Event, ForkReason, ForkSnapshot, HookName, LiveEvent, SeqRange, 
 pub use hook::{HookHost, HookVeto, NextTurnPatch, NoopHookHost};
 pub use ids::{ApprovalId, CallId, MsgId, SessionId};
 pub use message::{Content, Message, Role};
-pub use model::{Effort, ModelRef, ModelSpec, Price, Quirks, Thinking, ThinkingReplay};
+pub use model::{Effort, ModelRef, ModelSpec, MoneyMicros, Price, Quirks, Thinking, ThinkingReplay, cost_micros};
 pub use provider::{Chunk, Provider, Request};
 pub use registry::ToolRegistry;
 pub use toolspec::{DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec, wildcard_match, value_to_pattern};

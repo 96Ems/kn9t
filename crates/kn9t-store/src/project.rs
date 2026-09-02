@@ -28,7 +28,12 @@ pub enum Row {
         price_out: f64,
         price_cache_read: f64,
         price_cache_write: f64,
+        price_in_micros: i64,
+        price_out_micros: i64,
+        price_cache_read_micros: i64,
+        price_cache_write_micros: i64,
         cost_usd: f64,
+        cost_micros: i64,
         estimated: i64,
     },
     Compacted {
@@ -90,12 +95,13 @@ pub fn project(session_id: &str, ts: i64, event: &Event) -> Vec<Row> {
                 silent: msg.silent,
             }]
         }
-        Event::UsageRecorded { seq, provider, model, kind, tokens, price_snapshot, estimated, .. } => {
-            // R-STOR-070 — cost computed at write time from snapshot prices
-            let cost = tokens.input   as f64 * price_snapshot.input       / 1e6
-                     + tokens.cache_read  as f64 * price_snapshot.cache_read  / 1e6
-                     + tokens.cache_write as f64 * price_snapshot.cache_write / 1e6
-                     + tokens.output  as f64 * price_snapshot.output      / 1e6;
+        Event::UsageRecorded { seq, provider, model, kind, tokens, price_snapshot, cost_micros, estimated, .. } => {
+            // R-STOR-070 — deterministic integer cost (96E-14). Use the event's cost_micros if present,
+            // otherwise compute from tokens*price/1e6 via integer arithmetic.
+            let computed_micros = kn9t_core::cost_micros(tokens, price_snapshot);
+            let micros = if *cost_micros != 0 { *cost_micros } else { computed_micros };
+            // Keep old REAL columns for migration/compat: derive dollars from micros
+            let cost_usd = micros as f64 / 1_000_000.0;
             vec![Row::Usage {
                 session_id: session_id.to_owned(),
                 seq: *seq,
@@ -108,11 +114,16 @@ pub fn project(session_id: &str, ts: i64, event: &Event) -> Vec<Row> {
                 cache_read:  tokens.cache_read  as i64,
                 cache_write: tokens.cache_write as i64,
                 reasoning:   tokens.reasoning   as i64,
-                price_in:          price_snapshot.input,
-                price_out:         price_snapshot.output,
-                price_cache_read:  price_snapshot.cache_read,
-                price_cache_write: price_snapshot.cache_write,
-                cost_usd: cost,
+                price_in:          price_snapshot.input as f64 / 1_000_000.0,
+                price_out:         price_snapshot.output as f64 / 1_000_000.0,
+                price_cache_read:  price_snapshot.cache_read as f64 / 1_000_000.0,
+                price_cache_write: price_snapshot.cache_write as f64 / 1_000_000.0,
+                price_in_micros:          price_snapshot.input,
+                price_out_micros:         price_snapshot.output,
+                price_cache_read_micros:  price_snapshot.cache_read,
+                price_cache_write_micros: price_snapshot.cache_write,
+                cost_usd,
+                cost_micros: micros,
                 estimated: if *estimated { 1 } else { 0 },
             }]
         }
@@ -148,19 +159,22 @@ pub fn write_rows(conn: &Connection, rows: Vec<Row>) -> Result<(), StoreErr> {
             Row::Usage { session_id, seq, ts, provider, model, kind,
                 tokens_in, tokens_out, cache_read, cache_write, reasoning,
                 price_in, price_out, price_cache_read, price_cache_write,
-                cost_usd, estimated } => {
+                price_in_micros, price_out_micros, price_cache_read_micros, price_cache_write_micros,
+                cost_usd, cost_micros, estimated } => {
                 conn.execute(
                     "INSERT OR REPLACE INTO usage(\
                        session_id,seq,ts,provider,model,kind,\
                        tokens_in,tokens_out,cache_read,cache_write,reasoning,\
                        price_in_snapshot,price_out_snapshot,\
                        price_cache_read_snapshot,price_cache_write_snapshot,\
-                       cost_usd,estimated)\
-                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                       price_in_micros,price_out_micros,price_cache_read_micros,price_cache_write_micros,\
+                       cost_usd,cost_micros,estimated)\
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
                     params![session_id, seq as i64, ts, provider, model, kind,
                         tokens_in, tokens_out, cache_read, cache_write, reasoning,
                         price_in, price_out, price_cache_read, price_cache_write,
-                        cost_usd, estimated],
+                        price_in_micros, price_out_micros, price_cache_read_micros, price_cache_write_micros,
+                        cost_usd, cost_micros, estimated],
                 ).map_err(|e| StoreErr(format!("insert usage: {e}")))?;
             }
             Row::Compacted { session_id, seq, replaced_start, replaced_end,

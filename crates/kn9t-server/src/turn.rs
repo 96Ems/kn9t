@@ -360,7 +360,8 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
         tokens,
         model: model.r#ref.clone(),
     };
-    let cost = compute_cost(&usage.tokens, &model.price);
+    let cost_micros = compute_cost(&usage.tokens, &model.price);
+    let cost_usd = cost_micros as f64 / 1_000_000.0;
     let _ = state.store.append(
         session,
         kn9t_core::Event::UsageRecorded {
@@ -370,7 +371,8 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
             kind: UsageKind::Title,
             tokens: usage.tokens,
             price_snapshot: model.price,
-            cost_usd: cost,
+            cost_micros,
+            cost_usd,
             estimated: !usage_reported,
         },
     );
@@ -405,11 +407,6 @@ fn sanitize_title(s: &str) -> String {
         .collect()
 }
 
-fn compute_cost(tokens: &Tokens, price: &Price) -> f64 {
-    let m = 1_000_000.0;
-    (tokens.input as f64 * price.input
-        + tokens.output as f64 * price.output
-        + tokens.cache_read as f64 * price.cache_read
-        + tokens.cache_write as f64 * price.cache_write)
-        / m
+fn compute_cost(tokens: &Tokens, price: &Price) -> i64 {
+    kn9t_core::cost_micros(tokens, price)
 }

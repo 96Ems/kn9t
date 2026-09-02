@@ -39,8 +39,11 @@ pub struct RequestPlan {
 pub struct SessionSnapshot {
     pub head_seq: u64,
     pub ctx_tokens: u32,
-    /// This session's own spend, excludes inherited.
+    /// This session's own spend, excludes inherited. 96E-14: micros is truth.
+    #[serde(default)]
     pub cost_usd: f64,
+    #[serde(default)]
+    pub cost_micros: i64,
     pub model: ModelRef,
 }
 

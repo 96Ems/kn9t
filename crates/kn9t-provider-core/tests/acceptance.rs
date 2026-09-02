@@ -253,16 +253,16 @@ fn pcore_model_prices_required() {
         api_id: "gpt-4o".into(),
         ctx_window: 128_000,
         max_out: 4096,
-        price: Price { input: 2.5, output: 10.0, cache_read: 1.25, cache_write: 0.0 },
+        price: Price { input: 2500000, output: 10000000, cache_read: 1250000, cache_write: 0 },
         cache: CacheMode::Automatic,
         streaming: true,
         quirks: kn9t_core::Quirks::default(),
     };
-    // All four prices are present (non-NaN).
-    assert!(spec.price.input.is_finite());
-    assert!(spec.price.output.is_finite());
-    assert!(spec.price.cache_read.is_finite());
-    assert!(spec.price.cache_write.is_finite());
+    // All four prices are present (non-negative micros).
+    assert!(spec.price.input >= 0);
+    assert!(spec.price.output >= 0);
+    assert!(spec.price.cache_read >= 0);
+    assert!(spec.price.cache_write >= 0);
 }
 
 // ── pcore::connect_timeout (R-PCORE-010/020) ─────────────────────────────────

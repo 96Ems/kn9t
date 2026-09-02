@@ -34,12 +34,14 @@ mod core {
             origin_seq: 7,
             reason: ForkReason::Fork,
             inherited_cost_usd: 1.5,
+            inherited_cost_micros: 1_500_000,
             inherited_tokens_in: 10,
             inherited_tokens_out: 20,
             inherited_cache_read: 5,
             inherited_messages: 3,
             inherited_ctx_tokens: 100,
             budget_remaining_usd: Some(9.0),
+            budget_remaining_micros: Some(9_000_000),
             model_at_fork: model_ref(),
             thinking_at_fork: Thinking::Off,
             cwd_at_fork: PathBuf::from("/tmp"),
@@ -48,10 +50,10 @@ mod core {
 
     fn price() -> Price {
         Price {
-            input: 1.0,
-            output: 2.0,
-            cache_read: 0.1,
-            cache_write: 0.2,
+            input: 1_000_000,
+            output: 2_000_000,
+            cache_read: 100_000,
+            cache_write: 200_000,
         }
     }
 
@@ -266,6 +268,7 @@ mod core {
                     kind: UsageKind::Main,
                     tokens: Tokens::default(),
                     price_snapshot: price(),
+                    cost_micros: 0,
                     cost_usd: 0.0,
                     estimated: false,
                 },
@@ -389,6 +392,7 @@ mod core {
                 kind: UsageKind::Main,
                 tokens: Tokens::default(),
                 price_snapshot: price(),
+                cost_micros: 0,
                 cost_usd: 0.0,
                 estimated: false,
             },

@@ -40,7 +40,8 @@ impl ReactLoop {
         estimated: bool,
     ) -> Result<(), ReactError> {
         let price = params.model.price;
-        let cost = compute_cost(&usage.tokens, &price);
+        let cost_micros = kn9t_provider_core::cost_micros(&usage.tokens, &price);
+        let cost_usd = cost_micros as f64 / 1_000_000.0;
         self.append(
             params,
             Event::UsageRecorded {
@@ -50,7 +51,8 @@ impl ReactLoop {
                 kind,
                 tokens: usage.tokens,
                 price_snapshot: price,
-                cost_usd: cost,
+                cost_micros,
+                cost_usd,
                 estimated,
             },
         )?;
@@ -187,12 +189,7 @@ impl ReactLoop {
     }
 }
 
-/// Per-tier cost in USD (DESIGN sec.6.1 / R-CORE-080). Prices are USD per 1,000,000 tokens.
-fn compute_cost(tokens: &kn9t_provider_core::Tokens, price: &Price) -> f64 {
-    let m = 1_000_000.0;
-    (tokens.input as f64 * price.input
-        + tokens.output as f64 * price.output
-        + tokens.cache_read as f64 * price.cache_read
-        + tokens.cache_write as f64 * price.cache_write)
-        / m
+/// Per-tier cost in micros (96E-14, deterministic integer). Prices are micros per 1M tokens.
+fn compute_cost(tokens: &kn9t_provider_core::Tokens, price: &Price) -> i64 {
+    kn9t_provider_core::cost_micros(tokens, price)
 }

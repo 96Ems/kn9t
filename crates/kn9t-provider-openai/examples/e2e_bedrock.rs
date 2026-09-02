@@ -56,7 +56,7 @@ fn make_model(_base_url: &str, model_id: &str) -> ModelSpec {
         api_id:     model_id.to_owned(),
         ctx_window: 200_000,
         max_out:    512,
-        price: Price { input: 0.8, output: 4.0, cache_read: 0.08, cache_write: 1.0 },
+        price: Price { input: 800000, output: 4000000, cache_read: 80000, cache_write: 1000000 },
         cache:   CacheMode::None,
         streaming: true,
         quirks:  kn9t_core::Quirks::default(),

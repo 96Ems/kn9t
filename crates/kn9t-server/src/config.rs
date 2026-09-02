@@ -402,13 +402,13 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                                      .and_then(|p| serde_json::from_value::<PluginPrice>(p.clone()).ok())
                                      .filter(|p| p.input > 0.0 || p.output > 0.0)
                                      .map(|p| Price {
-                                         input: p.input,
-                                         output: p.output,
-                                         cache_read: p.cache_read,
-                                         cache_write: p.cache_write,
+                                         input: (p.input * 1_000_000.0).round() as i64,
+                                         output: (p.output * 1_000_000.0).round() as i64,
+                                         cache_read: (p.cache_read * 1_000_000.0).round() as i64,
+                                         cache_write: (p.cache_write * 1_000_000.0).round() as i64,
                                      })
                                      .or_else(|| lookup_price(&model_decl.id))
-                                     .unwrap_or(Price { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 });
+                                     .unwrap_or(Price { input: 0, output: 0, cache_read: 0, cache_write: 0 });
                                  
                                  let spec = ModelSpec {
                                      r#ref: ModelRef {
@@ -465,12 +465,12 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
 
         // Use config price if any non-zero, otherwise fallback lookup.
         let config_price = Price {
-            input:       rm.price_in,
-            output:      rm.price_out,
-            cache_read:  rm.price_cache_read,
-            cache_write: rm.price_cache_write,
+            input:       (rm.price_in * 1_000_000.0).round() as i64,
+            output:      (rm.price_out * 1_000_000.0).round() as i64,
+            cache_read:  (rm.price_cache_read * 1_000_000.0).round() as i64,
+            cache_write: (rm.price_cache_write * 1_000_000.0).round() as i64,
         };
-        let price = if config_price.input > 0.0 || config_price.output > 0.0 {
+        let price = if config_price.input > 0 || config_price.output > 0 {
             config_price
         } else {
             lookup_price(&api_id).unwrap_or(config_price)
@@ -838,7 +838,7 @@ fn fetch_openai_models(
             api_id: id.clone(),
             ctx_window,
             max_out,
-            price: lookup_price(&id).unwrap_or(Price { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }),
+            price: lookup_price(&id).unwrap_or(Price { input: 0, output: 0, cache_read: 0, cache_write: 0 }),
             cache: CacheMode::Automatic,
             streaming: true,
             quirks: kn9t_core::Quirks::default(),

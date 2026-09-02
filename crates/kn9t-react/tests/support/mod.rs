@@ -197,6 +197,7 @@ impl kn9t_core::Store for StubStore {
             head_seq: *self.seq.lock().unwrap(),
             ctx_tokens: 0,
             cost_usd: 0.0,
+        cost_micros: 0,
             model: test_model_ref(),
         })
     }
@@ -234,10 +235,10 @@ pub fn test_model_spec() -> ModelSpec {
         ctx_window: 100_000,
         max_out: 8_000,
         price: Price {
-            input: 1.0,
-            output: 2.0,
-            cache_read: 0.1,
-            cache_write: 1.25,
+            input: 1000000,
+            output: 2000000,
+            cache_read: 100000,
+            cache_write: 1250000,
         },
         cache: CacheMode::None,
         streaming: true,

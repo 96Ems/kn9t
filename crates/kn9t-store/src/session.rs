@@ -94,13 +94,14 @@ pub fn snapshot(store: &SqliteStore, session: &SessionId) -> Result<SessionSnaps
         )
         .map_err(|e| StoreErr(format!("ctx_tokens: {e}")))?;
 
-    let cost_usd: f64 = conn
+    let cost_micros: i64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(cost_usd),0.0) FROM usage WHERE session_id = ?1",
+            "SELECT COALESCE(SUM(cost_micros),0) FROM usage WHERE session_id = ?1",
             params![sid],
             |r| r.get(0),
         )
         .map_err(|e| StoreErr(format!("cost query: {e}")))?;
+    let cost_usd = cost_micros as f64 / 1_000_000.0;
 
     let model = reconstruct_model(&conn, &sid, &model_at_fork)?;
 
@@ -108,6 +109,7 @@ pub fn snapshot(store: &SqliteStore, session: &SessionId) -> Result<SessionSnaps
         head_seq: head_seq as u64,
         ctx_tokens: ctx_tokens as u32,
         cost_usd,
+        cost_micros,
         model,
     })
 }
