@@ -66,6 +66,10 @@ pub enum ReactError {
     Provider(String),
     /// Compaction re-plan still asked to compact a second time (R-RCT-090).
     CompactionLoop,
+    /// 96E-17: compaction was demanded (context exhausted) but no compactor plugin is
+    /// installed. Fail-closed: the turn ends, nothing is persisted, and the session
+    /// cannot continue.
+    CompactionUnavailable,
     /// Truncation ladder exhausted (R-RCT-070).
     TruncationGaveUp,
 }

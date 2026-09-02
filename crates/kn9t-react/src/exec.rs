@@ -159,121 +159,79 @@ impl ReactLoop {
         cancel: &Cancel,
         span: kn9t_provider_core::CompactSpan,
     ) -> Result<Attempt, ReactError> {
-        // 96E-16: pluggable delegation — if a compactor is set, use it (host fallback when None).
-        if let Some(compactor) = &self.compactor {
-            if cancel.cancelled() {
-                self.bus.emit(LiveEvent::TurnStatus { phase: "aborted".into(), message: String::new() });
-                return Ok(Attempt::AbortedInStream(estimated_assembled(&params.model.r#ref)));
-            }
-            let history = span.messages.clone();
-            match compactor.compact(span.clone(), &history) {
-                Ok(plan) => {
-                    if let Some(handoff) = &plan.handoff {
-                        let known: Vec<kn9t_provider_core::CallId> = span
-                            .messages
-                            .iter()
-                            .flat_map(|m| &m.content)
-                            .filter_map(|c| match c {
-                                Content::ToolCall { id, .. } => Some(id.clone()),
-                                _ => None,
-                            })
-                            .collect();
-                        let ev = Event::Handoff {
-                            seq: 0,
-                            keep: handoff.keep.clone(),
-                            summarize: handoff.summarize.clone(),
-                            drop_ids: handoff.drop_ids.clone(),
-                            resume_actions: handoff.resume_actions.clone(),
-                        };
-                        if let Err(e) = kn9t_provider_core::validate_handoff(&ev, &known) {
-                            self.bus.emit(LiveEvent::Error { message: format!("compactor handoff validation failed: {e}") });
-                            return Err(ReactError::Provider(format!("compactor handoff validation failed: {e}")));
-                        }
-                    }
-                    self.append(
-                        params,
-                        Event::Compacted {
-                            seq: 0,
-                            replaced: span.replaced,
-                            summary: plan.summary.clone(),
-                        },
-                    )?;
-                    if let Some(handoff) = plan.handoff {
-                        self.append(
-                            params,
-                            Event::Handoff {
-                                seq: 0,
-                                keep: handoff.keep,
-                                summarize: handoff.summarize,
-                                drop_ids: handoff.drop_ids,
-                                resume_actions: handoff.resume_actions,
-                            },
-                        )?;
-                    }
-                    let assembled = Assembled {
-                        message: plan.summary,
-                        usage: kn9t_provider_core::Usage {
-                            tokens: Tokens::default(),
-                            model: params.model.r#ref.clone(),
-                        },
-                        stop: StopReason::Stop,
-                        usage_reported: false,
-                    };
-                    return Ok(Attempt::Completed(assembled));
-                }
-                Err(e) => {
-                    self.bus.emit(LiveEvent::Error { message: format!("compactor failed: {e}") });
-                    return Err(ReactError::Provider(format!("compactor failed: {e}")));
-                }
-            }
+        // 96E-16/17: pluggable delegation — if a compactor is set, use it. If none is
+        // installed, compaction is fail-closed: the turn ends (CompactionUnavailable),
+        // the provider is never called, and nothing is persisted. The hardcoded
+        // inline-prompt fallback was removed (96E-17).
+        // Cancel is checked first: an ESC during a context-full turn is a clean abort,
+        // unrelated to compactor availability.
+        if cancel.cancelled() {
+            self.bus.emit(LiveEvent::TurnStatus { phase: "aborted".into(), message: String::new() });
+            return Ok(Attempt::AbortedInStream(estimated_assembled(&params.model.r#ref)));
         }
-        // Interim compaction prompt (SPEC-OPEN sec.18.1). Wording not frozen.
-        let mut msgs = span.messages.clone();
-        msgs.push(Message {
-            id: MsgId::new(),
-            role: Role::User,
-            content: vec![Content::Text {
-                text: "Summarize the conversation so far, preserving decisions, file paths, \
-                       and open tasks, so it can replace the older messages."
-                    .to_string(),
-            }],
-            silent: false,
-        });
-        let no_tools = Vec::new();
-        let no_cache = Vec::new();
-        let req = Request {
-            model: &params.model,
-            system: None,
-            messages: &msgs,
-            tools: &no_tools,
-            thinking: params.thinking,
-            max_tokens: params.max_tokens,
-            cache: &no_cache,
+        let Some(compactor) = &self.compactor else {
+            self.bus.emit(LiveEvent::Error { message: "context overflow — compaction required but no compactor plugin is installed; session cannot continue".into() });
+            return Err(ReactError::CompactionUnavailable);
         };
-        // Reuse the shared provider-attempt abstraction (explicitly distinguishes
-        // completed / cancelled / failed / malformed-incomplete).
-        let attempt = self.provider_attempt(&req, cancel, &params.model.r#ref)?;
-        match attempt {
-            Attempt::Completed(a) => {
-                self.record_usage(params, &a.usage, UsageKind::Compaction, !a.usage_reported)?;
+        match compactor.compact(span.clone(), &params.model.r#ref) {
+            Ok(plan) => {
+                if let Some(handoff) = &plan.handoff {
+                    let known: Vec<kn9t_provider_core::CallId> = span
+                        .messages
+                        .iter()
+                        .flat_map(|m| &m.content)
+                        .filter_map(|c| match c {
+                            Content::ToolCall { id, .. } => Some(id.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let ev = Event::Handoff {
+                        seq: 0,
+                        keep: handoff.keep.clone(),
+                        summarize: handoff.summarize.clone(),
+                        drop_ids: handoff.drop_ids.clone(),
+                        resume_actions: handoff.resume_actions.clone(),
+                    };
+                    if let Err(e) = kn9t_provider_core::validate_handoff(&ev, &known) {
+                        self.bus.emit(LiveEvent::Error { message: format!("compactor handoff validation failed: {e}") });
+                        return Err(ReactError::Provider(format!("compactor handoff validation failed: {e}")));
+                    }
+                }
                 self.append(
                     params,
                     Event::Compacted {
                         seq: 0,
                         replaced: span.replaced,
-                        summary: a.message.clone(),
+                        summary: plan.summary.clone(),
                     },
                 )?;
-                Ok(Attempt::Completed(a))
+                if let Some(handoff) = plan.handoff {
+                    self.append(
+                        params,
+                        Event::Handoff {
+                            seq: 0,
+                            keep: handoff.keep,
+                            summarize: handoff.summarize,
+                            drop_ids: handoff.drop_ids,
+                            resume_actions: handoff.resume_actions,
+                        },
+                    )?;
+                }
+                let assembled = Assembled {
+                    message: plan.summary,
+                    usage: kn9t_provider_core::Usage {
+                        tokens: Tokens::default(),
+                        model: params.model.r#ref.clone(),
+                    },
+                    stop: StopReason::Stop,
+                    usage_reported: false,
+                };
+                return Ok(Attempt::Completed(assembled));
             }
-            Attempt::AbortedInStream(a) => {
-                // Cancelled: usage accounting is correct (estimated if !reported), but
-                // partially compacted state is never committed as successful.
-                self.record_usage(params, &a.usage, UsageKind::Compaction, !a.usage_reported)?;
-                Ok(Attempt::AbortedInStream(a))
+            Err(e) => {
+                self.bus.emit(LiveEvent::Error { message: format!("compactor failed: {e}") });
+                return Err(ReactError::Provider(format!("compactor failed: {e}")));
             }
-            Attempt::Truncated => Ok(Attempt::Truncated),
-            Attempt::ContextOverflow => Ok(Attempt::ContextOverflow),
         }
     }
 

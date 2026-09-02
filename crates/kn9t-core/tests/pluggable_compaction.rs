@@ -24,17 +24,17 @@ fn p1_96e16_handoff_event_is_durable() {
 }
 
 #[test]
-fn p1_96e16_compactor_trait_exists_and_has_fallback() {
-    use kn9t_core::{CompactSpan, Compactor, CompactionPlan, Message, MsgId, Role, Content, SeqRange};
-    // Compactor trait must exist
+fn p1_96e17_compactor_trait_exists_model_passed() {
+    use kn9t_core::{CompactSpan, Compactor, CompactionPlan, Message, ModelRef, MsgId, Role, Content, SeqRange};
+    // Compactor trait must exist and receive the session model (96E-17 wire needs it).
     struct NoopCompactor;
     impl Compactor for NoopCompactor {
-        fn compact(&self, span: CompactSpan, _history: &[Message]) -> Result<CompactionPlan, String> {
-            // echo back a summary derived from span
+        fn compact(&self, span: CompactSpan, model: &ModelRef) -> Result<CompactionPlan, String> {
+            // echo back a summary derived from span + model
             let summary = Message {
                 id: MsgId::new(),
                 role: Role::Assistant,
-                content: vec![Content::Text { text: format!("summary of {} msgs", span.messages.len()) }],
+                content: vec![Content::Text { text: format!("summary of {} msgs via {}", span.messages.len(), model.id) }],
                 silent: false,
             };
             Ok(CompactionPlan { summary, handoff: None })
@@ -45,14 +45,15 @@ fn p1_96e16_compactor_trait_exists_and_has_fallback() {
         replaced: SeqRange { start: 1, end: 2 },
         messages: vec![Message { id: MsgId::new(), role: Role::User, content: vec![Content::Text { text: "hi".into() }], silent: false }],
     };
-    let plan = c.compact(span, &[]).unwrap();
-    assert!(plan.summary.content.iter().any(|c| matches!(c, Content::Text { text } if text.contains("summary"))));
+    let model = ModelRef { provider: "test".into(), id: "m-1".into() };
+    let plan = c.compact(span, &model).unwrap();
+    assert!(plan.summary.content.iter().any(|c| matches!(c, Content::Text { text } if text.contains("summary of 1 msgs via m-1"))));
     assert!(plan.handoff.is_none());
 }
 
 #[test]
 fn p1_96e16_handoff_callid_validation() {
-    use kn9t_core::{CallId, Event, Message, MsgId, Role, Content};
+    use kn9t_core::{CallId, Event};
     // Host must be able to validate CallIds in a Handoff against known session CallIds.
     // We test the helper that will be added to core.
     let known = vec![CallId("keep-1".into()), CallId("sum-1".into())];

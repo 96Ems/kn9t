@@ -509,17 +509,26 @@ fn truncation_gives_up() {
 
 #[test]
 fn compaction_replan_once() {
-    // Store returns compact:Some twice. The loop must run exactly one summarize call then
-    // hard error -- never two.
-    let summary = concat!(
-        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"summary\"}\n\n",
-        "data: {\"chunk\":\"stop\",\"tool_use\":null}\n\n",
-        "data: [DONE]\n\n",
-    );
-    let provider = Arc::new(ScriptedProvider::new(vec![
-        // Only the compaction summarize call should ever reach the provider.
-        StreamScript::Fixture(fixture_from_body(summary)),
-    ]));
+    // Store returns compact:Some twice. With a compactor installed the loop runs the
+    // compactor exactly once, re-plans, and a second compact demand is a hard error —
+    // the compactor must never run twice (R-RCT-090).
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct OnceCompactor { calls: Arc<AtomicUsize> }
+    impl kn9t_core::Compactor for OnceCompactor {
+        fn compact(&self, span: kn9t_core::CompactSpan, _model: &kn9t_core::ModelRef) -> Result<kn9t_core::CompactionPlan, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let summary = kn9t_core::Message {
+                id: kn9t_core::MsgId::new(),
+                role: kn9t_core::Role::Assistant,
+                content: vec![kn9t_core::Content::Text { text: format!("summary of {} msgs", span.messages.len()) }],
+                silent: false,
+            };
+            Ok(kn9t_core::CompactionPlan { summary, handoff: None })
+        }
+    }
+    let compactor_calls = Arc::new(AtomicUsize::new(0));
+    // The provider must never be hit: the compactor replaces the summarize call.
+    let provider = Arc::new(ScriptedProvider::new(vec![]));
     let store = Arc::new(
         StubStore::new(PlanScript::plain(vec![])).script(vec![
             PlanScript::compacting(),
@@ -533,17 +542,14 @@ fn compaction_replan_once() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(), compactor: None };
+        bus: bus.clone(), compactor: Some(Arc::new(OnceCompactor { calls: compactor_calls.clone() })) };
     let res = looop.run(run_params(&store));
     assert!(res.is_err(), "second compact demand must be a hard error");
-    // Exactly one provider call (the single summarize).
-    assert_eq!(*provider.calls.lock().unwrap(), 1);
-    // Usage attributed to Compaction, and a Compacted event was appended.
+    // Exactly one compactor call (the first); the second demand errors before delegation.
+    assert_eq!(compactor_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(*provider.calls.lock().unwrap(), 0, "compactor path must not call the provider");
+    // First compaction did commit a Compacted event.
     let appended = store.appended.lock().unwrap();
-    assert!(appended.iter().any(|e| matches!(
-        e,
-        Event::UsageRecorded { kind: kn9t_core::UsageKind::Compaction, .. }
-    )));
     assert!(appended
         .iter()
         .any(|e| matches!(e, Event::Compacted { .. })));
@@ -1423,32 +1429,21 @@ fn p1_96e11_compaction_cancel_does_not_commit() {
 }
 
 #[test]
-fn p1_96e11_compaction_cancel_usage_accounted() {
+fn p1_96e17_compaction_cancel_pre_fail_closed_aborts_cleanly() {
     use kn9t_core::{Cancel, Event, UsageKind};
+    // 96E-17: pre-cancelled + fail-closed => clean AbortedInStream (cancel is checked
+    // before compactor availability), nothing persisted, no usage rows (nothing was
+    // ever spent — the provider and compactor are never reached).
     let store = Arc::new(
         StubStore::new(PlanScript::plain(vec![])).script(vec![
             PlanScript::compacting(),
             PlanScript::plain(vec![]),
         ]),
     );
-    // Summary fixture WITHOUT usage chunk — tests estimated flag
-    let summary_no_usage = concat!(
-        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"summary\"}\n\n",
-        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
-        "data: [DONE]\n\n",
-    );
-    let main = concat!(
-        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"main\"}\n\n",
-        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
-        "data: [DONE]\n\n",
-    );
-    let provider = Arc::new(ScriptedProvider::new(vec![
-        StreamScript::Fixture(fixture_from_body(summary_no_usage)),
-        StreamScript::Fixture(fixture_from_body(main)),
-    ]));
+    let provider = Arc::new(ScriptedProvider::new(vec![]));
     let bus = Arc::new(RecordingBus::new());
     let looop = ReactLoop {
-        provider,
+        provider: provider.clone(),
         store: store.clone(),
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
@@ -1458,30 +1453,20 @@ fn p1_96e11_compaction_cancel_usage_accounted() {
     cancel.cancel();
     let mut params = run_params(&store);
     params.cancel = Some(cancel);
-    let _ = looop.run(params);
+    let res = looop.run(params);
+    // A pre-cancelled turn must abort cleanly — NOT fail with CompactionUnavailable.
+    assert!(res.is_ok(), "pre-cancelled fail-closed turn must abort cleanly");
+    assert_eq!(*provider.calls.lock().unwrap(), 0, "cancelled turn must never reach the provider");
     let appended = store.appended.lock().unwrap();
     // Must NOT have Compacted
     assert!(
         !appended.iter().any(|e| matches!(e, Event::Compacted { .. })),
         "cancelled compaction must not commit Compacted"
     );
-    // Usage accounting: a UsageRecorded with kind Compaction must exist, estimated=true (no usage chunk)
-    let usage = appended.iter().find_map(|e| {
-        if let Event::UsageRecorded { kind, estimated, .. } = e {
-            if *kind == UsageKind::Compaction {
-                return Some((*estimated, kind.clone()));
-            }
-        }
-        None
-    });
+    // No compaction usage: nothing was spent.
     assert!(
-        usage.is_some(),
-        "cancelled compaction must still record UsageRecorded(kind=Compaction), got {:?}",
-        appended.iter().map(|e| event_tag(e)).collect::<Vec<_>>()
-    );
-    assert!(
-        usage.unwrap().0,
-        "usage without provider chunk must be estimated=true"
+        !appended.iter().any(|e| matches!(e, Event::UsageRecorded { kind: UsageKind::Compaction, .. })),
+        "nothing was spent, so no Compaction usage row may exist"
     );
 }
 
@@ -1570,8 +1555,11 @@ fn p1_96e11_compaction_cancel_is_deterministic() {
 // ── 96E-16: pluggable compaction + handoff ───────────────────────────────
 
 #[test]
-fn p1_96e16_default_compaction_still_uses_provider() {
-    // No compactor set => fallback to provider (hardcoded prompt) must still work.
+fn p1_96e17_no_compactor_is_fail_closed() {
+    // 96E-17: no compactor installed => NO compaction at all (the hardcoded prompt
+    // fallback is gone). The turn that hits a compaction demand fails with
+    // CompactionUnavailable, nothing is persisted, and the provider is never
+    // called for summarization.
     let store = Arc::new(
         StubStore::new(PlanScript::plain(vec![])).script(vec![
             PlanScript::compacting(),
@@ -1579,18 +1567,12 @@ fn p1_96e16_default_compaction_still_uses_provider() {
             PlanScript::plain(vec![]),
         ]),
     );
-    let summary = concat!(
-        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"fallback summary\"}\n\n",
-        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
-        "data: [DONE]\n\n",
-    );
     let main = concat!(
         "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"main\"}\n\n",
         "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
         "data: [DONE]\n\n",
     );
     let provider = Arc::new(ScriptedProvider::new(vec![
-        StreamScript::Fixture(fixture_from_body(summary)),
         StreamScript::Fixture(fixture_from_body(main)),
     ]));
     let bus = Arc::new(RecordingBus::new());
@@ -1602,10 +1584,25 @@ fn p1_96e16_default_compaction_still_uses_provider() {
         hooks: Arc::new(kn9t_react::NoopHookHost),
         bus: bus.clone(), compactor: None };
     let res = looop.run(run_params(&store));
-    assert!(res.is_ok(), "fallback compaction should succeed");
+    assert!(
+        matches!(res, Err(kn9t_react::ReactError::CompactionUnavailable)),
+        "no compactor must fail closed with CompactionUnavailable"
+    );
     let appended = store.appended.lock().unwrap();
-    assert!(appended.iter().any(|e| matches!(e, Event::Compacted { .. })), "fallback must have Compacted");
-    assert_eq!(*provider.calls.lock().unwrap(), 2, "fallback compaction + main = 2 provider calls");
+    assert!(
+        !appended.iter().any(|e| matches!(e, Event::Compacted { .. })),
+        "fail-closed must not persist Compacted"
+    );
+    assert!(
+        !appended.iter().any(|e| matches!(e, Event::Handoff { .. })),
+        "fail-closed must not persist Handoff"
+    );
+    assert_eq!(*provider.calls.lock().unwrap(), 0, "fail-closed must not call the provider");
+    assert!(
+        bus.kinds().iter().any(|k| k == "Error"),
+        "must emit an Error on the live bus, got {:?}",
+        bus.kinds()
+    );
 }
 
 #[test]
@@ -1632,7 +1629,7 @@ fn p1_96e16_custom_compactor_overrides_provider_and_validates_ids() {
         calls: Arc<AtomicUsize>,
     }
     impl Compactor for CountingCompactor {
-        fn compact(&self, span: CompactSpan, _history: &[Message]) -> Result<CompactionPlan, String> {
+        fn compact(&self, span: CompactSpan, _model: &kn9t_core::ModelRef) -> Result<CompactionPlan, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             // Must cite a known CallId
             let summary = Message {
@@ -1717,7 +1714,7 @@ fn p1_96e16_handoff_validation_rejects_hallucinated_id() {
 
     struct HallucinatingCompactor;
     impl Compactor for HallucinatingCompactor {
-        fn compact(&self, _span: CompactSpan, _history: &[Message]) -> Result<CompactionPlan, String> {
+        fn compact(&self, _span: CompactSpan, _model: &kn9t_core::ModelRef) -> Result<CompactionPlan, String> {
             let summary = Message { id: MsgId::new(), role: Role::Assistant, content: vec![Content::Text { text: "bad".into() }], silent: false };
             let handoff = HandoffPlanData {
                 keep: vec![CallId("hallucinated-id".into())],

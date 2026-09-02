@@ -33,3 +33,6 @@ out.txt
 
 # python venv (uv)
 .venv/
+
+# MCP tui-test captures (test artifacts)
+artifacts/

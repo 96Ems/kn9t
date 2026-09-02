@@ -141,16 +141,18 @@ pub struct CompactionPlan {
     pub handoff: Option<HandoffPlanData>,
 }
 
-/// 96E-16 — pluggable compaction delegate, analogous to `PluginProvider`.
+/// 96E-16/17 — pluggable compaction delegate, analogous to `PluginProvider`.
 ///
-/// The host keeps the current hardcoded inline logic as the default/fallback when no
-/// compactor plugin is installed (same fail-open posture as the rest of the plugin system).
-/// When set, `ReactLoop::run_compaction` delegates to this trait instead of calling the
-/// provider with the fixed prompt; `validate_handoff` is applied host-side before any
-/// `Handoff` is persisted (host-side is safer — cannot be bypassed by a buggy/malicious
-/// compactor).
+/// When set, `ReactLoop::run_compaction` delegates to this trait; `validate_handoff`
+/// is applied host-side before any `Handoff` is persisted (host-side is safer — cannot
+/// be bypassed by a buggy/malicious compactor).
+///
+/// 96E-17: when no compactor is installed (`None`), compaction is **fail-closed** — the
+/// turn errors with `ReactError::CompactionUnavailable` and nothing is persisted. The
+/// hardcoded inline-prompt fallback was removed; without a compactor plugin a session
+/// simply ends when its context window is exhausted.
 pub trait Compactor: Send + Sync {
-    fn compact(&self, span: CompactSpan, history: &[Message]) -> Result<CompactionPlan, String>;
+    fn compact(&self, span: CompactSpan, model: &ModelRef) -> Result<CompactionPlan, String>;
 }
 
 // -- R-CORE-270: approval (ADR-0008) --
