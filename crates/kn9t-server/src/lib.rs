@@ -26,6 +26,7 @@ pub mod bus;
 pub mod config;
 pub mod policy;
 pub mod http_util;
+pub mod host_api;
 pub mod lease;
 pub mod log;
 pub mod router;

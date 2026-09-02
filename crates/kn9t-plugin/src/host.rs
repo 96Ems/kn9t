@@ -5,6 +5,7 @@
 //! Accepts `Box<dyn Read+Send>` + `Box<dyn Write+Send>` so tests wire in-process pipes.
 
 use crate::codec::{hook_name_str, write_host_msg, HostMsg, PluginDeclaration, PluginMsg};
+use crate::host_api::HostApi;
 
 /// Internal channel message — what the reader thread delivers per-call.
 #[derive(Debug)]
@@ -93,6 +94,9 @@ pub struct PluginHost {
     /// is poisoned; new calls fail fast and the reader terminates.
     unhealthy: Arc<std::sync::atomic::AtomicBool>,
     poison_reason: Arc<Mutex<Option<String>>>,
+    /// 96E-17: plugin → host API handler (host_api capability). Requests are
+    /// dispatched to a worker thread so a slow op never blocks the reader (96E-9).
+    api_handler: Arc<Mutex<Option<Arc<dyn HostApi>>>>,
 }
 
 impl PluginHost {
@@ -118,12 +122,15 @@ impl PluginHost {
         // 96E-10: health flag shared with reader thread
         let unhealthy: Arc<std::sync::atomic::AtomicBool> = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let poison_reason: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let api_handler: Arc<Mutex<Option<Arc<dyn HostApi>>>> = Arc::new(Mutex::new(None));
         let unhealthy_for_reader = Arc::clone(&unhealthy);
         let poison_for_reader = Arc::clone(&poison_reason);
 
         // Spawn reader thread — dispatches to per-call channels by ID.
         // KV requests (KvGet/KvSet/KvDel/KvDelScope) are handled inline here;
         // they never touch the pending_calls map.
+        let api_for_reader = Arc::clone(&api_handler);
+        let name_for_reader = plugin_name.clone();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(read);
             loop {
@@ -211,6 +218,55 @@ impl PluginHost {
                             let _ = write_host_msg(&mut **w, &reply);
                         }
                     }
+                    // ── 96E-17: plugin → host API request ──────────────────
+                    // Dispatched to a worker thread: a slow op (provider_complete)
+                    // must never block the reader (96E-9). The session id travels
+                    // INSIDE the payload (TLS session is turn-thread-local, 96E-5).
+                    PluginMsg::Request { id, op, payload } => {
+                        let handler = api_for_reader.lock().unwrap().clone();
+                        let writer = Arc::clone(&writer_clone);
+                        let name = name_for_reader.clone();
+                        let payload = payload.clone();
+                        match handler {
+                            None => {
+                                let reply = HostMsg::ApiResult {
+                                    id,
+                                    ok: false,
+                                    result: None,
+                                    error: Some("host API not enabled (no handler registered)".into()),
+                                };
+                                if let Ok(mut w) = writer.lock() {
+                                    let _ = write_host_msg(&mut **w, &reply);
+                                }
+                            }
+                            Some(h) => {
+                                std::thread::spawn(move || {
+                                    let session = payload
+                                        .get("session")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
+                                    let outcome = h.handle(&name, session.as_deref(), &op, &payload);
+                                    let reply = match outcome {
+                                        Ok(result) => HostMsg::ApiResult {
+                                            id,
+                                            ok: true,
+                                            result: Some(result),
+                                            error: None,
+                                        },
+                                        Err(e) => HostMsg::ApiResult {
+                                            id,
+                                            ok: false,
+                                            result: None,
+                                            error: Some(e),
+                                        },
+                                    };
+                                    if let Ok(mut w) = writer.lock() {
+                                        let _ = write_host_msg(&mut **w, &reply);
+                                    }
+                                });
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -262,6 +318,7 @@ impl PluginHost {
             kv,
             unhealthy,
             poison_reason,
+            api_handler,
         }
     }
 
@@ -309,7 +366,7 @@ impl PluginHost {
     }
 
     /// Get the current session ID (if set) — thread-local.
-    fn session_id(&self) -> Option<String> {
+    pub fn session_id(&self) -> Option<String> {
         TL_SESSION.with(|c| c.borrow().clone())
     }
 
@@ -398,6 +455,16 @@ impl PluginHost {
     /// Whether this plugin subscribes to a given hook.
     pub fn has_hook(&self, hook: HookName) -> bool {
         self.declaration.hooks.contains(&hook)
+    }
+
+    /// 96E-17: whether the plugin declared a given capability in its hello.
+    pub fn has_capability(&self, cap: &str) -> bool {
+        self.declaration.capabilities.iter().any(|c| c == cap)
+    }
+
+    /// 96E-17: install the plugin → host API handler (server-side ops).
+    pub fn set_api_handler(&self, api: Arc<dyn HostApi>) {
+        *self.api_handler.lock().unwrap() = Some(api);
     }
 
     /// Whether this plugin subscribes to a given event kind string.

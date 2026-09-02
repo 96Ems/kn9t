@@ -115,6 +115,7 @@ fn run() -> std::io::Result<()> {
     }
     
     let state = Arc::new(state);
+    state.install_host_api();
 
     // ── Bind + start ──────────────────────────────────────────────────────────
     let handle = ServerHandle::spawn(state)?;

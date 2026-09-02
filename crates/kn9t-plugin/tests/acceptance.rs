@@ -1094,4 +1094,181 @@ mod plug {
         }
     }
 
+    // ── 96E-17: plugin → host API (host_api capability) ─────────────────────
+
+    #[test]
+    fn p1_96e17_host_api_request_roundtrip() {
+        use kn9t_plugin::host_api::HostApi;
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+
+        // "Plugin" side: send a request, expect an ApiResult reply.
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let script = std::thread::spawn(move || {
+            // Wait until the host has installed its API handler (no read race).
+            ready_rx.recv().unwrap();
+            let mut writer = p_write;
+            write_plugin_msg(
+                &mut writer,
+                &PluginMsg::Request {
+                    id: 7,
+                    op: "session_read".to_string(),
+                    payload: json!({"session": "s1", "start": 0, "end": 5}),
+                },
+            )
+            .unwrap();
+            let mut reader = BufReader::new(p_read);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let reply: HostMsg = serde_json::from_str(line.trim_end()).unwrap();
+            let HostMsg::ApiResult { id, ok, result, error } = reply else {
+                panic!("expected ApiResult, got {line}");
+            };
+            assert_eq!(id, 7, "reply must echo the request id");
+            assert!(ok, "handler succeeded, error={error:?}");
+            assert!(error.is_none());
+            let result = result.expect("ok reply carries a result");
+            assert_eq!(result["messages"][0]["seq"], 5, "handler output passes through");
+        });
+
+        struct DummyApi;
+        impl HostApi for DummyApi {
+            fn handle(
+                &self,
+                plugin: &str,
+                session: Option<&str>,
+                op: &str,
+                payload: &serde_json::Value,
+            ) -> Result<serde_json::Value, String> {
+                assert_eq!(plugin, "t", "plugin name is passed");
+                assert_eq!(session, Some("s1"), "session rides inside the payload");
+                assert_eq!(op, "session_read");
+                Ok(json!({"messages": [{"seq": payload["end"]}]}))
+            }
+        }
+
+        let host = PluginHost::from_io(h_read, h_write, decl("t", vec![]), Arc::new(NoOpPluginKv));
+        host.set_api_handler(Arc::new(DummyApi));
+        ready_tx.send(()).unwrap();
+        script.join().unwrap();
+        assert!(host.is_healthy());
+    }
+
+    #[test]
+    fn p1_96e17_host_api_request_error_reply() {
+        use kn9t_plugin::host_api::HostApi;
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let script = std::thread::spawn(move || {
+            ready_rx.recv().unwrap();
+            let mut writer = p_write;
+            write_plugin_msg(
+                &mut writer,
+                &PluginMsg::Request {
+                    id: 3,
+                    op: "nope".to_string(),
+                    payload: json!({}),
+                },
+            )
+            .unwrap();
+            let mut reader = BufReader::new(p_read);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let reply: HostMsg = serde_json::from_str(line.trim_end()).unwrap();
+            let HostMsg::ApiResult { id, ok, result, error } = reply else {
+                panic!("expected ApiResult, got {line}");
+            };
+            assert_eq!(id, 3);
+            assert!(!ok, "unknown op must fail");
+            assert!(result.is_none());
+            assert!(error.unwrap().contains("unknown host API op"));
+        });
+
+        struct FailingApi;
+        impl HostApi for FailingApi {
+            fn handle(
+                &self,
+                _plugin: &str,
+                _session: Option<&str>,
+                _op: &str,
+                _payload: &serde_json::Value,
+            ) -> Result<serde_json::Value, String> {
+                Err("unknown host API op \"nope\"".to_string())
+            }
+        }
+
+        let host = PluginHost::from_io(h_read, h_write, decl("t", vec![]), Arc::new(NoOpPluginKv));
+        host.set_api_handler(Arc::new(FailingApi));
+        ready_tx.send(()).unwrap();
+        script.join().unwrap();
+        assert!(host.is_healthy(), "an op error must not poison the connection");
+    }
+
+    // ── 96E-16/17: RemoteCompactor delegation over the hook wire ────────────
+
+    #[test]
+    fn p1_96e17_remote_compactor_roundtrip() {
+        use kn9t_core::{CompactSpan, Compactor as _, ModelRef, SeqRange};
+        use kn9t_plugin::RemoteCompactor;
+
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+        // The compactor plugin answers compactor_compact with a plan.
+        let reply_body = json!({
+            "summary": {
+                "id": "m1",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "resume"}],
+                "silent": false
+            },
+            "handoff": {
+                "keep": ["t1"],
+                "summarize": [],
+                "drop": [],
+                "resume_actions": ["go on"]
+            }
+        });
+        spawn_plugin_responder(p_read, p_write, reply_body);
+
+        let mut d = decl("compactor", vec![]);
+        d.capabilities = vec!["compactor".to_string()];
+        let host = PluginHost::from_io(h_read, h_write, d, Arc::new(NoOpPluginKv));
+        // The server calls set_session on the turn thread; session_id() then
+        // travels in the hook payload.
+        host.set_session("sess-1");
+        let rc = RemoteCompactor::new(Arc::new(host));
+
+        let span = CompactSpan {
+            replaced: SeqRange { start: 1, end: 5 },
+            messages: vec![],
+        };
+        let model = ModelRef { provider: "p".to_string(), id: "m".to_string() };
+        let plan = rc.compact(span, &model).expect("compact must succeed");
+        let txt = plan.summary.content.iter().find_map(|c| match c {
+            Content::Text { text } => Some(text.clone()),
+            _ => None,
+        });
+        assert_eq!(txt.as_deref(), Some("resume"), "summary message parsed from wire");
+        let h = plan.handoff.expect("handoff attached");
+        assert_eq!(h.keep[0].0, "t1");
+        assert_eq!(h.resume_actions, vec!["go on".to_string()]);
+    }
+
+    #[test]
+    fn p1_96e17_remote_compactor_error_reply() {
+        use kn9t_core::{CompactSpan, Compactor as _, ModelRef, SeqRange};
+        use kn9t_plugin::RemoteCompactor;
+
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+        spawn_plugin_responder(p_read, p_write, json!({"error": "compactor blew up"}));
+
+        let mut d = decl("compactor", vec![]);
+        d.capabilities = vec!["compactor".to_string()];
+        let host = PluginHost::from_io(h_read, h_write, d, Arc::new(NoOpPluginKv));
+        let rc = RemoteCompactor::new(Arc::new(host));
+        let span = CompactSpan { replaced: SeqRange { start: 1, end: 5 }, messages: vec![] };
+        let model = ModelRef { provider: "p".to_string(), id: "m".to_string() };
+        let err = rc.compact(span, &model).map_err(|e| e.clone()).err().expect("error reply must surface as Err");
+        assert!(err.contains("blew up"), "plugin error message propagates, got {err}");
+    }
+
 } // mod plug

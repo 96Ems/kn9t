@@ -4,7 +4,7 @@ use std::thread;
 
 use kn9t_provider_core::{
     Cancel, Content, Decision, Event, HookVeto, LiveEvent, Message, ModelRef, MsgId, ProvErr,
-    Request, Role, StopReason, Tokens, ToolCall, ToolCtx, Usage, UsageKind,
+    Request, Role, StopReason, Tokens, ToolCall, ToolCtx, Usage,
 };
 
 use crate::assembler::{assemble, Assembled};

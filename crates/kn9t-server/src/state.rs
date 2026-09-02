@@ -239,7 +239,7 @@ impl ServerState {
     ///
     /// In-flight calls that miss step 3 get a synthetic error result at the call site
     /// (the pending channel is dropped / returns `disconnected`).
-    pub fn reload_plugin(&self, name: &str) -> Result<(String, usize), String> {
+    pub fn reload_plugin(self: &Arc<Self>, name: &str) -> Result<(String, usize), String> {
         // 0. Lookup host and spawn recipe (hold lock briefly).
         let (old_host, cmd, env) = {
             let hosts = self.plugin_hosts.lock().expect("hosts poisoned");
@@ -287,6 +287,8 @@ impl ServerState {
             crate::log!("hot-reload: warning: plugin declared name '{}' differs from requested '{}' — using declared name for registry", new_decl_name, name);
         }
         let new_host = Arc::new(new_host);
+        // 96E-17: the respawned host gets the plugin → host API handler too.
+        new_host.set_api_handler(Arc::new(crate::host_api::ServerHostApi { state: self.clone() }));
         let new_tools = crate::tools::extract_tools_public(&new_host);
 
         // 5. swap host and rebuild registry (dedup, first wins, same as startup).
@@ -330,6 +332,16 @@ impl ServerState {
     pub fn with_lease_idle(mut self, d: Duration) -> Self {
         self.leases = LeaseMap::new(d);
         self
+    }
+
+    /// 96E-17: install the plugin → host API (host_api capability) on every
+    /// plugin host. Must be called once after `Arc::new(state)` (the handler
+    /// holds an `Arc<ServerState>`).
+    pub fn install_host_api(self: &Arc<Self>) {
+        let api = Arc::new(crate::host_api::ServerHostApi { state: self.clone() });
+        for host in self.plugin_hosts.lock().expect("hosts poisoned").iter() {
+            host.set_api_handler(api.clone());
+        }
     }
     pub fn with_idle_exit(mut self, d: Duration) -> Self {
         self.idle = IdleTracker::new(d);

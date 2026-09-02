@@ -2057,4 +2057,188 @@ fn write_dummy_plugin(_path: &std::path::Path, _name: &str, _tool: &str) {
     panic!("plugin_reload test not supported on Windows in this harness");
 }
 
+// ── 96E-17: plugin → host API ops (host_api capability) ─────────────────────
+
+struct StubProvider {
+    text: String,
+}
+impl Provider for StubProvider {
+    fn name(&self) -> &str {
+        "stub"
+    }
+    fn stream(
+        &self,
+        _req: &Request<'_>,
+        _cancel: &Cancel,
+    ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
+        let chunks: Vec<Result<Chunk, ProvErr>> = vec![
+            Ok(Chunk::Text { idx: 0, delta: self.text.clone() }),
+            Ok(Chunk::Usage(Usage {
+                tokens: Tokens { input: 10, output: 20, cache_read: 0, cache_write: 0, reasoning: 0 },
+                model: ModelRef { provider: "test".into(), id: "m1".into() },
+            })),
+            Ok(Chunk::Stop(StopReason::Stop)),
+        ];
+        Ok(Box::new(chunks.into_iter()))
+    }
+}
+
+struct AllowAllApprover;
+impl Approver for AllowAllApprover {
+    fn request(&self, _call: &kn9t_core::ToolCall, _cwd: &std::path::Path, _reason: &str) -> kn9t_core::Decision {
+        kn9t_core::Decision::Allow
+    }
+}
+
+/// A trivial registry tool for tool_execute.
+struct EchoTool;
+impl kn9t_core::Tool for EchoTool {
+    fn spec(&self) -> &kn9t_core::ToolSpec {
+        static SPEC: std::sync::OnceLock<kn9t_core::ToolSpec> = std::sync::OnceLock::new();
+        SPEC.get_or_init(|| kn9t_core::ToolSpec {
+            name: "echo_tool".into(),
+            description: "echo".into(),
+            schema: serde_json::json!({"type":"object"}),
+            hidden: false,
+            effects: vec![],
+            policy: Default::default(),
+        })
+    }
+    fn execute(
+        &self,
+        args: &serde_json::Value,
+        _ctx: &kn9t_core::ToolCtx,
+        _cancel: &Cancel,
+    ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+        Ok(kn9t_core::ToolOutput {
+            content: vec![Content::Text { text: format!("echo:{}", args["msg"]) }],
+            details: None,
+            is_error: false,
+        })
+    }
+}
+
+#[test]
+fn p1_96e17_host_api_ops_session_read_provider_complete_tool_execute() {
+    use kn9t_plugin::HostApi as _;
+    use kn9t_server::host_api::ServerHostApi;
+
+    let (store, _tmp) = temp_store();
+    let spec = model_spec();
+    let mut state = ServerState::new(store.clone(), "test-token".into(), Default::default(), Vec::new())
+        .with_default_model(spec.clone())
+        .with_provider(Arc::new(StubProvider { text: "hello from stub".into() }));
+    state.model_registry = vec![spec.clone()];
+    let state = Arc::new(state);
+    {
+        // Approver must not block the test on interactive approval.
+        *state.approver.write().unwrap() = Arc::new(AllowAllApprover);
+        // A registry tool for tool_execute.
+        let mut reg = state.tools.lock().unwrap();
+        reg.push(Arc::new(EchoTool));
+    }
+
+    let sid = SessionId::new();
+    let model_ref = ModelRef { provider: "test".into(), id: "m1".into() };
+    kn9t_store::create_session(&store, &sid, "/cwd", &model_ref).unwrap();
+
+    store
+        .append(
+            &sid,
+            Event::MessageAppended {
+                seq: 0,
+                msg: kn9t_core::Message {
+                    id: MsgId::new(),
+                    role: Role::User,
+                    content: vec![Content::Text { text: "first".to_string() }],
+                    silent: false,
+                },
+            },
+        )
+        .unwrap();
+    store
+        .append(
+            &sid,
+            Event::MessageAppended {
+                seq: 0,
+                msg: kn9t_core::Message {
+                    id: MsgId::new(),
+                    role: Role::Assistant,
+                    content: vec![Content::ToolCall {
+                        id: kn9t_core::CallId("t1".into()),
+                        name: "echo_tool".into(),
+                        args_json: "{\"msg\":\"hi\"}".into(),
+                    }],
+                    silent: false,
+                },
+            },
+        )
+        .unwrap();
+
+    let api = ServerHostApi { state: state.clone() };
+    let sid_str = sid.0.clone();
+
+    // ── session_read ─────────────────────────────────────────────────────────
+    let r = api
+        .handle("plug", Some(&sid_str), "session_read", &serde_json::json!({"session": sid_str, "end": 99}))
+        .unwrap();
+    let msgs = r["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 2, "both appended messages readable");
+    assert_eq!(msgs[0]["role"], "user");
+    assert_eq!(msgs[1]["content"][0]["type"], "tool_call");
+    assert_eq!(msgs[1]["content"][0]["id"], "t1");
+
+    // ── provider_complete ────────────────────────────────────────────────────
+    let r = api
+        .handle(
+            "plug",
+            Some(&sid_str),
+            "provider_complete",
+            &serde_json::json!({
+                "session": sid_str,
+                "messages": [{
+                    "id": "u1",
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hi"}],
+                    "silent": false
+                }]
+            }),
+        )
+        .unwrap();
+    assert_eq!(r["content"][0]["text"], "hello from stub");
+    assert_eq!(r["stop"], "stop");
+    assert_eq!(r["usage"]["input"], 10);
+    assert_eq!(r["usage"]["output"], 20);
+
+    // Usage recorded in the session as Subagent (honest budget accounting).
+    let kinds = store
+        .query_strings(
+            "SELECT kind FROM usage WHERE session_id=?1",
+            &[&sid_str],
+        )
+        .unwrap();
+    assert!(
+        kinds.iter().any(|k| k == "subagent"),
+        "provider_complete usage must be recorded as subagent, got {kinds:?}"
+    );
+
+    // ── tool_execute (with policy) ───────────────────────────────────────────
+    let r = api
+        .handle(
+            "plug",
+            Some(&sid_str),
+            "tool_execute",
+            &serde_json::json!({"session": sid_str, "name": "echo_tool", "args": {"msg": "bonjour"}}),
+        )
+        .unwrap();
+    assert_eq!(r["is_error"], false);
+    assert_eq!(r["content"][0]["text"], "echo:\"bonjour\"");
+
+    // Unknown op → Err, unknown tool → Err.
+    assert!(api.handle("plug", Some(&sid_str), "nope", &serde_json::json!({})).is_err());
+    assert!(api
+        .handle("plug", Some(&sid_str), "tool_execute", &serde_json::json!({"name": "nope"}))
+        .is_err());
+}
+
 } // mod srv

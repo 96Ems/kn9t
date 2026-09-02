@@ -40,6 +40,16 @@ pub enum HostMsg {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// 96E-17 — reply to a plugin → host API `Request` (host_api capability).
+    /// `ok = true` → `result`; `ok = false` → `error`.
+    ApiResult {
+        id: u64,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 /// Messages the plugin sends to the host.
@@ -93,6 +103,11 @@ pub enum PluginMsg {
     KvDel { id: u64, scope: String, key: String },
     /// Plugin KV request — delete all keys in a scope. Host replies with `HostMsg::KvResult`.
     KvDelScope { id: u64, scope: String },
+    /// 96E-17 — plugin → host API request (host_api capability). The host runs
+    /// the named operation (e.g. `provider_complete`, `session_read`) and replies
+    /// with `HostMsg::ApiResult`. Ops are executed on a worker thread — the host
+    /// reader never blocks on a slow op (96E-9).
+    Request { id: u64, op: String, payload: serde_json::Value },
 }
 
 /// Provider declaration inside the plugin hello.

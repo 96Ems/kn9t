@@ -153,6 +153,30 @@ impl SqliteStore {
         Ok(out)
     }
 
+    /// Execute a query mapping every row through `f` (96E-17: multi-row reads
+    /// for the plugin host API — e.g. `session_read`).
+    pub fn query_rows<T, F>(
+        &self,
+        sql: &str,
+        params: &[&dyn rusqlite::types::ToSql],
+        f: F,
+    ) -> Result<Vec<T>, StoreErr>
+    where
+        F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    {
+        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+        let mut stmt = conn.prepare(sql).map_err(|e| StoreErr(format!("prepare: {e}")))?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params.iter().copied()))
+            .map_err(|e| StoreErr(format!("query: {e}")))?;
+        let mut f = f;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next().map_err(|e| StoreErr(format!("row: {e}")))? {
+            out.push(f(&r).map_err(|e| StoreErr(format!("row map: {e}")))?);
+        }
+        Ok(out)
+    }
+
     /// 96E-7 fix: atomic snapshot of durable payloads + head_seq.
     /// Holds the connection lock across both queries so a concurrent `append`
     /// cannot commit between them and cause a lost event during SSE attach.

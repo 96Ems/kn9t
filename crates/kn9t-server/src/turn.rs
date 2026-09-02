@@ -23,6 +23,19 @@ use crate::bus::SessionSink;
 use crate::state::ServerState;
 use crate::system_prompt;
 
+/// 96E-17: the first plugin host that declared the `compactor` capability
+/// becomes the compaction delegate. None when no plugin provides it — the loop
+/// is then fail-closed (compaction demanded → turn ends, session cannot
+/// continue). The plugin drives its own agent turn via the host_api ops.
+fn compactor_from_hosts(
+    hosts: &[Arc<kn9t_plugin::PluginHost>],
+) -> Option<Arc<dyn kn9t_core::Compactor>> {
+    hosts
+        .iter()
+        .find(|h| h.has_capability("compactor"))
+        .map(|h| Arc::new(kn9t_plugin::RemoteCompactor::new(h.clone())) as Arc<dyn kn9t_core::Compactor>)
+}
+
 /// Per-session cancellation handles for `abort` (R-SRV-060 command). A running turn
 /// registers its `Cancel`; `abort` fires it.
 static ABORTS: Mutex<Option<HashMap<String, Cancel>>> = Mutex::new(None);
@@ -196,7 +209,7 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
                 host.set_bus(sink.clone());
                 host.set_session(&session.0);
             }
-            Arc::new(ComposedHookHost::new(hosts))
+            Arc::new(ComposedHookHost::new(hosts.clone()))
         };
 
         let loop_ = ReactLoop {
@@ -205,7 +218,9 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             approver: state.approver_snapshot(),
             tools: state.tools_snapshot(),  // R-PLUG2-110: tools from plugin subprocess
             hooks,
-            bus: sink.clone(), compactor: None };
+            bus: sink.clone(),
+            compactor: compactor_from_hosts(&hosts),
+        };
 
         let params = RunParams {
             session: session.clone(),
