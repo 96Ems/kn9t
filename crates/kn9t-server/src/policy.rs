@@ -139,11 +139,21 @@ impl ApprovalCache {
     }
 
     pub fn is_approved(&self, session_id: Option<&str>, fp: &str) -> bool {
-        if self.persistent.lock().unwrap().contains(fp) {
+        if self
+            .persistent
+            .lock()
+            .expect("policy.rs: ApprovalCache::is_approved persistent lock poisoned")
+            .contains(fp)
+        {
             return true;
         }
         if let Some(sid) = session_id {
-            if let Some(set) = self.session.lock().unwrap().get(sid) {
+            if let Some(set) = self
+                .session
+                .lock()
+                .expect("policy.rs: ApprovalCache::is_approved session lock poisoned")
+                .get(sid)
+            {
                 if set.contains(fp) {
                     return true;
                 }
@@ -153,14 +163,22 @@ impl ApprovalCache {
     }
 
     pub fn approve_session(&self, session_id: String, fp: String) {
-        self.session.lock().unwrap().entry(session_id).or_default().insert(fp);
+        self.session
+            .lock()
+            .expect("policy.rs: ApprovalCache::approve_session session lock poisoned")
+            .entry(session_id)
+            .or_default()
+            .insert(fp);
     }
 
     /// Persist `fp` as `always`. Writes back to `config_path` under
     /// `[policy.approvals] always = [...]`. Returns error string on failure.
     pub fn approve_persistent(&self, fp: String) -> Result<(), String> {
         {
-            let mut guard = self.persistent.lock().unwrap();
+            let mut guard = self
+                .persistent
+                .lock()
+                .expect("policy.rs: ApprovalCache::approve_persistent persistent lock poisoned");
             if guard.contains(&fp) {
                 return Ok(());
             }
@@ -186,17 +204,43 @@ impl ApprovalCache {
         } else {
             toml::from_str(&text).map_err(|e| format!("parse config: {e}"))?
         };
-        // Ensure structure policy.approvals.always is an array
-        let always_arr = val
-            .as_table_mut().unwrap()
+        // Ensure structure policy.approvals.always is an array — malformed shapes return Err instead of panicking
+        let root = val
+            .as_table_mut()
+            .expect("policy.rs: config root must be a table — constructed as Table above");
+        let policy_val = root
             .entry("policy".to_string())
-            .or_insert(toml::Value::Table(toml::map::Map::new()))
-            .as_table_mut().unwrap()
+            .or_insert(toml::Value::Table(toml::map::Map::new()));
+        let policy_table = match policy_val.as_table_mut() {
+            Some(t) => t,
+            None => {
+                return Err(format!(
+                    "policy entry in {} is not a table",
+                    path.display()
+                ))
+            }
+        };
+        let approvals_val = policy_table
             .entry("approvals".to_string())
-            .or_insert(toml::Value::Table(toml::map::Map::new()))
-            .as_table_mut().unwrap()
+            .or_insert(toml::Value::Table(toml::map::Map::new()));
+        let approvals_table = match approvals_val.as_table_mut() {
+            Some(t) => t,
+            None => {
+                return Err(format!(
+                    "policy.approvals in {} is not a table",
+                    path.display()
+                ))
+            }
+        };
+        let always_arr = approvals_table
             .entry("always".to_string())
             .or_insert(toml::Value::Array(Vec::new()));
+        if !always_arr.is_array() {
+            return Err(format!(
+                "policy.approvals.always in {} is not an array",
+                path.display()
+            ));
+        }
         if let toml::Value::Array(arr) = always_arr {
             let already = arr.iter().any(|v| v.as_str() == Some(_new_fp));
             if !already {
@@ -212,10 +256,17 @@ impl ApprovalCache {
     }
 
     pub fn has_persistent(&self, fp: &str) -> bool {
-        self.persistent.lock().unwrap().contains(fp)
+        self.persistent
+            .lock()
+            .expect("policy.rs: ApprovalCache::has_persistent lock poisoned")
+            .contains(fp)
     }
     pub fn has_session(&self, sid: &str, fp: &str) -> bool {
-        self.session.lock().unwrap().get(sid).map_or(false, |s| s.contains(fp))
+        self.session
+            .lock()
+            .expect("policy.rs: ApprovalCache::has_session lock poisoned")
+            .get(sid)
+            .map_or(false, |s| s.contains(fp))
     }
 }
 
@@ -251,33 +302,59 @@ impl ApprovalRegistry {
             decision: Mutex::new(None),
             cvar: Condvar::new(),
         });
-        self.inner.lock().unwrap().insert(id, slot.clone());
-        self.meta.lock().unwrap().insert(id, meta);
+        self.inner
+            .lock()
+            .expect("policy.rs: ApprovalRegistry::create inner lock poisoned")
+            .insert(id, slot.clone());
+        self.meta
+            .lock()
+            .expect("policy.rs: ApprovalRegistry::create meta lock poisoned")
+            .insert(id, meta);
         slot
     }
 
     fn remove(&self, id: u64) {
-        self.inner.lock().unwrap().remove(&id);
-        self.meta.lock().unwrap().remove(&id);
+        self.inner
+            .lock()
+            .expect("policy.rs: ApprovalRegistry::remove inner lock poisoned")
+            .remove(&id);
+        self.meta
+            .lock()
+            .expect("policy.rs: ApprovalRegistry::remove meta lock poisoned")
+            .remove(&id);
     }
 
     /// Block until `id` is resolved. Caller must have created the slot.
     fn wait(&self, slot: Arc<ApprovalSlot>) -> Decision {
-        let mut guard = slot.decision.lock().unwrap();
+        let mut guard = slot
+            .decision
+            .lock()
+            .expect("policy.rs: ApprovalRegistry::wait decision lock poisoned");
         while guard.is_none() {
-            guard = slot.cvar.wait(guard).unwrap();
+            guard = slot
+                .cvar
+                .wait(guard)
+                .expect("policy.rs: ApprovalRegistry::wait condvar wait poisoned");
         }
-        guard.clone().unwrap()
+        guard
+            .clone()
+            .expect("policy.rs: ApprovalRegistry::wait decision must be Some after wait loop")
     }
 
     /// Resolve `id` with `decision`, waking any waiter. Returns true if found.
     pub fn resolve(&self, id: u64, decision: Decision) -> bool {
         let slot = {
-            let map = self.inner.lock().unwrap();
+            let map = self
+                .inner
+                .lock()
+                .expect("policy.rs: ApprovalRegistry::resolve inner lock poisoned");
             map.get(&id).cloned()
         };
         if let Some(slot) = slot {
-            let mut guard = slot.decision.lock().unwrap();
+            let mut guard = slot
+                .decision
+                .lock()
+                .expect("policy.rs: ApprovalRegistry::resolve decision lock poisoned");
             *guard = Some(decision);
             slot.cvar.notify_all();
             true
@@ -289,12 +366,23 @@ impl ApprovalRegistry {
     /// Resolve and return the stored meta for scope handling (session/always).
     pub fn resolve_with_meta(&self, id: u64, decision: Decision) -> Option<ApprovalMeta> {
         let slot = {
-            let map = self.inner.lock().unwrap();
+            let map = self
+                .inner
+                .lock()
+                .expect("policy.rs: ApprovalRegistry::resolve_with_meta inner lock poisoned");
             map.get(&id).cloned()
         };
-        let meta = self.meta.lock().unwrap().get(&id).cloned();
+        let meta = self
+            .meta
+            .lock()
+            .expect("policy.rs: ApprovalRegistry::resolve_with_meta meta lock poisoned")
+            .get(&id)
+            .cloned();
         if let Some(slot) = slot {
-            let mut guard = slot.decision.lock().unwrap();
+            let mut guard = slot
+                .decision
+                .lock()
+                .expect("policy.rs: ApprovalRegistry::resolve_with_meta decision lock poisoned");
             *guard = Some(decision);
             slot.cvar.notify_all();
             meta
@@ -305,13 +393,20 @@ impl ApprovalRegistry {
 
     /// For scope handling: get meta without resolving.
     pub fn get_meta(&self, id: u64) -> Option<ApprovalMeta> {
-        self.meta.lock().unwrap().get(&id).cloned()
+        self.meta
+            .lock()
+            .expect("policy.rs: ApprovalRegistry::get_meta meta lock poisoned")
+            .get(&id)
+            .cloned()
     }
 
     /// For tests: is there a pending slot for `id`?
     #[cfg(test)]
     pub fn has_pending(&self, id: u64) -> bool {
-        self.inner.lock().unwrap().contains_key(&id)
+        self.inner
+            .lock()
+            .expect("policy.rs: ApprovalRegistry::has_pending lock poisoned")
+            .contains_key(&id)
     }
 }
 
