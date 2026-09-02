@@ -29,7 +29,7 @@ Verified 2026-08-31 via `cargo test --workspace --no-fail-fast` + `cargo run -p 
 (schema regenerated, Go/Python stubs committed) + GI-1 dependency check.
 **2026-09-02 (post-batch):** 12 commits landed (P1 `76205ff`, 96E-8..16 `72f5ef6..735e7f2`, TUI
 hardening `9fbfe98`, and live-breakage fixes `40a3088`/`1b97a90` = 96E-18 durable SSE echo +
-96E-19 empty tool content / picker / autotitle). `cargo test --workspace`: **432 passed, 0 failed**
+96E-19 empty tool content / picker / autotitle, and 96E-17 fail-closed compaction + plugin → host API + compactor plugin). `cargo test --workspace`: **437 passed, 0 failed**
 (`srv::plugin_reload` excluded on Linux — Windows-harness-only by design, documented). Live TUI
 verified via `tui-testing` MCP against the real server: tool cards visible live + on reload,
 streamed text committed (no more disappear), empty tool output no longer 400s, `/session` picker
@@ -112,7 +112,7 @@ Seven ADRs written in `docs/adr/`:
 - ADR-0006: Policy is the single safety seam
 - ADR-0007: CRLF normalization via .gitattributes
 
-**Next:** ADR-0008 spec rewrite (R-CORE-270/R-RCT-100/R-TOOL-070/080/090/095 still SPEC-STALE; `plugins/kn9t-policy.py` fail-open + `allow`-means-`ask` left undone) — then G3 manual verification (3 TUIs, 1 server, 1 lease, screenshot paste) or Stage 10 (v2). Phase 4 + Phase 5 done: `cargo test --workspace` 432/0 (2026-09-02), `check-gi1.sh` OK, `check-schema.sh` OK, G1 green, TUI live breakage fixed (96E-18/19, see CHANGELOG), 7 ADRs.
+**Next:** E2E live compaction (session à ~80 % ctx avec le plugin compactor branché) — puis SDK Rust parity pour le RPC request/reply, puis ADR-0008 spec rewrite (R-CORE-270/R-RCT-100/R-TOOL-070/080/090/095 still SPEC-STALE; `plugins/kn9t-policy.py` fail-open + `allow`-means-`ask` left undone), puis G3 manual verification. Phase 4 + Phase 5 done: `cargo test --workspace` 437/0 (2026-09-02), `check-gi1.sh` OK, `check-schema.sh` OK, G1 green, TUI live breakage fixed (96E-18/19, see CHANGELOG), **96E-17 fail-closed + host_api RPC + TS compactor plugin** (see CHANGELOG), 7 ADRs.
 
 ---
 
@@ -133,6 +133,7 @@ The P1/96E batch and later live-breakage fixes are tracked here (they are not sp
 | 96E-16 | `efe897d` + `735e7f2` | Event::Handoff + Compactor trait + SDK PluginCompactor | tests |
 | 96E-18 | `40a3088` | **durable SSE echo via store after-append observer** — 96E-12 removed durable events from the live bus but the promised server-side echo never existed; TUI got no MessageAppended → no tool cards live, streamed text dropped at next TurnStarted | `srv::p1_96e18_durable_appends_echo_on_sse_bus` + live TUI |
 | 96E-19 | `1b97a90` | empty tool content wire form `"(no output)"` (400 fix), session picker substring filter + first-match select, autotitle uses session model | unit tests + live TUI |
+| 96E-17 | `b700895` + `36b651e` + `71aa63a` | **compaction fail-closed** (built-in prompt fallback supprimé — pas de plugin = pas de compaction, session terminée), **plugin → host API RPC** (`request`/`api_result`; ops `provider_complete`/`session_read`/`tool_execute`; usage `UsageKind::Subagent`), **RemoteCompactor** (hook `compactor_compact`) + sélection serveur (capability `compactor`), **plugin TS/Effect `kn9t-compactor`** (2 passes agent: triage keep/summarize/drop par CallId + summary avec keep verbatim). ARCHITECTURE: kn9t n'embarque PAS de sous-agent — les plugins font leurs propres boucles via le host API | `plug::p1_96e17_*` (4) + `srv::p1_96e17_host_api_ops_*` + `npm test` simulate.mjs + fail-closed react tests + smoke serveur (handshake OK) |
 
 ---
 

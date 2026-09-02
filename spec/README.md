@@ -178,8 +178,7 @@ native Bedrock is a performance/independence upgrade, not a capability gate.
 Items from DESIGN §18 that remain genuinely undecided and are **not** closed here, each
 tracked as `SPEC-OPEN` at the relevant site with the stated interim behavior:
 
-- **compaction prompt text** (§18.1) — interim: a fixed template in 04; wording is not
-  frozen.
+- **compaction prompt text** (§18.1) — **CLOSED 2026-09-02 (96E-17)** — the fixed template was deleted; compaction is delegated to a `compactor`-capability plugin (see §08b `compactor_compact`), fail-closed when no plugin is installed.
 - **custom provider model catalog disk cache** (§18.7) — interim: fetch per process, no cache.
 - **budget drift warning** (§18.8) — interim: `GET /budget` reports both figures, no warn.
 - **cache-hit reporting in `kn9t cost`** (§18.11) — interim: not surfaced.

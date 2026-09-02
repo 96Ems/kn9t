@@ -126,6 +126,8 @@ The plugin declares its capabilities in the hello reply:
 |---|---|
 | `streaming` | plugin may send `chunk` messages before `done` |
 | `cancelable` | plugin listens for `cancel` messages on a dedicated thread |
+| `host_api` | plugin may send `request` messages (96E-17): the host runs ops (`provider_complete`, `session_read`, `tool_execute`) and replies `api_result` |
+| `compactor` | plugin provides compaction: the host delegates `compactor_compact` (96E-16/17) — no plugin with this capability = fail-closed (no compaction) |
 
 A plugin without `"streaming"` MUST reply with `result` only (v1 behaviour, unchanged).
 A plugin without `"cancelable"` will not receive `cancel` messages; on abort the host
@@ -144,6 +146,7 @@ added without a protocol version bump.
 | `hook` | per hook invocation | `{"id":N,"hook":"<name>","payload":{}}` |
 | `event` | fire-and-forget bus event | `{"id":N,...event fields...}` |
 | `cancel` | abort a running call | `{"id":N}` |
+| `api_result` | reply to a plugin `request` (96E-17) | `{"id":N,"ok":true,"result":{}}` or `{"id":N,"ok":false,"error":"..."}` |
 | `shutdown` | graceful stop | — |
 
 **Plugin → Host:**
@@ -154,6 +157,7 @@ added without a protocol version bump.
 | `result` | atomic (non-streaming) reply | `{"id":N,...reply fields...}` |
 | `chunk` | partial streaming output | `{"id":N,...partial fields...}` |
 | `done` | final streaming reply + accounting | `{"id":N,...final fields...}` |
+| `request` | 96E-17: plugin → host API call (host_api) | `{"id":N,"op":"<op>","payload":{...}}` — ops: `provider_complete`, `session_read`, `tool_execute`; payload MUST carry the session id as `"session"` |
 
 > **R-PLUG2-040**
 > A plugin that declared `streaming` MUST use `chunk`/`done` for any call that produces
@@ -316,7 +320,7 @@ integers. The `"t"` field is always present and identifies the message type.
 
 Hook names: `before_tool_call`, `after_tool_call`, `before_request`,
 `should_stop_after_turn`, `prepare_next_turn`, `get_steering`, `get_followup`,
-`get_api_key`, `tool_call`, `provider_complete`.
+`get_api_key`, `tool_call`, `provider_complete`, `compactor_compact`.
 
 ---
 
@@ -334,6 +338,34 @@ The plugin MUST NOT reply to event messages.
 
 ```json
 { "t": "cancel", "id": 7 }
+```
+
+---
+
+**`request`** — 96E-17: plugin → host API call (host_api capability). The host runs the
+op on a worker thread (a slow op must never block the plugin reader) and replies with
+`api_result`. The payload MUST carry the session id (`"session"`).
+
+```json
+{ "t": "request", "id": 7, "op": "provider_complete", "payload": {
+  "session": "01...",
+  "messages": [ { "id": "u1", "role": "user", "content": [{"type":"text","text":"hi"}], "silent": false } ]
+}}
+```
+
+Ops (`kn9t-server` implements them; a conforming host MUST support at least):
+
+| op | payload | result |
+|---|---|---|
+| `provider_complete` | `session`, optional `model` (id), `messages` (list), optional `system` | `{"content":[...],"stop":"...","usage":{input,output,cache_read,cache_write}}` — usage recorded in the session as `UsageKind::Subagent` |
+| `session_read` | `session`, optional `start`/`end` (seq range, default whole transcript) | `{"messages":[{"seq":N,"role":"...","content":[...]}]}` |
+| `tool_execute` | `session`, `name`, `args` | `{"content":[...],"is_error":bool}` — routed through the normal approval path |
+
+**`api_result`** — host's reply to a plugin `request`.
+
+```json
+{ "t": "api_result", "id": 7, "ok": true, "result": { } }
+{ "t": "api_result", "id": 7, "ok": false, "error": "no model available" }
 ```
 
 ---
@@ -497,6 +529,26 @@ Final `done`:
 ```json
 { "stop": "end_turn", "usage": {"input":10,"output":4,"cache_read":0,"cache_write":0}, "cost_usd": 0.00012 }
 ```
+
+---
+
+**`compactor_compact`** — 96E-16/17: the host delegates compaction to a plugin that
+declared the `compactor` capability. The plugin runs its own agent turn (via the
+`host_api` ops) and replies atomically.
+
+Payload:
+```json
+{ "session": "01...", "model": {"provider":"p","id":"m"}, "replaced": {"start":1,"end":5} }
+```
+Reply:
+```json
+{ "summary": {"id":"compacted-1","role":"assistant","silent":false,"content":[...]}, "handoff": {
+  "keep": ["t1"], "summarize": [{"id":"t2","summary":"..."}], "drop": [], "resume_actions": ["..."] } }
+```
+`handoff` is optional. The host validates every cited CallId (`validate_handoff`)
+before persisting `Event::Compacted` + optional `Event::Handoff`; any error reply
+(`{"error":"..."}`) fails the compaction without persisting anything. No plugin with
+the capability = fail-closed: the turn errors with `CompactionUnavailable`.
 
 ---
 

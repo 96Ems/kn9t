@@ -11,9 +11,54 @@ pointer current.
 
 ## ▶ Next session starts here
 
-**Next:** ADR-0008 spec rewrite (R-CORE-270/R-RCT-100/R-TOOL-07x) + `plugins/kn9t-policy.py` fail-open → then G3 or Stage 10. The 400/TUI breakage that dominated the previous sessions is fixed and live-verified (below).
+**Next:** E2E live compaction (grosse session ~80 % ctx avec `kn9t-compactor` branché, via TUI-testing) — puis SDK Rust parity pour le RPC request/reply (`kn9t-plugin-sdk`), puis ADR-0008 spec rewrite + `kn9t-policy.py` fail-open, puis G3. Le 96E-17 (fail-closed + host API + compactor) est implémenté et testé (437/0), reste la vérification live de la compaction réelle.
 
 ---
+
+## Session — 2026-09-02 (3) — 96E-17: compaction fail-closed + plugin → host API + compactor plugin TS/Effect
+
+### Summary
+
+Suite directe de la review du compactor (96E-16) : l'utilisateur tranche que (a) le fallback intégré (prompt « Summarize… », SPEC-OPEN §18.1) doit **disparaître** — pas de compactor = pas de compaction = session terminée ; (b) le compactor doit être un **sous-agent à jeu de tools spécifique** ; (c) **kn9t ne doit PAS embarquer de sous-agent** — c'est l'APIs + les hooks ouverts qui permettent aux plugins externes de faire leurs propres boucles d'agent. Décision d'architecture actée et appliquée.
+
+### Fail-closed (`b700895`)
+
+- `run_compaction` : `compactor: None` → `LiveEvent::Error` + `Err(ReactError::CompactionUnavailable)`, provider jamais appelé, rien persisté. Check cancel AVANT (ESC pendant contexte plein = abort propre, zéro usage — rien n'a été dépensé). Prompt intégré supprimé → **SPEC-OPEN §18.1 closed**.
+- Trait `Compactor` reçoit le `ModelRef` (le wire en a besoin).
+- Tests inversés/écrits : `p1_96e17_no_compactor_is_fail_closed`, `compaction_replan_once` (stub compactor), cancellation (abort propre sans usage).
+
+### Plugin → host API RPC (`36b651e`) — LA primitive « sous-agent »
+
+Wire (schema-first, `schema/plugin.json` + `API.md` régénérés) :
+- plugin déclare la capability **`host_api`** ; plugin → host `{"t":"request","id","op","payload"}`, host → plugin `{"t":"api_result","id","ok","result"|"error"}`.
+- Ops dispatchées sur un **worker thread** — un op lent (provider_complete) ne bloque jamais le reader (leçon 96E-9) ; une erreur d'op ne poison pas la connexion. La session voyage DANS le payload (TLS = thread du turn, 96E-5).
+- Ops v1 (kn9t-server `host_api.rs`) : `provider_complete` (vrai provider du modèle de session ; usage enregistré `UsageKind::Subagent` — budgets honnêtes), `session_read` (messages projetés par range — résolution ID→contenu, gap #2 du ticket 96E-16), `tool_execute` (registre + approval path normal).
+- `RemoteCompactor` (kn9t-plugin) : hook `compactor_compact` {session, model, replaced} → parse le plan (validation host-side conservée). Le serveur sélectionne le 1er plugin déclarant la capability `compactor` ; sinon fail-closed.
+- Store : `query_rows()` (lectures multi-lignes). `PluginHost::set_api_handler` + `install_host_api()` (startup + hot-reload).
+
+### Plugin compactor TS/Effect (`71aa63a`) — `plugins/kn9t-compactor/`
+
+- **Zéro config, zéro clé** : tout passe par le host API (le modèle/credentials/cache de la session).
+- Tour d'agent 2 passes : (1) `session_read` du span → inventaire par CallId → **triage** : le LLM choisit keep/summarize/drop + `resume_actions` (IDs hallucinés rejetés, 1 shot de correction) ; (2) **summary** : le LLM rédige le texte — les résultats **keep sont copiés VERBATIM** (byte-exact) dans le message de summary par le plugin.
+- Réponse : `{summary: message assistant, handoff: {keep, summarize, drop, resume_actions}}` — validation host-side avant persistance de `Compacted` + `Handoff`.
+- `npm test` = harness hôte simulé (hello → compactor_compact → session_read/provider_complete → assertions incl. keep verbatim).
+- Installé dans `~/.kn9t/config.toml` (`[[plugin]]` node dist/main.js) ; smoke serveur OK (handshake `host_api compactor`).
+
+### Décisions d'architecture enregistrées
+
+1. **Pas de sous-agent embarqué.** Le (vrai) sous-agent, c'est le plugin. kn9t fournit le wire + les hooks + les ops ; le plugin pilote ses boucles.
+2. **Compaction fail-closed** : renversement de la posture fail-open du système de plugins, assumé produit (utilisateur) — enregistré ici et dans TRACKING.
+3. **Cache** (2e plan, non implémenté) : après un compact, le préfixe change → cache cassé une fois ; `plan.rs` recalcule un breakpoint à la frontière summary/kept dès la requête suivante (coût accepté, documenté).
+4. **Coût compté** : les appels LLM du compactor passent par `provider_complete` → `UsageRecorded(kind=subagent)` — contrairement à un plugin autonome qui appellerait un LLM privé (jamais visible).
+
+### Suivi / défauts assumés
+
+- SDK Rust `kn9t-plugin-sdk` : pas encore de request/reply client (parity §3 du 08b) — TODO.
+- E2E live : compaction réelle non déclenchée en live (pas de session à 80 % ctx sous la main) — prochaine étape.
+- `tool_execute` passe par l'approver (interactif) — en tête-à-tête un `Decision::Ask` bloque (comportement attendu).
+
+---
+
 
 ## Session — 2026-09-02 (2) — TUI live breakage root-caused & fixed (96E-18, 96E-19)
 
