@@ -16,6 +16,7 @@ pub use codec::PluginDeclaration;
 pub use composed::ComposedHookHost;
 pub use config::{filter_configs, PluginConfig, SubagentConfig};
 pub use host::PluginHost;
+pub use host::SessionScope;
 pub use host_api::HostApi;
 pub use remote_compactor::RemoteCompactor;
 pub use remote_provider::RemoteProvider;
