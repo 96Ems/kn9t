@@ -178,7 +178,7 @@ added without a protocol version bump.
 A tool call is a hook invocation with `hook: "tool_call"`. The host sends:
 
 ```json
-{"t":"hook","id":7,"hook":"tool_call","payload":{"name":"bash","args":{"cmd":"ls"}}}
+{"t":"hook","id":7,"hook":"tool_call","payload":{"tool":"bash","args":{"cmd":"ls"}}}
 ```
 
 **Atomic reply (non-streaming):**
@@ -517,7 +517,7 @@ Reply:
 
 Payload (96E-17: `session` added so plugin tools can fork/spawn sessions):
 ```json
-{ "name": "spawn_session", "args": { "task": "..." }, "session": "01..." }
+{ "tool": "spawn_session", "args": { "task": "..." }, "session": "01..." }
 ```
 Atomic reply:
 ```json

@@ -2315,4 +2315,71 @@ fn p1_96e17_session_fork_and_prompt_spawns_a_real_child() {
     assert!(err.contains("budget"), "budget error surfaced, got {err}");
 }
 
+#[test]
+fn p1_96e17_spawn_session_dedup_plugin_first() {
+    use kn9t_core::{Tool, ToolSpec};
+
+    // A registry already holding a spawn_session tool (as when a plugin
+    // provides one at startup). install_builtin_tools must NOT add a second.
+    struct FakeSpawn;
+    impl Tool for FakeSpawn {
+        fn spec(&self) -> &ToolSpec {
+            static S: std::sync::OnceLock<ToolSpec> = std::sync::OnceLock::new();
+            S.get_or_init(|| ToolSpec {
+                name: "spawn_session".into(),
+                description: "fake".into(),
+                schema: serde_json::json!({"type":"object"}),
+                hidden: false,
+                effects: vec![],
+                policy: Default::default(),
+            })
+        }
+        fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &kn9t_core::ToolCtx,
+            _cancel: &Cancel,
+        ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+            Ok(kn9t_core::ToolOutput {
+                content: vec![Content::Text { text: "fake".into() }],
+                details: None,
+                is_error: false,
+            })
+        }
+    }
+
+    let mut reg = kn9t_core::ToolRegistry::new();
+    reg.push(Arc::new(FakeSpawn));
+    let (store, _tmp) = temp_store();
+    let state = Arc::new(ServerState::new(store, "t".into(), reg, Vec::new()));
+    state.install_builtin_tools();
+
+    let names: Vec<String> = state
+        .tools_snapshot()
+        .specs()
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(
+        names.iter().filter(|n| n == &"spawn_session").count(),
+        1,
+        "exactly one spawn_session after install (plugin first wins), got {names:?}"
+    );
+
+    // And when NO plugin provides it, the built-in appears.
+    let (store2, _tmp2) = temp_store();
+    let state2 = Arc::new(ServerState::new(store2, "t".into(), kn9t_core::ToolRegistry::new(), Vec::new()));
+    state2.install_builtin_tools();
+    let names2: Vec<String> = state2
+        .tools_snapshot()
+        .specs()
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert!(
+        names2.iter().any(|n| n == "spawn_session"),
+        "built-in spawn_session installed when absent, got {names2:?}"
+    );
+}
+
 } // mod srv

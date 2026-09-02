@@ -348,7 +348,19 @@ impl ServerState {
     /// production executor is the same primitive the host_api offers plugins:
     /// fork a session (fork_reason=subagent) and run a sync turn on it. A
     /// spawned session running a turn IS a sub-agent — nothing more is needed.
+    /// First-wins: if a plugin already provides a tool named `spawn_session`,
+    /// the built-in is NOT installed (same dedup rule as the tool registry).
     pub fn install_builtin_tools(self: &Arc<Self>) {
+        let has_tool = self
+            .tools
+            .lock()
+            .expect("tools poisoned")
+            .get("spawn_session")
+            .is_some();
+        if has_tool {
+            crate::log!("install_builtin_tools: spawn_session already provided by a plugin — built-in skipped");
+            return;
+        }
         let executor: kn9t_plugin::spawn_tool::ChildExecutor = {
             use kn9t_plugin::HostApi as _;
             let state = self.clone();

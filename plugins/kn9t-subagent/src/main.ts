@@ -163,7 +163,7 @@ function main(): void {
     if (msg.t === "hook" && msg.hook === "tool_call") {
       const id = msg.id ?? 0;
       const payload = msg.payload ?? {};
-      const name = String(payload["name"] ?? "");
+      const name = String(payload["tool"] ?? ""); // canonical tool_call field (SDK contract)
       const args = (payload["args"] as Record<string, unknown>) ?? {};
       const session = String(payload["session"] ?? ""); // added by the host (96E-17)
       if (name === "spawn_session") {

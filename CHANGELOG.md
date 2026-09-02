@@ -44,6 +44,12 @@ Expose le tool `spawn_session` {task, model?, budget_usd?, tools?} : `session_fo
 - `kn9t-compactor` tourne encore en « plugin-loop » (provider_complete ×2) : à rebâtir sur `session_fork`(bare) + `session_prompt` + toolset compactor fourni par le plugin → la compaction devient une vraie session enfant (auditable, TUI, budget).
 - SDK Rust request/reply (parity), ADR-0008, E2E live compaction.
 
+### Hotfix live (retour TUI de l'utilisateur)
+
+Le tool `spawn_session` ne marchait pas en live et apparaissait 2 fois :
+1. **Spec vs impl `tool_call`** : la spec §2.3/§2.6 documentait `payload.name`, l'impl + SDK + plugins utilisent `payload.tool` → le plugin (copié de la spec) répondait « unknown tool ». Spec corrigée vers `tool` (la spec documente l'implémentation, pas l'inverse ici — le SDK est la référence).
+2. **Doublon `spawn_session`** : `install_builtin_tools` poussait le built-in sans dedup → 2 entrées dans le registre. Fix : first-wins — le built-in n'est installé que si aucun plugin ne fournit le nom (test `srv::p1_96e17_spawn_session_dedup_plugin_first` + smoke log « already provided by a plugin — built-in skipped »).
+
 ---
 
 ## Session — 2026-09-02 (3) — 96E-17: compaction fail-closed + plugin → host API + compactor plugin TS/Effect

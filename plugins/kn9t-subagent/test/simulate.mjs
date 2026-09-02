@@ -40,7 +40,7 @@ send({
   id: 7,
   hook: "tool_call",
   payload: {
-    name: "spawn_session",
+    tool: "spawn_session",
     args: { task: "check the diff and report regressions", budget_usd: 0.5 },
     session: "parent-001",
   },
