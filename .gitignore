@@ -28,6 +28,10 @@ custom-provider.log
 __pycache__/
 *.py[cod]
 
+# typescript plugin build (plugins/kn9t-compactor)
+plugins/*/node_modules/
+plugins/*/dist/
+
 # scratch
 out.txt
 

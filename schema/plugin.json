@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "kn9t Plugin Protocol (v1)",
-  "description": "Host ↔ Plugin NdJSON, ToolSpec, ProviderDecl, hooks. SDK and host JSON compatible.",
+  "description": "Host ↔ Plugin NdJSON, ToolSpec, ProviderDecl, hooks, host_api request/reply. SDK and host JSON compatible.",
   "host_to_plugin": {
     "Hello": {
       "type": "object",
@@ -24,7 +24,19 @@
       "required": ["t", "id", "hook", "payload"]
     },
     "Cancel": { "type": "object", "properties": { "t": { "const": "cancel" }, "id": { "type": "integer" } }, "required": ["t", "id"] },
-    "Shutdown": { "type": "object", "properties": { "t": { "const": "shutdown" } }, "required": ["t"] }
+    "Shutdown": { "type": "object", "properties": { "t": { "const": "shutdown" } }, "required": ["t"] },
+    "ApiResult": {
+      "type": "object",
+      "properties": {
+        "t": { "const": "api_result" },
+        "id": { "type": "integer" },
+        "ok": { "type": "boolean" },
+        "result": { "type": "object" },
+        "error": { "type": "string" }
+      },
+      "required": ["t", "id", "ok"],
+      "additionalProperties": false
+    }
   },
   "plugin_to_host": {
     "Hello": {
@@ -43,7 +55,19 @@
     },
     "Result": { "type": "object", "properties": { "t": { "const": "result" }, "id": { "type": "integer" } }, "required": ["t", "id"] },
     "Chunk": { "type": "object", "properties": { "t": { "const": "chunk" }, "id": { "type": "integer" } }, "required": ["t", "id"] },
-    "Done": { "type": "object", "properties": { "t": { "const": "done" }, "id": { "type": "integer" } }, "required": ["t", "id"] }
+    "Done": { "type": "object", "properties": { "t": { "const": "done" }, "id": { "type": "integer" } }, "required": ["t", "id"] },
+    "Request": {
+      "type": "object",
+      "description": "Plugin → host API request (host_api capability). Ops: provider_complete, session_read, tool_execute.",
+      "properties": {
+        "t": { "const": "request" },
+        "id": { "type": "integer" },
+        "op": { "type": "string" },
+        "payload": { "type": "object" }
+      },
+      "required": ["t", "id", "op", "payload"],
+      "additionalProperties": false
+    }
   },
   "definitions": {
     "ToolSpec": {
