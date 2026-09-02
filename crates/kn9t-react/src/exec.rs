@@ -35,7 +35,7 @@ impl ReactLoop {
             *replans += 1;
             // Emit compaction retry so TUI spinner shows honest phase (fix 4.2: emit after increment)
             self.bus.emit(LiveEvent::RetryAttempt { attempt: *replans, max: params.config.max_context_replans, error: "context_overflow".into(), delay_ms: 0, retry_kind: "compaction".into() });
-            self.bus.emit(LiveEvent::TurnStatus { phase: "retrying".into(), message: format!("context overflow â€” compaction replan {}/{}", *replans, params.config.max_context_replans) });
+            self.bus.emit(LiveEvent::TurnStatus { phase: "retrying".into(), message: format!("context overflow — compaction replan {}/{}", *replans, params.config.max_context_replans) });
             if *replans > params.config.max_context_replans {
                 return Err(ReactError::CompactionLoop);
             }
@@ -350,16 +350,16 @@ impl ReactLoop {
         }
     }
 
-    /// ADR-0008 â€” the policy plugin decides, this routes. `before_tool_call` yields
+    /// ADR-0008 — the policy plugin decides, this routes. `before_tool_call` yields
     /// `Allow`/`Ask`/`Deny`/`Replace` (strictest-wins across plugins, `composed.rs`) and
     /// kn9t no longer re-derives a verdict of its own: there is no classifier and no
     /// effects combiner left. `Ask` is handed to the `Approver`, which owns the prompt.
     ///
-    /// Failure posture (DESIGN Â§13.5) is unchanged: a hook that errors or times out yields
-    /// `Deny` â€” a policy that cannot answer is not permission. That is distinct from *no
+    /// Failure posture (DESIGN §13.5) is unchanged: a hook that errors or times out yields
+    /// `Deny` — a policy that cannot answer is not permission. That is distinct from *no
     /// policy installed*, which yields `Allow` (ADR-0008 decision 5).
     fn authorize(&self, params: &RunParams, call: &ToolCall) -> CallPlan {
-        // Â§4.1 treats `args_json` as cache-critical verbatim provider bytes, so a parse
+        // §4.1 treats `args_json` as cache-critical verbatim provider bytes, so a parse
         // failure here is a real defect (provider sent malformed JSON, or the bytes were
         // corrupted in transit). Surface it instead of silently substituting Null, which
         // would present the tool with empty args and produce a confusing downstream error.
@@ -396,7 +396,7 @@ impl ReactLoop {
         }
     }
 
-    /// ADR-0008 â€” hand an `Ask` to the approval mechanism and translate the user's answer.
+    /// ADR-0008 — hand an `Ask` to the approval mechanism and translate the user's answer.
     ///
     /// The `Approver` blocks this thread until `POST /approve` arrives (or the scope cache
     /// answers immediately), so no polling and no extra state machine here.

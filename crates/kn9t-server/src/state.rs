@@ -1,9 +1,9 @@
-//! [`ServerState`] â€” the shared, thread-safe wiring of the server (DESIGN Â§12).
+//! [`ServerState`] — the shared, thread-safe wiring of the server (DESIGN §12).
 //!
 //! This is the one place that names concrete `Store` (`SqliteStore`), tool, and
 //! policy types (GI-1 exception). Every `tiny_http` connection thread holds an
 //! `Arc<ServerState>`. Interior state (leases, buses, idle counters) is guarded by
-//! fine-grained locks so a long SSE backlog read never blocks a write (Â§12.4).
+//! fine-grained locks so a long SSE backlog read never blocks a write (§12.4).
 //!
 //! The provider used for turns and auto-titling is injected as `Arc<dyn Provider>`
 //! so tests drive the server fully offline.
@@ -27,11 +27,11 @@ use crate::policy::{ApprovalCache, ApprovalRegistry, InteractiveApprover, NonInt
 /// Overridable via `[server] idle_exit_secs` in config.toml (0 = disable).
 pub const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(5);
 
-/// ADR-0008 â€” the approver used when nothing can answer a prompt. Reached only if a policy
+/// ADR-0008 — the approver used when nothing can answer a prompt. Reached only if a policy
 /// plugin returned `Ask`, so denying is the honest answer: there is no one to ask.
 ///
 /// Note this is *not* the "no policy installed" path. With no policy plugin the hook layer
-/// answers `Allow` and no approver is consulted at all â€” kn9t runs unguarded by design
+/// answers `Allow` and no approver is consulted at all — kn9t runs unguarded by design
 /// (ADR-0008 decision 5).
 pub struct DenyAllApprover;
 impl Approver for DenyAllApprover {
@@ -88,7 +88,7 @@ impl IdleTracker {
         self.running_turns.load(Ordering::SeqCst)
     }
 
-    /// R-SRV-080 â€” exit when no client is attached and no turn is running,
+    /// R-SRV-080 — exit when no client is attached and no turn is running,
     /// after a short grace period since the last detach.
     ///
     /// - If `idle_exit` is zero: never exit (disabled).
@@ -120,7 +120,7 @@ pub struct ServerState {
     pub leases: LeaseMap,
     pub idle: IdleTracker,
     pub token: String,
-    /// Set by `POST /stop` â€” the watchdog detects this and exits cleanly.
+    /// Set by `POST /stop` — the watchdog detects this and exits cleanly.
     pub stop_requested: AtomicBool,
     /// Provider used for auto-titling and running turns. `None` disables both
     /// (routes still function; a `prompt` without a provider is a no-op turn).
@@ -133,7 +133,7 @@ pub struct ServerState {
     /// judgement already happened in the plugin. `RwLock` so a non-interactive run can swap
     /// in the deny-on-ask adapter at startup.
     pub approver: std::sync::RwLock<Arc<dyn Approver>>,
-    /// Registry for blocking approval requests (DESIGN Â§10).
+    /// Registry for blocking approval requests (DESIGN §10).
     pub approval_registry: Arc<ApprovalRegistry>,
     /// Session + persistent approval cache (scope=session|always).
     pub approval_cache: Arc<ApprovalCache>,
@@ -143,17 +143,17 @@ pub struct ServerState {
     /// Provider-reported budget figure, injectable (gateway `/user/usage`,
     /// R-NBED-040 / R-SRV-120). `None` where unavailable.
     pub provider_reported_budget: Mutex<Option<f64>>,
-    /// All model specs loaded from config (GET /models registry, DESIGN Â§8.2).
+    /// All model specs loaded from config (GET /models registry, DESIGN §8.2).
     pub model_registry: Vec<ModelSpec>,
-    /// Tools registry â€” populated from external auto-discovered plugins in
+    /// Tools registry — populated from external auto-discovered plugins in
     /// `~/.kn9t/plugins/` plus pinned `[[plugin]]` entries (R-PLUG2-110, ADR-0004).
     /// Wrapped in a Mutex for hot-reload (R-PLUG2-100): `POST /plugin/{name}/reload`
     /// swaps the host and rebuilds the registry without restarting the server.
     pub tools: Mutex<ToolRegistry>,
-    /// Plugin hosts â€” for composing hooks from all plugins (discovered + pinned).
+    /// Plugin hosts — for composing hooks from all plugins (discovered + pinned).
     /// Mutex for hot-reload.
     pub plugin_hosts: Mutex<Vec<Arc<PluginHost>>>,
-    /// Spawn recipe per plugin declared name â€” used to respawn on reload (R-PLUG2-100).
+    /// Spawn recipe per plugin declared name — used to respawn on reload (R-PLUG2-100).
     /// `cmd` is the exact argv (binary + args) and `env` the injected vars.
     pub plugin_spawn: Mutex<HashMap<String, (Vec<String>, Vec<(String, String)>)>>,
     /// ADR-0008 -- an in-process `HookHost` that replaces the composed plugin hooks.
@@ -202,7 +202,7 @@ impl ServerState {
         }
     }
 
-    /// Snapshot the current tool registry (clone under lock) â€” used by turns.
+    /// Snapshot the current tool registry (clone under lock) — used by turns.
     pub fn tools_snapshot(&self) -> ToolRegistry {
         self.tools.lock().expect("tools poisoned").clone()
     }
@@ -258,7 +258,7 @@ impl ServerState {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         if old_host.pending_count() != 0 {
-            crate::log!("hot-reload: plugin '{}' still has {} in-flight after timeout â€” proceeding to shutdown", name, old_host.pending_count());
+            crate::log!("hot-reload: plugin '{}' still has {} in-flight after timeout — proceeding to shutdown", name, old_host.pending_count());
         }
 
         // 3. shutdown and close write pipe.
@@ -273,7 +273,7 @@ impl ServerState {
             .map_err(|e| format!("respawn failed: {e}"))?;
         let new_decl_name = new_host.declaration.name.clone();
         if new_decl_name != name {
-            crate::log!("hot-reload: warning: plugin declared name '{}' differs from requested '{}' â€” using declared name for registry", new_decl_name, name);
+            crate::log!("hot-reload: warning: plugin declared name '{}' differs from requested '{}' — using declared name for registry", new_decl_name, name);
         }
         let new_host = Arc::new(new_host);
         let new_tools = crate::tools::extract_tools_public(&new_host);

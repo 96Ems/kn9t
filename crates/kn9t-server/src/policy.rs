@@ -27,7 +27,7 @@ use kn9t_core::{ApprovalId, Approver, Decision, EventSink, LiveEvent, ToolCall};
 // is threaded via TLS: the globally-shared approver emits to the correct session bus without
 // widening the trait. Set for the duration of `turn::spawn_turn`'s loop thread.
 // `Policy::check` is `(&self, call, cwd) -> Decision` with no session param
-// (DESIGN Â§10, R-CORE-270). The per-turn `SessionSink` is threaded via TLS so
+// (DESIGN §10, R-CORE-270). The per-turn `SessionSink` is threaded via TLS so
 // the globally-shared `InteractivePolicy` can emit to the correct session bus
 // without changing the trait signature. The value is set for the duration of
 // `turn::spawn_turn`'s loop thread.
@@ -79,7 +79,7 @@ where
     r
 }
 
-// â”€â”€ Fingerprint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Fingerprint ──────────────────────────────────────────────────────────────
 /// Canonical fingerprint for a tool call, used for session/always caching.
 /// For `bash` we use the extracted `cmd` string; for other tools the raw args.
 pub fn fingerprint(call: &ToolCall) -> String {
@@ -91,7 +91,7 @@ pub fn fingerprint(call: &ToolCall) -> String {
     format!("{}:{}", call.name, call.args_json)
 }
 
-// â”€â”€ ApprovalCache (session + persistent) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── ApprovalCache (session + persistent) ─────────────────────────────────────
 
 /// In-memory + on-disk cache for `scope=session` and `scope=always` approvals.
 /// `HardDeny` is never cached (see `InteractivePolicy::check`).
@@ -219,7 +219,7 @@ impl ApprovalCache {
     }
 }
 
-// â”€â”€ Approval registry (command-path resolution) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Approval registry (command-path resolution) ─────────────────────────────
 
 struct ApprovalSlot {
     decision: Mutex<Option<Decision>>,
@@ -315,7 +315,7 @@ impl ApprovalRegistry {
     }
 }
 
-// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 static NEXT_APPROVAL_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -334,20 +334,20 @@ fn extract_cmd(args_json: &str) -> Option<String> {
     None
 }
 
-// â”€â”€ Approver (ADR-0008) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Approver (ADR-0008) ──────────────────────────────────────────────────────
 
-/// ADR-0008 â€” the approval **mechanism**. It does not decide anything.
+/// ADR-0008 — the approval **mechanism**. It does not decide anything.
 ///
 /// Before ADR-0008 this type was `InteractivePolicy` and it did two jobs: judge the call
 /// (via `dispatch_policy`/`classify`) and, if the verdict was `Ask`, run the prompt. The
 /// judgement moved to a policy plugin (`HookVeto::Ask` on `before_tool_call`), so only the
-/// prompt remains â€” the part a subprocess cannot own, because it needs the session bus, the
+/// prompt remains — the part a subprocess cannot own, because it needs the session bus, the
 /// write lease and `~/.kn9t/config.toml`.
 ///
 /// `request` is called only when a plugin already said "ask". It short-circuits on a cached
 /// approval (`once|session|always`), otherwise emits `Event::ApprovalRequest` and blocks the
 /// calling turn thread on a `Condvar` until `POST /approve` resolves it (command path, never
-/// the bus â€” DESIGN Â§10, Principle 3).
+/// the bus — DESIGN §10, Principle 3).
 pub struct InteractiveApprover {
     pub registry: Arc<ApprovalRegistry>,
     pub cache: Arc<ApprovalCache>,
@@ -402,7 +402,7 @@ impl Approver for InteractiveApprover {
         }
 
         // Blocks until `POST /approve` arrives. The human wait happens here, server-side,
-        // *after* the hook returned â€” so a user taking their time cannot trip the plugin's
+        // *after* the hook returned — so a user taking their time cannot trip the plugin's
         // 30 s hook timeout (ADR-0008).
         let decision = self.registry.wait(slot);
         self.registry.remove(id);
@@ -410,7 +410,7 @@ impl Approver for InteractiveApprover {
     }
 }
 
-/// ADR-0008 â€” the non-interactive approver: `-p` / CI, where no one can answer a prompt.
+/// ADR-0008 — the non-interactive approver: `-p` / CI, where no one can answer a prompt.
 /// A plugin's `Ask` becomes `Deny`, since an unanswerable question is not permission.
 /// Cached `always` approvals still apply, so a scripted run honours what the user already
 /// approved persistently.

@@ -323,24 +323,24 @@ impl kn9t_core::Provider for ScriptedProvider {
     }
 }
 
-// â”€â”€ Tools plugin helper (R-PLUG2-110) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Tools plugin helper (R-PLUG2-110) ─────────────────────────────────────────
 
 /// Locate the built `kn9t-tools` plugin binary.
 ///
-/// NOTE â€” this is **build-time artifact location, NOT runtime plugin discovery**.
+/// NOTE — this is **build-time artifact location, NOT runtime plugin discovery**.
 /// The server discovers plugins only in `~/.kn9t/plugins/` (ADR-0004); it NEVER
 /// scans the repo's `plugins/` directory. These tests handshake the plugin
 /// *directly* (no server) to validate the ReAct loop, so they must locate the
-/// cargo build artifact. Searching `plugins/kn9t-tools/target/` here is fine â€”
+/// cargo build artifact. Searching `plugins/kn9t-tools/target/` here is fine —
 /// that is a build artifact path, not a runtime scan.
 ///
 /// Search order:
-///   1. `plugins/kn9t-tools/target/{debug,release}/kn9t-tools[.exe]` â€” the
+///   1. `plugins/kn9t-tools/target/{debug,release}/kn9t-tools[.exe]` — the
 ///      standalone crate build. `kn9t-tools` is no longer a workspace member;
 ///      build it with `cd plugins/kn9t-tools && cargo build`.
-///   2. `target/{debug,release}/kn9t-tools[.exe]` â€” legacy: in case the binary
+///   2. `target/{debug,release}/kn9t-tools[.exe]` — legacy: in case the binary
 ///      was built into the workspace target dir instead (pre-move layout).
-///   3. `<KN9T_HOME|~/.kn9t>/plugins/kn9t-tools[.exe]` â€” installed location
+///   3. `<KN9T_HOME|~/.kn9t>/plugins/kn9t-tools[.exe]` — installed location
 ///      where bootstrap copies it on first run.
 fn locate_tools_binary() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -352,14 +352,14 @@ fn locate_tools_binary() -> PathBuf {
     let ext = if cfg!(windows) { ".exe" } else { "" };
     let name = format!("kn9t-tools{ext}");
 
-    // (a) the external standalone build â€” the plugin now lives at
+    // (a) the external standalone build — the plugin now lives at
     //     plugins/kn9t-tools and is built on its own.
     let external = workspace_root
         .join("plugins").join("kn9t-tools").join("target").join(profile).join(&name);
     // (b) legacy workspace-target build.
     let legacy = workspace_root.join("target").join(profile).join(&name);
 
-    // (c) installed location â€” where bootstrap puts it.
+    // (c) installed location — where bootstrap puts it.
     let installed = {
         let home = std::env::var("KN9T_HOME")
             .map(PathBuf::from)
@@ -386,7 +386,7 @@ fn locate_tools_binary() -> PathBuf {
 /// Spawn the `kn9t-tools` plugin and return a `ToolRegistry` with all declared tools.
 /// Panics if the binary is not found. Build it first:
 /// `cd plugins/kn9t-tools && cargo build` (it is a standalone crate, not a workspace
-/// member â€” `cargo build -p kn9t-tools` from the root does not work).
+/// member — `cargo build -p kn9t-tools` from the root does not work).
 pub fn spawn_tools_registry() -> (Arc<PluginHost>, ToolRegistry) {
     let binary = locate_tools_binary();
     if !binary.exists() {
