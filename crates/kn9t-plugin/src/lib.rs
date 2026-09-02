@@ -11,7 +11,6 @@ pub mod host_api;
 pub mod remote_compactor;
 pub mod remote_provider;
 pub mod remote_tool;
-pub mod spawn_tool;
 
 pub use codec::PluginDeclaration;
 pub use composed::ComposedHookHost;
@@ -21,7 +20,6 @@ pub use host_api::HostApi;
 pub use remote_compactor::RemoteCompactor;
 pub use remote_provider::RemoteProvider;
 pub use remote_tool::RemoteTool;
-pub use spawn_tool::SpawnTool;
 
 // ── NoOpPluginKv ──────────────────────────────────────────────────────────────
 

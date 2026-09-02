@@ -125,43 +125,46 @@ hooks.
 > A `[[plugin]]` in a project file MUST be ignored with a warning.
 > **Accept:** `cargo test plug::project_plugin_ignored`.
 
-## 8. Subagent spawn (decision: mechanism specified, subset configurable)
+## 8. Sub-agents: sessions spawned by plugins (R-PLUG-110/120/130, rewritten 96E-17)
 
-> **R-PLUG-110 → DESIGN §18.2, §7 (decision: README §6)**
-> A built-in `spawn` tool MUST create a **new session** (session-per-subagent, §7) whose
-> origin is the current session at the current seq, `fork_reason = subagent` (R-STOR-130).
-> The parent thread blocks while the child runs its own ReAct loop; there is no shared
-> mutable state between them (§7.1). The child's result is returned to the parent as a
-> `Content::ToolResult` (§7 diagram: "summary returned as ToolResult").
-> ```json
-> // spawn tool schema (hand-written, GI-3-stable):
-> {"name":"spawn","description":"...","schema":{
->   "type":"object",
->   "properties":{
->     "task":{"type":"string"},
->     "model":{"type":"string"},          // optional; defaults to parent model
->     "budget_usd":{"type":"number"}      // optional; capped by parent remaining
->   },
->   "required":["task"]}}
-> ```
-> **Accept:** `cargo test plug::spawn_session` — spawn creates a `subagent` session, the
-> child transcript is isolated, and the summary returns as a `ToolResult`.
+> **Supersedes the original "built-in spawn tool" design (deleted 2026-09-02).**
+> kn9t ships **no built-in tools** — every tool comes from a plugin (the tool
+> registry is built exclusively from plugin hello declarations, R-PLUG2-110).
+> A "sub-agent" is therefore **not a kn9t concept**: it is a forked session
+> (`fork_reason = subagent`) running its own turn, and the capability to create
+> one is exposed to plugins as host_api ops, not as a server-owned tool.
 
-> **R-PLUG-120 → DESIGN §18.2, §7.3 (decision: configurable subset)**
-> The child's allowed tool set MUST be a **config list** with **no hardcoded default**
-> (README §6). Config key: `[subagent].tools = [...]`. If unset, the child inherits the
-> parent's tool set. *(This is the decision made for the spec: the design left the default
-> subset open; the spec makes it explicitly configurable rather than freezing a subset.)*
-> **Accept:** `cargo test plug::spawn_toolset` — a configured subset restricts the child; an
-> unset list inherits the parent set.
+> **R-PLUG-110 → DESIGN §18.2, §7 (96E-17 rewrite)**
+> The host MUST expose the session-spawning primitives to plugins via the
+> host_api ops (spec 08b §2.5): `session_fork` creates a new session from the
+> current one (`fork_reason = subagent`, R-STOR-130), and `session_prompt` runs
+> one full synchronous turn on it. The child's transcript is isolated in its
+> own session (own SSE bus, own usage rows, own budget) — the instance of a
+> "sub-agent" is just that session. A plugin (e.g. `kn9t-subagent`) MAY expose
+> a `spawn_session` tool that composes the two ops; the host MUST NOT provide
+> such a tool itself.
+> **Accept:** `srv::p1_96e17_session_fork_and_prompt_spawns_a_real_child` —
+> the child row is `fork_reason=subagent` with budget, has its own transcript
+> and usage, and the turn result returns to the caller.
 
-> **R-PLUG-130 → DESIGN §7.3, §18.2 (decision: budget cap)**
+> **R-PLUG-120 → DESIGN §18.2, §7.3 (96E-17 rewrite)**
+> `session_prompt` MUST accept an optional `tools` subset (a list in the op
+> payload); the child turn then runs with only those registry tools
+> (`ToolRegistry::filter_names`). If the parameter is absent the child inherits
+> the parent's tool set. Config key `[subagent].tools = [...]` may feed the
+> plugin's default, but there MUST be no hardcoded subset in the host.
+> **Accept:** `srv::p1_96e17_host_api_ops_*` — tool_execute/session ops
+> round-trip with tool subsets.
+
+> **R-PLUG-130 → DESIGN §7.3, §18.2 (96E-17 rewrite)**
 > The child MUST enforce a budget cap from `min(budget_usd argument, parent
-> budget_remaining_usd)` captured in the `ForkSnapshot` (R-CORE-160), without querying
-> ancestors at runtime (§7.3). Exceeding the cap ends the child turn with an error result
-> returned to the parent.
-> **Accept:** `cargo test plug::spawn_budget` — a child hitting its cap stops and reports,
-> and its spend is attributed to the child session (not double-counted, §7.2).
+> budget_remaining_usd)` captured in the `ForkSnapshot` (R-CORE-160), without
+> querying ancestors at runtime (§7.3). `session_fork` records the budget in
+> the fork; `session_prompt` enforces it after the turn and fails with a
+> budget error when exceeded. Spend is attributed to the child session (not
+> double-counted, §7.2).
+> **Accept:** `srv::p1_96e17_session_fork_and_prompt_spawns_a_real_child` —
+> a zero-budget fork fails `session_prompt` with a budget error.
 
 ## 9. Stage gate
 
@@ -170,5 +173,6 @@ hooks.
 > hooks round-trip with correct composition and failure posture (matching RCT R-RCT-110);
 > the dropped hooks are absent; timeouts cut at budget; `HookFailed` is emitted on every
 > failure and `on_event` unsubscribes after 3 failures; project-local `[[plugin]]` is
-> ignored; and the `spawn` tool creates isolated subagent sessions with configurable tools
-> and an enforced budget cap. GI-1 holds.
+> ignored; and the host_api `session_fork`/`session_prompt` ops create isolated subagent
+> sessions with configurable tool subsets and an enforced budget cap (no built-in tools
+> anywhere — tools come only from plugins). GI-1 holds.

@@ -15,6 +15,36 @@ pointer current.
 
 ---
 
+## ▶ Next session starts here
+
+**Next:** rebâtir `kn9t-compactor` sur les primitives session (session_fork bare + session_prompt + toolset compactor fourni par le plugin) — puis SDK Rust parity request/reply, ADR-0008 spec rewrite, puis E2E live compaction.
+
+---
+
+## Session — 2026-09-02 (5) — Zéro tool built-in : nettoyage complet (96E-17)
+
+Utilisateur : « y'a AUCUN builtin tools normalement ? tout provient des plugins » (parallèle kn9t-mcp / kn9t-tools). Confirme l'architecture : le registre de tools est construit **exclusivement** des déclarations `hello` des plugins (`extract_tools`, tools.rs:229) — le serveur n'héberge aucun tool.
+
+### Supprimé (fix propre, pas de patch)
+
+- `install_builtin_tools()` (serveur) + son appel dans `main.rs` + le test dedup qui n'existait que pour réparer mon propre ajout. Le doublon `spawn_session` du TOOLS panel ne peut plus exister.
+- Stub `SpawnTool` + `ChildExecutor` (kn9t-plugin, reliquat de l'ancienne spec 08 R-PLUG-110 « built-in spawn tool ») + ses 3 tests (`spawn_session`/`spawn_toolset`/`spawn_budget`).
+- `ToolCtx.session` (core + exec.rs + tests) : plus rien ne le lisait (le session d'un tool plugin voyage dans le payload `tool_call`, ajouté en `remote_tool.rs`).
+
+### Corrections réelles de la vieille spec
+
+- `spec/08-plugin.md` §8 : section réécrite — R-PLUG-110/120/130 décrivent désormais `session_fork`/`session_prompt` (ops host_api) comme primitives, le tool `spawn_session` est fourni par les PLUGINS (host MUST NOT fournir le tool), budget/toolset-reportés dans les ops; la porte R-PLUG-900 alignée (« no built-in tools anywhere »).
+- `spec/08b-plugin-redesign.md` : préambule — la mention du « spawn tool » porté depuis 08 est remplacée par la note de suppression.
+- TRACKING : rows R-PLUG-110/120/130 → nouveaux tests (srv::p1_96e17_*) ; registre 96E-17 noté « built-in retiré ».
+
+### Ce qui reste (le bon périmètre)
+
+- Serveur : wire + hooks + **ops host_api** (`session_fork`, `session_prompt`, `provider_complete`, `session_read`, `tool_execute`) = des capacités serveur (comme des endpoints), pas des tools.
+- Plugins : fournissent tous les tools (`kn9t-tools`, `kn9t-mcp`, `kn9t-subagent` …).
+- `kn9t-subagent` = l'unique `spawn_session` (fourni comme tool plugin, comme mcp/tools).
+
+---
+
 ## Session — 2026-09-02 (4) — Sous-agent = session forkée : primitives ouvertes + plugins pilotes
 
 ### Décision (utilisateur)

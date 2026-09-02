@@ -133,7 +133,7 @@ The P1/96E batch and later live-breakage fixes are tracked here (they are not sp
 | 96E-16 | `efe897d` + `735e7f2` | Event::Handoff + Compactor trait + SDK PluginCompactor | tests |
 | 96E-18 | `40a3088` | **durable SSE echo via store after-append observer** — 96E-12 removed durable events from the live bus but the promised server-side echo never existed; TUI got no MessageAppended → no tool cards live, streamed text dropped at next TurnStarted | `srv::p1_96e18_durable_appends_echo_on_sse_bus` + live TUI |
 | 96E-19 | `1b97a90` | empty tool content wire form `"(no output)"` (400 fix), session picker substring filter + first-match select, autotitle uses session model | unit tests + live TUI |
-| 96E-17 | `b700895` + `36b651e` + `71aa63a` + `d63554b` + `b4dbf7f` | **compaction fail-closed** (built-in prompt fallback supprimé — pas de plugin = pas de compaction, session terminée), **plugin → host API RPC** (`request`/`api_result`; ops `provider_complete`/`session_read`/`tool_execute` + **`session_fork`/`session_prompt`**; usage `UsageKind::Subagent`), **RemoteCompactor** (hook `compactor_compact`), **sous-agent = session forkée** (fork_reason=subagent + budget ForkSnapshot + `run_session_turn` synchrone/watchdog; tool intégré `spawn_session` R-PLUG-110; `ToolRegistry::filter_names`; `session` dans le payload tool_call), **plugins TS `kn9t-compactor`** (2 passes agent via host API) + **`kn9t-subagent`** (tool `spawn_session` pilote = la preuve des primitives) | `plug::p1_96e17_*` (4) + `srv::p1_96e17_*` (3 ops + fork/prompt) + `npm test` ×2 simulate + fail-closed react + smoke serveur (2 plugins handshake OK) |
+| 96E-17 | `b700895` + `36b651e` + `71aa63a` + `d63554b` + `b4dbf7f` | **compaction fail-closed** (built-in prompt fallback supprimé — pas de plugin = pas de compaction, session terminée), **plugin → host API RPC** (`request`/`api_result`; ops `provider_complete`/`session_read`/`tool_execute` + **`session_fork`/`session_prompt`**; usage `UsageKind::Subagent`), **RemoteCompactor** (hook `compactor_compact`), **sous-agent = session forkée** (fork_reason=subagent + budget ForkSnapshot + `run_session_turn` synchrone/watchdog; `ToolRegistry::filter_names`; `session` dans le payload tool_call; **built-in spawn_session retiré** (96E-17: zéro tool built-in — `kn9t-subagent` fournit le tool)), **plugins TS `kn9t-compactor`** (2 passes agent via host API) + **`kn9t-subagent`** (tool `spawn_session` pilote = la preuve des primitives) | `plug::p1_96e17_*` (4) + `srv::p1_96e17_*` (3 ops + fork/prompt) + `npm test` ×2 simulate + fail-closed react + smoke serveur (2 plugins handshake OK) |
 
 ---
 
@@ -385,9 +385,9 @@ All 13 requirements implemented; 8 named `plug::*` acceptance tests pass; GI-1 v
 | R-PLUG-080 | per-hook timeouts | plug::timeout | ☑ |
 | R-PLUG-090 | HookFailed + 3-fail unsubscribe | plug::hook_surface | ☑ |
 | R-PLUG-100 | project [[plugin]] ignored | plug::project_plugin_ignored | ☑ |
-| R-PLUG-110 | spawn creates subagent session | plug::spawn_session | ☑ |
-| R-PLUG-120 | configurable child toolset | plug::spawn_toolset | ☑ |
-| R-PLUG-130 | budget cap enforced | plug::spawn_budget | ☑ |
+| R-PLUG-110 | sub-agent = session forkée via ops host_api (`session_fork`/`session_prompt`, 96E-17: tool built-in supprimé — les plugins fournissent `spawn_session`) | `srv::p1_96e17_session_fork_and_prompt_spawns_a_real_child` | ☑ |
+| R-PLUG-120 | toolset enfant configurable (`tools` param de `session_prompt` + `filter_names`) | `srv::p1_96e17_host_api_ops_*` | ☑ |
+| R-PLUG-130 | budget cap enforced (ForkSnapshot + `run_session_turn`) | `srv::p1_96e17_session_fork_and_prompt_spawns_a_real_child` | ☑ |
 | **R-PLUG-900** | **stage gate** | all above | ☑ |
 
 ### Stage 08b — plugin protocol v2  (`spec/08b-plugin-redesign.md`)  — ☑ DONE (R-PLUG2-900 green)

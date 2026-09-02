@@ -2,8 +2,10 @@
 
 **Status:** replaces the protocol section of `08-plugin.md`. All `R-PLUG-*` requirements
 from stage 08 that touch the wire format, the SDK, or the crate layout are superseded by
-this file. Behavioural requirements (composition classes, failure postures, hook surface,
-spawn tool) remain valid and are not repeated here.
+this file. Behavioural requirements (composition classes, failure postures, hook surface)
+remain valid and are not repeated here. The built-in "spawn tool" from 08 §8 is
+**deleted** (96E-17): there are no built-in tools — sub-agent sessions are created
+by plugins through the host_api ops (`session_fork`/`session_prompt`, §2.5).
 
 **Decision log:** this spec was derived from a full design-challenge session recorded in
 `CHANGELOG.md` (2026-08-26 — Plugin redesign). Every branch in that session maps to a

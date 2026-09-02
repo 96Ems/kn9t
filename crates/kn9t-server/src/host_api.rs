@@ -292,7 +292,6 @@ impl ServerHostApi {
             read: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             bus: sink,
             call_id: call.id.clone(),
-            session: None,
         };
         let out = tool
             .execute(&args, &ctx, &cancel)
