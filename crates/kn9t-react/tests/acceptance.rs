@@ -82,15 +82,15 @@ fn turn_sequence() {
     let stop = looop.run(params).expect("loop ran");
     assert_stop(stop, StopReason::Stop);
 
-    // Ordered event trace on the bus for the first turn.
+    // Ordered event trace on the bus for the first turn — 96E-12: bus is live-only (transient).
     let kinds = bus.kinds();
-    // TurnStarted must precede the deltas; MessageAppended/UsageRecorded precede tool events.
     let pos = |name: &str| kinds.iter().position(|k| k == name);
     assert!(pos("TurnStarted").is_some());
     assert!(pos("TextDelta").unwrap() > pos("TurnStarted").unwrap());
     assert!(pos("ToolArgsDelta").is_some());
-    assert!(pos("MessageAppended").unwrap() < pos("ToolStarted").unwrap());
-    assert!(pos("UsageRecorded").unwrap() < pos("ToolStarted").unwrap());
+    // 96E-12: durable events must not be on the live bus; they are on the store.
+    assert!(pos("MessageAppended").is_none(), "durable MessageAppended must not be on live bus (96E-12)");
+    assert!(pos("UsageRecorded").is_none(), "durable UsageRecorded must not be on live bus (96E-12)");
     assert!(pos("ToolStarted").unwrap() < pos("ToolFinished").unwrap());
 
     // The persisted transcript (store.append order) has: assistant msg, usage, tool result
@@ -1365,5 +1365,222 @@ fn p1_96e6_sequential_after_tool_call_still_runs() {
     match &tool_result[0] {
         Content::Text { text } => assert_eq!(text, "hooked", "sequential tool must be hooked"),
         _ => panic!("expected Text"),
+    }
+}
+
+// ── P1 96E-11: compaction cancellation semantics must reuse attempt abstraction ─
+// Before fix: run_compaction ignores Cancel, commits Compacted even when cancelled,
+// and does not distinguish failed vs truncated vs cancelled.
+
+#[test]
+fn p1_96e11_compaction_cancel_does_not_commit() {
+    use kn9t_core::{Cancel, Event, StopReason};
+    // Store wants compaction once, then plain.
+    let store = Arc::new(
+        StubStore::new(PlanScript::plain(vec![])).script(vec![
+            PlanScript::compacting(),
+            PlanScript::plain(vec![]),
+            PlanScript::plain(vec![]),
+        ]),
+    );
+    // Compaction summary fixture (would succeed if not cancelled)
+    let summary = concat!(
+        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"summary\"}\n\n",
+        "data: {\"chunk\":\"usage\",\"tokens\":{\"input\":10,\"output\":5,\"cache_read\":0,\"cache_write\":0,\"reasoning\":0},\"model\":{\"provider\":\"replay\",\"id\":\"t\"}}\n\n",
+        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+        "data: [DONE]\n\n",
+    );
+    // Second fixture for main turn (should never be reached if cancelled compaction aborts)
+    let main = concat!(
+        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"main\"}\n\n",
+        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        StreamScript::Fixture(fixture_from_body(summary)),
+        StreamScript::Fixture(fixture_from_body(main)),
+    ]));
+    let bus = Arc::new(RecordingBus::new());
+    let looop = ReactLoop {
+        provider: provider.clone(),
+        store: store.clone(),
+        approver: Arc::new(AllowAll),
+        tools: ToolRegistry::new(),
+        hooks: Arc::new(kn9t_react::NoopHookHost),
+        bus: bus.clone(),
+    };
+    // Pre-cancelled Cancel — compaction must be considered cancelled
+    let cancel = Cancel::new();
+    cancel.cancel();
+    let mut params = run_params(&store);
+    params.cancel = Some(cancel);
+    let res = looop.run(params);
+    // Cancellation during compaction must be deterministic: either Ok(Aborted) or a provider-cancel error,
+    // but must NOT have committed Compacted as successful.
+    let appended = store.appended.lock().unwrap();
+    let has_compacted = appended.iter().any(|e| matches!(e, Event::Compacted { .. }));
+    assert!(
+        !has_compacted,
+        "cancelled compaction must NOT commit Compacted, but found {:?}",
+        appended.iter().map(|e| event_tag(e)).collect::<Vec<_>>()
+    );
+    // Provider should have been called at most once (compaction); main turn must not run after abort
+    assert!(
+        *provider.calls.lock().unwrap() <= 1,
+        "cancelled compaction should not proceed to main provider attempt, calls={}",
+        *provider.calls.lock().unwrap()
+    );
+    // Deterministic outcome: should be aborted, not a silent success with compacted
+    // Accept either Ok(Aborted) or Err; but if Ok, stop must be Aborted
+    if let Ok(stop) = res {
+        assert!(stop == StopReason::Aborted, "cancelled compaction should abort");
+    }
+}
+
+#[test]
+fn p1_96e11_compaction_cancel_usage_accounted() {
+    use kn9t_core::{Cancel, Event, UsageKind};
+    let store = Arc::new(
+        StubStore::new(PlanScript::plain(vec![])).script(vec![
+            PlanScript::compacting(),
+            PlanScript::plain(vec![]),
+        ]),
+    );
+    // Summary fixture WITHOUT usage chunk — tests estimated flag
+    let summary_no_usage = concat!(
+        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"summary\"}\n\n",
+        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let main = concat!(
+        "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"main\"}\n\n",
+        "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        StreamScript::Fixture(fixture_from_body(summary_no_usage)),
+        StreamScript::Fixture(fixture_from_body(main)),
+    ]));
+    let bus = Arc::new(RecordingBus::new());
+    let looop = ReactLoop {
+        provider,
+        store: store.clone(),
+        approver: Arc::new(AllowAll),
+        tools: ToolRegistry::new(),
+        hooks: Arc::new(kn9t_react::NoopHookHost),
+        bus,
+    };
+    let cancel = Cancel::new();
+    cancel.cancel();
+    let mut params = run_params(&store);
+    params.cancel = Some(cancel);
+    let _ = looop.run(params);
+    let appended = store.appended.lock().unwrap();
+    // Must NOT have Compacted
+    assert!(
+        !appended.iter().any(|e| matches!(e, Event::Compacted { .. })),
+        "cancelled compaction must not commit Compacted"
+    );
+    // Usage accounting: a UsageRecorded with kind Compaction must exist, estimated=true (no usage chunk)
+    let usage = appended.iter().find_map(|e| {
+        if let Event::UsageRecorded { kind, estimated, .. } = e {
+            if *kind == UsageKind::Compaction {
+                return Some((*estimated, kind.clone()));
+            }
+        }
+        None
+    });
+    assert!(
+        usage.is_some(),
+        "cancelled compaction must still record UsageRecorded(kind=Compaction), got {:?}",
+        appended.iter().map(|e| event_tag(e)).collect::<Vec<_>>()
+    );
+    assert!(
+        usage.unwrap().0,
+        "usage without provider chunk must be estimated=true"
+    );
+}
+
+#[test]
+fn p1_96e11_compaction_malformed_truncated_not_committed() {
+    use kn9t_core::{Event, ProvErr};
+    let store = Arc::new(
+        StubStore::new(PlanScript::plain(vec![])).script(vec![
+            PlanScript::compacting(),
+            PlanScript::plain(vec![]),
+        ]),
+    );
+    // Compaction provider returns Truncated (malformed-incomplete) pre-stream
+    let provider = Arc::new(ScriptedProvider::new(vec![StreamScript::PreStreamErr(
+        ProvErr::Truncated,
+    )]));
+    let bus = Arc::new(RecordingBus::new());
+    let looop = ReactLoop {
+        provider,
+        store: store.clone(),
+        approver: Arc::new(AllowAll),
+        tools: ToolRegistry::new(),
+        hooks: Arc::new(kn9t_react::NoopHookHost),
+        bus,
+    };
+    let res = looop.run(run_params(&store));
+    let appended = store.appended.lock().unwrap();
+    // Malformed-incomplete must NOT be committed as successful Compacted
+    assert!(
+        !appended.iter().any(|e| matches!(e, Event::Compacted { .. })),
+        "truncated compaction must NOT commit Compacted, got {:?}",
+        appended.iter().map(|e| event_tag(e)).collect::<Vec<_>>()
+    );
+    // Must be distinguishable from successful completion: loop should not be Ok(Stop)
+    // It should be an error (Truncated/failed) — not a silent success
+    assert!(
+        res.is_err(),
+        "truncated compaction should fail, not succeed"
+    );
+}
+
+#[test]
+fn p1_96e11_compaction_cancel_is_deterministic() {
+    use kn9t_core::{Cancel, Event};
+    // Run twice with same pre-cancelled input; outcome must be identical (deterministic)
+    for _ in 0..2 {
+        let store = Arc::new(
+            StubStore::new(PlanScript::plain(vec![])).script(vec![
+                PlanScript::compacting(),
+                PlanScript::plain(vec![]),
+            ]),
+        );
+        let summary = concat!(
+            "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"summary\"}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let main = concat!(
+            "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"main\"}\n\n",
+            "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            StreamScript::Fixture(fixture_from_body(summary)),
+            StreamScript::Fixture(fixture_from_body(main)),
+        ]));
+        let bus = Arc::new(RecordingBus::new());
+        let looop = ReactLoop {
+            provider,
+            store: store.clone(),
+            approver: Arc::new(AllowAll),
+            tools: ToolRegistry::new(),
+            hooks: Arc::new(kn9t_react::NoopHookHost),
+            bus,
+        };
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let mut params = run_params(&store);
+        params.cancel = Some(cancel);
+        let _ = looop.run(params);
+        let appended = store.appended.lock().unwrap();
+        assert!(
+            !appended.iter().any(|e| matches!(e, Event::Compacted { .. })),
+            "deterministic: cancelled compaction must never commit Compacted"
+        );
     }
 }

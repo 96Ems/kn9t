@@ -2,7 +2,7 @@
 //! to keep each file small; it is the same crate/type.
 
 use kn9t_provider_core::{
-    Cancel, Content, Event, Message, MsgId, Role, StopReason, ToolCall, UsageKind,
+    Cancel, Content, Event, LiveEvent, Message, MsgId, Role, StopReason, ToolCall, UsageKind,
 };
 
 use crate::loop_::{ReactError, ReactLoop, RunParams};
@@ -29,7 +29,7 @@ impl ReactLoop {
         let mut turn: u32 = 0;
         loop {
             turn += 1;
-            self.bus.emit(Event::TurnStarted { turn });
+            self.bus.emit(LiveEvent::TurnStarted { turn });
             // Phase "thinking" is emitted by one_attempt when the provider is actually contacted
             // (exec.rs), not here — avoids flipping back to "thinking" immediately after a tool batch
             // before the next provider round (fix 4.3).
@@ -39,16 +39,16 @@ impl ReactLoop {
             match self.execute_turn(&mut params, turn, &cancel) {
                 Ok(TurnOutcome::Continue) => continue,
                 Ok(TurnOutcome::Idle(stop)) => {
-                    self.bus.emit(Event::TurnStatus { phase: "idle".into(), message: String::new() });
-                    self.bus.emit(Event::TurnEnded { turn, stop });
+                    self.bus.emit(LiveEvent::TurnStatus { phase: "idle".into(), message: String::new() });
+                    self.bus.emit(LiveEvent::TurnEnded { turn, stop });
                     return Ok(stop);
                 }
                 Err(e) => {
-                    self.bus.emit(Event::TurnStatus { phase: "failed".into(), message: format!("{e:?}") });
-                    self.bus.emit(Event::Error {
+                    self.bus.emit(LiveEvent::TurnStatus { phase: "failed".into(), message: format!("{e:?}") });
+                    self.bus.emit(LiveEvent::Error {
                         message: format!("{e:?}"),
                     });
-                    self.bus.emit(Event::TurnEnded {
+                    self.bus.emit(LiveEvent::TurnEnded {
                         turn,
                         stop: StopReason::Aborted,
                     });
@@ -84,15 +84,15 @@ impl ReactLoop {
                 Attempt::Truncated => {
                     trunc_n += 1;
                     if trunc_n > params.config.truncation_attempts {
-                        self.bus.emit(Event::TurnStatus { phase: "failed".into(), message: format!("truncation ladder exhausted after {} attempts", trunc_n - 1) });
-                        self.bus.emit(Event::Error { message: format!("truncation ladder exhausted after {} attempts", trunc_n - 1) });
+                        self.bus.emit(LiveEvent::TurnStatus { phase: "failed".into(), message: format!("truncation ladder exhausted after {} attempts", trunc_n - 1) });
+                        self.bus.emit(LiveEvent::Error { message: format!("truncation ladder exhausted after {} attempts", trunc_n - 1) });
                         return Err(ReactError::TruncationGaveUp);
                     }
                     let ladder = &params.config.truncation_ladder;
                     let idx = ((trunc_n - 1) as usize).min(ladder.len().saturating_sub(1));
                     let lines = ladder[idx];
-                    self.bus.emit(Event::RetryAttempt { attempt: trunc_n, max: params.config.truncation_attempts, error: "truncated".into(), delay_ms: 0, retry_kind: "truncation".into() });
-                    self.bus.emit(Event::TurnStatus { phase: "retrying".into(), message: format!("truncated — retry {}/{} with {} lines limit", trunc_n, params.config.truncation_attempts, lines) });
+                    self.bus.emit(LiveEvent::RetryAttempt { attempt: trunc_n, max: params.config.truncation_attempts, error: "truncated".into(), delay_ms: 0, retry_kind: "truncation".into() });
+                    self.bus.emit(LiveEvent::TurnStatus { phase: "retrying".into(), message: format!("truncated — retry {}/{} with {} lines limit", trunc_n, params.config.truncation_attempts, lines) });
                     reminders.push(reminder_message(lines));
                     continue;
                 }
@@ -127,7 +127,7 @@ impl ReactLoop {
         }
 
         // Tool calls (R-RCT-020 step 7-9).
-        self.bus.emit(Event::TurnStatus { phase: "tool".into(), message: format!("running {} tool(s)", tool_calls.len()) });
+        self.bus.emit(LiveEvent::TurnStatus { phase: "tool".into(), message: format!("running {} tool(s)", tool_calls.len()) });
         let results = self.run_tool_batch(params, &tool_calls, cancel);
         // Persist tool results in the model's call order (R-RCT-020 step 8, R-RCT-130).
         let msg = Message {

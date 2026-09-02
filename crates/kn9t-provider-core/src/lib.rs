@@ -21,7 +21,7 @@ pub use sse::sse_lines;
 // that need kn9t_core::Quirks must use kn9t_core directly or the full path.
 pub use kn9t_core::{
     Approver, Bus, Cache, CallId, Cancel, CacheMode, Chunk, CompactSpan, Content, Decision,
-    Effort, Event, EventSink, ForkReason, ForkSnapshot, HookHost, HookName, HookVeto,
+    Effort, Event, EventSink, ForkReason, ForkSnapshot, HookHost, HookName, HookVeto, LiveEvent,
     MsgId, Message, ModelRef, ModelSpec, NextTurnPatch, NoopHookHost,
     Price, ProvErr, Provider, Request, RequestPlan, Role, SeqRange, SessionId,
     SessionSnapshot, Sha256, StopReason, Store, StoreErr, Thinking, Tokens,

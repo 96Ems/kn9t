@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use kn9t_core::{Bus, Content, Event, EventSink, Role, SessionId, Subscription};
+use kn9t_core::{Bus, Event, EventSink, LiveEvent, SessionId, Subscription};
 use kn9t_store::SqliteStore;
 
 /// Registry of per-session buses, created lazily on first subscribe/publish.
@@ -85,26 +85,18 @@ impl SessionSink {
     /// Persist what a crash would otherwise lose. Every failure here is swallowed: this is
     /// non-canonical scratch (R-STOR-116), and a write error must never break the turn that
     /// is actually producing the output.
-    fn salvage(&self, e: &Event) {
+    /// 96E-12: only `LiveEvent` is accepted; durable `MessageAppended` no longer
+    /// flows through this sink (it goes via `Store::append` only), so the
+    /// `MessageAppended` salvage branch is removed — the store clears live scratch
+    /// when the durable tool-result message is appended.
+    fn salvage(&self, e: &LiveEvent) {
         let Some(store) = &self.store else { return };
         match e {
-            Event::ToolStarted { call_id, name } => {
+            LiveEvent::ToolStarted { call_id, name } => {
                 let _ = store.begin_live_tool_call(&self.session, call_id, name);
             }
-            Event::ToolProgress { call_id, note } => {
+            LiveEvent::ToolProgress { call_id, note } => {
                 let _ = store.append_live_tool_progress(&self.session, call_id, note);
-            }
-            // The authoritative result is now durable, so the salvage copy is redundant.
-            // Keyed on `MessageAppended`, not `ToolFinished`: a call can finish and still
-            // lose its result if the process dies before the batch's tool-role message is
-            // appended (`turn.rs` appends once per batch), which is the exact window
-            // R-STOR-115 exists to cover.
-            Event::MessageAppended { msg, .. } if msg.role == Role::Tool => {
-                for c in &msg.content {
-                    if let Content::ToolResult { id, .. } = c {
-                        let _ = store.end_live_tool_call(&self.session, id);
-                    }
-                }
             }
             _ => {}
         }
@@ -112,8 +104,8 @@ impl SessionSink {
 }
 
 impl EventSink for SessionSink {
-    fn emit(&self, e: Event) {
+    fn emit(&self, e: LiveEvent) {
         self.salvage(&e);
-        self.bus.emit(e);
+        self.bus.publish(Event::from(e));
     }
 }

@@ -3,8 +3,8 @@
 use std::thread;
 
 use kn9t_provider_core::{
-    Cancel, Content, Decision, Event, HookVeto, Message, ModelRef, MsgId, ProvErr, Request, Role,
-    StopReason, Tokens, ToolCall, ToolCtx, Usage, UsageKind,
+    Cancel, Content, Decision, Event, HookVeto, LiveEvent, Message, ModelRef, MsgId, ProvErr,
+    Request, Role, StopReason, Tokens, ToolCall, ToolCtx, Usage, UsageKind,
 };
 
 use crate::assembler::{assemble, Assembled};
@@ -28,15 +28,37 @@ impl ReactLoop {
             .map_err(|e| ReactError::Store(e.0))?;
 
         // R-RCT-020 step 3 / R-RCT-090: run the compaction sub-turn then re-plan once.
+        // 96E-11: compaction reuses the provider_attempt abstraction so cancellation,
+        // truncated (malformed-incomplete), and failed outcomes are classified identically
+        // to normal provider execution.
         if plan.compact.is_some() {
             *replans += 1;
             // Emit compaction retry so TUI spinner shows honest phase (fix 4.2: emit after increment)
-            self.bus.emit(Event::RetryAttempt { attempt: *replans, max: params.config.max_context_replans, error: "context_overflow".into(), delay_ms: 0, retry_kind: "compaction".into() });
-            self.bus.emit(Event::TurnStatus { phase: "retrying".into(), message: format!("context overflow â€” compaction replan {}/{}", *replans, params.config.max_context_replans) });
+            self.bus.emit(LiveEvent::RetryAttempt { attempt: *replans, max: params.config.max_context_replans, error: "context_overflow".into(), delay_ms: 0, retry_kind: "compaction".into() });
+            self.bus.emit(LiveEvent::TurnStatus { phase: "retrying".into(), message: format!("context overflow â€” compaction replan {}/{}", *replans, params.config.max_context_replans) });
             if *replans > params.config.max_context_replans {
                 return Err(ReactError::CompactionLoop);
             }
-            self.run_compaction(params, cancel, plan.compact.take().unwrap())?;
+            match self.run_compaction(params, cancel, plan.compact.take().unwrap())? {
+                Attempt::Completed(_) => {
+                    // compaction committed; re-plan once
+                }
+                Attempt::AbortedInStream(a) => {
+                    // 96E-11: cancelled during compaction — already recorded Compaction usage
+                    // (estimated if needed) inside run_compaction, never appended Compacted.
+                    // Propagate as turn abort deterministically.
+                    return Ok(Attempt::AbortedInStream(a));
+                }
+                Attempt::Truncated => {
+                    // malformed-incomplete: explicitly distinguished from cancelled/failed
+                    self.bus.emit(LiveEvent::Error { message: "compaction truncated: malformed-incomplete".into() });
+                    return Err(ReactError::Provider("compaction truncated: malformed-incomplete".into()));
+                }
+                Attempt::ContextOverflow => {
+                    self.bus.emit(LiveEvent::Error { message: "compaction context overflow".into() });
+                    return Err(ReactError::Provider("compaction context overflow".into()));
+                }
+            }
             plan = self
                 .store
                 .plan_request(&params.session)
@@ -67,36 +89,45 @@ impl ReactLoop {
             cache: &plan.cache,
         };
 
-        // R-RCT-020 step 4: stream + assemble.
-        // Sync TUI status machine: thinking while provider connects
-        self.bus.emit(Event::TurnStatus { phase: "thinking".into(), message: String::new() });
-        let stream = match self.provider.stream_with_sink(&req, cancel, Some(self.bus.as_ref())) {
+        // R-RCT-020 step 4: stream + assemble via reusable abstraction (96E-11).
+        let attempt = self.provider_attempt(&req, cancel, &params.model.r#ref)?;
+        return Ok(attempt);
+    }
+
+    /// 96E-11: reusable provider-attempt/cancellation abstraction.
+    /// Explicitly distinguishes completed, cancelled, failed, and malformed-incomplete
+    /// (Truncated/ContextOverflow) outcomes with deterministic cancellation semantics.
+    fn provider_attempt(
+        &self,
+        req: &Request,
+        cancel: &Cancel,
+        model: &ModelRef,
+    ) -> Result<Attempt, ReactError> {
+        self.bus.emit(LiveEvent::TurnStatus { phase: "thinking".into(), message: String::new() });
+        let stream = match self.provider.stream_with_sink(req, cancel, Some(self.bus.as_ref())) {
             Ok(s) => {
-                // Provider connected, now streaming deltas
-                self.bus.emit(Event::TurnStatus { phase: "streaming".into(), message: String::new() });
+                self.bus.emit(LiveEvent::TurnStatus { phase: "streaming".into(), message: String::new() });
                 s
-            },
+            }
             Err(ProvErr::ContextOverflow) => return Ok(Attempt::ContextOverflow),
             Err(ProvErr::Truncated) => return Ok(Attempt::Truncated),
             Err(e) => {
                 if cancel.cancelled() {
-                    self.bus.emit(Event::TurnStatus { phase: "aborted".into(), message: String::new() });
-                    return Ok(Attempt::AbortedInStream(estimated_assembled(&params.model.r#ref)));
+                    self.bus.emit(LiveEvent::TurnStatus { phase: "aborted".into(), message: String::new() });
+                    return Ok(Attempt::AbortedInStream(estimated_assembled(model)));
                 }
-                self.bus.emit(Event::TurnStatus { phase: "failed".into(), message: format!("{e:?}") });
-                self.bus.emit(Event::Error { message: format!("provider failed: {e:?}") });
+                self.bus.emit(LiveEvent::TurnStatus { phase: "failed".into(), message: format!("{e:?}") });
+                self.bus.emit(LiveEvent::Error { message: format!("provider failed: {e:?}") });
                 return Err(ReactError::Provider(e.to_string()));
             }
         };
-
         match assemble(stream, self.bus.as_ref()) {
             Ok(mut a) => {
-                a.usage.model = params.model.r#ref.clone();
+                a.usage.model = model.clone();
                 if cancel.cancelled() {
-                    self.bus.emit(Event::TurnStatus { phase: "aborted".into(), message: String::new() });
+                    self.bus.emit(LiveEvent::TurnStatus { phase: "aborted".into(), message: String::new() });
                     Ok(Attempt::AbortedInStream(a))
                 } else {
-                    // assemble emitted TextDelta/ThinkingDelta; phase inferred but emit idle briefly before Complete
                     Ok(Attempt::Completed(a))
                 }
             }
@@ -104,12 +135,12 @@ impl ReactLoop {
             Err(ProvErr::Truncated) => Ok(Attempt::Truncated),
             Err(e) => {
                 if cancel.cancelled() {
-                    self.bus.emit(Event::TurnStatus { phase: "aborted".into(), message: String::new() });
-                    let est = estimated_assembled(&params.model.r#ref);
+                    self.bus.emit(LiveEvent::TurnStatus { phase: "aborted".into(), message: String::new() });
+                    let est = estimated_assembled(model);
                     Ok(Attempt::AbortedInStream(est))
                 } else {
-                    self.bus.emit(Event::TurnStatus { phase: "failed".into(), message: format!("provider stream failed mid-stream: {e:?}") });
-                    self.bus.emit(Event::Error { message: format!("provider stream failed: {e:?}") });
+                    self.bus.emit(LiveEvent::TurnStatus { phase: "failed".into(), message: format!("provider stream failed mid-stream: {e:?}") });
+                    self.bus.emit(LiveEvent::Error { message: format!("provider stream failed: {e:?}") });
                     Err(ReactError::Provider(e.to_string()))
                 }
             }
@@ -118,12 +149,16 @@ impl ReactLoop {
 
     /// R-RCT-090 / R-RCT-095: the compaction summarize sub-turn. Uses `UsageKind::Compaction`,
     /// never `Main`. The loop is the only component that calls a provider or emits usage.
+    /// 96E-11: reuses `provider_attempt` so cancellation, truncated (malformed-incomplete),
+    /// failed, and completed are distinguished identically to normal provider execution.
+    /// Cancelled compaction records Compaction usage (estimated if needed) but never commits
+    /// `Compacted` (partial state must not be treated as successful).
     fn run_compaction(
         &self,
         params: &RunParams,
         cancel: &Cancel,
         span: kn9t_provider_core::CompactSpan,
-    ) -> Result<(), ReactError> {
+    ) -> Result<Attempt, ReactError> {
         // Interim compaction prompt (SPEC-OPEN sec.18.1). Wording not frozen.
         let mut msgs = span.messages.clone();
         msgs.push(Message {
@@ -147,27 +182,31 @@ impl ReactLoop {
             max_tokens: params.max_tokens,
             cache: &no_cache,
         };
-        self.bus.emit(Event::TurnStatus { phase: "thinking".into(), message: String::new() });
-        let stream = self
-            .provider
-            .stream_with_sink(&req, cancel, Some(self.bus.as_ref()))
-            .map_err(|e| ReactError::Provider(e.to_string()))?;
-        let mut a = assemble(stream, self.bus.as_ref())
-            .map_err(|e| ReactError::Provider(e.to_string()))?;
-        a.usage.model = params.model.r#ref.clone();
-
-        // Step 2: UsageRecorded { kind: Compaction }.
-        self.record_usage(params, &a.usage, UsageKind::Compaction, !a.usage_reported)?;
-        // Step 3: Compacted { replaced, summary }.
-        self.append(
-            params,
-            Event::Compacted {
-                seq: 0,
-                replaced: span.replaced,
-                summary: a.message,
-            },
-        )?;
-        Ok(())
+        // Reuse the shared provider-attempt abstraction (explicitly distinguishes
+        // completed / cancelled / failed / malformed-incomplete).
+        let attempt = self.provider_attempt(&req, cancel, &params.model.r#ref)?;
+        match attempt {
+            Attempt::Completed(a) => {
+                self.record_usage(params, &a.usage, UsageKind::Compaction, !a.usage_reported)?;
+                self.append(
+                    params,
+                    Event::Compacted {
+                        seq: 0,
+                        replaced: span.replaced,
+                        summary: a.message.clone(),
+                    },
+                )?;
+                Ok(Attempt::Completed(a))
+            }
+            Attempt::AbortedInStream(a) => {
+                // Cancelled: usage accounting is correct (estimated if !reported), but
+                // partially compacted state is never committed as successful.
+                self.record_usage(params, &a.usage, UsageKind::Compaction, !a.usage_reported)?;
+                Ok(Attempt::AbortedInStream(a))
+            }
+            Attempt::Truncated => Ok(Attempt::Truncated),
+            Attempt::ContextOverflow => Ok(Attempt::ContextOverflow),
+        }
     }
 
     /// R-RCT-130 / DESIGN sec.11.2: run one tool batch. `parallel_safe` tools may run on OS
@@ -224,13 +263,13 @@ impl ReactLoop {
                             args.clone(),
                             id.clone(),
                             thread::spawn(move || {
-                                bus.emit(Event::ToolStarted { call_id: id.clone(), name: name.clone() });
+                                bus.emit(LiveEvent::ToolStarted { call_id: id.clone(), name: name.clone() });
                                 let out = tool.execute(&args, &ctx, &cancel);
                                 let (inner, is_error) = match out {
                                     Ok(o) => (o.content, o.is_error),
                                     Err(e) => (vec![Content::Text { text: e.0 }], true),
                                 };
-                                bus.emit(Event::ToolFinished { call_id: id.clone(), is_error });
+                                bus.emit(LiveEvent::ToolFinished { call_id: id.clone(), is_error });
                                 (inner, is_error)
                             }),
                         ));
@@ -281,7 +320,7 @@ impl ReactLoop {
                 let Some(tool) = self.tools.get(&call.name) else {
                     return synth_error(&call.id, &format!("unknown tool `{}`", call.name));
                 };
-                self.bus.emit(Event::ToolStarted {
+                self.bus.emit(LiveEvent::ToolStarted {
                     call_id: call.id.clone(),
                     name: call.name.clone(),
                 });
@@ -296,7 +335,7 @@ impl ReactLoop {
                     Ok(o) => (o.content, o.is_error),
                     Err(e) => (vec![Content::Text { text: e.0 }], true),
                 };
-                self.bus.emit(Event::ToolFinished {
+                self.bus.emit(LiveEvent::ToolFinished {
                     call_id: call.id.clone(),
                     is_error,
                 });
@@ -329,7 +368,7 @@ impl ReactLoop {
         let args: serde_json::Value = match serde_json::from_str(&call.args_json) {
             Ok(v) => v,
             Err(e) => {
-                self.bus.emit(Event::Error {
+                self.bus.emit(LiveEvent::Error {
                     message: format!(
                         "tool '{}' (call {}): malformed args_json: {e}",
                         call.name, call.id.0
@@ -339,7 +378,7 @@ impl ReactLoop {
             }
         };
         if !args.is_object() {
-            self.bus.emit(Event::Error {
+            self.bus.emit(LiveEvent::Error {
                 message: format!(
                     "tool '{}' (call {}): args_json is not a JSON object: {}",
                     call.name, call.id.0, call.args_json
@@ -455,7 +494,7 @@ mod tests {
     // ── 96E-8: malformed JSON must not reach Tool::execute ────────────────
     #[test]
     fn p1_96e8_authorize_malformed_json_is_deny() {
-        use kn9t_core::{Content, HookHost, Message, ModelRef, Tool, ToolCtx, Cancel, ToolSpec, Store, StoreErr, SessionId, SessionSnapshot, RequestPlan, EventSink, Event, ToolRegistry, Approver, Decision, ToolCall, CallId};
+        use kn9t_core::{Content, HookHost, LiveEvent, Message, ModelRef, Tool, ToolCtx, Cancel, ToolSpec, Store, StoreErr, SessionId, SessionSnapshot, RequestPlan, EventSink, Event, ToolRegistry, Approver, Decision, ToolCall, CallId};
         use std::collections::HashMap;
         use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
         use crate::loop_::RunParams;
@@ -472,8 +511,8 @@ mod tests {
             fn name(&self) -> &str { "dummy" }
             fn stream(&self, _r: &kn9t_core::Request, _c: &Cancel) -> Result<Box<dyn Iterator<Item=Result<kn9t_core::Chunk, kn9t_core::ProvErr>>+Send>, kn9t_core::ProvErr> { unreachable!() }
         }
-        struct DummyBus(Arc<Mutex<Vec<Event>>>);
-        impl EventSink for DummyBus { fn emit(&self, e: Event) { self.0.lock().unwrap().push(e); } }
+        struct DummyBus(Arc<Mutex<Vec<LiveEvent>>>);
+        impl EventSink for DummyBus { fn emit(&self, e: LiveEvent) { self.0.lock().unwrap().push(e); } }
         struct AllowAllApprover;
         impl Approver for AllowAllApprover { fn request(&self, _c: &ToolCall, _cwd: &std::path::Path, _r: &str) -> Decision { Decision::Allow } }
         struct CountingTool(Arc<AtomicUsize>);
@@ -551,7 +590,7 @@ mod tests {
         assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "null must not reach tool");
         // Bus must have Error events
         let evs = bus_events.lock().unwrap();
-        assert!(evs.iter().any(|e| matches!(e, Event::Error { .. })), "must emit Error");
+        assert!(evs.iter().any(|e| matches!(e, LiveEvent::Error { .. })), "must emit Error");
     }
 
     #[test]

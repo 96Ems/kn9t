@@ -1,7 +1,7 @@
 //! R-PLUG-050 — RemoteTool: a tool declared by a plugin, exposed as a `Tool` trait object.
 
 use crate::host::PluginHost;
-use kn9t_core::{Cancel, Content, Event, Tool, ToolCtx, ToolErr, ToolOutput, ToolSpec};
+use kn9t_core::{Cancel, Content, LiveEvent, Tool, ToolCtx, ToolErr, ToolOutput, ToolSpec};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -59,7 +59,7 @@ impl Tool for RemoteTool {
             |chunk| {
                 // Plugin sends chunks like {"text": "--- a/file.rs"}
                 if let Some(text) = chunk.get("text").and_then(|v| v.as_str()) {
-                    bus.emit(Event::ToolProgress {
+                    bus.emit(LiveEvent::ToolProgress {
                         call_id: call_id.clone(),
                         note: text.to_string(),
                     });

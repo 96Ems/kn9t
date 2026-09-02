@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use kn9t_core::{ApprovalId, Approver, Decision, Event, EventSink, ToolCall};
+use kn9t_core::{ApprovalId, Approver, Decision, EventSink, LiveEvent, ToolCall};
 
 // ── Thread-local sink ────────────────────────────────────────────────────────
 // `Approver::request` has no session parameter (R-CORE-270), so the per-turn `SessionSink`
@@ -388,7 +388,7 @@ impl Approver for InteractiveApprover {
         // No sink means nothing is listening (non-interactive run, or a turn outside
         // `spawn_turn`): there is no one to ask, so fail closed rather than hang.
         match get_policy_sink() {
-            Some(sink) => sink.emit(Event::ApprovalRequest {
+            Some(sink) => sink.emit(LiveEvent::ApprovalRequest {
                 id: ApprovalId(id),
                 tool: call.name.clone(),
                 args: args_val,
@@ -438,15 +438,15 @@ impl Approver for NonInteractiveApprover {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kn9t_core::EventSink;
+    use kn9t_core::{EventSink, LiveEvent};
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
     struct RecordingSink {
-        events: Mutex<Vec<Event>>,
+        events: Mutex<Vec<LiveEvent>>,
     }
     impl EventSink for RecordingSink {
-        fn emit(&self, e: Event) {
+        fn emit(&self, e: LiveEvent) {
             self.events.lock().unwrap().push(e);
         }
     }
@@ -465,7 +465,7 @@ mod tests {
         loop {
             {
                 let evs = sink.events.lock().unwrap();
-                if let Some(Event::ApprovalRequest { id, .. }) = evs.first() {
+                if let Some(LiveEvent::ApprovalRequest { id, .. }) = evs.first() {
                     return id.0;
                 }
             }
@@ -539,7 +539,7 @@ mod tests {
 
         let id = wait_for_event(&sink, "reason path");
         let reason = match &sink.events.lock().unwrap()[0] {
-            Event::ApprovalRequest { reason, .. } => reason.clone(),
+            LiveEvent::ApprovalRequest { reason, .. } => reason.clone(),
             _ => panic!("wrong event"),
         };
         assert_eq!(reason, "not in ALLOW list");

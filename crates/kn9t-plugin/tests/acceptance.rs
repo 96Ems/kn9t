@@ -810,16 +810,16 @@ mod plug {
     /// subsequent hook Result beyond the hook timeout.
     #[test]
     fn p1_96e9_event_backlog_does_not_block_rpc() {
-        use kn9t_core::{Event, EventSink};
+        use kn9t_core::{Event, LiveEvent, EventSink};
 
         struct SlowSink {
-            events: Mutex<Vec<Event>>,
+            events: Mutex<Vec<LiveEvent>>,
             delay: Duration,
         }
         impl EventSink for SlowSink {
-            fn emit(&self, e: Event) {
+            fn emit(&self, e: LiveEvent) {
                 // Only slow down transient plugin notifications so HookFailed path stays fast
-                if matches!(e, Event::PluginNotification { .. }) {
+                if matches!(e, LiveEvent::PluginNotification { .. }) {
                     std::thread::sleep(self.delay);
                 }
                 self.events.lock().unwrap().push(e);
@@ -887,7 +887,7 @@ mod plug {
         // HookFailed would be emitted on timeout; check immediately (HookFailed path does not go through event channel)
         {
             let evs = slow.events.lock().unwrap().clone();
-            let hook_failed = evs.iter().filter(|e| matches!(e, Event::HookFailed { .. })).count();
+            let hook_failed = evs.iter().filter(|e| matches!(e, LiveEvent::HookFailed { .. })).count();
             assert_eq!(
                 hook_failed, 0,
                 "hook should not have timed out; HookFailed count={}, elapsed={:?}, events={} (dropped is OK)",
@@ -900,25 +900,25 @@ mod plug {
         // some of the buffered 64 before asserting.
         std::thread::sleep(Duration::from_millis(400));
         let evs2 = slow.events.lock().unwrap().clone();
-        let notif = evs2.iter().filter(|e| matches!(e, Event::PluginNotification { .. })).count();
+        let notif = evs2.iter().filter(|e| matches!(e, LiveEvent::PluginNotification { .. })).count();
         assert!(notif > 0, "at least some notifications should arrive, got {notif}");
         assert!(notif <= 200, "cannot exceed sent");
         // And ensure RPC still completed (no late HookFailed appeared)
-        let hook_failed2 = evs2.iter().filter(|e| matches!(e, Event::HookFailed { .. })).count();
+        let hook_failed2 = evs2.iter().filter(|e| matches!(e, LiveEvent::HookFailed { .. })).count();
         assert_eq!(hook_failed2, 0, "no HookFailed should appear after drain");
     }
 
     /// 96E-9: saturation — transient events may be dropped, RPC still completes.
     #[test]
     fn p1_96e9_transient_events_may_be_dropped_under_pressure() {
-        use kn9t_core::{Event, EventSink};
+        use kn9t_core::{LiveEvent, EventSink};
 
         struct CountingSink {
             count: Mutex<usize>,
         }
         impl EventSink for CountingSink {
-            fn emit(&self, e: Event) {
-                if matches!(e, Event::PluginNotification { .. }) {
+            fn emit(&self, e: LiveEvent) {
+                if matches!(e, LiveEvent::PluginNotification { .. }) {
                     // Simulate slow consumer without sleeping too long: just count, but we
                     // will fill channel by not draining fast enough via sleep in event thread?
                     // Instead we use a bus that never drains fast? Simpler: use a channel bus

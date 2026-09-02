@@ -8,27 +8,24 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use kn9t_provider_core::{
-    Event, HookName, HookVeto, Message, ModelRef, NextTurnPatch, Price, StopReason, Usage,
-    UsageKind,
+    Event, HookName, HookVeto, LiveEvent, Message, ModelRef, NextTurnPatch, Price, StopReason,
+    Usage, UsageKind,
 };
 
 use crate::loop_::{ReactError, ReactLoop, RunParams};
 
 impl ReactLoop {
-    /// R-RCT-020: durable append via the store (assigns seq, commits, returns seq), then
-    /// publish to the bus for observers (DESIGN sec.3.1). Cancellation is never checked
-    /// inside an append (R-RCT-040), so no transaction is half-applied.
+    /// R-RCT-020: durable append via the store (assigns seq, commits, returns seq).
+    /// 96E-12: durable events must go through the store only; the live bus (`EventSink`)
+    /// is transient-only (`LiveEvent`), so we do NOT republish the durable event via
+    /// `self.bus.emit`. Durable observers read from the store (or the server's
+    /// `SessionBuses::publish` for SSE echo after store commit). Cancellation is never
+    /// checked inside an append (R-RCT-040).
     pub(crate) fn append(&self, params: &RunParams, event: Event) -> Result<u64, ReactError> {
-        let for_bus = event.clone();
         let seq = self
             .store
             .append(&params.session, event)
             .map_err(|e| ReactError::Store(e.0))?;
-        // Re-publish the durable event (with its assigned seq if the store rewrote it) so
-        // subscribers see it. The store returns the seq; the bus copy carries seq 0 as
-        // constructed, which is acceptable for transient observation (durable truth is in
-        // the store, R-CORE-225).
-        self.bus.emit(for_bus);
         Ok(seq)
     }
 
@@ -182,7 +179,7 @@ impl ReactLoop {
     }
 
     fn hook_failed(&self, hook: HookName, reason: &str) {
-        self.bus.emit(Event::HookFailed {
+        self.bus.emit(LiveEvent::HookFailed {
             plugin: "host".to_string(),
             hook,
             reason: reason.to_string(),

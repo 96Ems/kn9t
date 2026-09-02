@@ -25,7 +25,7 @@ pub use bus::{Bus, EventSink, Subscription};
 pub use cache::{breakpoints, Cache, CacheMode};
 pub use cancel::Cancel;
 pub use error::{ProvErr, StoreErr, ToolErr};
-pub use event::{Event, ForkReason, ForkSnapshot, HookName, SeqRange, UsageKind};
+pub use event::{Event, ForkReason, ForkSnapshot, HookName, LiveEvent, SeqRange, UsageKind};
 pub use hook::{HookHost, HookVeto, NextTurnPatch, NoopHookHost};
 pub use ids::{ApprovalId, CallId, MsgId, SessionId};
 pub use message::{Content, Message, Role};

@@ -235,3 +235,103 @@ impl Event {
         self
     }
 }
+
+/// 96E-12 — distinct type for transient (live) events only.
+/// `EventSink::emit` accepts only this type, so durable variants cannot be
+/// emitted through the live path at compile time. Durable events must go
+/// through `Store::append(Event::...)` (R-CORE-225).
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LiveEvent {
+    TurnStarted {
+        turn: u32,
+    },
+    TextDelta {
+        msg_id: MsgId,
+        idx: u32,
+        delta: String,
+    },
+    ThinkingDelta {
+        msg_id: MsgId,
+        idx: u32,
+        delta: String,
+    },
+    ToolArgsDelta {
+        msg_id: MsgId,
+        idx: u32,
+        delta: String,
+    },
+    ToolStarted {
+        call_id: CallId,
+        name: String,
+    },
+    ToolProgress {
+        call_id: CallId,
+        note: String,
+    },
+    ToolFinished {
+        call_id: CallId,
+        is_error: bool,
+    },
+    ApprovalRequest {
+        id: ApprovalId,
+        tool: String,
+        args: serde_json::Value,
+        cwd: PathBuf,
+        #[serde(default)]
+        reason: String,
+    },
+    TurnEnded {
+        turn: u32,
+        stop: StopReason,
+    },
+    HookFailed {
+        plugin: String,
+        hook: HookName,
+        reason: String,
+    },
+    TitleChanged {
+        title: String,
+    },
+    Error {
+        message: String,
+    },
+    RetryAttempt {
+        attempt: u32,
+        max: u32,
+        error: String,
+        delay_ms: u64,
+        retry_kind: String,
+    },
+    TurnStatus {
+        phase: String,
+        #[serde(default)]
+        message: String,
+    },
+    PluginNotification {
+        #[serde(flatten)]
+        payload: serde_json::Value,
+    },
+}
+
+impl From<LiveEvent> for Event {
+    fn from(live: LiveEvent) -> Self {
+        match live {
+            LiveEvent::TurnStarted { turn } => Event::TurnStarted { turn },
+            LiveEvent::TextDelta { msg_id, idx, delta } => Event::TextDelta { msg_id, idx, delta },
+            LiveEvent::ThinkingDelta { msg_id, idx, delta } => Event::ThinkingDelta { msg_id, idx, delta },
+            LiveEvent::ToolArgsDelta { msg_id, idx, delta } => Event::ToolArgsDelta { msg_id, idx, delta },
+            LiveEvent::ToolStarted { call_id, name } => Event::ToolStarted { call_id, name },
+            LiveEvent::ToolProgress { call_id, note } => Event::ToolProgress { call_id, note },
+            LiveEvent::ToolFinished { call_id, is_error } => Event::ToolFinished { call_id, is_error },
+            LiveEvent::ApprovalRequest { id, tool, args, cwd, reason } => Event::ApprovalRequest { id, tool, args, cwd, reason },
+            LiveEvent::TurnEnded { turn, stop } => Event::TurnEnded { turn, stop },
+            LiveEvent::HookFailed { plugin, hook, reason } => Event::HookFailed { plugin, hook, reason },
+            LiveEvent::TitleChanged { title } => Event::TitleChanged { title },
+            LiveEvent::Error { message } => Event::Error { message },
+            LiveEvent::RetryAttempt { attempt, max, error, delay_ms, retry_kind } => Event::RetryAttempt { attempt, max, error, delay_ms, retry_kind },
+            LiveEvent::TurnStatus { phase, message } => Event::TurnStatus { phase, message },
+            LiveEvent::PluginNotification { payload } => Event::PluginNotification { payload },
+        }
+    }
+}

@@ -65,7 +65,7 @@ fn make_model(_base_url: &str, model_id: &str) -> ModelSpec {
 
 struct NullSink;
 impl kn9t_core::EventSink for NullSink {
-    fn emit(&self, _: kn9t_core::Event) {}
+    fn emit(&self, _: kn9t_core::LiveEvent) {}
 }
 
 fn stream_and_assemble(

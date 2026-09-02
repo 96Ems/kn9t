@@ -18,7 +18,7 @@ enum ReaderMsg {
 }
 
 use kn9t_core::{
-    Cancel, Content, Event, EventSink, HookName, HookVeto, Message, ModelRef, MsgId,
+    Cancel, Content, Event, EventSink, HookName, HookVeto, LiveEvent, Message, ModelRef, MsgId,
     NextTurnPatch, PluginKv, Role, StopReason, Usage,
 };
 use serde_json::Value;
@@ -228,7 +228,7 @@ impl PluginHost {
                     .or_else(|| event.get("sessionId").and_then(|v| v.as_str()).map(|s| s.to_string()));
                 if let Some(sid) = sid_opt {
                     if let Some(bus) = session_buses_for_thread.lock().unwrap().get(&sid) {
-                        bus.emit(Event::PluginNotification { payload: event });
+                        bus.emit(LiveEvent::PluginNotification { payload: event });
                     }
                 } else {
                     // No session_id: broadcast to all known session buses
@@ -237,12 +237,12 @@ impl PluginHost {
                         // Fallback to thread-local bus if no session buses registered
                         TL_BUS.with(|c| {
                             if let Some(bus) = c.borrow().as_ref() {
-                                bus.emit(Event::PluginNotification { payload: event.clone() });
+                                bus.emit(LiveEvent::PluginNotification { payload: event.clone() });
                             }
                         });
                     } else {
                         for bus in buses.values() {
-                            bus.emit(Event::PluginNotification { payload: event.clone() });
+                            bus.emit(LiveEvent::PluginNotification { payload: event.clone() });
                         }
                     }
                 }
@@ -617,7 +617,7 @@ impl PluginHost {
     fn emit_hook_failed(&self, hook: HookName, reason: &str) {
         TL_BUS.with(|c| {
             if let Some(bus) = c.borrow().as_ref() {
-                bus.emit(Event::HookFailed {
+                bus.emit(LiveEvent::HookFailed {
                     plugin: self.declaration.name.clone(),
                     hook,
                     reason: reason.to_string(),

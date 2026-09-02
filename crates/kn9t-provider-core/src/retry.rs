@@ -59,14 +59,14 @@ where
                     return Err(e);
                 }
                 if let Some(s) = sink {
-                    s.emit(kn9t_core::Event::RetryAttempt {
+                    s.emit(kn9t_core::LiveEvent::RetryAttempt {
                         attempt: n + 1,
                         max,
                         error: format!("{e:?}"),
                         delay_ms,
                         retry_kind: "provider".into(),
                     });
-                    s.emit(kn9t_core::Event::TurnStatus {
+                    s.emit(kn9t_core::LiveEvent::TurnStatus {
                         phase: "retrying".into(),
                         message: format!("retry {}/{} in {}ms: {:?}", n + 1, max, delay_ms, e),
                     });

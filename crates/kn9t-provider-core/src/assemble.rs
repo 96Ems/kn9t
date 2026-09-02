@@ -2,7 +2,7 @@
 //! DB-02: this is the canonical implementation; kn9t-react delegates here.
 
 use kn9t_core::{
-    CallId, Chunk, Content, Event, EventSink, Message, ModelRef, MsgId, ProvErr, Role,
+    CallId, Chunk, Content, EventSink, LiveEvent, Message, ModelRef, MsgId, ProvErr, Role,
     StopReason, Tokens, Usage,
 };
 
@@ -39,14 +39,14 @@ pub fn assemble(
         let chunk = chunk_res?;
         match chunk {
             Chunk::Text { idx, delta } => {
-                sink.emit(Event::TextDelta { msg_id: msg_id.clone(), idx, delta: delta.clone() });
+                sink.emit(LiveEvent::TextDelta { msg_id: msg_id.clone(), idx, delta: delta.clone() });
                 match text_parts.iter_mut().find(|(i, _)| *i == idx) {
                     Some(e) => e.1.push_str(&delta),
                     None    => text_parts.push((idx, delta)),
                 }
             }
             Chunk::Thinking { idx, delta } => {
-                sink.emit(Event::ThinkingDelta { msg_id: msg_id.clone(), idx, delta: delta.clone() });
+                sink.emit(LiveEvent::ThinkingDelta { msg_id: msg_id.clone(), idx, delta: delta.clone() });
                 match think_parts.iter_mut().find(|(i, _)| *i == idx) {
                     Some(e) => e.1.push_str(&delta),
                     None    => think_parts.push((idx, delta)),
@@ -60,7 +60,7 @@ pub fn assemble(
                 tools.push(ToolAccum { idx, id, name, args_json: String::new() });
             }
             Chunk::ToolArgs { idx, delta } => {
-                sink.emit(Event::ToolArgsDelta { msg_id: msg_id.clone(), idx, delta: delta.clone() });
+                sink.emit(LiveEvent::ToolArgsDelta { msg_id: msg_id.clone(), idx, delta: delta.clone() });
                 if let Some(t) = tools.iter_mut().find(|t| t.idx == idx) {
                     t.args_json.push_str(&delta);
                 }

@@ -1,7 +1,7 @@
 //! R-CORE-220 .. R-CORE-230 — the broadcast bus (transient events only) and the
 //! `EventSink` trait.
 
-use crate::event::Event;
+use crate::event::{Event, LiveEvent};
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
@@ -9,8 +9,9 @@ use std::time::Duration;
 /// R-CORE-230 — the transient-event sink used by `assemble()` (PCORE) and tools
 /// (TOOL) to emit deltas/progress without knowing about the bus or store. Durable
 /// events MUST NOT be emitted through an `EventSink`.
+/// 96E-12: type-safe — accepts only `LiveEvent` (transient), never durable `Event`.
 pub trait EventSink: Send + Sync {
-    fn emit(&self, e: Event);
+    fn emit(&self, e: LiveEvent);
 }
 
 /// Shared per-subscriber ring buffer. Bounded; when full, `push` drops the oldest
@@ -155,10 +156,10 @@ impl Default for Bus {
     }
 }
 
-/// R-CORE-230 — a `Bus` is an `EventSink`; its `emit` delegates to `publish`.
+/// R-CORE-230 — a `Bus` is an `EventSink`; its `emit` delegates to `publish` via conversion.
 impl EventSink for Bus {
-    fn emit(&self, e: Event) {
-        self.publish(e);
+    fn emit(&self, e: LiveEvent) {
+        self.publish(Event::from(e));
     }
 }
 
@@ -182,10 +183,15 @@ impl Subscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::LiveEvent;
     use std::thread;
 
     fn test_event() -> Event {
         Event::Error { message: "test".into() }
+    }
+
+    fn test_live_event() -> LiveEvent {
+        LiveEvent::Error { message: "test".into() }
     }
 
     #[test]
@@ -340,11 +346,38 @@ mod tests {
         let bus = Bus::new();
         let sub = bus.subscribe(10);
 
-        // Use the EventSink trait
+        // Use the EventSink trait — 96E-12: must be LiveEvent, not Event
         let sink: &dyn EventSink = &bus;
-        sink.emit(test_event());
+        sink.emit(test_live_event());
 
         assert!(sub.try_recv().is_some());
+    }
+
+    #[test]
+    fn test_event_sink_cannot_accept_durable() {
+        // Compile-time guarantee: EventSink::emit takes LiveEvent, so the following
+        // would not compile after 96E-12:
+        //   let sink: &dyn EventSink = &Bus::new();
+        //   sink.emit(Event::MessageAppended { seq: 0, msg: ... });
+        // This test documents the type safety by asserting that LiveEvent does not
+        // have durable variants and that Event::MessageAppended cannot be used as LiveEvent.
+        // We verify at runtime that LiveEvent has no `seq` field and that a durable
+        // Event is distinguishable.
+        let live = LiveEvent::Error { message: "x".into() };
+        let event: Event = live.clone().into();
+        assert!(event.seq().is_none(), "LiveEvent must be transient (no seq)");
+        let durable = Event::MessageAppended {
+            seq: 1,
+            msg: crate::Message {
+                id: crate::MsgId::new(),
+                role: crate::Role::User,
+                content: vec![],
+                silent: false,
+            },
+        };
+        assert!(durable.seq().is_some(), "durable must have seq");
+        // The type system prevents `sink.emit(durable)` — this would be a compile error:
+        // `expected LiveEvent, found Event`
     }
 
     #[test]

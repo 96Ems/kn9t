@@ -11,18 +11,19 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use kn9t_core::{
-    Approver, Cache, CacheMode, CompactSpan, Decision, Event, EventSink, Message, ModelRef, ModelSpec,
-    Price, Quirks, RequestPlan, SessionId, SessionSnapshot, StoreErr, Tool, ToolCall, ToolSpec,
-    ToolRegistry,
+    Approver, Cache, CacheMode, CompactSpan, Decision, Event, EventSink, LiveEvent, Message,
+    ModelRef, ModelSpec, Price, Quirks, RequestPlan, SessionId, SessionSnapshot, StoreErr, Tool,
+    ToolCall, ToolSpec, ToolRegistry,
 };
 use kn9t_plugin::{PluginHost, RemoteTool};
 use kn9t_provider_replay::fixture::Fixture;
 use kn9t_provider_replay::ReplayProvider;
 
 /// A bus that records every published event for assertions.
+/// 96E-12: stores `LiveEvent` (transient only); durable events are asserted via `StubStore::appended`.
 #[derive(Clone, Default)]
 pub struct RecordingBus {
-    pub events: Arc<Mutex<Vec<Event>>>,
+    pub events: Arc<Mutex<Vec<LiveEvent>>>,
 }
 
 impl RecordingBus {
@@ -36,16 +37,16 @@ impl RecordingBus {
             .lock()
             .unwrap()
             .iter()
-            .map(event_tag)
+            .map(live_event_tag)
             .collect()
     }
-    pub fn snapshot(&self) -> Vec<Event> {
+    pub fn snapshot(&self) -> Vec<LiveEvent> {
         self.events.lock().unwrap().clone()
     }
 }
 
 impl EventSink for RecordingBus {
-    fn emit(&self, e: Event) {
+    fn emit(&self, e: LiveEvent) {
         self.events.lock().unwrap().push(e);
     }
 }
@@ -72,6 +73,27 @@ pub fn event_tag(e: &Event) -> String {
         Event::TurnStatus { .. } => "TurnStatus",
         Event::TitleChanged { .. } => "TitleChanged",
         Event::PluginNotification { .. } => "PluginNotification",
+    }
+    .to_string()
+}
+
+pub fn live_event_tag(e: &LiveEvent) -> String {
+    match e {
+        LiveEvent::TurnStarted { .. } => "TurnStarted",
+        LiveEvent::TextDelta { .. } => "TextDelta",
+        LiveEvent::ThinkingDelta { .. } => "ThinkingDelta",
+        LiveEvent::ToolArgsDelta { .. } => "ToolArgsDelta",
+        LiveEvent::ToolStarted { .. } => "ToolStarted",
+        LiveEvent::ToolProgress { .. } => "ToolProgress",
+        LiveEvent::ToolFinished { .. } => "ToolFinished",
+        LiveEvent::ApprovalRequest { .. } => "ApprovalRequest",
+        LiveEvent::TurnEnded { .. } => "TurnEnded",
+        LiveEvent::HookFailed { .. } => "HookFailed",
+        LiveEvent::TitleChanged { .. } => "TitleChanged",
+        LiveEvent::Error { .. } => "Error",
+        LiveEvent::RetryAttempt { .. } => "RetryAttempt",
+        LiveEvent::TurnStatus { .. } => "TurnStatus",
+        LiveEvent::PluginNotification { .. } => "PluginNotification",
     }
     .to_string()
 }
