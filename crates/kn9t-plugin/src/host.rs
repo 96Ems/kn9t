@@ -271,36 +271,26 @@ impl PluginHost {
             }
         });
 
-        // 96E-5 fix: per-session event routing. The plugin's Event may contain
-        // a `session_id` field; if so, route only to that session's bus. Otherwise
-        // broadcast to all known session buses. This ensures concurrent sessions
-        // don't have their events misrouted via the old single SharedBus.
+        // 96E-21 fix: per-session event routing is explicit — a plugin event
+        // reaches a session's client IFF its `session_id` matches a registered
+        // bus. Missing or unknown `session_id` is DROPPED (diagnostic, no
+        // broadcast). The old "broadcast to all when untagged" leaked subagent
+        // events to the master (AGENTS.md leak). If a plugin genuinely needs a
+        // global event, it must use a dedicated diagnostic channel, not this.
         let session_buses: Arc<Mutex<HashMap<String, Arc<dyn EventSink>>>> = Arc::new(Mutex::new(HashMap::new()));
         let session_buses_for_thread = Arc::clone(&session_buses);
         std::thread::spawn(move || {
             while let Ok(event) = event_rx.recv() {
-                // Try to extract session_id from the event payload for per-session routing
                 let sid_opt = event.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string())
                     .or_else(|| event.get("sessionId").and_then(|v| v.as_str()).map(|s| s.to_string()));
                 if let Some(sid) = sid_opt {
                     if let Some(bus) = session_buses_for_thread.lock().unwrap().get(&sid) {
                         bus.emit(LiveEvent::PluginNotification { payload: event });
                     }
+                    // unknown sid -> drop (no broadcast)
                 } else {
-                    // No session_id: broadcast to all known session buses
-                    let buses = session_buses_for_thread.lock().unwrap().clone();
-                    if buses.is_empty() {
-                        // Fallback to thread-local bus if no session buses registered
-                        TL_BUS.with(|c| {
-                            if let Some(bus) = c.borrow().as_ref() {
-                                bus.emit(LiveEvent::PluginNotification { payload: event.clone() });
-                            }
-                        });
-                    } else {
-                        for bus in buses.values() {
-                            bus.emit(LiveEvent::PluginNotification { payload: event.clone() });
-                        }
-                    }
+                    // No session_id: drop — never broadcast to all (96E-21)
+                    // Could log to stderr for diagnostics, but must not fan out to every session.
                 }
             }
         });
@@ -1006,5 +996,80 @@ fn parse_next_turn_patch(body: &Value) -> NextTurnPatch {
             NextTurnPatch { model, thinking }
         }
         _ => NextTurnPatch::default(),
+    }
+}
+
+/// RAII guard that restores the plugin thread-locals (`TL_SESSION`/`TL_BUS`) on
+/// drop. A spawned session runs its own turn synchronously on the CALLER's
+/// thread (`run_session_turn`), and `compose_loop` overwrites the caller's
+/// `TL_SESSION` with the child id. Without a restore, every later hook on that
+/// thread (e.g. `get_steering`) mis-attributes itself to the CHILD session —
+/// AGENTS.md injected into the parent's transcript (plugin leak). Wrap the
+/// child turn with this guard so the parent thread-local survives it.
+pub struct SessionScope {
+    session: Option<String>,
+    bus: Option<Arc<dyn EventSink>>,
+}
+
+impl SessionScope {
+    /// Capture the current thread-local state. `Drop` restores it.
+    pub fn capture() -> Self {
+        let session = TL_SESSION.with(|c| c.borrow().clone());
+        let bus = TL_BUS.with(|c| c.borrow().clone());
+        SessionScope { session, bus }
+    }
+}
+
+impl Drop for SessionScope {
+    fn drop(&mut self) {
+        TL_SESSION.with(|c| *c.borrow_mut() = self.session.clone());
+        TL_BUS.with(|c| *c.borrow_mut() = self.bus.clone());
+    }
+}
+
+#[cfg(test)]
+mod session_scope_tests {
+    use super::*;
+
+    struct NoopSink;
+    impl kn9t_core::EventSink for NoopSink {
+        fn emit(&self, _e: kn9t_core::LiveEvent) {}
+    }
+
+    /// Regression test for the AGENTS.md plugin leak: a spawned session runs
+    /// synchronously on the parent turn's thread and `compose_loop` overwrites
+    /// the thread-local session id with the child. `SessionScope` must restore
+    /// the parent's id (and bus) so later hooks (get_steering) on the SAME
+    /// thread still attribute to the parent — not the child.
+    #[test]
+    fn scope_restores_parent_session_after_nested_child_turn() {
+        TL_SESSION.with(|c| *c.borrow_mut() = None);
+        TL_BUS.with(|c| *c.borrow_mut() = None);
+
+        // Simulate the parent turn: compose_loop sets the parent session + bus.
+        TL_SESSION.with(|c| *c.borrow_mut() = Some("parent-001".to_string()));
+        TL_BUS.with(|c| *c.borrow_mut() = Some(Arc::new(NoopSink) as Arc<dyn EventSink>));
+
+        // run_session_turn(child) begins: capture the caller's thread-local.
+        let scope = SessionScope::capture();
+        assert_eq!(TL_SESSION.with(|c| c.borrow().clone()).as_deref(), Some("parent-001"));
+        assert!(TL_BUS.with(|c| c.borrow().is_some()));
+
+        // Inside the child turn, compose_loop overwrites the thread-local.
+        TL_SESSION.with(|c| *c.borrow_mut() = Some("child-900".to_string()));
+        TL_BUS.with(|c| *c.borrow_mut() = Some(Arc::new(NoopSink) as Arc<dyn EventSink>));
+
+        // The child turn finishes; the scope drops and must restore.
+        drop(scope);
+
+        assert_eq!(
+            TL_SESSION.with(|c| c.borrow().clone()).as_deref(),
+            Some("parent-001"),
+            "parent session id must be restored after the nested child turn"
+        );
+        assert!(
+            TL_BUS.with(|c| c.borrow().is_some()),
+            "parent bus must be restored after the nested child turn"
+        );
     }
 }

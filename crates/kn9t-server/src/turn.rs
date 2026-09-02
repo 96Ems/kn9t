@@ -250,6 +250,13 @@ pub(crate) fn run_session_turn(
         )
         .map_err(|e| format!("append message: {}", e.0))?;
 
+    // A spawned session's turn runs synchronously on the CALLER's thread, so
+    // compose_loop overwrites the caller's TL_SESSION/TL_BUS with this child.
+    // Restore them on the way out — otherwise every later hook on this thread
+    // (get_steering etc.) mis-attributes to the child and leaks AGENTS.md
+    // reminders into the parent (kn9t-agents-md plugin leak).
+    let _scope = kn9t_plugin::SessionScope::capture();
+
     let (loop_, _sink) = compose_loop(state, session, &model, tool_names)?;
 
     // Watchdog: the loop aborts at its next cancel checkpoint when the timeout
