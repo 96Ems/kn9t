@@ -219,3 +219,53 @@ pub trait PluginEventSink: Send + Sync {
     /// Called on a background thread for each matching event. Must not block.
     fn on_event(&self, kind: &str, event: &Value);
 }
+
+// ── PluginCompactor (96E-16) ────────────────────────────────────────────────
+
+/// Pluggable compaction delegate for external plugins (96E-16).
+///
+/// When a plugin implements this, the host's `ReactLoop` can delegate the
+/// `CompactSpan → summary` step to it instead of the hardcoded prompt. The
+/// host keeps the hardcoded path as fallback when no compactor is installed
+/// (fail-open). The plugin receives the span to replace and the full history
+/// for context, and returns a `CompactionPlan` that the host validates
+/// (host-side CallId check) before persisting `Event::Compacted` and
+/// optional `Event::Handoff`.
+///
+/// This is the SDK surface; the host's `kn9t_core::Compactor` is the wire
+/// counterpart. A future wire message will bridge the two (the SDK will
+/// serialize the plan as JSON and the host will validate and persist).
+pub trait PluginCompactor: Send + Sync {
+    /// Produce a compaction plan for `span`, given the full `history`.
+    ///
+    /// Return `Err` to signal failure — the host will surface it as a
+    /// provider error and not persist any `Compacted`/`Handoff`.
+    fn compact(&self, span: Value, history: &[Value]) -> Result<CompactionPlan, String>;
+}
+
+/// What a `PluginCompactor` returns. The host validates `handoff.keep/summarize/drop`
+/// CallIds against the live session before persisting.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CompactionPlan {
+    /// Summarized replacement message (the new assistant content).
+    pub summary: Value,
+    /// Optional structured handoff (kept/summarized/dropped tool IDs + resume actions).
+    pub handoff: Option<CompactionHandoff>,
+}
+
+/// Structured handoff data (ID-based) that a compactor may attach.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CompactionHandoff {
+    pub keep: Vec<String>,
+    pub summarize: Vec<CompactionSummary>,
+    #[serde(rename = "drop")]
+    pub drop_ids: Vec<String>,
+    pub resume_actions: Vec<String>,
+}
+
+/// One summarized tool result in a handoff.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CompactionSummary {
+    pub id: String,
+    pub summary: String,
+}
