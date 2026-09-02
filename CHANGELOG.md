@@ -11,9 +11,44 @@ pointer current.
 
 ## ▶ Next session starts here
 
-**Next:** finish the ADR-0008 fallout listed under "Left undone" below — the `spec/` requirement
-rewrite (R-CORE-270, R-RCT-100, R-TOOL-070/080/090/095), the `kn9t-policy.py` fail-open bug, and
-the TUI `reason` display. Then G3 manual verification or Stage 10 bedrock-native/gemini (v2).
+**Next:** verify tool-calling after today's P1/96E-8..16 batch (the 400 was masked by empty-body error), G3 or Stage 10.
+
+---
+
+## Session — 2026-09-02 — P1 + 96E-8..16 batch + TUI hardening
+
+### Summary
+
+10 commits today fixing the P1-era robustness gaps that accumulated after the plan.md stages. All work was TDD red→green (acceptance test written failing, then fix, then `cargo test --workspace` green) and pushed after each fix per AGENTS.md. Live TUI verification done via `tui-testing` MCP `launch_tui({command:"./target/debug/kn9t"})` — the 4 hidden tools (`launch_tui`, `expect_text`, `get_screen_region`, `wait_for_screen_stability`) were discovered by enumerating `Object.keys(tools["tui-testing"])` after `discover_targets` returned `[]` for this Rust repo.
+
+### What changed today
+
+- `76205ff` P1 — `PluginHost` session isolation (thread-local → per-session bus), parallel `after_tool_call`, atomic SSE `read_attach_snapshot` (single `Mutex` lock + `KN9T_SSE_TEST_DELAY_MS` for test).
+- `72f5ef6` 96E-8 — `exec.rs:authorize` now `Deny` on `args_json` parse error or non-object `null` (was `Value::Null` reaching `Tool::execute`); emits `LiveEvent::Error`, never reaches policy hooks.
+- `ba2cf4e` 96E-9 — `host.rs` reader demux `event_tx.send` → `try_send` (drop under pressure, transient safe) so 200-event flood no longer stalls RPC to 500ms timeout.
+- `fb9d04b` 96E-10 — `PluginHost` poison on malformed `PluginMsg`: `unhealthy`+`poison_reason`+broadcast `ReaderMsg::Err`+`break`, `check_healthy()` fail-fast <100ms.
+- `062f5d0` 96E-11/12 — `exec.rs:provider_attempt`/`run_compaction` share `Completed/AbortedInStream/Truncated/ContextOverflow` classification; `EventSink::emit(LiveEvent)` type-safe (transient only, durable via `store.append`).
+- `d612c0a` 96E-15 — double-UTF8 mojibake `Â§`/`â€”`/`─` repaired at byte level via `windows-1252→utf8` heuristic, `crates/kn9t-core/tests/mojibake.rs` regression.
+- `a100904` 96E-13 — `SqliteStore` doc: single `Mutex<Connection>` serialized, WAL only for external readers/crash safety, not in-process concurrency.
+- `07f645c` 96E-14 — `Price`/`cost_micros` integer micros (`MoneyMicros(i64)` via `i128`), `Price` `f64→i64` with `de_micros` compat, `cost_integer.rs` rounding boundary test.
+- `efe897d` 96E-16 — `Event::Handoff { keep, summarize, drop, resume_actions }` durable + `validate_handoff` host-side, `Compactor { compact(span, history) }` with fallback, `ReactLoop::compactor` delegation + 3 acceptance tests.
+- `735e7f2` SDK — `PluginCompactor` trait for external plugins (wire bridging future).
+- `TUI harden` (now, uncommitted) — `http.rs` `http_status_as_error(false)` + `provider.rs` log 400 body + `encode.rs` empty tool output → `"(no output)"` placeholder (gateway 400 root cause), `message_handler.rs` `expanded:true` so tool output visible by default (user: invisible).
+
+### Why TUI tool output was invisible / why 400
+
+- TUI `TranscriptParser::parse` set `expanded:false` for done tools loaded from DB — had to hit space on each card. Flipped to `true`.
+- Provider `send` treated 400 as `ProvErr::Http { body:"" }` — empty, so `server.log` showed `http 400: ` with no clue. Fixed by disabling `http_status_as_error` and reading body (truncated 4k) and by ensuring empty tool content never maps to `""`.
+
+### Verification today
+
+- `cargo build --workspace` clean (14s, warnings only), `cargo test --workspace` green, `cargo test -p kn9t-tui` 124 passed, `cargo test -p kn9t-core --test pluggable_compaction` 3 passed, `cargo test -p kn9t-react --test acceptance p1_96e16 3 passed`.
+- `kn9t status` → `port 34383/43551`, `33 models`, `34 sessions`.
+- `launch_tui` → `kn9t` welcome `34 recent sessions` → `/models` picker → `/session` picker → `hello tui` input → `thinking...` spinner → `▸ assistant Hello! I'm kn9t...` — full ReAct loop end-to-end. Follow-up prompt with `bash` tool calls triggered the now-fixed 400 (empty tool output + swallowed body).
+
+### Process note
+
+`spec/` rewrite for ADR-0008 (R-CORE-270 etc.) still `SPEC-STALE` per TRACKING.md — intentional, recorded as spec bug. The 400's empty body masked that a plain control command (`echo hi`) today produced a tool result of `""` after `grep` plumbing — that empty result then poisoned the next turn's provider payload. Fix is at the encode seam (placeholder) per AGENTS.md §10, not at the tool.
 
 ---
 

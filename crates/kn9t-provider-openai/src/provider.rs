@@ -99,12 +99,16 @@ impl OpenAiProvider {
         };
 
         let timeout = Duration::from_millis(self.config.connect_timeout_ms);
-        let resp = send(http_req, timeout, cancel)?;
+        let mut resp = send(http_req, timeout, cancel)?;
 
         if resp.status != 200 {
+            let body = std::io::read_to_string(&mut resp.body).unwrap_or_default();
+            // Truncate to 4k for log/error but keep full error visible.
+            let snippet = if body.len() > 4000 { format!("{}…", &body[..4000]) } else { body.clone() };
+            eprintln!("[{}] HTTP {} body: {}", self.config.name, resp.status, snippet);
             return Err(ProvErr::Http {
                 status: resp.status,
-                body:   String::new(),
+                body,
             });
         }
 

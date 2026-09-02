@@ -421,7 +421,7 @@ impl TranscriptParser {
                     },
                     output: if output.is_empty() { None } else { Some(output) },
                     progress_lines: Vec::new(),  // Not available when loading from DB
-                    expanded: false,  // Collapsed by default when done
+                    expanded: true,  // Expanded by default so tool output visible (fix: collapsed hid output, user reports no collapse line)
                     active_tab: ToolTab::Output,
                     scroll_offset: 0,
                 });

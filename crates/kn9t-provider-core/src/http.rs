@@ -45,6 +45,8 @@ pub fn send(req: HttpRequest, connect_timeout: Duration, cancel: Option<Cancel>)
     let config = ureq::config::Config::builder()
         .timeout_connect(Some(connect_timeout))
         // No read timeout — body streams unbounded (R-PCORE-020).
+        // Do not treat HTTP status as error — we need the body on 400 for diagnostics.
+        .http_status_as_error(false)
         .build();
     let agent = ureq::Agent::new_with_config(config);
 
@@ -105,6 +107,7 @@ pub fn send_get(
 ) -> Result<HttpResponse, ProvErr> {
     let config = ureq::config::Config::builder()
         .timeout_connect(Some(connect_timeout))
+        .http_status_as_error(false)
         .build();
     let agent = ureq::Agent::new_with_config(config);
 
