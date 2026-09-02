@@ -42,6 +42,9 @@ impl Tool for RemoteTool {
         let payload = serde_json::json!({
             "tool": self.spec.name,
             "args": args,
+            // 96E-17: the calling session — plugin tools that spawn sessions
+            // (fork/prompt) need it. Set by the server per turn via TLS.
+            "session": self.host.session_id(),
         });
 
         // Clone what we need for the closure.
