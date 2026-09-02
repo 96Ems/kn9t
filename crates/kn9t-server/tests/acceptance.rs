@@ -2241,4 +2241,78 @@ fn p1_96e17_host_api_ops_session_read_provider_complete_tool_execute() {
         .is_err());
 }
 
+#[test]
+fn p1_96e17_session_fork_and_prompt_spawns_a_real_child() {
+    use kn9t_plugin::HostApi as _;
+    use kn9t_server::host_api::ServerHostApi;
+
+    // A child session is just a forked session running a turn (R-PLUG-110).
+    let (store, _tmp) = temp_store();
+    let spec = model_spec();
+    let mut state = ServerState::new(store.clone(), "test-token".into(), Default::default(), Vec::new())
+        .with_default_model(spec.clone())
+        .with_provider(Arc::new(StubProvider { text: "child says hi".into() }));
+    state.model_registry = vec![spec.clone()];
+    {
+        *state.approver.write().unwrap() = Arc::new(AllowAllApprover);
+    }
+    let state = Arc::new(state);
+    let api = ServerHostApi { state: state.clone() };
+
+    let parent = SessionId::new();
+    let model_ref = ModelRef { provider: "test".into(), id: "m1".into() };
+    kn9t_store::create_session(&store, &parent, "/cwd", &model_ref).unwrap();
+
+    // 1. fork a bare child (no transcript inheritance).
+    let r = api
+        .handle("plug", Some(&parent.0.as_str()), "session_fork", &serde_json::json!({
+            "session": parent.0, "copy_events": false, "budget_usd": 10.0,
+        }))
+        .unwrap();
+    let child_id = r["session"].as_str().unwrap().to_string();
+
+    // The child row is a subagent fork with the budget captured.
+    let (reason, budget): (String, Option<f64>) = store
+        .query_one(
+            "SELECT fork_reason, budget_remaining_usd FROM sessions WHERE id=?1",
+            &[&child_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(reason, "subagent");
+    assert_eq!(budget, Some(10.0));
+
+    // 2. run one synchronous turn on the child.
+    let r = api
+        .handle("plug", Some(&child_id), "session_prompt", &serde_json::json!({
+            "session": child_id, "text": "summarize the span",
+        }))
+        .unwrap();
+    assert_eq!(r["result"], "child says hi");
+
+    // The child has its OWN transcript (task + assistant) and its OWN usage.
+    let msgs: Vec<String> = store
+        .query_strings("SELECT role FROM messages WHERE session_id=?1 ORDER BY seq", &[&child_id])
+        .unwrap();
+    assert_eq!(msgs, vec!["user", "assistant"], "child transcript lives in its session");
+    let usage: Vec<String> = store
+        .query_strings("SELECT kind FROM usage WHERE session_id=?1", &[&child_id])
+        .unwrap();
+    assert!(!usage.is_empty(), "child usage is recorded in the child session");
+
+    // 3. budget is enforced: a fork with a tiny budget errors when exceeded.
+    let r = api
+        .handle("plug", Some(&parent.0.as_str()), "session_fork", &serde_json::json!({
+            "session": parent.0, "copy_events": false, "budget_usd": 0.0,
+        }))
+        .unwrap();
+    let tight = r["session"].as_str().unwrap().to_string();
+    let err = api
+        .handle("plug", Some(&tight), "session_prompt", &serde_json::json!({
+            "session": tight, "text": "will blow the budget",
+        }))
+        .expect_err("zero budget must fail");
+    assert!(err.contains("budget"), "budget error surfaced, got {err}");
+}
+
 } // mod srv

@@ -80,6 +80,10 @@ pub struct ToolCtx {
     /// The `CallId` of the call being executed. Tools use this to emit
     /// `ToolProgress` events so the TUI can stream output to the right tool line.
     pub call_id: CallId,
+    /// 96E-17: the session this call runs in. Built-in tools such as
+    /// `spawn_session` need it to fork/locate the parent session. `None` in
+    /// unit tests where no session exists.
+    pub session: Option<SessionId>,
 }
 
 /// R-CORE-260

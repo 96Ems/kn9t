@@ -277,6 +277,7 @@ impl ReactLoop {
                             read: params.read_map.clone(),
                             bus: self.bus.clone(),
                             call_id: call.id.clone(),
+                            session: Some(params.session.clone()),
                         };
                         let cancel = cancel.clone();
                         let args = args.clone();
@@ -355,6 +356,7 @@ impl ReactLoop {
                     read: params.read_map.clone(),
                     bus: self.bus.clone(),
                     call_id: call.id.clone(),
+                    session: Some(params.session.clone()),
                 };
                 let out = tool.execute(args, &ctx, cancel);
                 let (inner, is_error) = match out {

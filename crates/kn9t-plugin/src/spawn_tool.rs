@@ -7,9 +7,11 @@ use kn9t_core::Tool;
 /// Budget cap error message.
 const BUDGET_EXCEEDED_MSG: &str = "budget cap exceeded: child budget would exceed parent remaining";
 
-/// A child session executor. In production this would run a real ReAct loop;
-/// in tests it is replaced by a mock via the `executor` field.
-pub type ChildExecutor = Box<dyn Fn(&str, f64, Option<Vec<String>>) -> Result<String, String> + Send + Sync>;
+/// A child session executor. In production this runs a real child ReAct loop
+/// against a forked session (kn9t-server `subagent::run_child`); in tests it is
+/// replaced by a mock via the `executor` field.
+/// Args: (task, budget_usd, tool_names, model_id, session_id).
+pub type ChildExecutor = Box<dyn Fn(&str, f64, Option<Vec<String>>, Option<&str>, Option<&str>) -> Result<String, String> + Send + Sync>;
 
 /// SpawnTool: spawns a child agent session.
 pub struct SpawnTool {
@@ -39,6 +41,10 @@ impl SpawnTool {
                     "task": {
                         "type": "string",
                         "description": "The task for the child agent to perform."
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Model id for the child (optional; defaults to parent model)."
                     },
                     "budget_usd": {
                         "type": "number",
@@ -75,6 +81,11 @@ impl Tool for SpawnTool {
             .unwrap_or("")
             .to_string();
 
+        // 96E-17: optional child model id (defaults to the parent model).
+        let model_id = args
+            .get("model")
+            .and_then(|m| m.as_str());
+
         // R-PLUG-130: budget cap
         let requested_budget = args
             .get("budget_usd")
@@ -98,8 +109,9 @@ impl Tool for SpawnTool {
             None => requested_budget,
         };
 
-        // Execute child session
-        match (self.executor)(&task, child_budget, self.child_tools.clone()) {
+        // Execute child session. The parent session id travels via the tool context.
+        let session_id = _ctx.session.as_ref().map(|s| s.0.as_str());
+        match (self.executor)(&task, child_budget, self.child_tools.clone(), model_id, session_id) {
             Ok(result) => Ok(ToolOutput {
                 content: vec![Content::Text { text: result }],
                 details: None,

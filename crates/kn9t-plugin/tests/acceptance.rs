@@ -463,7 +463,7 @@ mod plug {
         let called = Arc::new(Mutex::new(false));
         let called_clone = called.clone();
 
-        let executor = Box::new(move |task: &str, _budget: f64, _tools: Option<Vec<String>>| {
+        let executor = Box::new(move |task: &str, _budget: f64, _tools: Option<Vec<String>>, _model: Option<&str>, _session: Option<&str>| {
             *called_clone.lock().unwrap() = true;
             Ok(format!("done: {task}"))
         });
@@ -478,6 +478,7 @@ mod plug {
             read: Arc::new(Mutex::new(HashMap::new())),
             bus: bus.clone(),
             call_id: kn9t_core::CallId("test-call".to_string()),
+            session: None,
         };
         let cancel = Cancel::new();
 
@@ -502,7 +503,7 @@ mod plug {
         let received_tools: Arc<Mutex<Option<Option<Vec<String>>>>> = Arc::new(Mutex::new(None));
         let received_clone = received_tools.clone();
 
-        let executor = Box::new(move |_task: &str, _budget: f64, tools: Option<Vec<String>>| {
+        let executor = Box::new(move |_task: &str, _budget: f64, tools: Option<Vec<String>>, _model: Option<&str>, _session: Option<&str>| {
             *received_clone.lock().unwrap() = Some(tools);
             Ok("ok".to_string())
         });
@@ -517,6 +518,7 @@ mod plug {
             read: Arc::new(Mutex::new(HashMap::new())),
             bus: bus.clone(),
             call_id: kn9t_core::CallId("test-call".to_string()),
+            session: None,
         };
         let cancel = Cancel::new();
 
@@ -541,6 +543,7 @@ mod plug {
             read: Arc::new(Mutex::new(HashMap::new())),
             bus: bus.clone(),
             call_id: kn9t_core::CallId("test-call".to_string()),
+            session: None,
         };
         let cancel = Cancel::new();
 
@@ -548,7 +551,7 @@ mod plug {
         {
             let received_budget: Arc<Mutex<Option<f64>>> = Arc::new(Mutex::new(None));
             let rb = received_budget.clone();
-            let executor = Box::new(move |_task: &str, budget: f64, _tools: Option<Vec<String>>| {
+            let executor = Box::new(move |_task: &str, budget: f64, _tools: Option<Vec<String>>, _model: Option<&str>, _session: Option<&str>| {
                 *rb.lock().unwrap() = Some(budget);
                 Ok("ok".to_string())
             });
@@ -561,7 +564,7 @@ mod plug {
 
         // Case 2: parent_remaining = 0 → error ToolResult
         {
-            let executor = Box::new(|_task: &str, _budget: f64, _tools: Option<Vec<String>>| {
+            let executor = Box::new(|_task: &str, _budget: f64, _tools: Option<Vec<String>>, _model: Option<&str>, _session: Option<&str>| {
                 Ok("should not run".to_string())
             });
             let tool = SpawnTool::new(None, Some(0.0), executor);
@@ -574,7 +577,7 @@ mod plug {
         {
             let received_budget: Arc<Mutex<Option<f64>>> = Arc::new(Mutex::new(None));
             let rb = received_budget.clone();
-            let executor = Box::new(move |_task: &str, budget: f64, _tools: Option<Vec<String>>| {
+            let executor = Box::new(move |_task: &str, budget: f64, _tools: Option<Vec<String>>, _model: Option<&str>, _session: Option<&str>| {
                 *rb.lock().unwrap() = Some(budget);
                 Ok("ok".to_string())
             });

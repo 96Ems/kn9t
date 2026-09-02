@@ -64,6 +64,18 @@ impl ToolRegistry {
         self.0.iter()
     }
 
+    /// 96E-17: restrict the registry to the given tool names (sub-agent toolset).
+    /// Unknown names are silently dropped; order follows `self.0`.
+    pub fn filter_names(&self, names: &[String]) -> ToolRegistry {
+        ToolRegistry::from_tools(
+            self.0
+                .iter()
+                .filter(|t| names.iter().any(|n| n == &t.spec().name))
+                .cloned()
+                .collect(),
+        )
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }

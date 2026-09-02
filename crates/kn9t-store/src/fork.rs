@@ -4,6 +4,7 @@ use kn9t_core::{
     Event, ForkReason, ForkSnapshot, ModelRef, SessionId, StoreErr, Thinking,
 };
 use rusqlite::params;
+use rusqlite::Connection;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::db::SqliteStore;
@@ -13,25 +14,23 @@ fn now_ts() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
 }
 
-/// Fork `origin` at `origin_seq` into `new_id`.
-/// Copies MessageAppended, ModelChanged, Compacted (NOT UsageRecorded).
-/// seq 0 = SessionForked; copied events renumbered from 1.
-pub fn fork_session(
-    store: &SqliteStore,
+/// Common fork head: compute inherited totals, create the fork session row and
+/// write the `SessionForked` event (seq 0). Returns the `ForkSnapshot` stored.
+/// The caller then writes the copied events (fork) or nothing (empty), sets
+/// `head_seq`, and commits. 96E-17: extracted so the bare child fork
+/// (`fork_session_empty`) shares exactly the same snapshot semantics.
+fn fork_begin(
+    conn: &Connection,
     origin: &SessionId,
     new_id: &SessionId,
     origin_seq: u64,
     reason: ForkReason,
     budget_remaining_usd: Option<f64>,
     cwd: &str,
-) -> Result<(), StoreErr> {
+    ts: i64,
+) -> Result<ForkSnapshot, StoreErr> {
     let origin_sid = origin.0.clone();
     let new_sid    = new_id.0.clone();
-    let ts = now_ts();
-
-    let conn = store.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
-    conn.execute_batch("BEGIN IMMEDIATE")
-        .map_err(|e| StoreErr(format!("begin fork: {e}")))?;
 
     // Inherited totals up to origin_seq — 96E-14: use micros for determinism
     let (inh_cost_micros, inh_tok_in, inh_tok_out, inh_cache_read): (i64, i64, i64, i64) = conn
@@ -112,13 +111,38 @@ pub fn fork_session(
     ).map_err(|e| StoreErr(format!("create fork session: {e}")))?;
 
     // seq=0 SessionForked event
-    let fork_event   = Event::SessionForked { seq: 0, fork: fork_snap };
+    let fork_event   = Event::SessionForked { seq: 0, fork: fork_snap.clone() };
     let fork_payload = serde_json::to_string(&fork_event)
         .map_err(|e| StoreErr(format!("serialize SessionForked: {e}")))?;
     conn.execute(
         "INSERT INTO events(session_id,seq,ts,kind,payload) VALUES(?1,0,?2,'SessionForked',?3)",
         params![new_sid, ts, fork_payload],
     ).map_err(|e| StoreErr(format!("insert SessionForked: {e}")))?;
+
+    Ok(fork_snap)
+}
+
+/// Fork `origin` at `origin_seq` into `new_id`.
+/// Copies MessageAppended, ModelChanged, Compacted (NOT UsageRecorded).
+/// seq 0 = SessionForked; copied events renumbered from 1.
+pub fn fork_session(
+    store: &SqliteStore,
+    origin: &SessionId,
+    new_id: &SessionId,
+    origin_seq: u64,
+    reason: ForkReason,
+    budget_remaining_usd: Option<f64>,
+    cwd: &str,
+) -> Result<(), StoreErr> {
+    let origin_sid = origin.0.clone();
+    let new_sid    = new_id.0.clone();
+    let ts = now_ts();
+
+    let conn = store.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| StoreErr(format!("begin fork: {e}")))?;
+
+    fork_begin(&conn, origin, new_id, origin_seq, reason, budget_remaining_usd, cwd, ts)?;
 
     // Collect copyable events from origin
     struct CopyRow { old_seq: u64, kind: String, payload: String, ts: i64 }
@@ -170,6 +194,34 @@ pub fn fork_session(
 
     conn.execute_batch("COMMIT")
         .map_err(|e| StoreErr(format!("commit fork: {e}")))?;
+    Ok(())
+}
+
+/// 96E-17 — bare fork: same origin/snapshot semantics as [`fork_session`] but
+/// **no events are copied** (empty child session, head_seq=0). Used by the
+/// compactor sub-agent, which must NOT inherit the parent transcript (it would
+/// immediately re-overflow the context window — the span is delivered instead
+/// as the child's task message).
+pub fn fork_session_empty(
+    store: &SqliteStore,
+    origin: &SessionId,
+    new_id: &SessionId,
+    origin_seq: u64,
+    reason: ForkReason,
+    budget_remaining_usd: Option<f64>,
+    cwd: &str,
+) -> Result<(), StoreErr> {
+    let ts = now_ts();
+
+    let conn = store.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| StoreErr(format!("begin fork empty: {e}")))?;
+
+    fork_begin(&conn, origin, new_id, origin_seq, reason, budget_remaining_usd, cwd, ts)?;
+
+    // head_seq stays 0 (fork_begin inserts the row with head_seq=0).
+    conn.execute_batch("COMMIT")
+        .map_err(|e| StoreErr(format!("commit fork empty: {e}")))?;
     Ok(())
 }
 

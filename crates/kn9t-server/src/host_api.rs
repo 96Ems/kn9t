@@ -87,6 +87,94 @@ impl ServerHostApi {
         Ok(json!({ "messages": rows }))
     }
 
+    /// `session_fork` — spawn a new session from `session` (fork_reason=subagent).
+    /// `copy_events: true` (default) inherits the parent transcript; `false`
+    /// creates a bare child (task-only — the compactor use case). The fork
+    /// captures the budget in the ForkSnapshot (R-PLUG-130).
+    /// Reply: `{"session":"<new-id>"}`. A spawned session running a turn IS a
+    /// sub-agent — there is no separate sub-agent concept in kn9t.
+    fn session_fork(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
+        let session = self.require_session(session)?;
+        let copy_events = payload.get("copy_events").and_then(|v| v.as_bool()).unwrap_or(true);
+        let budget_usd = payload.get("budget_usd").and_then(|v| v.as_f64());
+        let model_id = payload.get("model").and_then(|v| v.as_str());
+        let child = SessionId::new();
+        let parent = SessionId(session.to_string());
+
+        let model: Option<ModelSpec> = if let Some(id) = model_id {
+            self.state.model_registry.iter().find(|m| m.r#ref.id == id).cloned()
+        } else {
+            self.state.store.get_model_spec_for_session(session)
+        };
+        if let Some(m) = &model {
+            self.state.store.register_model_spec(m.clone());
+        }
+
+        let parent_head: u64 = self
+            .state
+            .store
+            .query_one(
+                "SELECT head_seq FROM sessions WHERE id=?1",
+                &[&session],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|h| h.max(0) as u64)
+            .unwrap_or(0);
+        let cwd = self.state.cwd.to_string_lossy().to_string();
+        if copy_events {
+            kn9t_store::fork_session(
+                &self.state.store,
+                &parent,
+                &child,
+                parent_head,
+                kn9t_core::ForkReason::Subagent,
+                budget_usd,
+                &cwd,
+            )
+            .map_err(|e| format!("session_fork: {}", e.0))?;
+        } else {
+            kn9t_store::fork_session_empty(
+                &self.state.store,
+                &parent,
+                &child,
+                parent_head,
+                kn9t_core::ForkReason::Subagent,
+                budget_usd,
+                &cwd,
+            )
+            .map_err(|e| format!("session_fork(bare): {}", e.0))?;
+        }
+        Ok(json!({ "session": child.0 }))
+    }
+
+    /// `session_prompt` — run one full synchronous turn on `session` with `text`
+    /// (the session's own model, tool subset optional, fork budget enforced).
+    /// Reply: `{"session":"...","result":"..."}`.
+    fn session_prompt(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
+        let session = self.require_session(session)?;
+        let text = payload
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "session_prompt requires \"text\"".to_string())?;
+        let tools = payload
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect::<Vec<_>>());
+        let timeout = payload
+            .get("timeout_s")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(600);
+        let result = crate::turn::run_session_turn(
+            &self.state,
+            &SessionId(session.to_string()),
+            text,
+            tools,
+            timeout,
+        )?;
+        Ok(json!({ "session": session, "result": result }))
+    }
+
+
     /// `provider_complete` — one real provider call with the session's model.
     /// Reply: `{"content":[...],"stop":"...","usage":{"input":..,"output":..}}`.
     fn provider_complete(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
@@ -204,6 +292,7 @@ impl ServerHostApi {
             read: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             bus: sink,
             call_id: call.id.clone(),
+            session: None,
         };
         let out = tool
             .execute(&args, &ctx, &cancel)
@@ -224,6 +313,8 @@ impl HostApi for ServerHostApi {
             "session_read" => self.session_read(session, payload),
             "provider_complete" => self.provider_complete(session, payload),
             "tool_execute" => self.tool_execute(session, payload),
+            "session_fork" => self.session_fork(session, payload),
+            "session_prompt" => self.session_prompt(session, payload),
             other => Err(format!("unknown host API op {other:?}")),
         }
     }

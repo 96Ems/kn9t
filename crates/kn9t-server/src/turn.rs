@@ -11,10 +11,11 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use kn9t_core::{
-    Cancel, Content, Decision, Event, EventSink, HookHost, Message, MsgId, Price, Request, Role,
-    SessionId, Store, Thinking, Tokens, Usage, UsageKind,
+    Cancel, Content, Decision, Event, EventSink, HookHost, ModelSpec, Message, MsgId, Price, Request,
+    Role, SessionId, Store, Thinking, Tokens, Usage, UsageKind,
 };
 use kn9t_plugin::ComposedHookHost;
 use kn9t_react::{ReactConfig, ReactLoop, RunParams};
@@ -152,6 +153,180 @@ pub fn resolve_approval(state: &Arc<ServerState>, id: u64, decision_str: &str, s
     Ok(decision)
 }
 
+/// Compose the full `ReactLoop` for a session: bus + sink, hooks (from plugin
+/// hosts, session-attached), provider, tool registry (optionally filtered to a
+/// subset), and the compactor delegation. Single composition point — shared by
+/// `spawn_turn` and the host_api `session_prompt` op (96E-17).
+pub(crate) fn compose_loop(
+    state: &Arc<ServerState>,
+    session: &SessionId,
+    model: &ModelSpec,
+    tool_names: Option<Vec<String>>,
+) -> Result<(ReactLoop, Arc<dyn EventSink>), String> {
+    let bus = state.buses.bus_for(&session.0);
+    // R-STOR-116: salvage in-flight tool progress so a crash mid-batch still leaves
+    // usable content for R-STOR-115's synthesized result.
+    let sink: Arc<dyn EventSink> = Arc::new(SessionSink::with_store(
+        bus.clone(),
+        state.store.clone(),
+        session.clone(),
+    ));
+
+    // Compose hooks from all plugins (R-PLUG-060).
+    // Each plugin host gets a reference to the bus and session for emitting events.
+    let hosts = state.hosts_snapshot();
+    // ADR-0008: a test may install hooks in-process rather than spawning a policy plugin.
+    let hooks: Arc<dyn HookHost> = if let Some(h) = state.hooks_override_snapshot() {
+        h
+    } else if hosts.is_empty() {
+        Arc::new(kn9t_core::NoopHookHost)
+    } else {
+        // Set the bus and session on each plugin host
+        for host in &hosts {
+            host.set_bus(sink.clone());
+            host.set_session(&session.0);
+        }
+        Arc::new(ComposedHookHost::new(hosts.clone()))
+    };
+
+    let mut tools = state.tools_snapshot(); // R-PLUG2-110: tools from plugin subprocess
+    if let Some(names) = tool_names {
+        tools = tools.filter_names(&names);
+    }
+
+    // Get the provider for this model.
+    let provider = state
+        .get_provider(&model.r#ref.provider)
+        .or_else(|| state.provider.clone())
+        .ok_or_else(|| format!("no provider for {}", model.r#ref.provider))?;
+
+    Ok((
+        ReactLoop {
+            provider: provider.clone(),
+            store: state.store.clone(),
+            approver: state.approver_snapshot(),
+            tools,
+            hooks,
+            bus: sink.clone(),
+            compactor: compactor_from_hosts(&hosts),
+        },
+        sink,
+    ))
+}
+
+/// Run one full synchronous turn on `session` with `text` as the user message.
+/// Returns the final assistant text. Enforces the session's fork budget.
+/// 96E-17: this is the "make a spawned session do its work" primitive (a
+/// spawned session running a turn IS a sub-agent — the concept adds nothing).
+pub(crate) fn run_session_turn(
+    state: &Arc<ServerState>,
+    session: &SessionId,
+    text: &str,
+    tool_names: Option<Vec<String>>,
+    timeout_s: u64,
+) -> Result<String, String> {
+    // The model spec comes from the session's fork (model_at_fork) or default.
+    let model = state
+        .store
+        .get_model_spec_for_session(&session.0)
+        .or_else(|| state.default_model.clone())
+        .ok_or_else(|| "no model available for session".to_string())?;
+    state.store.register_model_spec(model.clone());
+
+    // Append the user message durably.
+    state
+        .store
+        .append(
+            session,
+            Event::MessageAppended {
+                seq: 0,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::User,
+                    content: vec![Content::Text { text: text.to_string() }],
+                    silent: false,
+                },
+            },
+        )
+        .map_err(|e| format!("append message: {}", e.0))?;
+
+    let (loop_, _sink) = compose_loop(state, session, &model, tool_names)?;
+
+    // Watchdog: the loop aborts at its next cancel checkpoint when the timeout
+    // fires (the plugin's worker thread stays responsive).
+    let cancel = Cancel::new();
+    let cancel_watch = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(timeout_s));
+        cancel_watch.cancel();
+    });
+    let params = RunParams {
+        session: session.clone(),
+        model: model.clone(),
+        thinking: Thinking::Off,
+        max_tokens: Some(model.max_out),
+        cwd: state.cwd.clone(),
+        config: ReactConfig::default(),
+        read_map: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        system: Some(system_prompt::default_system_prompt()),
+        cancel: Some(cancel),
+    };
+    loop_
+        .run(params)
+        .map_err(|e| format!("session turn failed: {e:?}"))?;
+
+    // Budget enforcement against the fork snapshot (R-PLUG-130).
+    let budget: Option<f64> = state
+        .store
+        .query_one(
+            "SELECT budget_remaining_usd FROM sessions WHERE id=?1",
+            &[&session.0.as_str()],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(budget) = budget {
+        let spent: f64 = state
+            .store
+            .query_one(
+                "SELECT COALESCE(SUM(cost_usd),0) FROM usage WHERE session_id=?1",
+                &[&session.0.as_str()],
+                |r| r.get::<_, f64>(0),
+            )
+            .unwrap_or(0.0);
+        if spent > budget {
+            return Err(format!("session budget exceeded: spent ${spent:.4} > ${budget:.4}"));
+        }
+    }
+
+    // Final assistant text.
+    let content: Option<String> = state
+        .store
+        .query_one(
+            "SELECT content FROM messages WHERE session_id=?1 AND role='assistant'
+             ORDER BY seq DESC LIMIT 1",
+            &[&session.0.as_str()],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+    let text = content
+        .and_then(|json| serde_json::from_str::<Vec<Content>>(&json).ok())
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|c| match c {
+                    Content::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    if text.trim().is_empty() {
+        return Err("session produced no assistant text".into());
+    }
+    Ok(text)
+}
+
 /// Spawn a background turn for `session`. If no provider is wired, this is a no-op
 /// (the user message is already durably appended).
 pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
@@ -167,15 +342,6 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
         return;
     };
     crate::log!("[spawn_turn] using model {}:{}", model.r#ref.provider, model.r#ref.id);
-    
-    // Get the provider for this model.
-    let provider = state.get_provider(&model.r#ref.provider)
-        .or_else(|| state.provider.clone());
-    let Some(provider) = provider else {
-        crate::log!("[spawn_turn] no provider for {}", model.r#ref.provider);
-        return;
-    };
-    crate::log!("[spawn_turn] using provider {}", model.r#ref.provider);
 
     std::thread::spawn(move || {
         state.idle.turn_started();
@@ -186,40 +352,15 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
         // compute cache breakpoints and the compaction threshold.
         state.store.register_model_spec(model.clone());
 
-        let bus = state.buses.bus_for(&session.0);
-        // R-STOR-116: salvage in-flight tool progress so a crash mid-batch still leaves
-        // usable content for R-STOR-115's synthesized result.
-        let sink: Arc<dyn EventSink> = Arc::new(SessionSink::with_store(
-            bus.clone(),
-            state.store.clone(),
-            session.clone(),
-        ));
-
-        // Compose hooks from all plugins (R-PLUG-060).
-        // Each plugin host gets a reference to the bus and session for emitting events.
-        let hosts = state.hosts_snapshot();
-        // ADR-0008: a test may install hooks in-process rather than spawning a policy plugin.
-        let hooks: Arc<dyn HookHost> = if let Some(h) = state.hooks_override_snapshot() {
-            h
-        } else if hosts.is_empty() {
-            Arc::new(kn9t_core::NoopHookHost)
-        } else {
-            // Set the bus and session on each plugin host
-            for host in &hosts {
-                host.set_bus(sink.clone());
-                host.set_session(&session.0);
+        // Single composition point (bus/sink + hooks + tools + provider + compactor).
+        let (loop_, sink) = match compose_loop(&state, &session, &model, None) {
+            Ok(v) => v,
+            Err(e) => {
+                crate::log!("[spawn_turn] compose failed: {e}");
+                clear_cancel(&session.0);
+                state.idle.turn_ended();
+                return;
             }
-            Arc::new(ComposedHookHost::new(hosts.clone()))
-        };
-
-        let loop_ = ReactLoop {
-            provider: provider.clone(),
-            store: state.store.clone(),
-            approver: state.approver_snapshot(),
-            tools: state.tools_snapshot(),  // R-PLUG2-110: tools from plugin subprocess
-            hooks,
-            bus: sink.clone(),
-            compactor: compactor_from_hosts(&hosts),
         };
 
         let params = RunParams {

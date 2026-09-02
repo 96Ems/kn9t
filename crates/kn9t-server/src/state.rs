@@ -343,6 +343,47 @@ impl ServerState {
             host.set_api_handler(api.clone());
         }
     }
+
+    /// 96E-17: register the built-in `spawn_session` tool (R-PLUG-110). Its
+    /// production executor is the same primitive the host_api offers plugins:
+    /// fork a session (fork_reason=subagent) and run a sync turn on it. A
+    /// spawned session running a turn IS a sub-agent — nothing more is needed.
+    pub fn install_builtin_tools(self: &Arc<Self>) {
+        let executor: kn9t_plugin::spawn_tool::ChildExecutor = {
+            use kn9t_plugin::HostApi as _;
+            let state = self.clone();
+            Box::new(move |task, budget, tools, model, session| {
+                let parent = session
+                    .ok_or_else(|| "spawn_session requires a parent session (ToolCtx.session)".to_string())?;
+                let api = crate::host_api::ServerHostApi { state: state.clone() };
+                let fork = api.handle(
+                    "builtin",
+                    Some(parent),
+                    "session_fork",
+                    &serde_json::json!({
+                        "copy_events": true,
+                        "budget_usd": budget,
+                        "model": model,
+                    }),
+                )?;
+                let child = fork["session"]
+                    .as_str()
+                    .ok_or_else(|| "session_fork returned no session".to_string())?;
+                let prompt = api.handle(
+                    "builtin",
+                    Some(child),
+                    "session_prompt",
+                    &serde_json::json!({ "text": task, "tools": tools }),
+                )?;
+                Ok(prompt["result"].as_str().unwrap_or_default().to_string())
+            })
+        };
+        let tool = kn9t_plugin::SpawnTool::new(None, None, executor);
+        self.tools
+            .lock()
+            .expect("tools poisoned")
+            .push(Arc::new(tool));
+    }
     pub fn with_idle_exit(mut self, d: Duration) -> Self {
         self.idle = IdleTracker::new(d);
         self

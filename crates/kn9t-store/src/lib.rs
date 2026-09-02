@@ -17,6 +17,7 @@ pub mod reproject;
 pub use db::SqliteStore;
 pub use cost::CostRollup;
 pub use fork::fork_session;
+pub use fork::fork_session_empty;
 pub use session::create_session;
 pub use plan::{
     close_orphan_tool_calls, close_orphan_tool_calls_with, compact_span, has_orphan_tool_call,
