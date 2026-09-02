@@ -564,7 +564,7 @@ All plugin communication is newline-delimited JSON (NdJSON) over stdin/stdout.
 | `chunk` | `id: u64` |  |
 | `done` | `id: u64` |  |
 | `hello` | `capabilities: string[]`, `events: string[]`, `hooks: string[]`, `name: string`, `provider: object`, `tools: object[]` |  |
-| `request` | `id: u64`, `op: string`, `payload: object` | Plugin → host API request (host_api capability). Ops: provider_complete, session_read, tool_execute. |
+| `request` | `id: u64`, `op: string`, `payload: object` | Plugin → host API request (host_api capability). Ops: provider_complete, session_read, tool_execute, session_fork, session_prompt. |
 | `result` | `id: u64` |  |
 
 ### 5.4 `ModelDecl`
