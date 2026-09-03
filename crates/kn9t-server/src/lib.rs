@@ -1,4 +1,4 @@
-﻿//! # kn9t-server
+//! # kn9t-server
 //!
 //! The HTTP surface for kn9t (stage 06, spec `06-server.md`). One server process,
 //! N clients (DESIGN §12). Blocking, thread-per-connection over `tiny_http`; no

@@ -1,4 +1,4 @@
-﻿# TRACKING — kn9t
+# TRACKING — kn9t
 
 Live status scoreboard. This is the mutable counterpart to `AGENTS.md` (the rulebook) and
 `CHANGELOG.md` (the narrative). Update it **as you work**.

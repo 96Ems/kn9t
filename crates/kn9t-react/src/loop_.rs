@@ -1,4 +1,4 @@
-﻿//! R-RCT-010 .. R-RCT-130 -- the ReAct loop driver.
+//! R-RCT-010 .. R-RCT-130 -- the ReAct loop driver.
 //!
 //! The loop owns only trait objects (R-RCT-010, GI-1) and per-run parameters; it never
 //! names a concrete `Provider`, `Tool`, `Store`, or `Approver`. One turn executes the exact

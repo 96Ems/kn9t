@@ -1,4 +1,4 @@
-﻿//! Provider attempt + tool batch + store/hook helpers for [`ReactLoop`] (R-RCT-020..130).
+//! Provider attempt + tool batch + store/hook helpers for [`ReactLoop`] (R-RCT-020..130).
 
 use std::thread;
 

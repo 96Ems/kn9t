@@ -208,7 +208,7 @@ The 96E-12 commit message said the server published durable echoes; the code did
 - `ba2cf4e` 96E-9 — `host.rs` reader demux `event_tx.send` → `try_send` (drop under pressure, transient safe) so 200-event flood no longer stalls RPC to 500ms timeout.
 - `fb9d04b` 96E-10 — `PluginHost` poison on malformed `PluginMsg`: `unhealthy`+`poison_reason`+broadcast `ReaderMsg::Err`+`break`, `check_healthy()` fail-fast <100ms.
 - `062f5d0` 96E-11/12 — `exec.rs:provider_attempt`/`run_compaction` share `Completed/AbortedInStream/Truncated/ContextOverflow` classification; `EventSink::emit(LiveEvent)` type-safe (transient only, durable via `store.append`).
-- `d612c0a` 96E-15 — double-UTF8 mojibake `Â§`/`â€”`/`─` repaired at byte level via `windows-1252→utf8` heuristic, `crates/kn9t-core/tests/mojibake.rs` regression.
+- `d612c0a` 96E-15 — double-UTF8 mojibake `U+00C2 U+00A7`/`U+00E2 U+20AC U+201D`/`U+2500` repaired at byte level via `windows-1252→utf8` heuristic, `crates/kn9t-core/tests/mojibake.rs` regression.
 - `a100904` 96E-13 — `SqliteStore` doc: single `Mutex<Connection>` serialized, WAL only for external readers/crash safety, not in-process concurrency.
 - `07f645c` 96E-14 — `Price`/`cost_micros` integer micros (`MoneyMicros(i64)` via `i128`), `Price` `f64→i64` with `de_micros` compat, `cost_integer.rs` rounding boundary test.
 - `efe897d` 96E-16 — `Event::Handoff { keep, summarize, drop, resume_actions }` durable + `validate_handoff` host-side, `Compactor { compact(span, history) }` with fallback, `ReactLoop::compactor` delegation + 3 acceptance tests.
@@ -306,7 +306,7 @@ I ran `git checkout` on `config.rs` while it held ~200 lines of the user's uncom
 destroying it; it was recovered only because an unrelated stash I had made earlier still existed as
 a dangling object. Never `git checkout` a dirty file to undo *my own* bad edit. I now snapshot
 uncommitted work to a temp directory before any destructive step. Second lesson:
-`Set-Content -Encoding UTF8` in PowerShell 5.1 double-encodes existing UTF-8 (`—` → `Ã¢â‚¬â€`);
+`Set-Content -Encoding UTF8` in PowerShell 5.1 double-encodes existing UTF-8 (`U+2014` -> `U+00C3 U+00A2 U+00E2 U+201A U+00AC U+00E2 U+20AC`);
 use the `read`/`edit`/`write` tools or `[System.IO.File]::WriteAllText` with a UTF8Encoding($false).
 
 ---
