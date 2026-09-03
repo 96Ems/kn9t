@@ -293,6 +293,29 @@ impl ServerHostApi {
         }))
     }
 
+    /// `ui_directive` / `ui_push` — 96E-23 structured plugin→TUI directive (session-scoped).
+    /// Required: `"target"` (string, non-empty) + `"op"` (string, non-empty).
+    /// Optional: `"payload"` (any JSON, defaults to null) — forwarded verbatim (opaque).
+    /// Emits `LiveEvent::UiDirective {plugin, target, op, payload}` to the session's bus,
+    /// reusing 96E-21's session-scoped routing (no broadcast fallback).
+    /// Reply: `{"ok":true}`.
+    fn ui_directive(&self, session: Option<&str>, payload: &Value, plugin: &str) -> Result<Value, String> {
+        let session = self.require_session(session)?;
+        let target = payload.get("target").and_then(|v| v.as_str()).ok_or_else(|| "ui_directive requires \"target\" (string)".to_string())?;
+        let op = payload.get("op").and_then(|v| v.as_str()).ok_or_else(|| "ui_directive requires \"op\" (string)".to_string())?;
+        if target.is_empty() { return Err("ui_directive: target must be non-empty".into()); }
+        if op.is_empty() { return Err("ui_directive: op must be non-empty".into()); }
+        let inner = payload.get("payload").cloned().unwrap_or(Value::Null);
+        let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
+        sink.emit(kn9t_core::LiveEvent::UiDirective {
+            plugin: plugin.to_string(),
+            target: target.to_string(),
+            op: op.to_string(),
+            payload: inner,
+        });
+        Ok(json!({"ok": true}))
+    }
+
     /// `tool_execute` — run a registry tool through the normal approval path.
     /// Reply: `{"content":[...],"is_error":bool}`.
     fn tool_execute(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
@@ -358,6 +381,7 @@ impl HostApi for ServerHostApi {
             "session_prompt" => self.session_prompt(session, payload),
             "tool_list" => self.tool_list(session, payload),
             "interaction_request" => self.interaction_request(session, payload, plugin),
+            "ui_directive" | "ui_push" => self.ui_directive(session, payload, plugin),
             other => Err(format!("unknown host API op {other:?}")),
         }
     }

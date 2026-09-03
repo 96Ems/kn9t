@@ -164,6 +164,9 @@ pub struct App {
     // Diff viewer (separate from overlay - needs &mut for mouse hit tracking).
     pub diff_viewer: Option<crate::diff_viewer::DiffViewer>,
 
+    // 96E-23: structured UI directives (session-scoped, transport only until 96E-25).
+    pub ui_directives: Vec<(String, String, String, serde_json::Value)>,
+
     // Keybinds.
     keybinds: Keybinds,
     tick_ctl: TickControl,
@@ -197,6 +200,7 @@ impl App {
             prompt_history: PromptHistory::new(),
             prompt_stash: PromptStash::new(),
             staged_images: Vec::new(),
+            ui_directives: Vec::new(),
             streaming: false,
             aborting: false,
             turn_phase: "idle".into(),
@@ -287,6 +291,7 @@ impl App {
         self.overlay = None;
         self.active_approval_id = None;
         self.active_interaction_id = None;
+        self.ui_directives.clear();
 
         // Clear tool mode state.
         self.tool_mode = false;
@@ -1912,6 +1917,7 @@ impl App {
             session_title: self.session.session_title().map(|s| s.to_string()),
             sessions: self.session.sessions.clone(),
             model_sel: self.model_sel.clone(),
+            ui_directives: std::mem::take(&mut self.ui_directives),
         };
         crate::reducer::reduce(&mut st, frame);
         // Copy back
@@ -1924,6 +1930,7 @@ impl App {
         self.active_approval_id = st.active_approval_id;
         self.active_interaction_id = st.active_interaction_id;
         self.overlay = st.overlay;
+        self.ui_directives = st.ui_directives;
         self.session.state.session_id = st.session_id;
         self.session.set_session_title(st.session_title);
         self.session.sessions = st.sessions;

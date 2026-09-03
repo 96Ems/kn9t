@@ -54,6 +54,7 @@ fn event_name(e: &Event) -> &'static str {
         Event::TurnStatus { .. } => "turn_status",
         Event::PluginNotification { .. } => "plugin_notification",
         Event::InteractionRequest { .. } => "interaction_request",
+        Event::UiDirective { .. } => "ui_directive",
     }
 }
 

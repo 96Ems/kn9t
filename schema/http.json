@@ -427,7 +427,8 @@
       { "kind": "retry_attempt", "attempt": "u32", "max": "u32", "error": "string", "delay_ms": "u64", "retry_kind": "string" },
       { "kind": "turn_status", "phase": "string", "message": "string" },
       { "kind": "plugin_notification", "plugin": "string", "message": "string" },
-      { "kind": "interaction_request", "id": "u64", "plugin": "string", "payload": "Value" }
+      { "kind": "interaction_request", "id": "u64", "plugin": "string", "payload": "Value" },
+      { "kind": "ui_directive", "plugin": "string", "target": "string", "op": "string", "payload": "Value" }
     ]
   }
 }

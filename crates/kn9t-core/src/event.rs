@@ -257,6 +257,17 @@ pub enum Event {
         plugin: String,
         payload: serde_json::Value,
     },
+    /// 96E-23 — structured plugin→TUI UI directive (transient, session-scoped).
+    /// Distinct from `PluginNotification` (free-text) — carries a non-text
+    /// structured payload routed via the same session-scoped dispatch fixed in
+    /// 96E-21 (must NOT broadcast). `target`/`op` are host-validated; `payload`
+    /// is opaque and forwarded verbatim to the TUI.
+    UiDirective {
+        plugin: String,
+        target: String,
+        op: String,
+        payload: serde_json::Value,
+    },
 }
 
 impl Event {
@@ -383,6 +394,14 @@ pub enum LiveEvent {
         plugin: String,
         payload: serde_json::Value,
     },
+    /// 96E-23 — structured UI directive (transient, session-scoped), same dispatch
+    /// guarantees as InteractionRequest (no broadcast, plugin in payload).
+    UiDirective {
+        plugin: String,
+        target: String,
+        op: String,
+        payload: serde_json::Value,
+    },
 }
 
 impl From<LiveEvent> for Event {
@@ -404,6 +423,7 @@ impl From<LiveEvent> for Event {
             LiveEvent::TurnStatus { phase, message } => Event::TurnStatus { phase, message },
             LiveEvent::PluginNotification { payload } => Event::PluginNotification { payload },
             LiveEvent::InteractionRequest { id, plugin, payload } => Event::InteractionRequest { id, plugin, payload },
+            LiveEvent::UiDirective { plugin, target, op, payload } => Event::UiDirective { plugin, target, op, payload },
         }
     }
 }

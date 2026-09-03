@@ -110,6 +110,12 @@ pub enum SseFrame {
         payload: serde_json::Value,
         plugin: String,
     },
+    UiDirective {
+        op: String,
+        payload: serde_json::Value,
+        plugin: String,
+        target: String,
+    },
 }
 
 impl SseFrame {

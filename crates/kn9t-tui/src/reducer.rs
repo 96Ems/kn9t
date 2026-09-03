@@ -41,6 +41,8 @@ pub struct State {
     pub session_title: Option<String>,
     pub sessions: Vec<SessionEntry>,
     pub model_sel: ModelSelector,
+    /// 96E-23: structured UI directives received (plugin, target, op, payload) — transport only.
+    pub ui_directives: Vec<(String, String, String, serde_json::Value)>,
 }
 
 impl Default for State {
@@ -59,6 +61,7 @@ impl Default for State {
             session_title: None,
             sessions: Vec::new(),
             model_sel: ModelSelector::new(),
+            ui_directives: Vec::new(),
         }
     }
 }
@@ -221,6 +224,11 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
         }
         SseFrame::PluginNotification { plugin, message } => {
             state.transcript.push(Message::new(&plugin, message));
+        }
+        SseFrame::UiDirective { plugin, target, op, payload } => {
+            // 96E-23 transport primitive only — record verbatim for later page rendering (96E-24/25).
+            // Must not affect PluginNotification path.
+            state.ui_directives.push((plugin, target, op, payload));
         }
         SseFrame::HookFailed { .. } => {}
     }
@@ -585,5 +593,28 @@ mod tests {
         reduce(&mut s, SseFrame::ToolFinished { call_id: "c-err".into(), is_error: true });
         assert_eq!(s.transcript.messages()[0].tools[0].status, "error");
         assert!(!s.transcript.messages()[0].tools[0].expanded);
+    }
+
+    #[test]
+    fn ui_directive_is_recorded_and_plugin_notification_unaffected() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::UiDirective { plugin: "p".into(), target: "sidebar".into(), op: "show".into(), payload: serde_json::json!({"panel":"x"}) });
+        assert_eq!(s.ui_directives.len(), 1);
+        assert_eq!(s.ui_directives[0].0, "p");
+        assert_eq!(s.ui_directives[0].1, "sidebar");
+        // Transcript must NOT have been polluted — PluginNotification is separate
+        assert_eq!(s.transcript.message_count(), 0);
+        // PluginNotification still pushes text
+        reduce(&mut s, SseFrame::PluginNotification { plugin: "p".into(), message: "hello".into() });
+        assert_eq!(s.transcript.message_count(), 1);
+        assert_eq!(s.ui_directives.len(), 1, "PluginNotification must not affect ui_directives");
+    }
+
+    #[test]
+    fn ui_directive_payload_opaque_not_interpreted() {
+        let mut s = State::default();
+        let complex = serde_json::json!({"fields":[{"name":"age","type":"number"}],"title":"hi","arr":[1,2,3]});
+        reduce(&mut s, SseFrame::UiDirective { plugin: "p".into(), target: "t".into(), op: "render".into(), payload: complex.clone() });
+        assert_eq!(s.ui_directives[0].3, complex);
     }
 }

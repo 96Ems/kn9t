@@ -539,6 +539,7 @@ without replaying already-processed events (exact gap-free dedup on the server).
 | `turn_status` | `message: string`, `phase: string` | no |
 | `plugin_notification` | `message: string`, `plugin: string` | no |
 | `interaction_request` | `id: u64`, `payload: object`, `plugin: string` | no |
+| `ui_directive` | `op: string`, `payload: object`, `plugin: string`, `target: string` | no |
 
 **Durable events** carry `seq` and are replayed on reconnect. **Transient events** are
 live only. Clients track the highest durable `seq` seen and reconnect with `from=last+1`.
