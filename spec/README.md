@@ -109,7 +109,11 @@ These hold across every file and are not restated per requirement. Violating one
 defect regardless of which crate introduced it.
 
 - **GI-1 → DESIGN §2.** No crate except `kn9t-server` has more than one workspace
-  dependency. CI asserts this by parsing each `Cargo.toml`.
+  dependency. CI asserts this by parsing each `Cargo.toml`. Scope: **`[dependencies]`
+  only** — what a crate links at build time. Test-only siblings in
+  `[dev-dependencies]` are exempt, since they cannot create a runtime coupling or a
+  cycle in the shipped artifact; `scripts/check-gi1.sh` lists the ones it skips so the
+  exemption stays auditable (96E-32).
 - **GI-2 → DESIGN §1, §4.** `kn9t-core` depends only on `serde`/`serde_json`. Every event
   payload is `Serialize + Deserialize` with no `Arc`, file handle, `&dyn`, or closure.
 - **GI-3 → DESIGN §8.4.2.1.** No `HashMap` is ever serialized into a request or a cached

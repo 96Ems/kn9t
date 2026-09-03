@@ -11,6 +11,11 @@ kn9t-provider-core = { path = "../kn9t-provider-core" }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+# GI-1 scope is [dependencies] only (spec/README.md): the loop links exactly one
+# sibling and sees the store/provider/tool/policy as `dyn Trait`. These three are
+# test-only - the replay provider and a real plugin host let the acceptance tests
+# drive the loop end-to-end without a network or a stub that could drift from the
+# genuine parser.
 kn9t-core = { path = "../kn9t-core" }
 kn9t-provider-replay = { path = "../kn9t-provider-replay" }
 kn9t-plugin = { path = "../kn9t-plugin" }

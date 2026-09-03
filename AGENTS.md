@@ -95,7 +95,8 @@ For each stage `NN`:
 - **MAY** — optional.
 
 ### Global invariants — check these every stage (CI should enforce)
-- **GI-1** no crate except `kn9t-server` has >1 workspace dependency.
+- **GI-1** no crate except `kn9t-server` has >1 workspace dependency in `[dependencies]`
+  (`[dev-dependencies]` are exempt and reported by `scripts/check-gi1.sh`).
 - **GI-2** `kn9t-core` depends only on `serde`/`serde_json`; event payloads are pure data.
 - **GI-3** no `HashMap` is ever serialized into a request/cached prefix; `preserve_order` off.
 - **GI-4** `events` table is append-only; only `live_messages` is mutable-in-place.

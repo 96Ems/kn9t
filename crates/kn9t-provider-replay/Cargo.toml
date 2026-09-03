@@ -11,4 +11,7 @@ kn9t-provider-core = { path = "../kn9t-provider-core" }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+# GI-1 scope is [dependencies] only (spec/README.md). Tests need
+# `kn9t_core::Quirks`, which provider-core deliberately does not re-export
+# because it collides with its own HTTP `Quirks`.
 kn9t-core = { path = "../kn9t-core" }
