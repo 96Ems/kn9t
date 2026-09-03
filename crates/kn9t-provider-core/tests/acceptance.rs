@@ -224,6 +224,7 @@ fn pcore_quirks_merge() {
         require_tools:    false,
         streaming:        true,
         extra_body:       serde_json::Value::Null,
+        trim_trailing_whitespace: false,
     };
     let model_override = Quirks {
         max_tokens_field: "max_completion_tokens".into(),

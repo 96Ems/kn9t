@@ -2001,6 +2001,10 @@ fn abort_then_prompt_race() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "plugin reload harness needs a POSIX shell script as the dummy plugin binary"
+)]
 fn plugin_reload() {
     // Build a dummy plugin that declares one tool and replies instantly.
     let tmp = tempfile::tempdir().unwrap();
@@ -2052,9 +2056,11 @@ fn write_dummy_plugin(path: &std::path::Path, name: &str, tool: &str) {
     let mode = std::fs::metadata(path).unwrap().permissions().mode();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o111)).unwrap();
 }
+// On Windows the test above is #[ignore]d (the dummy plugin is a POSIX shell
+// script), so this stub only has to satisfy the compiler - it is never called.
 #[cfg(windows)]
 fn write_dummy_plugin(_path: &std::path::Path, _name: &str, _tool: &str) {
-    panic!("plugin_reload test not supported on Windows in this harness");
+    unreachable!("plugin_reload is #[ignore]d on Windows");
 }
 
 // ── 96E-17: plugin → host API ops (host_api capability) ─────────────────────
