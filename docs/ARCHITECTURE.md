@@ -713,7 +713,7 @@ mostly applied:
 | GI-6 TUI links no core | `check-schema.sh` grep | ✅ verified: 0 references |
 | snake_case wire | serde attributes | ✅ structural |
 | durable ≠ transient | **the type system** (`LiveEvent`) | ✅ compile error |
-| schema ↔ code | `check-schema.sh` | ⚠️ green only on LF checkouts — F3 |
+| schema ↔ code | `check-schema.sh` | ✅ fixed in ADR-0009 (was F3/F4) |
 | no bare unwrap in `policy.rs` | `check-unwrap-trend.sh` + `deny(clippy::unwrap_used)` | ✅ |
 | SSE race test is run | `check-sse-race.sh` | ✅ |
 
@@ -758,57 +758,43 @@ named sibling. Either the invariant should say "`[dependencies]` only" explicitl
 re-export works and the hole closes. The rename is ~20 lines and removes an asterisk from
 three crates.
 
-### F3 — `check-gi1.sh` cannot run on this machine
+### F3 — Guard scripts unrunnable on Windows ✅ FIXED (96E-29, ADR-0009)
 
-`core.autocrlf=true` plus `* text=auto` means every `.sh` file is CRLF in the working tree.
-Running `bash scripts/check-gi1.sh` fails immediately:
+`core.autocrlf=true` plus `* text=auto` meant every `.sh` file was CRLF in the working
+tree, so `bash scripts/check-gi1.sh` died immediately:
 
 ```
 line 4: $'\r': command not found
 line 12: syntax error near unexpected token `$'do\r''
 ```
 
-All six guard scripts are affected. The pre-commit hook is also **not installed**
-(`.git/hooks/` contains only `.sample` files), so *no* guard currently runs on this
-checkout — including the schema drift gate.
+All six guard scripts were affected, and the pre-commit hook was never installed
+(`.git/hooks/` held only `.sample` files), so *no* guard ran on this checkout.
 
-**ADR-0007 predicted this exact bug class and then mis-prescribed the cure.** It opens by
-naming the failure — *"an invariant claimed in docs that nothing enforced… breaks
-`check-schema.sh`/`check-gi1.sh` drift gates"* — and its Consequences assert *"Windows
-contributors can keep `core.autocrlf=true` locally."* They cannot. `* text=auto` normalizes
-LF in the **index** but hands the working tree CRLF, and `bash` executes the working tree.
-Verified:
+**ADR-0007 predicted this exact bug class and then mis-prescribed the cure.** It named the
+failure — *"an invariant claimed in docs that nothing enforced… breaks
+`check-schema.sh`/`check-gi1.sh` drift gates"* — then asserted *"Windows contributors can
+keep `core.autocrlf=true` locally."* They could not. `* text=auto` normalizes the **index**;
+`bash` executes the **working tree**.
 
-```
-$ git ls-files --eol scripts/check-gi1.sh
-i/lf    w/crlf    attr/text=auto    scripts/check-gi1.sh
-```
+Resolved by pinning `eol=lf` on executable and generated text, installing the hook via
+`core.hooksPath`, and resolving `cargo` through `scripts/_cargo.sh` (WSL has no
+`~/.cargo`). Verified: `check-ci.sh` exits 0 end-to-end, and the hook rejects a deliberate
+GI-1 violation with `GI-1 VIOLATION: kn9t-store has 2 workspace deps (max 1)`.
+Renormalizing produced **no content churn** — the index was already LF, so this was purely
+a checkout-side defect. ADR-0007 is superseded by ADR-0009 rather than edited, since its
+Consequences section is known-false.
 
-The diagnosis was right, the remedy was one attribute short. That is the highest-leverage
-fix in this list, because it is the mechanism every other invariant depends on:
+### F4 — `xtask --check` false drift ✅ FIXED (96E-30, same root cause)
 
-```
-# .gitattributes
-*.sh                      text eol=lf
-scripts/pre-commit.hook   text eol=lf
-```
+`cargo run -p xtask -- --check` reported **all five** generated files as drifted. They were
+not: `git diff --ignore-cr-at-eol` showed zero content difference. The generator writes
+`\n`, the checkout had `\r\n`, and `check()` compares byte-for-byte
+(`xtask/src/main.rs:128`).
 
-then `git add --renormalize .` and install the hook. ADR-0007 should be superseded rather
-than edited, since its Consequences section is now known-false.
-
-### F4 — `xtask --check` reports drift that is pure line-endings
-
-Related to F3 and worth separating. Running `cargo run -p xtask -- --check` reports **all
-five** generated files as drifted. They are not: `git diff --ignore-cr-at-eol` shows zero
-content difference. The generator writes `\n`; the checkout has `\r\n`; `check()` compares
-strings byte-for-byte (`xtask/src/main.rs:128`).
-
-Consequence: on Windows the gate is permanently red, which trains whoever sees it to
-ignore it — the exact failure mode these scripts exist to prevent. And running `generate`
-to "fix" it rewrites all five files to LF, producing a 5-file diff with no semantic change.
-
-*Fix:* normalize before comparing, e.g. `have.replace("\r\n", "\n") == want`, or add the
-generated paths to `.gitattributes` with `eol=lf`. One line either way.
+Fixed by the same `eol=lf` pin, with **no change to the comparison logic** — the false
+positive was the line endings, not the generator. Adding a normalizing compare would have
+masked the underlying checkout bug while leaving the six guard scripts broken.
 
 ### F5 — Mojibake guard is itself mojibake'd
 
@@ -908,11 +894,12 @@ the actual ratio.
    rather than leaving an aspiration; the single-mutex store says exactly why it is not a
    pool; GI-1's dev-dep exception is justified in the Cargo.toml where it happens.
 
-The dominant risk is not structural, it is **enforcement**: F3 + F4 mean none of the guard
-scripts run on the primary development machine, and F1 means the spec no longer describes
-the code in the one area that governs whether `rm -rf /` executes. Both are cheap. Fix
-those two and the invariant discipline this project is built on becomes real again rather
-than nominal.
+The dominant risk was never structural, it was **enforcement**. F3 + F4 are now fixed
+(ADR-0009): all six guard scripts run, `check-ci.sh` passes end-to-end, and the pre-commit
+hook is installable in one command and demonstrably rejects a GI-1 violation. What remains
+is F1 — the spec no longer describes the code in the one area that governs whether
+`rm -rf /` executes. Close that and the invariant discipline this project is built on is
+real rather than nominal.
 
 ---
 

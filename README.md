@@ -271,6 +271,7 @@ All JSON is `snake_case`, on the wire and in the database.
 cargo test --workspace
 cd plugins/kn9t-tools && cargo test        # plugins are separate crates
 
+bash scripts/install-hooks.sh              # once per clone: pre-commit gates
 bash scripts/check-ci.sh                   # all invariant gates
 cargo run -p xtask -- generate             # after editing schema/*.json
 ```

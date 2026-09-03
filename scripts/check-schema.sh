@@ -11,13 +11,15 @@
 
 set -e
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/_cargo.sh
+. "$(dirname "$0")/_cargo.sh"
 
 echo "== schema drift check =="
 
 # 1. Re-derive every generated output in memory and compare byte-for-byte against
 #    the committed files. `xtask --check` refuses to write anything to the tree, so
 #    a failure cannot leave half-regenerated files behind.
-if ! cargo run -p xtask -- --check > /tmp/xtask-check.log 2>&1; then
+if ! "$CARGO" run -p xtask -- --check > /tmp/xtask-check.log 2>&1; then
   cat /tmp/xtask-check.log
   echo ""
   echo "SCHEMA DRIFT: generated files differ from committed output."

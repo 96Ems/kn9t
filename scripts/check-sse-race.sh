@@ -11,6 +11,8 @@
 
 set -e
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/_cargo.sh
+. "$(dirname "$0")/_cargo.sh"
 
 echo "== SSE race regression test wiring =="
 
@@ -28,14 +30,18 @@ if ! grep -rq "p1_96e7_attach_does_not_lose" crates --include="*.rs"; then
 fi
 echo "  test p1_96e7_attach*: present"
 
-# 3. Actually run it (fast — single test)
+# 3. Actually run it (fast — single test). Run ONCE and reuse the output: the
+#    previous version invoked `cargo test` twice, doubling the cost and making
+#    the pass/fail verdict depend on a second, independent run.
 echo "  running cargo test p1_96e7..."
-if ! cargo test -p kn9t-server --lib p1_96e7 --quiet 2>&1 | tail -n 20; then
-  echo "  cargo test p1_96e7 finished (see above)"
-fi
+out="$("$CARGO" test -p kn9t-server --lib p1_96e7 2>&1)" || true
+echo "$out" | tail -n 20
 
-# Verify it passed (not ignored)
-if cargo test -p kn9t-server --lib p1_96e7 2>&1 | grep -Eq "1 passed|2 passed"; then
+if echo "$out" | grep -Eq "[1-9][0-9]* passed"; then
+  if echo "$out" | grep -Eq "[1-9][0-9]* ignored"; then
+    echo "FAIL: SSE race test is #[ignore]d — it must actually run"
+    exit 1
+  fi
   echo "SSE race: OK (test exercised and passing)"
 else
   echo "FAIL: SSE race test did not report passed"

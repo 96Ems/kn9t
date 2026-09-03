@@ -1,7 +1,13 @@
 # ADR-0007: CRLF normalization via .gitattributes
 
 ## Status
-Accepted
+Superseded by [ADR-0009](0009-pin-eol-lf-on-executable-text.md)
+
+> The Decision here is sound but incomplete, and the Consequences section is
+> **known-false**: `core.autocrlf=true` was *not* safe for contributors, because
+> `text=auto` normalizes the index while `bash` executes the working tree. Every
+> guard script this ADR set out to protect was unrunnable as a result (96E-29).
+> Left unedited as the historical record; see ADR-0009 for the fix.
 
 ## Date
 2026-08-31

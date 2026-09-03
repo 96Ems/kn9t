@@ -1,6 +1,30 @@
 * text=auto
-# Fixtures are raw provider bytes, verbatim (R-RPLY-010). Never convert line endings.
+
+# ── Executable text must be LF in the WORKING TREE, not just the index ────────
+# `* text=auto` normalizes to LF on commit, but a checkout with
+# core.autocrlf=true writes CRLF into the working tree - and bash reads the
+# working tree, not the index. A CRLF shebang makes `#!/bin/bash\r` an unknown
+# interpreter, so every guard script dies with:
+#     line 4: $'\r': command not found
+#     line 12: syntax error near unexpected token `$'do\r''
+# `eol=lf` pins the checkout regardless of the contributor's core.autocrlf.
+# ADR-0007 normalized the index and stopped one attribute short (96E-29).
+*.sh                           text eol=lf
+*.hook                         text eol=lf
+*.py                           text eol=lf
+
+# ── Generated files are byte-compared by `xtask --check` ──────────────────────
+# The generator emits \n. A CRLF working tree fails that comparison on content
+# that is identical, so the drift gate is permanently red on Windows and would
+# block every commit once the pre-commit hook is installed (96E-30).
+crates/kn9t-server/src/api.rs  text eol=lf
+crates/kn9t-tui/src/wire.rs    text eol=lf
+API.md                         text eol=lf
+schema/generated/**            text eol=lf
+
+# ── Raw bytes: never convert ──────────────────────────────────────────────────
+# Fixtures are captured provider bytes, replayed verbatim (R-RPLY-010).
 crates/kn9t-provider-replay/fixtures/** -text
-# Go plugin binaries - never convert line endings
+# Go plugin binaries.
 plugins/kn9t-agents-md/kn9t-agents-md binary
 plugins/kn9t-agents-md/kn9t-agents-md.exe binary
