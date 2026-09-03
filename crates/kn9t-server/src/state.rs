@@ -19,6 +19,7 @@ use kn9t_plugin::PluginHost;
 use kn9t_store::SqliteStore;
 
 use crate::bus::SessionBuses;
+use crate::interaction::InteractionRegistry;
 use crate::lease::{LeaseMap, DEFAULT_LEASE_IDLE};
 use crate::policy::{ApprovalCache, ApprovalRegistry, InteractiveApprover, NonInteractiveApprover};
 
@@ -137,6 +138,8 @@ pub struct ServerState {
     pub approval_registry: Arc<ApprovalRegistry>,
     /// Session + persistent approval cache (scope=session|always).
     pub approval_cache: Arc<ApprovalCache>,
+    /// 96E-28 — generic client→host interaction registry (opaque JSON payloads).
+    pub interaction_registry: Arc<InteractionRegistry>,
     /// Working directory root (server process cwd), used for the tool context when
     /// a session does not pin its own.
     pub cwd: PathBuf,
@@ -175,6 +178,7 @@ impl ServerState {
     ) -> Self {
         let approval_registry = Arc::new(ApprovalRegistry::new());
         let approval_cache = Arc::new(ApprovalCache::new(crate::config::global_config_path()));
+        let interaction_registry = Arc::new(InteractionRegistry::new());
         let approver: Arc<dyn Approver> = Arc::new(InteractiveApprover::with_cache(
             approval_registry.clone(),
             approval_cache.clone(),
@@ -203,6 +207,7 @@ impl ServerState {
             approver: std::sync::RwLock::new(approver),
             approval_registry,
             approval_cache,
+            interaction_registry,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             provider_reported_budget: Mutex::new(None),
             model_registry: Vec::new(),

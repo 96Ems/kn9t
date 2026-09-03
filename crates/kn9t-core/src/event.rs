@@ -251,6 +251,12 @@ pub enum Event {
         #[serde(flatten)]
         payload: serde_json::Value,
     },
+    /// 96E-28 — generic client→host interaction request (transient).
+    InteractionRequest {
+        id: u64,
+        plugin: String,
+        payload: serde_json::Value,
+    },
 }
 
 impl Event {
@@ -368,6 +374,15 @@ pub enum LiveEvent {
         #[serde(flatten)]
         payload: serde_json::Value,
     },
+    /// 96E-28 — generic client→host interaction request (transient). The host does
+    /// not interpret `payload`; it is the plugin's own shape (question/choices,
+    /// form schema, etc.) forwarded verbatim to the client. The client responds
+    /// via `POST /ui-respond {id, payload}`.
+    InteractionRequest {
+        id: u64,
+        plugin: String,
+        payload: serde_json::Value,
+    },
 }
 
 impl From<LiveEvent> for Event {
@@ -388,6 +403,7 @@ impl From<LiveEvent> for Event {
             LiveEvent::RetryAttempt { attempt, max, error, delay_ms, retry_kind } => Event::RetryAttempt { attempt, max, error, delay_ms, retry_kind },
             LiveEvent::TurnStatus { phase, message } => Event::TurnStatus { phase, message },
             LiveEvent::PluginNotification { payload } => Event::PluginNotification { payload },
+            LiveEvent::InteractionRequest { id, plugin, payload } => Event::InteractionRequest { id, plugin, payload },
         }
     }
 }

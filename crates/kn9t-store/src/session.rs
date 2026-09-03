@@ -207,6 +207,7 @@ fn event_kind_name(event: &Event) -> &'static str {
         Event::RetryAttempt { .. }        => "RetryAttempt",
         Event::TurnStatus { .. }          => "TurnStatus",
         Event::PluginNotification { .. }  => "PluginNotification",
+        Event::InteractionRequest { .. }  => "InteractionRequest",
     }
 }
 

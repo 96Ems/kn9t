@@ -73,6 +73,14 @@ class RenameReq:
     name: str
 
 
+@dataclass
+class UiRespondReq:
+    """Request body."""
+
+    id: int
+    payload: Any
+
+
 # Plugin protocol definitions (schema/plugin.json).
 
 @dataclass

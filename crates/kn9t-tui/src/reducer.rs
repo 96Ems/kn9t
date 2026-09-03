@@ -25,6 +25,8 @@ pub struct State {
     pub transcript: crate::message_handler::Transcript,
     pub tokens: TokenTracker,
     pub active_approval_id: Option<u64>,
+    /// 96E-28: active generic interaction id (opaque payload).
+    pub active_interaction_id: Option<u64>,
     pub overlay: Option<Overlay>,
     pub session_id: String,
     pub session_title: Option<String>,
@@ -42,6 +44,7 @@ impl Default for State {
             transcript: crate::message_handler::Transcript::new(),
             tokens: TokenTracker::new(),
             active_approval_id: None,
+            active_interaction_id: None,
             overlay: None,
             session_id: String::new(),
             session_title: None,
@@ -155,6 +158,12 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
         SseFrame::ApprovalRequest { id, tool, args, .. } => {
             state.active_approval_id = Some(id);
             state.overlay = Some(Overlay::Approval { tool, args: serde_json::to_string(&args).unwrap_or_default(), selected: 0 });
+        }
+        SseFrame::InteractionRequest { id, plugin, payload } => {
+            state.active_interaction_id = Some(id);
+            // Generic renderer: payload is opaque JSON, stringify for display.
+            let payload_str = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| format!("{payload:?}"));
+            state.overlay = Some(Overlay::Interaction { id, plugin, payload: payload_str, input: String::new() });
         }
         SseFrame::ModelChanged { model, .. } => {
             let name = format!("{}:{}", model.provider, model.id);

@@ -387,6 +387,22 @@
       "lease": false,
       "description": "Hot-reload a plugin by name: cancel in-flight, shutdown, respawn, re-handshake, re-register tools (R-PLUG2-100)",
       "response": { "type": "object", "properties": { "reloaded": { "type": "string" }, "tools": { "type": "integer", "description": "total tools after reload" } }, "required": ["reloaded"] }
+    },
+    {
+      "method": "POST",
+      "path": "/ui-respond",
+      "lease": false,
+      "description": "96E-28: respond to a pending generic plugin→client interaction (opaque payload, unknown id rejected)",
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "description": "Pending interaction id from interaction_request event" },
+          "payload": { "description": "Opaque JSON response — forwarded verbatim to the waiting plugin" }
+        },
+        "required": ["id", "payload"],
+        "additionalProperties": false
+      },
+      "response": { "type": "object", "properties": { "responded": { "type": "integer" }, "payload": {} }, "required": ["responded"] }
     }
   ],
   "sse": {
@@ -410,7 +426,8 @@
       { "kind": "error", "message": "string" },
       { "kind": "retry_attempt", "attempt": "u32", "max": "u32", "error": "string", "delay_ms": "u64", "retry_kind": "string" },
       { "kind": "turn_status", "phase": "string", "message": "string" },
-      { "kind": "plugin_notification", "plugin": "string", "message": "string" }
+      { "kind": "plugin_notification", "plugin": "string", "message": "string" },
+      { "kind": "interaction_request", "id": "u64", "plugin": "string", "payload": "Value" }
     ]
   }
 }

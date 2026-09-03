@@ -4,6 +4,7 @@
 
 pub mod blob;
 pub mod cost;
+pub mod interaction;
 pub mod models;
 pub mod plugin;
 pub mod policy;

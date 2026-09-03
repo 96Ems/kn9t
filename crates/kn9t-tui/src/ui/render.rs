@@ -979,6 +979,62 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
             }
         }
 
+        Overlay::Interaction { plugin, payload, input, .. } => {
+            let border_fg = theme.primary;
+            let border_style = Style::default().fg(border_fg).bg(Color::Black).add_modifier(Modifier::BOLD);
+            if overlay_w >= 2 && overlay_h >= 2 {
+                buf[(overlay_x, overlay_y)].set_char('┏').set_style(border_style);
+                buf[(overlay_x + overlay_w - 1, overlay_y)].set_char('┓').set_style(border_style);
+                buf[(overlay_x, overlay_y + overlay_h - 1)].set_char('┗').set_style(border_style);
+                buf[(overlay_x + overlay_w - 1, overlay_y + overlay_h - 1)].set_char('┛').set_style(border_style);
+                for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
+                    buf[(x, overlay_y)].set_char('━').set_style(border_style);
+                    buf[(x, overlay_y + overlay_h - 1)].set_char('━').set_style(border_style);
+                }
+                for y in (overlay_y + 1)..(overlay_y + overlay_h - 1) {
+                    buf[(overlay_x, y)].set_char('┃').set_style(border_style);
+                    buf[(overlay_x + overlay_w - 1, y)].set_char('┃').set_style(border_style);
+                }
+            }
+            let mut y = overlay_y + 1;
+            let title = format!("{} asks:", plugin);
+            let title_x = overlay_x + (overlay_w.saturating_sub(title.len() as u16)) / 2;
+            for (i, ch) in title.chars().enumerate() {
+                buf[(title_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+            }
+            y += 2;
+            let inner_w = (overlay_w.saturating_sub(4)) as usize;
+            let inner_x = overlay_x + 2;
+            for line in wrap_text(payload, inner_w.max(1)) {
+                if y >= overlay_y + overlay_h - 3 { break; }
+                for (i, ch) in line.chars().enumerate() {
+                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 { break; }
+                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                }
+                y += 1;
+            }
+            y += 1;
+            let prompt = "› ";
+            for (i, ch) in prompt.chars().enumerate() {
+                buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+            }
+            let input_x = inner_x + prompt.len() as u16;
+            for (i, ch) in input.chars().enumerate() {
+                if input_x + i as u16 >= overlay_x + overlay_w - 2 { break; }
+                buf[(input_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+            }
+            let cx = input_x + input.chars().count() as u16;
+            if cx < overlay_x + overlay_w - 1 {
+                buf[(cx, y)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
+            }
+            let footer = "Enter send · Esc cancel";
+            let fx = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
+            let fy = overlay_y + overlay_h - 1;
+            for (i, ch) in footer.chars().enumerate() {
+                buf[(fx + i as u16, fy)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+            }
+        }
+
         Overlay::Help => {
             let mut y = overlay_y + 1;
             

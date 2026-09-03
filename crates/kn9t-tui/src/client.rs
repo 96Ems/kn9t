@@ -284,6 +284,15 @@ impl Client {
             .map_err(|e| ClientError::Http(e.to_string()))?;
         resp.into_json().map_err(|e| ClientError::Json(e.to_string()))
     }
+
+    /// 96E-28: respond to a pending generic interaction — opaque payload forwarded verbatim.
+    pub fn ui_respond(&self, id: u64, payload: serde_json::Value) -> Result<(), ClientError> {
+        let req = UiRespondReq { id, payload };
+        self.request("POST", "/ui-respond")
+            .send_json(&req)
+            .map_err(|e| ClientError::Http(e.to_string()))?;
+        Ok(())
+    }
 }
 
 use std::sync::Arc;

@@ -226,6 +226,12 @@ fn route(
 
         // ── plugin hot-reload (R-PLUG2-100) ──
         (Method::Post, ["plugin", name, "reload"]) => routes::plugin::reload(state, name),
+
+        // ── 96E-28 generic interaction ──
+        (Method::Post, ["ui-respond"]) => match parse_json::<api::UiRespondReq>(req) {
+            Ok(body) => routes::interaction::respond(state, body).into(),
+            Err(e) => e.into(),
+        },
         
         // ── unknown ──
         _ => JsonResp::error(404, "not_found", "no such route").into(),
