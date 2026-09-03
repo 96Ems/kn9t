@@ -2212,3 +2212,68 @@ fn approval_body_lines(tool: &str, args: &str, theme: &Theme, width: usize) -> V
     }
     lines
 }
+
+#[cfg(test)]
+mod golden {
+    use super::*;
+    use crate::app::Overlay;
+    use crate::theme::Theme;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn theme() -> Theme { Theme::dark() }
+
+    fn render_overlay_to_string(overlay: &Overlay, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let th = theme();
+        terminal.draw(|f| {
+            let area = f.area();
+            super::render_overlay(f, overlay, area, &th);
+        }).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..height {
+            for x in 0..width {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            if y + 1 < height { out.push('\n'); }
+        }
+        out
+    }
+
+    #[test]
+    fn golden_approval_overlay_contains_tool_and_actions() {
+        let overlay = Overlay::Approval { tool: "bash".into(), args: r#"{"cmd":"rm -rf /"}"#.into(), selected: 0 };
+        let snap = render_overlay_to_string(&overlay, 60, 15);
+        // Buffer must contain the command snippet and the action hints; tool name is implicit via Command line
+        assert!(snap.contains("rm -rf"), "approval overlay must show args preview, got:\n{snap}");
+        assert!(snap.contains("APPROVAL") || snap.contains("Allow"), "must show approval header or actions, got:\n{snap}");
+        assert!(snap.contains("Allow") && snap.contains("Deny"), "must show Allow/Deny actions, got:\n{snap}");
+    }
+
+    #[test]
+    fn golden_interaction_overlay_contains_plugin_and_payload() {
+        let overlay = Overlay::Interaction { id: 42, plugin: "kn9t-ask-user".into(), payload: "{\n  \"question\": \"choose?\"\n}".into(), input: "my ans".into() };
+        let snap = render_overlay_to_string(&overlay, 60, 15);
+        assert!(snap.contains("kn9t-ask-user"), "must show plugin name, got:\n{snap}");
+        assert!(snap.contains("choose?"), "must show payload question, got:\n{snap}");
+        assert!(snap.contains("my ans"), "must show current input, got:\n{snap}");
+        assert!(snap.contains("Enter") && snap.contains("Esc"), "must show footer hints, got:\n{snap}");
+    }
+
+    #[test]
+    fn golden_interaction_overlay_esc_hint_present_even_empty_input() {
+        let overlay = Overlay::Interaction { id: 1, plugin: "p".into(), payload: "hello".into(), input: String::new() };
+        let snap = render_overlay_to_string(&overlay, 60, 15);
+        // Must be renderable without panic and contain the payload
+        assert!(snap.contains("hello"), "payload must be visible, got:\n{snap}");
+        assert!(snap.contains("Esc"), "cancel hint must be present, got:\n{snap}");
+    }
+
+    #[test]
+    fn golden_help_overlay_renders() {
+        let overlay = Overlay::Help;
+        let snap = render_overlay_to_string(&overlay, 60, 15);
+        assert!(snap.contains("HELP") || snap.contains("Navigation") || snap.contains("Actions"), "help overlay must contain headings, got:\n{snap}");
+    }
+}

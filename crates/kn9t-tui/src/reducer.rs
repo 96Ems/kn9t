@@ -6,6 +6,15 @@
 //!
 //! Handles the three frames previously ignored: `ThinkingDelta`, `ModelChanged`, `Compacted`
 //! (only their `seq` was recorded). `Compacted` especially — the transcript now reflects a compaction.
+//!
+//! ## Test strategy (96E-19)
+//!
+//! This module is the **primary unit-test seam** for the TUI (pure logic, no terminal).
+//! All state transitions are tested here without a PTY. Terminal rendering is covered
+//! separately via golden-snapshot tests in `ui::render` (`ui/render.rs` `golden_*` tests)
+//! which render to a `TestBackend` and assert the buffer string. What's intentionally
+//! left untested: raw crossterm event loop, `App::run` poll loop, and `Client` HTTP I/O
+//! — pure I/O glue with no branching worth unit-testing.
 
 use crate::message_handler::{Message, ToolCard};
 use crate::model_selector::ModelSelector;
@@ -467,5 +476,114 @@ mod tests {
         assert_eq!(t.output.as_deref(), Some("file1\nfile2"));
         // The tool results message must NOT become a transcript message.
         assert_eq!(s.transcript.message_count(), 1);
+    }
+
+    // ── 96E-19 extended reducer coverage ────────────────────────────────────
+
+    #[test]
+    fn interaction_request_sets_overlay() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::InteractionRequest { id: 99, plugin: "kn9t-ask-user".into(), payload: serde_json::json!({"question":"choose?","choices":["a","b"]}) });
+        assert_eq!(s.active_interaction_id, Some(99));
+        match &s.overlay {
+            Some(crate::app::Overlay::Interaction { id, plugin, payload, input }) => {
+                assert_eq!(*id, 99);
+                assert_eq!(plugin, "kn9t-ask-user");
+                assert!(payload.contains("choose?"));
+                assert!(input.is_empty());
+            }
+            other => panic!("expected Interaction overlay, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn interaction_request_replaces_approval_overlay() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::ApprovalRequest { id: 1, tool: "bash".into(), args: serde_json::json!({}), cwd: "/tmp".into() });
+        assert!(matches!(s.overlay, Some(crate::app::Overlay::Approval { .. })));
+        reduce(&mut s, SseFrame::InteractionRequest { id: 2, plugin: "p".into(), payload: serde_json::json!({"q":"?"}) });
+        assert_eq!(s.active_interaction_id, Some(2));
+        assert!(matches!(s.overlay, Some(crate::app::Overlay::Interaction { .. })));
+    }
+
+    #[test]
+    fn plugin_notification_pushes_message() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::PluginNotification { plugin: "kn9t-tools".into(), message: "hello from plugin".into() });
+        assert!(s.transcript.messages().iter().any(|m| m.content.contains("hello from plugin")));
+    }
+
+    #[test]
+    fn hook_failed_is_noop_and_does_not_crash() {
+        let mut s = State::default();
+        reduce(&mut s, text_msg("assistant", "before", 1));
+        let count = s.transcript.message_count();
+        reduce(&mut s, SseFrame::HookFailed { plugin: "p".into(), hook: "before_tool_call".into(), reason: "oops".into() });
+        assert_eq!(s.transcript.message_count(), count);
+    }
+
+    #[test]
+    fn tool_progress_updates_card() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::TurnStarted { turn: 1 });
+        reduce(&mut s, tool_call_msg(1, "c-progress"));
+        reduce(&mut s, SseFrame::ToolProgress { call_id: "c-progress".into(), note: "step 1".into() });
+        let t = &s.transcript.messages()[0].tools[0];
+        assert!(t.progress_lines.iter().any(|l| l.contains("step 1")));
+        assert!(t.status.contains("step 1"));
+        reduce(&mut s, SseFrame::ToolProgress { call_id: "c-progress".into(), note: "step 2".into() });
+        assert_eq!(s.transcript.messages()[0].tools[0].progress_lines.len(), 2);
+    }
+
+    #[test]
+    fn tool_args_delta_is_ignored_but_not_crashing() {
+        let mut s = State::default();
+        reduce(&mut s, tool_call_msg(1, "c1"));
+        reduce(&mut s, SseFrame::ToolArgsDelta { msg_id: "m1".into(), idx: 0, delta: "{\"cmd\"".into() });
+        assert_eq!(s.transcript.tool_count(), 1);
+    }
+
+    #[test]
+    fn usage_recorded_updates_tokens() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::UsageRecorded { seq: 10, provider: "openai".into(), model: "gpt-4".into(), usage_kind: "main".into(), tokens: WireTokens { input: 5, output: 10, cache_read: 0, cache_write: 0, reasoning: 0 }, cost_usd: 0.001, estimated: false });
+        assert_eq!(s.last_seq, 10);
+        assert_eq!(s.tokens.tokens_in(), 5);
+        assert_eq!(s.tokens.tokens_out(), 10);
+    }
+
+    #[test]
+    fn error_frame_sets_failed_and_message() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::TurnStarted { turn: 1 });
+        reduce(&mut s, SseFrame::Error { message: "boom".into() });
+        assert_eq!(s.turn_phase, "failed");
+        assert!(s.turn_status_msg.contains("boom"));
+        assert!(s.transcript.messages().iter().any(|m| m.role == "error" && m.content.contains("boom")));
+    }
+
+    #[test]
+    fn compacted_empty_summary_fallback() {
+        let mut s = State::default();
+        let empty = WireMessage { id: "e".into(), role: "assistant".into(), content: vec![], silent: false };
+        reduce(&mut s, SseFrame::Compacted { seq: 5, replaced: WireSeqRange { start: 1, end: 2 }, summary: empty });
+        assert!(s.transcript.messages().iter().any(|m| m.content.contains("Conversation compacted")));
+    }
+
+    #[test]
+    fn silent_user_message_is_ignored() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::MessageAppended { seq: 1, msg: WireMessage { id: "m1".into(), role: "user".into(), content: vec![WireContent::Text { text: "hidden".into() }], silent: true } });
+        assert_eq!(s.transcript.message_count(), 0, "silent user message must not create transcript entry");
+    }
+
+    #[test]
+    fn tool_finished_error_marks_card_error() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::TurnStarted { turn: 1 });
+        reduce(&mut s, tool_call_msg(1, "c-err"));
+        reduce(&mut s, SseFrame::ToolFinished { call_id: "c-err".into(), is_error: true });
+        assert_eq!(s.transcript.messages()[0].tools[0].status, "error");
+        assert!(!s.transcript.messages()[0].tools[0].expanded);
     }
 }
