@@ -39,6 +39,15 @@ pub enum HostMsg {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// 96E-17 — reply to a plugin → host API `Request`.
+    ApiResult {
+        id: u64,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 // ── Plugin → Host ─────────────────────────────────────────────────────────────
@@ -92,6 +101,8 @@ pub enum PluginMsg {
     /// Delete all keys in `scope` from the host's persistent KV store.
     /// Host replies with [`HostMsg::KvResult`].
     KvDelScope { id: u64, scope: String },
+    /// 96E-17 — plugin → host API request (host_api capability). Host replies with `HostMsg::ApiResult`.
+    Request { id: u64, op: String, payload: serde_json::Value },
 }
 
 // ── Shared data types ─────────────────────────────────────────────────────────

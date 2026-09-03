@@ -89,6 +89,7 @@ type CancelMap = Arc<Mutex<HashMap<u64, CancelToken>>>;
 
 /// Per-KV-call reply map (kv request id → channel).
 type KvPending = Arc<Mutex<HashMap<u64, mpsc::SyncSender<KvReply>>>>;
+type ApiPending = Arc<Mutex<HashMap<u64, mpsc::SyncSender<crate::ctx::ApiReply>>>>;
 
 struct Runner {
     name:       String,
@@ -100,6 +101,8 @@ struct Runner {
     cancels:    CancelMap,
     kv_pending: KvPending,
     kv_next_id: Arc<AtomicU64>,
+    api_pending: ApiPending,
+    api_next_id: Arc<AtomicU64>,
 }
 
 impl Runner {
@@ -116,6 +119,8 @@ impl Runner {
             kv_pending: Arc::new(Mutex::new(HashMap::new())),
             // Use a high base to avoid ID collision with hook call IDs (which start at 1).
             kv_next_id: Arc::new(AtomicU64::new(1_000_000)),
+            api_pending: Arc::new(Mutex::new(HashMap::new())),
+            api_next_id: Arc::new(AtomicU64::new(2_000_000)),
         }
     }
 
@@ -172,6 +177,15 @@ impl Runner {
             Arc::clone(&self.writer),
             Arc::clone(&self.kv_pending),
             Arc::clone(&self.kv_next_id),
+        )
+    }
+
+    fn make_host_client(&self, session: Option<String>) -> crate::ctx::HostApiClient {
+        crate::ctx::HostApiClient::new(
+            Arc::clone(&self.writer),
+            Arc::clone(&self.api_pending),
+            Arc::clone(&self.api_next_id),
+            session,
         )
     }
 
@@ -246,6 +260,13 @@ impl Runner {
                     }
                 }
 
+                HostMsg::ApiResult { id, result, ok, error } => {
+                    let reply = crate::ctx::ApiReply { ok, result, error };
+                    if let Some(tx) = runner.api_pending.lock().unwrap().remove(&id) {
+                        let _ = tx.send(reply);
+                    }
+                }
+
                 HostMsg::Hook { id, hook, payload } => {
                     let r = Arc::clone(&runner);
                     std::thread::spawn(move || {
@@ -269,9 +290,10 @@ impl Runner {
     }
 
     fn dispatch_tool(self: &Arc<Self>, id: u64, payload: Value) {
-        // Plugin protocol: {"tool": "<name>", "args": {...}}
+        // Plugin protocol: {"tool": "<name>", "args": {...}, "session_id": "..."}
         let name = payload.get("tool").and_then(|n| n.as_str()).unwrap_or("");
         let args = payload.get("args").cloned().unwrap_or(Value::Null);
+        let session = payload.get("session_id").or_else(|| payload.get("session")).and_then(|v| v.as_str()).map(|s| s.to_string());
 
         let tool = self.tools.iter().find(|t| t.spec().name == name);
         let tool = match tool {
@@ -294,6 +316,7 @@ impl Runner {
             cancel: cancel.clone(),
             progress: ProgressSender { id, writer },
             kv: self.make_kv_client(),
+            host: self.make_host_client(session),
         };
 
         let output = tool.execute(&args, &ctx);
@@ -332,6 +355,7 @@ impl Runner {
             cancel: cancel.clone(),
             chunk: ChunkSender::new(id, Arc::clone(&self.writer)),
             kv: self.make_kv_client(),
+            host: self.make_host_client(None),
         };
 
         let result = provider.complete(&payload, &ctx);

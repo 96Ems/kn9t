@@ -75,6 +75,7 @@ pub fn event_tag(e: &Event) -> String {
         Event::TitleChanged { .. } => "TitleChanged",
         Event::PluginNotification { .. } => "PluginNotification",
         Event::InteractionRequest { .. } => "InteractionRequest",
+        Event::UiDirective { .. } => "UiDirective",
     }
     .to_string()
 }
@@ -93,6 +94,7 @@ pub fn live_event_tag(e: &LiveEvent) -> String {
         LiveEvent::HookFailed { .. } => "HookFailed",
         LiveEvent::TitleChanged { .. } => "TitleChanged",
         LiveEvent::InteractionRequest { .. } => "InteractionRequest",
+        LiveEvent::UiDirective { .. } => "UiDirective",
         LiveEvent::Error { .. } => "Error",
         LiveEvent::RetryAttempt { .. } => "RetryAttempt",
         LiveEvent::TurnStatus { .. } => "TurnStatus",

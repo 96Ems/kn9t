@@ -391,6 +391,85 @@ impl KvClient {
     }
 }
 
+// ── HostApiClient ──────────────────────────────────────────────────────────
+
+/// Client for the plugin → host API (`host_api` capability, 96E-17).
+///
+/// `session_read`, `provider_complete`, `tool_execute`, `session_fork`,
+/// `session_prompt`, `tool_list`, `interaction_request`, `ui_*` etc. are all
+/// dispatched through this client. See `crates/kn9t-server/src/host_api.rs`
+/// for the op catalogue. The host replies with `HostMsg::ApiResult`.
+pub struct HostApiClient {
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    pending: Arc<Mutex<HashMap<u64, mpsc::SyncSender<ApiReply>>>>,
+    next_id: Arc<AtomicU64>,
+    /// Session id for this call (extracted from the host's `tool_call` payload).
+    /// If set, `call` will auto-inject `session` into the payload when absent,
+    /// so tools don't need to thread `session` through their own args.
+    session: Option<String>,
+}
+
+pub(crate) struct ApiReply {
+    pub ok: bool,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+impl HostApiClient {
+    pub(crate) fn new(
+        writer: Arc<Mutex<Box<dyn Write + Send>>>,
+        pending: Arc<Mutex<HashMap<u64, mpsc::SyncSender<ApiReply>>>>,
+        next_id: Arc<AtomicU64>,
+        session: Option<String>,
+    ) -> Self {
+        Self { writer, pending, next_id, session }
+    }
+
+    /// Test stub — never receives a reply (always times out).
+    pub fn for_test() -> Self {
+        Self {
+            writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(AtomicU64::new(0)),
+            session: None,
+        }
+    }
+
+    /// Call one host API op with a JSON payload. On success returns the host's
+    /// `result` field; on failure returns the host's `error` string.
+    ///
+    /// If `payload` lacks a `"session"` key and this client has a session
+    /// (from the enclosing `tool_call`), it is auto-injected — so tool authors
+    /// don't need to thread session ids through their tool schemas.
+    pub fn call(&self, op: &str, mut payload: serde_json::Value) -> Result<serde_json::Value, String> {
+        if let Some(sess) = &self.session {
+            if let Some(obj) = payload.as_object_mut() {
+                if !obj.contains_key("session") {
+                    obj.insert("session".to_string(), serde_json::Value::String(sess.clone()));
+                }
+            }
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.pending.lock().unwrap().insert(id, tx);
+        let msg = crate::wire::PluginMsg::Request { id, op: op.to_string(), payload };
+        {
+            let mut w = self.writer.lock().map_err(|e| format!("writer lock: {e}"))?;
+            crate::wire::write_plugin(&mut **w, &msg).map_err(|e| format!("host_api write {op}: {e}"))?;
+        }
+        match rx.recv_timeout(std::time::Duration::from_secs(600)) {
+            Ok(r) => {
+                self.pending.lock().unwrap().remove(&id);
+                if r.ok { Ok(r.result.unwrap_or(serde_json::Value::Null)) } else { Err(r.error.unwrap_or_else(|| format!("host_api {op} failed"))) }
+            }
+            Err(_) => {
+                self.pending.lock().unwrap().remove(&id);
+                Err(format!("host_api {op} timeout"))
+            }
+        }
+    }
+}
+
 // ── ToolCallCtx ──────────────────────────────────────────────────────────────
 
 /// Context passed to [`PluginTool::execute`](crate::traits::PluginTool::execute).
@@ -402,6 +481,9 @@ pub struct ToolCallCtx {
     pub progress: ProgressSender,
     /// Persistent KV store backed by the host's SQLite database.
     pub kv: KvClient,
+    /// Plugin → host API client (host_api capability, 96E-17). Auto-injects
+    /// the current session so callers don't need to thread it manually.
+    pub host: HostApiClient,
 }
 
 // ── ProviderCallCtx ──────────────────────────────────────────────────────────
@@ -414,4 +496,6 @@ pub struct ProviderCallCtx {
     pub chunk: ChunkSender,
     /// Persistent KV store backed by the host's SQLite database.
     pub kv: KvClient,
+    /// Plugin → host API client.
+    pub host: HostApiClient,
 }
