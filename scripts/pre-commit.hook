@@ -1,0 +1,22 @@
+#!/bin/bash
+# Pre-commit drift gates.
+# Runs the two mechanical invariant checks before every commit:
+#   scripts/check-gi1.sh     — dependency budget (GI-1)
+#   scripts/check-schema.sh  — schema-first contract (ADR-0005, GI-6)
+# A red check refuses the commit. Both scripts are the "script over assertion"
+# precedent from TRACKING.md:31-35.
+
+set -e
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$repo_root"
+
+./scripts/check-gi1.sh
+./scripts/check-schema.sh
+./scripts/check-mojibake.sh
+./scripts/check-unwrap-trend.sh
+# SSE race test is not run on every commit (too slow) — run via ./scripts/check-sse-race.sh in CI
+# but we do verify the hook and test exist cheaply:
+if ! grep -rq "KN9T_SSE_TEST_DELAY_MS" crates --include="*.rs" >/dev/null; then
+  echo "SSE hook missing"
+  exit 1
+fi

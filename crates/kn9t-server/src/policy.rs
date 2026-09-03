@@ -1,3 +1,4 @@
+#![deny(clippy::unwrap_used)]
 //! DESIGN §10 → ADR-0008 — the approval **mechanism**.
 //!
 //! This module used to decide risk (`ConfigPolicy`, `InteractivePolicy`, `dispatch_policy`,
@@ -531,6 +532,7 @@ impl Approver for NonInteractiveApprover {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use kn9t_core::{EventSink, LiveEvent};
