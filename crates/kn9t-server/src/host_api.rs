@@ -219,6 +219,7 @@ impl ServerHostApi {
 
     /// `provider_complete` — one real provider call with the session's model.
     /// Reply: `{"content":[...],"stop":"...","usage":{"input":..,"output":..}}`.
+    /// Optional: `"tools"` — array of tool specs to enable tool_use responses.
     fn provider_complete(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
         let session = self.require_session(session)?;
         let model = self.resolve_model(payload)?;
@@ -231,6 +232,24 @@ impl ServerHostApi {
         let system = payload.get("system").and_then(|v| v.as_str());
         let max_tokens = payload.get("max_tokens").and_then(|v| v.as_u64()).map(|t| t as u32);
 
+        // Optional tools: either inline specs or names to look up from registry
+        let tools: Vec<kn9t_core::ToolSpec> = if let Some(tools_val) = payload.get("tools") {
+            if let Some(arr) = tools_val.as_array() {
+                // If array of strings -> look up from registry
+                // If array of objects -> parse as ToolSpec
+                if arr.first().map(|v| v.is_string()).unwrap_or(false) {
+                    let names: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+                    let registry = self.state.tools_snapshot();
+                    names.iter().filter_map(|n| registry.get(n).map(|t| t.spec().clone())).collect()
+                } else {
+                    serde_json::from_value(tools_val.clone()).unwrap_or_default()
+                }
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
         let provider = self
             .state
             .get_provider(&model.r#ref.provider)
@@ -242,7 +261,7 @@ impl ServerHostApi {
             model: &model,
             system,
             messages: &messages,
-            tools: &[],
+            tools: &tools,
             thinking: Thinking::Off,
             max_tokens,
             cache: &[],
