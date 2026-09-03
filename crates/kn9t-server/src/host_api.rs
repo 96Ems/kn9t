@@ -367,6 +367,9 @@ impl ServerHostApi {
 
     /// `tool_execute` — run a registry tool through the normal approval path.
     /// Reply: `{"content":[...],"is_error":bool}`.
+    /// 96E-22 fix: CallId must be unique per invocation, not `plugin-{name}` (which
+    /// collides on repeated same-tool calls and silently overwrites live_tool_calls via
+    /// INSERT OR REPLACE).
     fn tool_execute(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
         let session = self.require_session(session)?;
         let name = payload
@@ -383,8 +386,10 @@ impl ServerHostApi {
             .clone();
 
         // Normal approval path: the approver shows/answers the request.
+        // 96E-22: unique per invocation — static atomic counter avoids colliding on repeated same-tool calls.
+        static TOOL_EXEC_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let call = ToolCall {
-            id: kn9t_core::CallId(format!("plugin-{name}")),
+            id: kn9t_core::CallId(format!("plugin-{name}-{}", TOOL_EXEC_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed))),
             name: name.to_string(),
             args_json: serde_json::to_string(&args).unwrap_or_default(),
         };
