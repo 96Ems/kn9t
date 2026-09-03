@@ -669,9 +669,67 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             render_tool_card(card, app, &mut lines, inner_w, theme);
             let content_end_line_idx = lines.len();
             tool_line_info.push((card.call_id.clone(), header_line_idx, content_end_line_idx));
+            // 96E-27: collapsible subagent sub-entry nested under its spawning tool call
+            if let Some(sub) = app.subagents.iter().find(|s| s.call_id == card.call_id) {
+                let collapsed = sub.collapsed;
+                let vis = sub.visibility.as_str();
+                let indicator = if collapsed { "[+]" } else { "[-]" };
+                let vis_style = match vis {
+                    "silent" => Style::default().fg(theme.muted),
+                    "full" => Style::default().fg(theme.primary),
+                    _ => Style::default().fg(theme.success),
+                };
+                let header = Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(format!("{} subagent ", indicator), Style::default().fg(theme.muted)),
+                    Span::styled(truncate(&sub.task, inner_w.saturating_sub(20)), Style::default().fg(theme.fg).add_modifier(Modifier::ITALIC)),
+                    Span::styled(format!(" [{}]", vis), vis_style),
+                    Span::styled("  (a:attach ".to_string() + if collapsed { "expand" } else { "collapse" } + ")", Style::default().fg(theme.muted)),
+                ]);
+                lines.push(header);
+                if !collapsed {
+                    // Expanded: show page placeholders live if linked
+                    if let Some(pk) = &sub.page_key {
+                        if let Some(page) = app.ui_pages.get(pk) {
+                            for pid in &page.order {
+                                if let Some(ph) = page.placeholders.get(pid) {
+                                    let ph_lines = crate::widgets::render_placeholder(pid, ph, inner_w.saturating_sub(6), theme);
+                                    for l in ph_lines {
+                                        let mut indented = vec![Span::raw("      ")];
+                                        indented.extend(l.spans);
+                                        lines.push(Line::from(indented));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if vis == "silent" {
+                    // silent: minimal one-liner already shown, no page preview
+                }
+            }
         }
 
         lines.push(Line::from("")); // spacing
+    }
+
+    // 96E-27: attached subagent full transcript on demand (session_read result)
+    if let Some((ref call_id, ref transcript)) = app.attached_subagent {
+        lines.push(Line::from(vec![
+            Span::styled("── ", Style::default().fg(theme.muted)),
+            Span::styled(format!("Attached subagent {} ", &call_id[..8.min(call_id.len())]), Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("({} msgs)", transcript.len()), Style::default().fg(theme.muted)),
+            Span::styled(" ── (Esc to close)", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC)),
+        ]));
+        for msg in transcript {
+            let content_val = &msg.content;
+            // Try to extract text from content JSON
+            let text = if let Some(s) = content_val.as_str() { s.to_string() } else { content_val.to_string() };
+            let role_style = if msg.role == "assistant" { Style::default().fg(theme.assistant) } else { Style::default().fg(theme.fg) };
+            for wrapped in wrap_text(&text, inner_w.saturating_sub(4)) {
+                lines.push(Line::from(vec![Span::raw("    "), Span::styled(wrapped, role_style)]));
+            }
+        }
+        lines.push(Line::from(""));
     }
 
     // Live delta — render as markdown.

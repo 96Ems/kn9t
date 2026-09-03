@@ -24,6 +24,28 @@ use crate::token_tracker::{TokenCounts, TokenTracker};
 use crate::wire::SseFrame;
 use crate::app::Overlay;
 
+/// 96E-27 — collapsible subagent entry nested under its spawning tool call.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubagentEntry {
+    pub call_id: String,
+    pub plugin: String,
+    pub task: String,
+    pub visibility: String, // silent|progress|full
+    pub collapsed: bool,
+    pub session_id: Option<String>,
+    pub page_key: Option<PageKey>,
+}
+
+impl SubagentEntry {
+    fn collapsed_for(visibility: &str) -> bool {
+        match visibility {
+            "silent" => true,   // one-liner, collapsed
+            "full" => false,    // expanded inline
+            _ => true,          // progress: collapsed by default
+        }
+    }
+}
+
 /// Minimal TUI state mutated by SSE frames.
 /// This is the pure state slice of `App` — no `Client`, no `Terminal`, no `EventLoop`.
 #[derive(Debug)]
@@ -48,6 +70,28 @@ pub struct State {
     pub ui_pages: std::collections::HashMap<PageKey, UiPage>,
     /// 96E-25: selected page key for multi-page tab switcher (None = first page).
     pub ui_page_selected: Option<PageKey>,
+    /// 96E-27: collapsible subagent sub-entries nested under spawning tool calls.
+    pub subagents: Vec<SubagentEntry>,
+    /// 96E-27: attached subagent transcript view (call_id -> transcript preview).
+    pub attached_subagent: Option<(String, Vec<crate::wire::TranscriptMessage>)>,
+}
+
+impl State {
+    /// Toggle collapse for a subagent sub-entry.
+    pub fn toggle_subagent(&mut self, call_id: &str) {
+        if let Some(entry) = self.subagents.iter_mut().find(|e| e.call_id == call_id) {
+            entry.collapsed = !entry.collapsed;
+        }
+    }
+    /// Attach: open the subagent's full transcript on demand (session_read result).
+    pub fn attach_subagent(&mut self, call_id: &str, transcript: Vec<crate::wire::TranscriptMessage>) {
+        if self.subagents.iter().any(|e| e.call_id == call_id) {
+            self.attached_subagent = Some((call_id.to_string(), transcript));
+        }
+    }
+    pub fn detach_subagent(&mut self) {
+        self.attached_subagent = None;
+    }
 }
 
 impl Default for State {
@@ -69,6 +113,8 @@ impl Default for State {
             ui_directives: Vec::new(),
             ui_pages: std::collections::HashMap::new(),
             ui_page_selected: None,
+            subagents: Vec::new(),
+            attached_subagent: None,
         }
     }
 }
@@ -143,6 +189,29 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                 active_tab: crate::message_handler::ToolTab::Input,
                 scroll_offset: 0,
             }).collect();
+            // 96E-27: detect SubagentSpec spawns (args contains task) and create collapsed sub-entry
+            for (call_id, name, args) in &tool_calls {
+                // Heuristic: SubagentSpec tools have task in args; also name often spawn_subagent
+                let is_spawn = name.contains("spawn") || args.contains("\"task\"");
+                if is_spawn {
+                    // Parse args_json for task + visibility; fallback to name if parse fails
+                    let parsed: Option<serde_json::Value> = serde_json::from_str(args).ok();
+                    let task = parsed.as_ref().and_then(|v| v.get("task")).and_then(|v| v.as_str()).unwrap_or(name.as_str()).to_string();
+                    let visibility = parsed.as_ref().and_then(|v| v.get("visibility")).and_then(|v| v.as_str()).unwrap_or("progress").to_string();
+                    let collapsed = SubagentEntry::collapsed_for(&visibility);
+                    // Derive plugin from tool name? For tests, plugin is tool name prefix; default to spawn plugin.
+                    let plugin = "unknown".to_string();
+                    state.subagents.push(SubagentEntry {
+                        call_id: call_id.clone(),
+                        plugin,
+                        task,
+                        visibility: visibility.clone(),
+                        collapsed,
+                        session_id: None,
+                        page_key: None,
+                    });
+                }
+            }
             if !final_content.is_empty() || !tools.is_empty() {
                 state.transcript.push(Message::new(&msg.role, final_content).with_tools(tools));
             }
@@ -244,6 +313,10 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                     // Auto-select first page if none selected
                     if state.ui_page_selected.is_none() {
                         state.ui_page_selected = Some((plugin.clone(), target.clone()));
+                    }
+                    // 96E-27: link page to most recent pending subagent without a page (nested view)
+                    if let Some(entry) = state.subagents.iter_mut().rev().find(|e| e.page_key.is_none()) {
+                        entry.page_key = Some((plugin.clone(), target.clone()));
                     }
                 }
                 "write_placeholder" => {
@@ -695,5 +768,92 @@ mod tests {
         let page = s.ui_pages.get(&key).unwrap();
         assert_eq!(page.placeholders.get("t1").unwrap().value, serde_json::json!("new_a"));
         assert_eq!(page.placeholders.get("t2").unwrap().value, serde_json::json!("b"), "other placeholder must not be clobbered by cheap write");
+    }
+
+    // ── 96E-27 subagent collapsible + attach ──────────────────────────────────
+
+    fn spawn_call_msg(seq: u64, call_id: &str, visibility: &str) -> SseFrame {
+        SseFrame::MessageAppended {
+            seq,
+            msg: WireMessage {
+                id: format!("m{}", seq),
+                role: "assistant".into(),
+                content: vec![WireContent::ToolCall {
+                    id: call_id.into(),
+                    name: "spawn_subagent".into(),
+                    args_json: format!(r#"{{"task":"do X","visibility":"{}"}}"#, visibility),
+                }],
+                silent: false,
+            },
+        }
+    }
+
+    #[test]
+    fn subagent_collapsible_under_spawning_tool_call() {
+        let mut s = State::default();
+        reduce(&mut s, spawn_call_msg(1, "c1", "progress"));
+        assert_eq!(s.subagents.len(), 1);
+        let e = &s.subagents[0];
+        assert_eq!(e.call_id, "c1");
+        assert_eq!(e.visibility, "progress");
+        assert!(e.collapsed, "progress should be collapsed by default");
+        // Must be rendered as sub-entry, not a separate panel — check subagents vector is the source for transcript rendering
+        assert_eq!(s.ui_pages.len(), 0, "no separate page panel should be created for subagent's collapsed view");
+    }
+
+    #[test]
+    fn subagent_visibility_distinct_rendering() {
+        let mut s = State::default();
+        reduce(&mut s, spawn_call_msg(1, "c-silent", "silent"));
+        assert!(s.subagents[0].collapsed, "silent collapsed");
+        // silent should not expand to show page even when one is declared — still one-liner
+        reduce(&mut s, SseFrame::UiDirective { plugin: "p".into(), target: "pg".into(), op: "declare_page".into(), payload: serde_json::json!({"page_id":"pg","layout":[{"placeholder_id":"status","kind":"text"}]}) });
+        // page is still declared side-panel wise, but subagent's collapsed flag stays true (one-liner)
+        assert!(s.subagents[0].collapsed);
+
+        let mut s2 = State::default();
+        reduce(&mut s2, spawn_call_msg(1, "c-full", "full"));
+        assert!(!s2.subagents[0].collapsed, "full should start expanded");
+
+        let mut s3 = State::default();
+        reduce(&mut s3, spawn_call_msg(1, "c-prog", "progress"));
+        assert!(s3.subagents[0].collapsed, "progress collapsed by default");
+    }
+
+    #[test]
+    fn subagent_toggle_collapse_and_attach() {
+        let mut s = State::default();
+        reduce(&mut s, spawn_call_msg(1, "c1", "progress"));
+        assert!(s.subagents[0].collapsed);
+        s.toggle_subagent("c1");
+        assert!(!s.subagents[0].collapsed, "toggle should expand");
+        s.toggle_subagent("c1");
+        assert!(s.subagents[0].collapsed, "toggle should collapse again");
+        // attach: opens full transcript on demand via session_read, without altering parent's default view
+        let transcript = vec![crate::wire::TranscriptMessage { role: "assistant".into(), content: serde_json::json!("hello"), silent: false }];
+        s.attach_subagent("c1", transcript.clone());
+        assert_eq!(s.attached_subagent.as_ref().unwrap().0, "c1");
+        assert_eq!(s.attached_subagent.as_ref().unwrap().1.len(), 1);
+        // Parent transcript unchanged
+        assert_eq!(s.transcript.message_count(), 1, "parent's tool call still one message");
+        s.detach_subagent();
+        assert!(s.attached_subagent.is_none());
+    }
+
+    #[test]
+    fn subagent_multiple_concurrent_independent() {
+        let mut s = State::default();
+        reduce(&mut s, spawn_call_msg(1, "c1", "progress"));
+        reduce(&mut s, spawn_call_msg(2, "c2", "progress"));
+        reduce(&mut s, spawn_call_msg(3, "c3", "full"));
+        assert_eq!(s.subagents.len(), 3);
+        // Toggle one does not affect others
+        s.toggle_subagent("c1");
+        assert!(!s.subagents.iter().find(|e| e.call_id=="c1").unwrap().collapsed);
+        assert!(s.subagents.iter().find(|e| e.call_id=="c2").unwrap().collapsed);
+        assert!(!s.subagents.iter().find(|e| e.call_id=="c3").unwrap().collapsed, "c3 full stays expanded");
+        // Attach one does not affect others
+        s.attach_subagent("c2", vec![]);
+        assert_eq!(s.attached_subagent.as_ref().unwrap().0, "c2");
     }
 }

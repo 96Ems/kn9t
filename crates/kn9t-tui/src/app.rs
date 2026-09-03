@@ -169,6 +169,9 @@ pub struct App {
     // 96E-25: plugin-declared pages (rendered as side panel with tab switcher).
     pub ui_pages: std::collections::HashMap<(String,String), crate::page_state::UiPage>,
     pub ui_page_selected: Option<(String,String)>,
+    // 96E-27: collapsible subagent sub-entries
+    pub subagents: Vec<crate::reducer::SubagentEntry>,
+    pub attached_subagent: Option<(String, Vec<crate::wire::TranscriptMessage>)>,
 
     // Keybinds.
     keybinds: Keybinds,
@@ -206,6 +209,8 @@ impl App {
             ui_directives: Vec::new(),
             ui_pages: std::collections::HashMap::new(),
             ui_page_selected: None,
+            subagents: Vec::new(),
+            attached_subagent: None,
             streaming: false,
             aborting: false,
             turn_phase: "idle".into(),
@@ -299,6 +304,8 @@ impl App {
         self.ui_directives.clear();
         self.ui_pages.clear();
         self.ui_page_selected = None;
+        self.subagents.clear();
+        self.attached_subagent = None;
 
         // Clear tool mode state.
         self.tool_mode = false;
@@ -333,6 +340,33 @@ impl App {
                 tool.scroll_offset = 0;  // Reset scroll on expand
             }
         }
+    }
+
+    /// 96E-27: toggle collapse for a subagent sub-entry.
+    pub fn toggle_subagent(&mut self, call_id: &str) {
+        if let Some(entry) = self.subagents.iter_mut().find(|e| e.call_id == call_id) {
+            entry.collapsed = !entry.collapsed;
+        }
+    }
+
+    /// 96E-27: attach — fetch subagent's full transcript via session_read (host_api).
+    pub fn attach_subagent(&mut self, call_id: &str) {
+        // If already attached to this one, detach.
+        if self.attached_subagent.as_ref().map(|(id, _)| id == call_id).unwrap_or(false) {
+            self.attached_subagent = None;
+            return;
+        }
+        // Find subagent's session (if known) else page_id as proxy
+        let session_opt = self.subagents.iter().find(|e| e.call_id == call_id).and_then(|e| e.session_id.clone()).or_else(|| self.subagents.iter().find(|e| e.call_id == call_id).and_then(|e| e.page_key.as_ref().map(|(_, pid)| pid.clone())));
+        if let (Some(client), Some(sess)) = (&self.client, session_opt) {
+            // Try GET /session/{id} (transcript fetch)
+            if let Ok(detail) = client.get_session(&sess) {
+                self.attached_subagent = Some((call_id.to_string(), detail.transcript));
+                return;
+            }
+        }
+        // Fallback: attach with empty transcript (still shows the sub-entry header)
+        self.attached_subagent = Some((call_id.to_string(), vec![]));
     }
 
     /// Switch tab for a tool.
@@ -659,6 +693,12 @@ impl App {
             return;
         }
 
+        // 96E-27: attached subagent view — Esc closes it.
+        if self.attached_subagent.is_some() && key.code == KeyCode::Esc {
+            self.attached_subagent = None;
+            return;
+        }
+
         // Screen-specific handling.
         match self.screen {
             Screen::Welcome => {
@@ -777,6 +817,18 @@ impl App {
                 }
                 KeyCode::PageDown => {
                     self.scroll_tool_output(10);
+                    return;
+                }
+                KeyCode::Char('a') => {
+                    if let Some(id) = self.focused_tool.clone() {
+                        self.attach_subagent(&id);
+                    }
+                    return;
+                }
+                KeyCode::Char('e') => {
+                    if let Some(id) = self.focused_tool.clone() {
+                        self.toggle_subagent(&id);
+                    }
                     return;
                 }
                 _ => {
@@ -1927,6 +1979,8 @@ impl App {
             ui_directives: std::mem::take(&mut self.ui_directives),
             ui_pages: std::mem::take(&mut self.ui_pages),
             ui_page_selected: self.ui_page_selected.clone(),
+            subagents: std::mem::take(&mut self.subagents),
+            attached_subagent: self.attached_subagent.clone(),
         };
         crate::reducer::reduce(&mut st, frame);
         // Copy back
@@ -1942,6 +1996,8 @@ impl App {
         self.ui_directives = st.ui_directives;
         self.ui_pages = st.ui_pages;
         self.ui_page_selected = st.ui_page_selected;
+        self.subagents = st.subagents;
+        self.attached_subagent = st.attached_subagent;
         self.session.state.session_id = st.session_id;
         self.session.set_session_title(st.session_title);
         self.session.sessions = st.sessions;
