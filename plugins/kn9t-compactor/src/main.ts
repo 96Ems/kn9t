@@ -225,10 +225,13 @@ function compactProgram(hookPayload: Record<string, unknown>) {
       }
     }
 
-    // 3. Summary pass (full span + decisions; kept outputs stay verbatim host-side).
+    // 3. Summary pass — must NOT round-trip full tool outputs back into the
+    // LLM's context (96E-17: summarize_tool_result never requires full output
+    // to leave the host). We send only previews + decisions; kept results are
+    // copied verbatim host-side, summarized ones use the triage note.
     const summaryMsgs = [
       { id: "sys-summary", role: "system", silent: false, content: [{ type: "text", text: SUMMARY_SYSTEM }] },
-      { id: "usr-summary", role: "user", silent: false, content: [{ type: "text", text: `Decisions:\n${JSON.stringify(decisions)}\n\nSpan:\n${JSON.stringify(messages)}` }] },
+      { id: "usr-summary", role: "user", silent: false, content: [{ type: "text", text: `Decisions:\n${JSON.stringify(decisions)}\n\nInventory:\n${inv.text}` }] },
     ];
     const s = hostRequest("provider_complete", { session, messages: summaryMsgs });
     if (!s.ok) return yield* _(Effect.fail(new Error(`provider(summary): ${s.error}`)));
