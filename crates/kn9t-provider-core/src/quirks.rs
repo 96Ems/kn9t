@@ -43,6 +43,9 @@ pub struct Quirks {
     /// Arbitrary extra JSON to merge into the request body (e.g. LiteLLM metadata).
     #[serde(default)]
     pub extra_body: serde_json::Value,
+    /// True → trim trailing whitespace from assistant messages (Bedrock requirement).
+    #[serde(default)]
+    pub trim_trailing_whitespace: bool,
 }
 
 fn default_max_tokens_field() -> String { "max_tokens".into() }
@@ -66,6 +69,7 @@ impl Default for Quirks {
             require_tools:    false,
             streaming:        true,
             extra_body:       serde_json::Value::Null,
+            trim_trailing_whitespace: false,
         }
     }
 }
@@ -90,6 +94,7 @@ impl Quirks {
                               } else {
                                   model.extra_body.clone()
                               },
+            trim_trailing_whitespace: model.trim_trailing_whitespace || self.trim_trailing_whitespace,
         }
     }
 }

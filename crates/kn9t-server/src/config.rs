@@ -194,6 +194,7 @@ pub struct RawQuirks {
     pub thinking_replay:   Option<String>,
     pub require_tools:     Option<bool>,
     pub streaming:         Option<bool>,
+    pub trim_trailing_whitespace: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -641,6 +642,7 @@ fn build_http_quirks(r: &RawQuirks) -> HttpQuirks {
         require_tools:    r.require_tools.unwrap_or(def.require_tools),
         streaming:        r.streaming.unwrap_or(def.streaming),
         extra_body:       serde_json::Value::Null,
+        trim_trailing_whitespace: r.trim_trailing_whitespace.unwrap_or(def.trim_trailing_whitespace),
     }
 }
 
@@ -657,6 +659,7 @@ fn merge_quirks(base: HttpQuirks, over: &RawQuirks) -> HttpQuirks {
         require_tools:    over.require_tools.unwrap_or(base.require_tools),
         streaming:        over.streaming.unwrap_or(base.streaming),
         extra_body:       serde_json::Value::Null,
+        trim_trailing_whitespace: over.trim_trailing_whitespace.unwrap_or(base.trim_trailing_whitespace),
     }
 }
 

@@ -218,6 +218,12 @@ fn encode_message(
     // Simple text-only messages → string content (no cache needed).
     if msg.content.len() == 1 {
         if let Content::Text { text } = &msg.content[0] {
+            // Bedrock quirk: trim trailing whitespace from assistant messages.
+            let text = if quirks.trim_trailing_whitespace && msg.role == Role::Assistant {
+                text.trim_end()
+            } else {
+                text.as_str()
+            };
             if !needs_cache {
                 return json!({ "role": role, "content": text });
             }
@@ -275,7 +281,18 @@ fn encode_message(
             let content_val = if text_parts.is_empty() {
                 Value::Null
             } else {
-                Value::String(text_parts.join(""))
+                let joined = text_parts.join("");
+                // Bedrock quirk: trim trailing whitespace from assistant messages.
+                let trimmed = if quirks.trim_trailing_whitespace {
+                    joined.trim_end().to_string()
+                } else {
+                    joined
+                };
+                if trimmed.is_empty() {
+                    Value::Null
+                } else {
+                    Value::String(trimmed)
+                }
             };
             return json!({
                 "role": "assistant",
