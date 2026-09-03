@@ -54,6 +54,7 @@ pub mod ui;
 pub mod hyperlinks;
 pub mod latex;
 pub mod which_key;
+pub mod page_state;
 pub mod widgets;
 pub mod wire;
 pub mod word_segmenter;

@@ -166,6 +166,9 @@ pub struct App {
 
     // 96E-23: structured UI directives (session-scoped, transport only until 96E-25).
     pub ui_directives: Vec<(String, String, String, serde_json::Value)>,
+    // 96E-25: plugin-declared pages (rendered as side panel with tab switcher).
+    pub ui_pages: std::collections::HashMap<(String,String), crate::page_state::UiPage>,
+    pub ui_page_selected: Option<(String,String)>,
 
     // Keybinds.
     keybinds: Keybinds,
@@ -201,6 +204,8 @@ impl App {
             prompt_stash: PromptStash::new(),
             staged_images: Vec::new(),
             ui_directives: Vec::new(),
+            ui_pages: std::collections::HashMap::new(),
+            ui_page_selected: None,
             streaming: false,
             aborting: false,
             turn_phase: "idle".into(),
@@ -292,6 +297,8 @@ impl App {
         self.active_approval_id = None;
         self.active_interaction_id = None;
         self.ui_directives.clear();
+        self.ui_pages.clear();
+        self.ui_page_selected = None;
 
         // Clear tool mode state.
         self.tool_mode = false;
@@ -1918,6 +1925,8 @@ impl App {
             sessions: self.session.sessions.clone(),
             model_sel: self.model_sel.clone(),
             ui_directives: std::mem::take(&mut self.ui_directives),
+            ui_pages: std::mem::take(&mut self.ui_pages),
+            ui_page_selected: self.ui_page_selected.clone(),
         };
         crate::reducer::reduce(&mut st, frame);
         // Copy back
@@ -1931,6 +1940,8 @@ impl App {
         self.active_interaction_id = st.active_interaction_id;
         self.overlay = st.overlay;
         self.ui_directives = st.ui_directives;
+        self.ui_pages = st.ui_pages;
+        self.ui_page_selected = st.ui_page_selected;
         self.session.state.session_id = st.session_id;
         self.session.set_session_title(st.session_title);
         self.session.sessions = st.sessions;

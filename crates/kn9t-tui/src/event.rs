@@ -101,6 +101,8 @@ impl TickControl {
     pub fn set_streaming(&self, val: bool) {
         self.streaming.store(val, Ordering::Relaxed);
     }
+    #[cfg(test)]
+    pub fn dummy() -> Self { Self { streaming: Arc::new(AtomicBool::new(false)) } }
 }
 
 /// Spawn tick thread — only sends when streaming.

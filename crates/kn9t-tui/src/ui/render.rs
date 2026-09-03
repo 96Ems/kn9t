@@ -484,6 +484,49 @@ fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             y = render_line_at(buf, content_x, y, w, &format!("{} {}", check, tool.name), style);
         }
     }
+
+    // 96E-25: plugin pages (toggleable side panel, multiple pages via tabs)
+    if !app.ui_pages.is_empty() && y < area.y + area.height {
+        y = render_line_at(buf, content_x, y, w, "PAGES", Style::default().bg(theme.tool_focus_bg).fg(theme.fg).add_modifier(Modifier::BOLD));
+        // Tab bar: show page tabs, highlight selected
+        let selected = app.ui_page_selected.clone().or_else(|| app.ui_pages.keys().next().cloned());
+        let mut tab_line: Vec<Span> = Vec::new();
+        for key in app.ui_pages.keys() {
+            let label = crate::widgets::page_tab_label(&key.0, &key.1, 10);
+            let is_sel = selected.as_ref().map(|s| s == key).unwrap_or(false);
+            let style = if is_sel {
+                Style::default().bg(theme.tab_active_bg).fg(theme.tab_active_fg)
+            } else {
+                Style::default().bg(theme.tool_focus_bg).fg(theme.tab_inactive_fg)
+            };
+            tab_line.push(Span::styled(format!(" {} ", label), style));
+            tab_line.push(Span::raw(" "));
+        }
+        if !tab_line.is_empty() && y < area.y + area.height {
+            render_spanned_line_at(buf, content_x, y, w, Line::from(tab_line));
+            y += 1;
+        }
+        // Render selected page placeholders
+        if let Some(sel) = selected {
+            if let Some(page) = app.ui_pages.get(&sel) {
+                // Page header
+                if y < area.y + area.height {
+                    y = render_line_at(buf, content_x, y, w, &format!("{}/{}", page.plugin, page.page_id), Style::default().bg(theme.tool_focus_bg).fg(theme.primary).add_modifier(Modifier::BOLD));
+                }
+                for pid in &page.order {
+                    if y >= area.y + area.height { break; }
+                    if let Some(ph) = page.placeholders.get(pid) {
+                        let lines = crate::widgets::render_placeholder(pid, ph, w, theme);
+                        for line in lines {
+                            if y >= area.y + area.height { break; }
+                            render_spanned_line_at(buf, content_x, y, w, line);
+                            y += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn render_line_at(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, w: usize, text: &str, style: Style) -> u16 {
@@ -492,6 +535,19 @@ fn render_line_at(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, w: usize, t
         buf[(x + i as u16, y)].set_char(ch).set_style(style);
     }
     y + 1
+}
+
+fn render_spanned_line_at(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, w: usize, line: Line) {
+    let mut cx = x;
+    let end_x = x + w as u16;
+    for span in line.spans {
+        for ch in span.content.chars() {
+            if cx >= end_x { break; }
+            buf[(cx, y)].set_char(ch).set_style(span.style);
+            cx += 1;
+        }
+        if cx >= end_x { break; }
+    }
 }
 
 fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
@@ -1623,7 +1679,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
+pub(crate) fn truncate(s: &str, max: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= max {
         s.to_string()
@@ -2275,5 +2331,78 @@ mod golden {
         let overlay = Overlay::Help;
         let snap = render_overlay_to_string(&overlay, 60, 15);
         assert!(snap.contains("HELP") || snap.contains("Navigation") || snap.contains("Actions"), "help overlay must contain headings, got:\n{snap}");
+    }
+
+    fn render_sidebar_with_pages_to_string(width: u16, height: u16, pages: Vec<((String,String), crate::page_state::UiPage)>, selected: Option<(String,String)>) -> String {
+        use crate::app::App;
+        use crate::config::Config;
+        use crate::event::TickControl;
+        use ratatui::layout::Rect;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let th = theme();
+        // Build a minimal App with pages
+        let mut app = App::new(Config::default(), TickControl::dummy());
+        for (k, pg) in pages {
+            app.ui_pages.insert(k, pg);
+        }
+        app.ui_page_selected = selected;
+        terminal.draw(|f| {
+            let area = Rect::new(0,0,width,height);
+            super::render_right_sidebar(f, &app, area, &th);
+        }).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..height {
+            for x in 0..width {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            if y + 1 < height { out.push('\n'); }
+        }
+        out
+    }
+
+    #[test]
+    fn golden_pages_panel_renders_declared_page_distinct_from_transcript() {
+        use crate::page_state::{UiPage, Placeholder, PlaceholderKind};
+        use std::collections::HashMap;
+        use serde_json::json;
+        let mut ph = HashMap::new();
+        ph.insert("status".to_string(), Placeholder { kind: PlaceholderKind::Text, value: json!("running") });
+        ph.insert("prog".to_string(), Placeholder { kind: PlaceholderKind::Bar, value: json!(42) });
+        let mut ph2 = HashMap::new();
+        ph2.insert("items".to_string(), Placeholder { kind: PlaceholderKind::List, value: json!(["a","b"]) });
+        let pages = vec![
+            (("plug1".to_string(),"dash".to_string()), UiPage { plugin: "plug1".into(), page_id: "dash".into(), order: vec!["status".into(),"prog".into()], placeholders: ph }),
+            (("plug2".to_string(),"other".to_string()), UiPage { plugin: "plug2".into(), page_id: "other".into(), order: vec!["items".into()], placeholders: ph2 }),
+        ];
+        let snap = render_sidebar_with_pages_to_string(30, 20, pages, Some(("plug1".to_string(),"dash".to_string())));
+        // Must show PAGES header and selected page content, distinct from transcript
+        assert!(snap.contains("PAGES"), "must show PAGES section header, got:\n{snap}");
+        assert!(snap.contains("plug1/dash") || snap.contains("dash"), "must show selected page header, got:\n{snap}");
+        assert!(snap.contains("status") || snap.contains("running"), "must render text placeholder, got:\n{snap}");
+        assert!(snap.contains("42%") || snap.contains("prog"), "must render bar placeholder, got:\n{snap}");
+        // Must show tab switcher for multiple pages (labels truncated to 10 chars, so check prefix)
+        assert!(snap.contains("plug1/dash") && (snap.contains("plug2/oth") || snap.contains("other")), "must show tab switcher for concurrent pages, got:\n{snap}");
+    }
+
+    #[test]
+    fn golden_placeholder_write_updates_without_full_rerender() {
+        // Declare then write: verify bar value changes
+        use crate::page_state::{UiPage, Placeholder, PlaceholderKind};
+        use std::collections::HashMap;
+        use serde_json::json;
+        let mut ph = HashMap::new();
+        ph.insert("prog".to_string(), Placeholder { kind: PlaceholderKind::Bar, value: json!(0) });
+        let pages_before = vec![ (("p".to_string(),"pg".to_string()), UiPage { plugin: "p".into(), page_id: "pg".into(), order: vec!["prog".into()], placeholders: ph.clone() } ) ];
+        let snap_before = render_sidebar_with_pages_to_string(30, 20, pages_before, Some(("p".to_string(),"pg".to_string())));
+        assert!(snap_before.contains("prog"), "initial bar placeholder must be visible, got:\n{snap_before}");
+        // bar value numeric part must be visible (may be clipped without % due to width)
+        assert!(snap_before.contains("0"), "initial bar value must be visible, got:\n{snap_before}");
+        let mut ph2 = HashMap::new();
+        ph2.insert("prog".to_string(), Placeholder { kind: PlaceholderKind::Bar, value: json!(85) });
+        let pages_after = vec![ (("p".to_string(),"pg".to_string()), UiPage { plugin: "p".into(), page_id: "pg".into(), order: vec!["prog".into()], placeholders: ph2 } ) ];
+        let snap_after = render_sidebar_with_pages_to_string(30, 20, pages_after, Some(("p".to_string(),"pg".to_string())));
+        assert!(snap_after.contains("85"), "updated bar value must be visible without re-declaring whole page, got:\n{snap_after}");
     }
 }

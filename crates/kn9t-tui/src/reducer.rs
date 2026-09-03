@@ -18,6 +18,7 @@
 
 use crate::message_handler::{Message, ToolCard};
 use crate::model_selector::ModelSelector;
+use crate::page_state::{self, PageKey, UiPage};
 use crate::session_manager::SessionEntry;
 use crate::token_tracker::{TokenCounts, TokenTracker};
 use crate::wire::SseFrame;
@@ -43,6 +44,10 @@ pub struct State {
     pub model_sel: ModelSelector,
     /// 96E-23: structured UI directives received (plugin, target, op, payload) — transport only.
     pub ui_directives: Vec<(String, String, String, serde_json::Value)>,
+    /// 96E-25: plugin-declared pages (plugin, page_id) -> UiPage for rendering.
+    pub ui_pages: std::collections::HashMap<PageKey, UiPage>,
+    /// 96E-25: selected page key for multi-page tab switcher (None = first page).
+    pub ui_page_selected: Option<PageKey>,
 }
 
 impl Default for State {
@@ -62,6 +67,8 @@ impl Default for State {
             sessions: Vec::new(),
             model_sel: ModelSelector::new(),
             ui_directives: Vec::new(),
+            ui_pages: std::collections::HashMap::new(),
+            ui_page_selected: None,
         }
     }
 }
@@ -226,9 +233,33 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             state.transcript.push(Message::new(&plugin, message));
         }
         SseFrame::UiDirective { plugin, target, op, payload } => {
-            // 96E-23 transport primitive only — record verbatim for later page rendering (96E-24/25).
-            // Must not affect PluginNotification path.
-            state.ui_directives.push((plugin, target, op, payload));
+            // 96E-23 transport — record verbatim.
+            state.ui_directives.push((plugin.clone(), target.clone(), op.clone(), payload.clone()));
+            // 96E-25: page ops are tunneled through UiDirective with target=page_id and
+            // op declare_page/write_placeholder/clear_page. Update structured map.
+            match op.as_str() {
+                "declare_page" => {
+                    let layout = payload.get("layout").unwrap_or(&payload);
+                    let _ = page_state::apply_declare(&mut state.ui_pages, &plugin, &target, layout);
+                    // Auto-select first page if none selected
+                    if state.ui_page_selected.is_none() {
+                        state.ui_page_selected = Some((plugin.clone(), target.clone()));
+                    }
+                }
+                "write_placeholder" => {
+                    let pid = payload.get("placeholder_id").or_else(|| payload.get("id")).and_then(|v| v.as_str()).unwrap_or("");
+                    if let Some(val) = payload.get("value").cloned() {
+                        let _ = page_state::apply_write(&mut state.ui_pages, &plugin, &target, pid, val);
+                    }
+                }
+                "clear_page" => {
+                    let _ = page_state::apply_clear(&mut state.ui_pages, &plugin, &target);
+                    if state.ui_page_selected.as_ref().map(|k| k.0 == plugin && k.1 == target).unwrap_or(false) {
+                        state.ui_page_selected = state.ui_pages.keys().next().cloned();
+                    }
+                }
+                _ => {}
+            }
         }
         SseFrame::HookFailed { .. } => {}
     }
@@ -616,5 +647,53 @@ mod tests {
         let complex = serde_json::json!({"fields":[{"name":"age","type":"number"}],"title":"hi","arr":[1,2,3]});
         reduce(&mut s, SseFrame::UiDirective { plugin: "p".into(), target: "t".into(), op: "render".into(), payload: complex.clone() });
         assert_eq!(s.ui_directives[0].3, complex);
+    }
+
+    // ── 96E-25 page lifecycle ─────────────────────────────────────────────
+
+    #[test]
+    fn page_declare_write_clear_lifecycle() {
+        let mut s = State::default();
+        // Declare page via UiDirective (target=page_id, op=declare_page)
+        reduce(&mut s, SseFrame::UiDirective { plugin: "my-plugin".into(), target: "dash".into(), op: "declare_page".into(), payload: serde_json::json!({"page_id":"dash","layout":[{"placeholder_id":"status","kind":"text","default":"idle"},{"placeholder_id":"prog","kind":"bar","default":0}]}) });
+        assert_eq!(s.ui_pages.len(), 1);
+        let key = ("my-plugin".to_string(), "dash".to_string());
+        assert!(s.ui_pages.contains_key(&key));
+        assert_eq!(s.ui_page_selected, Some(key.clone()));
+        // Cheap write: only one placeholder
+        reduce(&mut s, SseFrame::UiDirective { plugin: "my-plugin".into(), target: "dash".into(), op: "write_placeholder".into(), payload: serde_json::json!({"page_id":"dash","placeholder_id":"prog","value":55}) });
+        let page = s.ui_pages.get(&key).unwrap();
+        assert_eq!(page.placeholders.get("prog").unwrap().value, serde_json::json!(55));
+        // Status must not have changed
+        assert_eq!(page.placeholders.get("status").unwrap().value, serde_json::json!("idle"));
+        // Clear
+        reduce(&mut s, SseFrame::UiDirective { plugin: "my-plugin".into(), target: "dash".into(), op: "clear_page".into(), payload: serde_json::json!({"page_id":"dash"}) });
+        assert!(s.ui_pages.is_empty());
+        assert!(s.ui_page_selected.is_none());
+    }
+
+    #[test]
+    fn page_multiple_concurrent_dont_collide() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::UiDirective { plugin: "p1".into(), target: "a".into(), op: "declare_page".into(), payload: serde_json::json!({"page_id":"a","layout":[{"placeholder_id":"x","kind":"text"}]}) });
+        reduce(&mut s, SseFrame::UiDirective { plugin: "p2".into(), target: "b".into(), op: "declare_page".into(), payload: serde_json::json!({"page_id":"b","layout":[{"placeholder_id":"y","kind":"number"}]}) });
+        assert_eq!(s.ui_pages.len(), 2);
+        // Both keys present, no collision despite same placeholder_id name would be different pages
+        assert!(s.ui_pages.contains_key(&("p1".to_string(),"a".to_string())));
+        assert!(s.ui_pages.contains_key(&("p2".to_string(),"b".to_string())));
+        // Write to one does not affect other
+        reduce(&mut s, SseFrame::UiDirective { plugin: "p1".into(), target: "a".into(), op: "write_placeholder".into(), payload: serde_json::json!({"page_id":"a","placeholder_id":"x","value":"hello"}) });
+        assert_eq!(s.ui_pages.get(&("p2".to_string(),"b".to_string())).unwrap().placeholders.get("y").unwrap().value, serde_json::json!(0));
+    }
+
+    #[test]
+    fn page_write_without_full_rerender_preserves_other_placeholders() {
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::UiDirective { plugin: "p".into(), target: "pg".into(), op: "declare_page".into(), payload: serde_json::json!({"page_id":"pg","layout":[{"placeholder_id":"t1","kind":"text","default":"a"},{"placeholder_id":"t2","kind":"text","default":"b"}]}) });
+        let key = ("p".to_string(),"pg".to_string());
+        reduce(&mut s, SseFrame::UiDirective { plugin: "p".into(), target: "pg".into(), op: "write_placeholder".into(), payload: serde_json::json!({"page_id":"pg","placeholder_id":"t1","value":"new_a"}) });
+        let page = s.ui_pages.get(&key).unwrap();
+        assert_eq!(page.placeholders.get("t1").unwrap().value, serde_json::json!("new_a"));
+        assert_eq!(page.placeholders.get("t2").unwrap().value, serde_json::json!("b"), "other placeholder must not be clobbered by cheap write");
     }
 }
