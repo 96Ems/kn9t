@@ -316,6 +316,55 @@ impl ServerHostApi {
         Ok(json!({"ok": true}))
     }
 
+    /// 96E-24 — `ui_declare_page {page_id, layout}` — declare a templated page,
+    /// then `ui_write_placeholder` cheaply and `ui_clear_page` teardown.
+    fn ui_declare_page(&self, session: Option<&str>, payload: &Value, plugin: &str) -> Result<Value, String> {
+        let session = self.require_session(session)?;
+        let page_id = payload.get("page_id").and_then(|v| v.as_str()).ok_or_else(|| "ui_declare_page requires \"page_id\"".to_string())?;
+        let layout = payload.get("layout").ok_or_else(|| "ui_declare_page requires \"layout\"".to_string())?;
+        self.state.ui_pages.declare(plugin, session, page_id, layout)?;
+        // Forward to TUI as a structured UiDirective (same bus, session-scoped)
+        let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
+        sink.emit(kn9t_core::LiveEvent::UiDirective {
+            plugin: plugin.to_string(),
+            target: page_id.to_string(),
+            op: "declare_page".to_string(),
+            payload: json!({"page_id": page_id, "layout": layout}),
+        });
+        Ok(json!({"ok": true, "page_id": page_id}))
+    }
+
+    fn ui_write_placeholder(&self, session: Option<&str>, payload: &Value, plugin: &str) -> Result<Value, String> {
+        let session = self.require_session(session)?;
+        let page_id = payload.get("page_id").and_then(|v| v.as_str()).ok_or_else(|| "ui_write_placeholder requires \"page_id\"".to_string())?;
+        let placeholder_id = payload.get("placeholder_id").or_else(|| payload.get("id")).and_then(|v| v.as_str()).ok_or_else(|| "ui_write_placeholder requires \"placeholder_id\"".to_string())?;
+        let value = payload.get("value").cloned().ok_or_else(|| "ui_write_placeholder requires \"value\"".to_string())?;
+        self.state.ui_pages.write(plugin, session, page_id, placeholder_id, value.clone())?;
+        let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
+        sink.emit(kn9t_core::LiveEvent::UiDirective {
+            plugin: plugin.to_string(),
+            target: page_id.to_string(),
+            op: "write_placeholder".to_string(),
+            payload: json!({"page_id": page_id, "placeholder_id": placeholder_id, "value": value}),
+        });
+        Ok(json!({"ok": true}))
+    }
+
+    fn ui_clear_page(&self, session: Option<&str>, payload: &Value, plugin: &str) -> Result<Value, String> {
+        let session = self.require_session(session)?;
+        let page_id = payload.get("page_id").and_then(|v| v.as_str()).ok_or_else(|| "ui_clear_page requires \"page_id\"".to_string())?;
+        self.state.ui_pages.clear(plugin, session, page_id)?;
+        let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
+        sink.emit(kn9t_core::LiveEvent::UiDirective {
+            plugin: plugin.to_string(),
+            target: page_id.to_string(),
+            op: "clear_page".to_string(),
+            payload: json!({"page_id": page_id}),
+        });
+        // Also host-side teardown already done via clear(); TUI will drop its rendering.
+        Ok(json!({"ok": true}))
+    }
+
     /// `tool_execute` — run a registry tool through the normal approval path.
     /// Reply: `{"content":[...],"is_error":bool}`.
     fn tool_execute(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
@@ -382,6 +431,9 @@ impl HostApi for ServerHostApi {
             "tool_list" => self.tool_list(session, payload),
             "interaction_request" => self.interaction_request(session, payload, plugin),
             "ui_directive" | "ui_push" => self.ui_directive(session, payload, plugin),
+            "ui_declare_page" => self.ui_declare_page(session, payload, plugin),
+            "ui_write_placeholder" => self.ui_write_placeholder(session, payload, plugin),
+            "ui_clear_page" => self.ui_clear_page(session, payload, plugin),
             other => Err(format!("unknown host API op {other:?}")),
         }
     }

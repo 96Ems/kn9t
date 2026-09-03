@@ -25,6 +25,7 @@ pub mod auth;
 pub mod bus;
 pub mod config;
 pub mod interaction;
+pub mod ui_pages;
 pub mod policy;
 pub mod http_util;
 pub mod host_api;

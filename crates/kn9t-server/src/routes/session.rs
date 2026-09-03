@@ -174,6 +174,7 @@ pub fn delete(state: &Arc<ServerState>, id: &str) -> JsonResp {
     match state.store.delete_session(&sid) {
         Ok(()) => {
             state.buses.drop_session(id);
+            state.ui_pages.clear_session(id);
             JsonResp::ok(serde_json::json!({ "deleted": id }))
         }
         Err(e) => JsonResp::error(400, "delete_failed", &e.0),
