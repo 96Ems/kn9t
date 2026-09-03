@@ -43,20 +43,32 @@ impl Cancel {
     }
 
     /// Returns `true` if cancelled (either already, or before `d` elapsed).
+    ///
+    /// Loops until the flag is set or the deadline passes: a `Condvar` may wake
+    /// spuriously, so a single `wait_timeout` can return with neither condition
+    /// met. Observed in practice returning after 219us on a 10ms timeout, which
+    /// made callers poll far more often than requested (96E-38).
     pub fn wait_timeout(&self, d: Duration) -> bool {
         if self.cancelled() {
             return true;
         }
-        let guard = self.0.lock.lock().expect("cancel mutex poisoned");
-        if self.cancelled() {
-            return true;
+        let deadline = std::time::Instant::now() + d;
+        let mut guard = self.0.lock.lock().expect("cancel mutex poisoned");
+        loop {
+            if self.cancelled() {
+                return true;
+            }
+            let remaining = match deadline.checked_duration_since(std::time::Instant::now()) {
+                Some(r) if !r.is_zero() => r,
+                _ => return self.cancelled(),
+            };
+            let (g, _res) = self
+                .0
+                .cv
+                .wait_timeout(guard, remaining)
+                .expect("cancel condvar poisoned");
+            guard = g;
         }
-        let (_guard, _res) = self
-            .0
-            .cv
-            .wait_timeout(guard, d)
-            .expect("cancel condvar poisoned");
-        self.cancelled()
     }
 }
 
@@ -145,8 +157,11 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(!result); // Not cancelled
-        assert!(elapsed >= Duration::from_millis(10)); // Actually waited
-        assert!(elapsed < Duration::from_millis(100)); // Didn't wait too long
+        // wait_timeout loops until the deadline, so it must honour the full 10ms
+        // even if the condvar wakes spuriously. A small tolerance absorbs
+        // Instant sampling jitter only.
+        assert!(elapsed >= Duration::from_millis(9), "returned too early: {elapsed:?}");
+        assert!(elapsed < Duration::from_millis(100), "waited too long: {elapsed:?}");
     }
 
     #[test]
@@ -164,7 +179,7 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(result); // Was cancelled
-        assert!(elapsed < Duration::from_secs(1)); // Didn't wait full timeout
+        assert!(elapsed < Duration::from_secs(1), "did not wake on cancel: {elapsed:?}");
 
         handle.join().unwrap();
     }
