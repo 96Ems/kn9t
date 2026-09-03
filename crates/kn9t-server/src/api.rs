@@ -83,3 +83,13 @@ pub struct RenameReq {
     pub name: String,
 }
 
+/// Request body.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiRespondReq {
+    /// Pending interaction id from interaction_request event
+    pub id: u64,
+    /// Opaque JSON response — forwarded verbatim to the waiting plugin
+    pub payload: serde_json::Value,
+}
+

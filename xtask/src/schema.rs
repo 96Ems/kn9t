@@ -19,6 +19,7 @@ pub fn req_name_for_path(path: &str) -> Option<&'static str> {
         "/session/{id}/rename" => Some("RenameReq"),
         "/session/{id}/compact" => Some("CompactReq"),
         "/approve" => Some("ApproveReq"),
+        "/ui-respond" => Some("UiRespondReq"),
         _ => None,
     }
 }

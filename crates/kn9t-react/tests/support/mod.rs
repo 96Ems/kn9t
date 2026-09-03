@@ -74,6 +74,7 @@ pub fn event_tag(e: &Event) -> String {
         Event::TurnStatus { .. } => "TurnStatus",
         Event::TitleChanged { .. } => "TitleChanged",
         Event::PluginNotification { .. } => "PluginNotification",
+        Event::InteractionRequest { .. } => "InteractionRequest",
     }
     .to_string()
 }
@@ -91,6 +92,7 @@ pub fn live_event_tag(e: &LiveEvent) -> String {
         LiveEvent::TurnEnded { .. } => "TurnEnded",
         LiveEvent::HookFailed { .. } => "HookFailed",
         LiveEvent::TitleChanged { .. } => "TitleChanged",
+        LiveEvent::InteractionRequest { .. } => "InteractionRequest",
         LiveEvent::Error { .. } => "Error",
         LiveEvent::RetryAttempt { .. } => "RetryAttempt",
         LiveEvent::TurnStatus { .. } => "TurnStatus",

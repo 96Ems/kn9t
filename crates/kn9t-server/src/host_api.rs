@@ -188,6 +188,35 @@ impl ServerHostApi {
         Ok(json!({ "tools": names }))
     }
 
+    /// `interaction_request` — 96E-28 generic primitive: register a pending
+    /// interaction with `payload` (plugin's own opaque shape) and block until
+    /// the client responds via `POST /ui-respond {id, payload}`.
+    /// Emits `LiveEvent::InteractionRequest {id, plugin, payload}` to the
+    /// session bus so the TUI (or any SSE client) can render it generically.
+    /// Reply: `{"payload": <client response>}` — the client's opaque answer.
+    fn interaction_request(&self, session: Option<&str>, payload: &Value, plugin: &str) -> Result<Value, String> {
+        let session = self.require_session(session)?;
+        // The plugin's prompt payload is `payload.payload` if wrapped, else the
+        // whole payload. Accept both for SDK convenience — but require something.
+        let prompt_payload = payload.get("payload").cloned().unwrap_or_else(|| payload.clone());
+        // Create pending slot
+        let (id, handle) = self.state.interaction_registry.create(
+            session.to_string(),
+            plugin.to_string(),
+            prompt_payload.clone(),
+        );
+        // Emit to session bus — TUI renders generically from `payload`.
+        let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
+        sink.emit(kn9t_core::LiveEvent::InteractionRequest {
+            id,
+            plugin: plugin.to_string(),
+            payload: prompt_payload,
+        });
+        // Block on condvar until `POST /ui-respond` resolves it.
+        let response = self.state.interaction_registry.wait(&handle);
+        Ok(json!({ "payload": response }))
+    }
+
     /// `provider_complete` — one real provider call with the session's model.
     /// Reply: `{"content":[...],"stop":"...","usage":{"input":..,"output":..}}`.
     fn provider_complete(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
@@ -316,7 +345,7 @@ impl ServerHostApi {
 impl HostApi for ServerHostApi {
     fn handle(
         &self,
-        _plugin: &str,
+        plugin: &str,
         session: Option<&str>,
         op: &str,
         payload: &Value,
@@ -328,6 +357,7 @@ impl HostApi for ServerHostApi {
             "session_fork" => self.session_fork(session, payload),
             "session_prompt" => self.session_prompt(session, payload),
             "tool_list" => self.tool_list(session, payload),
+            "interaction_request" => self.interaction_request(session, payload, plugin),
             other => Err(format!("unknown host API op {other:?}")),
         }
     }

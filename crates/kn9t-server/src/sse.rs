@@ -53,6 +53,7 @@ fn event_name(e: &Event) -> &'static str {
         Event::RetryAttempt { .. } => "retry_attempt",
         Event::TurnStatus { .. } => "turn_status",
         Event::PluginNotification { .. } => "plugin_notification",
+        Event::InteractionRequest { .. } => "interaction_request",
     }
 }
 

@@ -55,6 +55,12 @@ type RenameReq struct {
 	Name string `json:"name"`
 }
 
+// UiRespondReq — request body.
+type UiRespondReq struct {
+	ID uint64 `json:"id"`
+	Payload any `json:"payload"`
+}
+
 // Plugin protocol definitions (schema/plugin.json).
 // ModelDecl.
 type ModelDecl struct {

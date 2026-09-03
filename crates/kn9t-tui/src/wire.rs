@@ -105,6 +105,11 @@ pub enum SseFrame {
         message: String,
         plugin: String,
     },
+    InteractionRequest {
+        id: u64,
+        payload: serde_json::Value,
+        plugin: String,
+    },
 }
 
 impl SseFrame {
@@ -235,6 +240,13 @@ pub struct ApprovalResp {
     pub id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+}
+
+/// `UiRespondReq` — request body (schema-derived).
+#[derive(Debug, Clone, Serialize)]
+pub struct UiRespondReq {
+    pub id: u64,
+    pub payload: serde_json::Value,
 }
 
 

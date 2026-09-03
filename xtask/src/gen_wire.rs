@@ -297,6 +297,7 @@ fn emit_http_requests(http: &Value) -> String {
             "CreateSessionReq" => "CreateSessionReq",
             "PromptReq" => "PromptReq",
             "ApproveReq" => "ApprovalResp",
+            "UiRespondReq" => "UiRespondReq",
             _ => continue,
         };
         s.push_str(&emit_serialize_struct(wire_name, req_obj));

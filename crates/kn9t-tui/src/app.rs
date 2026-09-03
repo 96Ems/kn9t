@@ -51,6 +51,8 @@ pub struct ToolEntry {
 #[derive(Debug, Clone)]
 pub enum Overlay {
     Approval { tool: String, args: String, selected: usize },
+    /// 96E-28 generic interaction — payload is plugin's opaque shape, rendered generically.
+    Interaction { id: u64, plugin: String, payload: String, input: String },
     Help,
     WhichKey,
     CommandPalette,
@@ -137,6 +139,8 @@ pub struct App {
     pub phrase_idx: usize,
     pub overlay: Option<Overlay>,
     pub active_approval_id: Option<u64>,
+    /// 96E-28: active generic interaction id (if any) — analogous to approval but opaque.
+    pub active_interaction_id: Option<u64>,
     pub slash: SlashState,
     pub quit: bool,
 
@@ -201,6 +205,7 @@ impl App {
             phrase_idx: 0,
             overlay: None,
             active_approval_id: None,
+            active_interaction_id: None,
             slash: SlashState::new(),
             quit: false,
             tool_mode: false,
@@ -281,6 +286,7 @@ impl App {
         // Clear any pending UI state.
         self.overlay = None;
         self.active_approval_id = None;
+        self.active_interaction_id = None;
 
         // Clear tool mode state.
         self.tool_mode = false;
@@ -993,6 +999,28 @@ impl App {
                         };
                         self.respond_approval(decision);
                         self.overlay = None;
+                    }
+                    _ => {}
+                }
+            }
+            Some(Overlay::Interaction { ref mut input, .. }) => {
+                match key.code {
+                    KeyCode::Esc => {
+                        // Cancel: respond with empty/cancel payload so plugin unblocks.
+                        self.respond_interaction(serde_json::json!({"cancelled": true}));
+                    }
+                    KeyCode::Enter => {
+                        let text = std::mem::take(input);
+                        // Try to parse as JSON so structured choices are preserved; fall back to string.
+                        let payload = serde_json::from_str::<serde_json::Value>(&text)
+                            .unwrap_or_else(|_| serde_json::Value::String(text));
+                        self.respond_interaction(serde_json::json!({"value": payload}));
+                    }
+                    KeyCode::Backspace => {
+                        input.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        input.push(c);
                     }
                     _ => {}
                 }
@@ -1878,6 +1906,7 @@ impl App {
             transcript: std::mem::replace(&mut self.transcript, crate::message_handler::Transcript::new()),
             tokens: std::mem::replace(&mut self.tokens, crate::token_tracker::TokenTracker::new()),
             active_approval_id: self.active_approval_id,
+            active_interaction_id: self.active_interaction_id,
             overlay: self.overlay.clone(),
             session_id: self.session.state.session_id.clone(),
             session_title: self.session.session_title().map(|s| s.to_string()),
@@ -1893,6 +1922,7 @@ impl App {
         self.transcript = st.transcript;
         self.tokens = st.tokens;
         self.active_approval_id = st.active_approval_id;
+        self.active_interaction_id = st.active_interaction_id;
         self.overlay = st.overlay;
         self.session.state.session_id = st.session_id;
         self.session.set_session_title(st.session_title);
@@ -1998,6 +2028,15 @@ impl App {
         if let (Some(client), Some(holder), Some(id)) = (&self.client, lease, self.active_approval_id) {
             let _ = client.approve(&session_id, &holder, id, decision);
             self.active_approval_id = None;
+        }
+    }
+
+    /// 96E-28: respond to a generic interaction with an opaque payload.
+    fn respond_interaction(&mut self, payload: serde_json::Value) {
+        if let (Some(client), Some(id)) = (&self.client, self.active_interaction_id) {
+            let _ = client.ui_respond(id, payload);
+            self.active_interaction_id = None;
+            self.overlay = None;
         }
     }
 

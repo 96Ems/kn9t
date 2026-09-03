@@ -480,6 +480,26 @@ Write operations require an **X-Lease** header: the holder token minted by
 | `tools` | u64 | total tools after reload |
 
 
+### `POST /ui-respond` — 96E-28: respond to a pending generic plugin→client interaction (opaque payload, unknown id rejected)
+
+- **Lease required:** no
+
+**Request body**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | u64 | yes | Pending interaction id from interaction_request event |
+| `payload` | object | yes | Opaque JSON response — forwarded verbatim to the waiting plugin |
+
+
+**Response `200`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `payload` | object |  |
+| `responded` | u64 |  |
+
+
 ---
 
 ## 3. SSE Event Stream
@@ -518,6 +538,7 @@ without replaying already-processed events (exact gap-free dedup on the server).
 | `retry_attempt` | `attempt: u32`, `delay_ms: u64`, `error: string`, `max: u32`, `retry_kind: string` | no |
 | `turn_status` | `message: string`, `phase: string` | no |
 | `plugin_notification` | `message: string`, `plugin: string` | no |
+| `interaction_request` | `id: u64`, `payload: object`, `plugin: string` | no |
 
 **Durable events** carry `seq` and are replayed on reconnect. **Transient events** are
 live only. Clients track the highest durable `seq` seen and reconnect with `from=last+1`.
