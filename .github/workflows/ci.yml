@@ -35,16 +35,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.0
       - uses: Swatinem/rust-cache@v2
-      - name: Build
+      # AGENTS.md 8: warnings are errors. The workspace is at zero warnings
+      # across all targets -- keep this a hard gate.
+      - name: Build (warnings are errors)
         run: cargo build --workspace --all-targets
-      # AGENTS.md 8 wants warnings to be errors, and the tree did reach zero
-      # warnings across all targets. Kept advisory only while the plugin
-      # re-declare ("re-hello") API lands: PluginHost::declaration became
-      # Arc<Mutex<..>> and its callers are mid-migration. Flip back to a hard
-      # failure -- and delete continue-on-error -- once that compiles.
-      - name: Warnings (advisory during the re-declare API migration)
-        run: cargo build --workspace --all-targets
-        continue-on-error: true
         env:
           RUSTFLAGS: -D warnings
       - name: Test
