@@ -35,16 +35,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.0
       - uses: Swatinem/rust-cache@v2
-      - name: Build
+      # AGENTS.md 8: warnings are errors. The tree is at zero warnings across
+      # all targets, so this is a hard gate -- keep it that way.
+      - name: Build (warnings are errors)
         run: cargo build --workspace --all-targets
-      # AGENTS.md 8 mandates -D warnings, but the tree still carries ~20 in
-      # kn9t-tui / kn9t-server / kn9t-react (mostly dead code). Gating on it
-      # today would land red and get switched off, which is worse than an
-      # honest non-blocking report. Flip this to a hard failure -- and delete
-      # continue-on-error -- once that backlog is clear.
-      - name: Warnings (advisory until the dead-code backlog is clear)
-        run: cargo build --workspace --all-targets
-        continue-on-error: true
         env:
           RUSTFLAGS: -D warnings
       - name: Test
