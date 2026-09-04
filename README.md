@@ -3,7 +3,7 @@
 **A minimal, modular coding agent in Rust. OS threads, no async. Events are the wire, the log, and the truth.**
 
 [![Rust](https://img.shields.io/badge/rust-1.94%2B-orange)](https://www.rust-lang.org)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](Cargo.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![No async](https://img.shields.io/badge/tokio-free-brightgreen)](#design-principles)
 
 kn9t is a coding agent built for auditability. One `Event` enum is simultaneously the SSE
@@ -319,5 +319,5 @@ before 1.0.
 
 ## License
 
-MIT. Declared in `Cargo.toml` (`[workspace.package] license = "MIT"`); no `LICENSE` file
-is shipped in this revision.
+MIT — see [`LICENSE`](LICENSE), also declared in `Cargo.toml`
+(`[workspace.package] license = "MIT"`).
