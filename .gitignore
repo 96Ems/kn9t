@@ -32,6 +32,11 @@ __pycache__/
 plugins/*/node_modules/
 plugins/*/dist/
 
+# go plugin build output - 5 MB of binaries were committed (96E-37).
+# Build with: cd plugins/kn9t-agents-md && go build -o kn9t-agents-md .
+plugins/kn9t-agents-md/kn9t-agents-md
+plugins/kn9t-agents-md/kn9t-agents-md.exe
+
 # scratch
 out.txt
 

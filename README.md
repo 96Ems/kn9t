@@ -55,6 +55,9 @@ cargo build --release
 
 # default tools ship as a separate plugin crate
 cd plugins/kn9t-tools && cargo build --release && cd ../..
+
+# optional: the Go and TypeScript plugins build independently
+cd plugins/kn9t-agents-md && go build -o kn9t-agents-md . && cd ../..
 ```
 
 First run bootstraps `~/.kn9t/` — `config.toml` from a commented template, a `token`, and

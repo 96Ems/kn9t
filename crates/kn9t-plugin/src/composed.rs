@@ -57,10 +57,7 @@ impl HookHost for ComposedHookHost {
         args: &serde_json::Value,
         mut result: Vec<Content>,
     ) -> Vec<Content> {
-        eprintln!("[DEBUG ComposedHookHost::after_tool_call] tool={}, {} plugins", tool, self.plugins.len());
-        for (i, plugin) in self.plugins.iter().enumerate() {
-            eprintln!("[DEBUG ComposedHookHost::after_tool_call] plugin[{}]='{}' has_hook={}",
-                i, plugin.declaration.name, plugin.has_hook(kn9t_core::HookName::AfterToolCall));
+        for plugin in &self.plugins {
             result = plugin.after_tool_call(tool, args, result);
         }
         result
@@ -107,16 +104,10 @@ impl HookHost for ComposedHookHost {
 
     /// Collect composition: concat in declared order.
     fn get_steering(&self) -> Vec<Message> {
-        eprintln!("[DEBUG ComposedHookHost::get_steering] {} plugins", self.plugins.len());
         let mut out = Vec::new();
-        for (i, plugin) in self.plugins.iter().enumerate() {
-            eprintln!("[DEBUG ComposedHookHost::get_steering] plugin[{}] = '{}', has get_steering = {}",
-                i, plugin.declaration.name, plugin.has_hook(kn9t_core::HookName::GetSteering));
-            let msgs = plugin.get_steering();
-            eprintln!("[DEBUG ComposedHookHost::get_steering] plugin[{}] returned {} messages", i, msgs.len());
-            out.extend(msgs);
+        for plugin in &self.plugins {
+            out.extend(plugin.get_steering());
         }
-        eprintln!("[DEBUG ComposedHookHost::get_steering] total = {} messages", out.len());
         out
     }
 
