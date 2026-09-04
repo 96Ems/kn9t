@@ -4,15 +4,13 @@
 //! and running turns. Useful as `kn9t status` did not exist before and
 //! previously fell through to the TUI.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
 use serde_json::Value;
 
 pub fn run(port: u16, server_token: &str) {
     let host = format!("127.0.0.1:{port}");
     let auth = format!("Bearer {server_token}");
 
-    let health = get_json(&host, &auth, "/health");
+    let health = crate::http::get_json(&host, &auth, "/health", "status");
     if health.is_null() {
         eprintln!("[kn9t status] no response from server on port {port}");
         std::process::exit(1);
@@ -36,7 +34,7 @@ pub fn run(port: u16, server_token: &str) {
 
     // Also show a one-line summary from /models and /session so `status`
     // is actually useful without running three commands.
-    let models = get_json(&host, &auth, "/models");
+    let models = crate::http::get_json(&host, &auth, "/models", "status");
     if let Some(arr) = models.get("models").and_then(|v| v.as_array()) {
         println!("  models: {} configured", arr.len());
         for m in arr.iter().take(5) {
@@ -50,7 +48,7 @@ pub fn run(port: u16, server_token: &str) {
         }
     }
 
-    let sessions = get_json(&host, &auth, "/session");
+    let sessions = crate::http::get_json(&host, &auth, "/session", "status");
     let count = sessions.get("sessions")
         .and_then(|v| v.as_array())
         .map(|a| a.len())
@@ -59,19 +57,3 @@ pub fn run(port: u16, server_token: &str) {
     println!("  sessions: {count}");
 }
 
-fn get_json(host: &str, auth: &str, path: &str) -> Value {
-    let request = format!("GET {path} HTTP/1.0\r\nHost: {host}\r\nAuthorization: {auth}\r\n\r\n");
-    let mut stream = match TcpStream::connect(host) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[kn9t status] cannot reach server: {e}");
-            std::process::exit(1);
-        }
-    };
-    stream.write_all(request.as_bytes()).unwrap();
-    stream.flush().unwrap();
-    let mut resp = String::new();
-    BufReader::new(stream).read_to_string(&mut resp).unwrap_or(0);
-    let body_start = resp.find("\r\n\r\n").map(|i| i + 4).unwrap_or(resp.len());
-    serde_json::from_str(&resp[body_start..]).unwrap_or(Value::Null)
-}

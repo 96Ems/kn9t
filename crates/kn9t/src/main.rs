@@ -24,6 +24,7 @@ mod cmd_sessions;
 mod cmd_status;
 mod cmd_stop;
 mod cmd_tools;
+mod http;
 
 use std::env;
 use std::fs;

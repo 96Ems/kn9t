@@ -1,7 +1,7 @@
 //! `kn9t sessions` — list all sessions from the server.
 
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::net::TcpStream;
 
 pub fn run(port: u16, server_token: &str) {

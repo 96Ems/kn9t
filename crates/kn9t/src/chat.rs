@@ -196,25 +196,7 @@ fn resolve_default_model(host: &str, auth: &str) -> Option<(String, String)> {
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 
 fn post_json(host: &str, auth: &str, path: &str, body: &Value, lease: Option<&str>) -> Value {
-    let body_str = serde_json::to_string(body).unwrap();
-    let mut headers = format!(
-        "Authorization: {auth}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
-        body_str.len()
-    );
-    if let Some(l) = lease {
-        headers.push_str(&format!("X-Lease: {l}\r\n"));
-    }
-    let request = format!("POST {path} HTTP/1.0\r\nHost: {host}\r\n{headers}\r\n{body_str}");
-    let mut stream = TcpStream::connect(host).unwrap_or_else(|e| {
-        eprintln!("[kn9t chat] cannot reach server: {e}");
-        std::process::exit(1);
-    });
-    stream.write_all(request.as_bytes()).unwrap();
-    stream.flush().unwrap();
-    let mut resp = String::new();
-    BufReader::new(stream).read_to_string(&mut resp).unwrap_or(0);
-    let body_start = resp.find("\r\n\r\n").map(|i| i + 4).unwrap_or(resp.len());
-    serde_json::from_str(&resp[body_start..]).unwrap_or(Value::Null)
+    crate::http::post_json(host, auth, path, body, lease, "chat")
 }
 
 // ── Approval context (thread-local so the SSE loop can reach host/auth) ──────
@@ -288,19 +270,7 @@ fn approval_selector(tool: &str, args: &Value) -> bool {
 // ── HTTP GET helper ───────────────────────────────────────────────────────────
 
 fn get_json(host: &str, auth: &str, path: &str) -> Value {
-    let request = format!(
-        "GET {path} HTTP/1.0\r\nHost: {host}\r\nAuthorization: {auth}\r\n\r\n"
-    );
-    let mut stream = TcpStream::connect(host).unwrap_or_else(|e| {
-        eprintln!("[kn9t] cannot reach server: {e}");
-        std::process::exit(1);
-    });
-    stream.write_all(request.as_bytes()).unwrap();
-    stream.flush().unwrap();
-    let mut resp = String::new();
-    BufReader::new(stream).read_to_string(&mut resp).unwrap_or(0);
-    let body_start = resp.find("\r\n\r\n").map(|i| i + 4).unwrap_or(resp.len());
-    serde_json::from_str(&resp[body_start..]).unwrap_or(Value::Null)
+    crate::http::get_json(host, auth, path, "chat")
 }
 
 // ── Global attach (keeps server alive) ────────────────────────────────────────
@@ -652,39 +622,8 @@ fn release_lease(host: &str, auth: &str, session_id: &str, lease: &str) {
 /// The background thread holds the TcpStream open — server counts this as an
 /// attached client. When the receiver is dropped (process exits or REPL Ctrl-D),
 /// the thread exits, TcpStream closes, server calls `client_detached`.
-fn subscribe_sse(host: &str, auth: &str, session_id: &str, from_seq: u64)
-    -> mpsc::Receiver<String>
-{
-    let (tx, rx) = mpsc::sync_channel::<String>(1024);
-    let host2    = host.to_string();
-    let auth2    = auth.to_string();
-    let sid      = session_id.to_string();
-
-    thread::spawn(move || {
-        let path    = format!("/session/{sid}/events?from={from_seq}");
-        let request = format!(
-            "GET {path} HTTP/1.0\r\nHost: {host2}\r\n\
-             Authorization: {auth2}\r\nAccept: text/event-stream\r\n\r\n"
-        );
-        let stream = match TcpStream::connect(&host2) {
-            Ok(s) => s,
-            Err(e) => { eprintln!("[kn9t] SSE connect: {e}"); return; }
-        };
-        let mut w = stream.try_clone().unwrap();
-        let _ = w.write_all(request.as_bytes());
-        let _ = w.flush();
-        drop(w);
-        // Blocks reading until process exits or tx.send fails (rx dropped).
-        // TcpStream drops when this thread exits → server sees EOF → client_detached.
-        for line in BufReader::new(stream).lines() {
-            match line {
-                Ok(l) => { if tx.send(l).is_err() { break; } }
-                Err(_) => break,
-            }
-        }
-    });
-
-    rx
+fn subscribe_sse(host: &str, auth: &str, session_id: &str, from_seq: u64) -> mpsc::Receiver<String> {
+    crate::http::subscribe_sse(host, auth, session_id, from_seq)
 }
 
 // ── REPL loop ─────────────────────────────────────────────────────────────────

@@ -1,8 +1,5 @@
 //! `kn9t cost` — GET /cost (+ GET /budget summary).
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-use serde_json::Value;
 
 pub fn run(args: &[String], port: u16, server_token: &str) {
     let host = format!("127.0.0.1:{port}");
@@ -43,7 +40,7 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
     }
 
     let path = format!("/cost?since={since}&group_by={group_by}");
-    let resp = get_json(&host, &auth, &path);
+    let resp = crate::http::get_json(&host, &auth, &path, "cost");
     if resp.get("error").is_some() {
         eprintln!("[kn9t cost] error: {resp}");
         std::process::exit(1);
@@ -72,7 +69,7 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
     }
 
     // Budget summary (best-effort).
-    let budget = get_json(&host, &auth, "/budget");
+    let budget = crate::http::get_json(&host, &auth, "/budget", "cost");
     if budget.get("error").is_none() {
         let local = budget.get("local_estimate").and_then(|v| v.as_f64()).unwrap_or(0.0);
         println!();
@@ -85,16 +82,3 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
     }
 }
 
-fn get_json(host: &str, auth: &str, path: &str) -> Value {
-    let request = format!("GET {path} HTTP/1.0\r\nHost: {host}\r\nAuthorization: {auth}\r\n\r\n");
-    let mut stream = TcpStream::connect(host).unwrap_or_else(|e| {
-        eprintln!("[kn9t cost] cannot reach server: {e}");
-        std::process::exit(1);
-    });
-    stream.write_all(request.as_bytes()).unwrap();
-    stream.flush().unwrap();
-    let mut resp = String::new();
-    BufReader::new(stream).read_to_string(&mut resp).unwrap_or(0);
-    let body_start = resp.find("\r\n\r\n").map(|i| i + 4).unwrap_or(resp.len());
-    serde_json::from_str(&resp[body_start..]).unwrap_or(Value::Null)
-}

@@ -2,8 +2,6 @@
 //! If no id is given, uses the session with the highest head_seq (most active).
 
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
 
 pub fn run(args: &[String], port: u16, server_token: &str) {
     let host = format!("127.0.0.1:{port}");
@@ -43,28 +41,13 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
-fn get_json(host: &str, auth: &str, path: &str) -> Value {
-    let request = format!(
-        "GET {path} HTTP/1.0\r\nHost: {host}\r\nAuthorization: {auth}\r\n\r\n"
-    );
-    let mut stream = TcpStream::connect(host).unwrap_or_else(|e| {
-        eprintln!("[kn9t history] cannot reach server: {e}");
-        std::process::exit(1);
-    });
-    stream.write_all(request.as_bytes()).unwrap();
-    stream.flush().unwrap();
-    let mut resp = String::new();
-    BufReader::new(stream).read_to_string(&mut resp).unwrap_or(0);
-    let body_start = resp.find("\r\n\r\n").map(|i| i + 4).unwrap_or(resp.len());
-    serde_json::from_str(&resp[body_start..]).unwrap_or(Value::Null)
-}
 
 fn get_session(host: &str, auth: &str, id: &str) -> Value {
-    get_json(host, auth, &format!("/session/{id}"))
+    crate::http::get_json(host, auth, &format!("/session/{id}"), "history")
 }
 
 fn latest_session(host: &str, auth: &str) -> Option<String> {
-    let resp = get_json(host, auth, "/session");
+    let resp = crate::http::get_json(host, auth, "/session", "history");
     // Server wraps in { "sessions": [...] } or returns array directly.
     let arr = if resp.is_array() {
         resp.as_array()?.to_vec()

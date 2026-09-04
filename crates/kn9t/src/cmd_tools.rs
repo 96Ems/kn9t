@@ -1,13 +1,10 @@
 //! `kn9t tools` — GET /tools.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-use serde_json::Value;
 
 pub fn run(port: u16, server_token: &str) {
     let host = format!("127.0.0.1:{port}");
     let auth = format!("Bearer {server_token}");
-    let resp = get_json(&host, &auth, "/tools");
+    let resp = crate::http::get_json(&host, &auth, "/tools", "tools");
     if resp.get("error").is_some() {
         eprintln!("[kn9t tools] error: {resp}");
         std::process::exit(1);
@@ -33,16 +30,3 @@ pub fn run(port: u16, server_token: &str) {
     }
 }
 
-fn get_json(host: &str, auth: &str, path: &str) -> Value {
-    let request = format!("GET {path} HTTP/1.0\r\nHost: {host}\r\nAuthorization: {auth}\r\n\r\n");
-    let mut stream = TcpStream::connect(host).unwrap_or_else(|e| {
-        eprintln!("[kn9t tools] cannot reach server: {e}");
-        std::process::exit(1);
-    });
-    stream.write_all(request.as_bytes()).unwrap();
-    stream.flush().unwrap();
-    let mut resp = String::new();
-    BufReader::new(stream).read_to_string(&mut resp).unwrap_or(0);
-    let body_start = resp.find("\r\n\r\n").map(|i| i + 4).unwrap_or(resp.len());
-    serde_json::from_str(&resp[body_start..]).unwrap_or(Value::Null)
-}
