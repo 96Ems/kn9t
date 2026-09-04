@@ -82,7 +82,14 @@ pub fn get_json(host: &str, auth: &str, path: &str, who: &str) -> Value {
 
 /// `POST path` with a JSON body, parsed as JSON. `lease` adds `X-Lease` when the caller
 /// holds the session write lease.
-pub fn post_json(host: &str, auth: &str, path: &str, body: &Value, lease: Option<&str>, who: &str) -> Value {
+pub fn post_json(
+    host: &str,
+    auth: &str,
+    path: &str,
+    body: &Value,
+    lease: Option<&str>,
+    who: &str,
+) -> Value {
     let body_str = serde_json::to_string(body).unwrap_or_else(|_| "{}".to_string());
     let mut headers = format!(
         "Authorization: {auth}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
@@ -104,7 +111,12 @@ pub fn post_json(host: &str, auth: &str, path: &str, body: &Value, lease: Option
 ///
 /// The reader thread owns the socket: when it exits the `TcpStream` drops, the server sees
 /// EOF and fires `client_detached`. Sending stops as soon as the receiver is dropped.
-pub fn subscribe_sse(host: &str, auth: &str, session_id: &str, from_seq: u64) -> mpsc::Receiver<String> {
+pub fn subscribe_sse(
+    host: &str,
+    auth: &str,
+    session_id: &str,
+    from_seq: u64,
+) -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::sync_channel::<String>(1024);
     let host2 = host.to_string();
     let auth2 = auth.to_string();
@@ -165,9 +177,7 @@ mod tests {
             let mut buf = [0u8; 4096];
             let n = sock.read(&mut buf).unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..n]).into_owned();
-            let resp = format!(
-                "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{body}"
-            );
+            let resp = format!("HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{body}");
             let _ = sock.write_all(resp.as_bytes());
             let _ = sock.flush();
             req
@@ -183,21 +193,43 @@ mod tests {
 
         assert_eq!(v["ok"], serde_json::json!(true));
         assert_eq!(v["n"], serde_json::json!(3));
-        assert!(req.starts_with("GET /health HTTP/1.0\r\n"), "request line: {req:?}");
-        assert!(req.contains("Authorization: Bearer tok-123\r\n"), "auth header missing: {req:?}");
+        assert!(
+            req.starts_with("GET /health HTTP/1.0\r\n"),
+            "request line: {req:?}"
+        );
+        assert!(
+            req.contains("Authorization: Bearer tok-123\r\n"),
+            "auth header missing: {req:?}"
+        );
     }
 
     #[test]
     fn post_json_sends_body_content_length_and_lease() {
         let (addr, h) = stub(r#"{"accepted":1}"#);
         let body = serde_json::json!({"prompt":"hi"});
-        let v = post_json(&addr, "Bearer t", "/session/s1/prompt", &body, Some("lease-9"), "test");
+        let v = post_json(
+            &addr,
+            "Bearer t",
+            "/session/s1/prompt",
+            &body,
+            Some("lease-9"),
+            "test",
+        );
         let req = h.join().expect("stub thread");
 
         assert_eq!(v["accepted"], serde_json::json!(1));
-        assert!(req.starts_with("POST /session/s1/prompt HTTP/1.0\r\n"), "request line: {req:?}");
-        assert!(req.contains("Content-Type: application/json\r\n"), "content-type: {req:?}");
-        assert!(req.contains("X-Lease: lease-9\r\n"), "lease header: {req:?}");
+        assert!(
+            req.starts_with("POST /session/s1/prompt HTTP/1.0\r\n"),
+            "request line: {req:?}"
+        );
+        assert!(
+            req.contains("Content-Type: application/json\r\n"),
+            "content-type: {req:?}"
+        );
+        assert!(
+            req.contains("X-Lease: lease-9\r\n"),
+            "lease header: {req:?}"
+        );
         // Content-Length must match the serialized body, or the server blocks waiting for more.
         let expected = serde_json::to_string(&body).unwrap();
         assert!(
@@ -211,9 +243,19 @@ mod tests {
     #[test]
     fn post_json_omits_lease_header_when_none() {
         let (addr, h) = stub("{}");
-        post_json(&addr, "Bearer t", "/x", &serde_json::json!({}), None, "test");
+        post_json(
+            &addr,
+            "Bearer t",
+            "/x",
+            &serde_json::json!({}),
+            None,
+            "test",
+        );
         let req = h.join().expect("stub thread");
-        assert!(!req.contains("X-Lease"), "lease header must be absent: {req:?}");
+        assert!(
+            !req.contains("X-Lease"),
+            "lease header must be absent: {req:?}"
+        );
     }
 
     /// A non-JSON response yields `Value::Null` rather than panicking: these commands render
@@ -281,8 +323,14 @@ mod tests {
         }
         let req = h.join().expect("stub thread");
 
-        assert!(req.starts_with("GET /session/s1/events?from=7 HTTP/1.0\r\n"), "request: {req:?}");
-        assert!(req.contains("Accept: text/event-stream\r\n"), "accept header: {req:?}");
+        assert!(
+            req.starts_with("GET /session/s1/events?from=7 HTTP/1.0\r\n"),
+            "request: {req:?}"
+        );
+        assert!(
+            req.contains("Accept: text/event-stream\r\n"),
+            "accept header: {req:?}"
+        );
         assert_eq!(data.len(), 2, "expected 2 data lines, got {data:?}");
         assert!(data[0].contains("\"a\":1"));
         assert!(data[1].contains("\"b\":2"));

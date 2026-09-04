@@ -156,11 +156,26 @@ pub struct WireMessage {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WireContent {
-    Text { text: String },
-    ToolCall { id: String, name: String, args_json: String },
-    ToolResult { id: String, content: Vec<WireContent>, is_error: bool },
-    Thinking { text: String },
-    Image { sha256: String, mime: String },
+    Text {
+        text: String,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        args_json: String,
+    },
+    ToolResult {
+        id: String,
+        content: Vec<WireContent>,
+        is_error: bool,
+    },
+    Thinking {
+        text: String,
+    },
+    Image {
+        sha256: String,
+        mime: String,
+    },
 }
 
 /// Wire tokens.
@@ -226,7 +241,6 @@ pub struct TranscriptMessage {
     pub silent: bool,
 }
 
-
 /// `CreateSessionReq` — request body (schema-derived).
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateSessionReq {
@@ -270,7 +284,6 @@ pub struct UiRespondReq {
     pub id: u64,
     pub payload: serde_json::Value,
 }
-
 
 /// Model info (GET /models).
 #[derive(Debug, Clone, Deserialize)]

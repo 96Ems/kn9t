@@ -383,11 +383,22 @@ fn random_uuid() -> String {
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-\
          {:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0], b[1], b[2], b[3],
-        b[4], b[5],
-        b[6], b[7],
-        b[8], b[9],
-        b[10], b[11], b[12], b[13], b[14], b[15],
+        b[0],
+        b[1],
+        b[2],
+        b[3],
+        b[4],
+        b[5],
+        b[6],
+        b[7],
+        b[8],
+        b[9],
+        b[10],
+        b[11],
+        b[12],
+        b[13],
+        b[14],
+        b[15],
     )
 }
 
@@ -436,10 +447,10 @@ fn os_random_bytes<const N: usize>() -> [u8; N] {
 /// write, it prints a warning and returns.
 pub fn ensure_home(home: &Path) {
     let config_path = home.join("config.toml");
-    let token_path  = home.join("token");
+    let token_path = home.join("token");
 
     let need_config = !config_path.exists();
-    let need_token  = !token_path.exists();
+    let need_token = !token_path.exists();
 
     if !need_config && !need_token {
         return; // fast path — already set up
@@ -469,13 +480,21 @@ pub fn ensure_home(home: &Path) {
             Ok(_) => {
                 writeln!(err, "").ok();
                 writeln!(err, "  kn9t — first run").ok();
-                writeln!(err, "  ─────────────────────────────────────────────────────").ok();
+                writeln!(
+                    err,
+                    "  ─────────────────────────────────────────────────────"
+                )
+                .ok();
                 writeln!(err, "  Created: {}", home.display()).ok();
                 writeln!(err, "").ok();
                 writeln!(err, "  Next step: edit ~/.kn9t/config.toml and uncomment a").ok();
                 writeln!(err, "  [[provider]] block with your API credentials, then").ok();
                 writeln!(err, "  run kn9t again.").ok();
-                writeln!(err, "  ─────────────────────────────────────────────────────").ok();
+                writeln!(
+                    err,
+                    "  ─────────────────────────────────────────────────────"
+                )
+                .ok();
                 writeln!(err, "").ok();
             }
             Err(e) => {
@@ -508,7 +527,10 @@ pub fn ensure_home(home: &Path) {
 fn install_default_tools(home: &Path) {
     let plugins_dir = home.join("plugins");
     if let Err(e) = fs::create_dir_all(&plugins_dir) {
-        eprintln!("[kn9t] warning: cannot create {}: {e}", plugins_dir.display());
+        eprintln!(
+            "[kn9t] warning: cannot create {}: {e}",
+            plugins_dir.display()
+        );
         return;
     }
 

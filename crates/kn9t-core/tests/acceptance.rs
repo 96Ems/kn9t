@@ -91,14 +91,8 @@ mod core {
             serde_json::to_string(&SessionId("abc".into())).unwrap(),
             "\"abc\""
         );
-        assert_eq!(
-            serde_json::to_string(&MsgId("m".into())).unwrap(),
-            "\"m\""
-        );
-        assert_eq!(
-            serde_json::to_string(&CallId("c".into())).unwrap(),
-            "\"c\""
-        );
+        assert_eq!(serde_json::to_string(&MsgId("m".into())).unwrap(), "\"m\"");
+        assert_eq!(serde_json::to_string(&CallId("c".into())).unwrap(), "\"c\"");
         assert_eq!(serde_json::to_string(&ApprovalId(42)).unwrap(), "42");
 
         let s: SessionId = serde_json::from_str("\"round\"").unwrap();
@@ -182,7 +176,8 @@ mod core {
                 id: CallId("c".into()),
                 name: "x".into(),
                 args_json: raw.into(),
-            }], silent: false
+            }],
+            silent: false,
         };
         let ev = Event::MessageAppended { seq: 1, msg };
         let json = serde_json::to_string(&ev).unwrap();
@@ -494,13 +489,18 @@ mod core {
 
         // `Cache`'s derive list is pinned by R-CORE-200 (no `Debug`), so compare
         // with `==` rather than `assert_eq!`.
-        let eq = |a: &[Cache], b: &[Cache]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x == y);
+        let eq =
+            |a: &[Cache], b: &[Cache]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x == y);
 
         // [assistant, user], cap 4 -> [System, AfterMessage{idx:1}, AfterMessage{idx:0}]
         let ms = vec![msg(Role::Assistant), msg(Role::User)];
         assert!(eq(
             &breakpoints_of(&ms, &explicit(4)),
-            &[Cache::System, Cache::AfterMessage { idx: 1 }, Cache::AfterMessage { idx: 0 }]
+            &[
+                Cache::System,
+                Cache::AfterMessage { idx: 1 },
+                Cache::AfterMessage { idx: 0 }
+            ]
         ));
 
         // single user message, cap 4 -> [System, AfterMessage{idx:0}]
@@ -519,7 +519,13 @@ mod core {
 
         // cap 2 on a long conversation -> exactly 2, the two stable anchors first.
         let long: Vec<Message> = (0..10)
-            .map(|i| msg(if i % 2 == 0 { Role::User } else { Role::Assistant }))
+            .map(|i| {
+                msg(if i % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                })
+            })
             .collect();
         let bp = breakpoints_of(&long, &explicit(2));
         assert_eq!(bp.len(), 2);

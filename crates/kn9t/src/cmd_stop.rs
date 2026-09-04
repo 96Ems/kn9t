@@ -19,8 +19,9 @@ fn kn9t_home() -> PathBuf {
 }
 
 pub fn run() {
-    let home  = kn9t_home();
-    let port  = match fs::read_to_string(home.join("port")).ok()
+    let home = kn9t_home();
+    let port = match fs::read_to_string(home.join("port"))
+        .ok()
         .and_then(|s| s.trim().parse::<u16>().ok())
     {
         Some(p) => p,
@@ -29,7 +30,8 @@ pub fn run() {
             std::process::exit(1);
         }
     };
-    let token = match fs::read_to_string(home.join("token")).ok()
+    let token = match fs::read_to_string(home.join("token"))
+        .ok()
         .map(|s| s.trim().to_string())
     {
         Some(t) => t,
@@ -39,8 +41,8 @@ pub fn run() {
         }
     };
 
-    let host    = format!("127.0.0.1:{port}");
-    let auth    = format!("Bearer {token}");
+    let host = format!("127.0.0.1:{port}");
+    let auth = format!("Bearer {token}");
     let request = format!(
         "POST /stop HTTP/1.0\r\nHost: {host}\r\nAuthorization: {auth}\r\n\
          Content-Length: 0\r\n\r\n"
@@ -57,7 +59,9 @@ pub fn run() {
     stream.flush().unwrap();
 
     let mut resp = String::new();
-    BufReader::new(stream).read_to_string(&mut resp).unwrap_or(0);
+    BufReader::new(stream)
+        .read_to_string(&mut resp)
+        .unwrap_or(0);
 
     if resp.contains("200") {
         eprintln!("[kn9t stop] server stopping (port {port})");

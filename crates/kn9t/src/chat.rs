@@ -23,10 +23,10 @@ use std::time::{Duration, Instant};
 pub fn attach(args: &[String], port: u16, server_token: &str) {
     let auth = format!("Bearer {server_token}");
     let host = format!("127.0.0.1:{port}");
-    
+
     // Keep server alive while CLI is running.
     let _attach_stop = spawn_global_attach(&host, &auth);
-    
+
     let session_id = if let Some(id) = args.first().filter(|s| !s.starts_with('-')) {
         id.clone()
     } else {
@@ -71,13 +71,21 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
                 }
                 i += 2;
             }
-            "--continue" => { do_continue = true; i += 1; }
-            "--json" => { json_output = true; i += 1; }
+            "--continue" => {
+                do_continue = true;
+                i += 1;
+            }
+            "--json" => {
+                json_output = true;
+                i += 1;
+            }
             "--format" if i + 1 < args.len() => {
                 let fmt = args[i + 1].as_str();
-                if fmt == "json" { json_output = true; }
-                else if fmt == "text" { json_output = false; }
-                else {
+                if fmt == "json" {
+                    json_output = true;
+                } else if fmt == "text" {
+                    json_output = false;
+                } else {
                     eprintln!("[kn9t chat] --format must be json|text (got '{fmt}')");
                     std::process::exit(2);
                 }
@@ -97,7 +105,10 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
                 eprintln!("Try: kn9t chat --help");
                 std::process::exit(2);
             }
-            _ => { prompt_words.push(&args[i]); i += 1; }
+            _ => {
+                prompt_words.push(&args[i]);
+                i += 1;
+            }
         }
     }
 
@@ -153,9 +164,13 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
         let prompt_ev = json!({ "kind": "prompt", "text": prompt, "session_id": session_id });
         json_emit(&prompt_ev);
     }
-    post_json(&host, &auth,
+    post_json(
+        &host,
+        &auth,
         &format!("/session/{session_id}/prompt"),
-        &json!({ "text": prompt }), Some(&lease));
+        &json!({ "text": prompt }),
+        Some(&lease),
+    );
 
     if json_output {
         stream_events_json(rx);
@@ -215,8 +230,13 @@ fn set_approval_ctx(host: &str, auth: &str) {
 
 fn post_approval(host: &str, auth: &str, req_id: &str, allow: bool) {
     let decision = if allow { "allow" } else { "deny" };
-    post_json(host, auth, "/approve",
-        &json!({ "id": req_id, "decision": decision }), None);
+    post_json(
+        host,
+        auth,
+        "/approve",
+        &json!({ "id": req_id, "decision": decision }),
+        None,
+    );
 }
 
 /// Render an inline keyboard selector: `[ No ]  [ Yes ]`.
@@ -249,9 +269,15 @@ fn approval_selector(tool: &str, args: &Value) -> bool {
 
         if let Ok(Event::Key(key)) = event::read() {
             match (key.code, key.modifiers) {
-                (KeyCode::Left, _)  | (KeyCode::Char('h'), _) => { selected = false; }
-                (KeyCode::Right, _) | (KeyCode::Char('l'), _) => { selected = true; }
-                (KeyCode::Enter, _) => { break; }
+                (KeyCode::Left, _) | (KeyCode::Char('h'), _) => {
+                    selected = false;
+                }
+                (KeyCode::Right, _) | (KeyCode::Char('l'), _) => {
+                    selected = true;
+                }
+                (KeyCode::Enter, _) => {
+                    break;
+                }
                 (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
                     let _ = terminal::disable_raw_mode();
                     eprintln!();
@@ -263,7 +289,14 @@ fn approval_selector(tool: &str, args: &Value) -> bool {
     }
 
     let _ = terminal::disable_raw_mode();
-    eprintln!("\r  {}", if selected { "→ allowed" } else { "→ denied " });
+    eprintln!(
+        "\r  {}",
+        if selected {
+            "→ allowed"
+        } else {
+            "→ denied "
+        }
+    );
     selected
 }
 
@@ -285,7 +318,7 @@ fn spawn_global_attach(host: &str, auth: &str) -> Arc<AtomicBool> {
     let stop_clone = stop.clone();
     let host = host.to_string();
     let auth = auth.to_string();
-    
+
     thread::spawn(move || {
         let request = format!(
             "GET /attach HTTP/1.1\r\nHost: {host}\r\nAuthorization: {auth}\r\nConnection: keep-alive\r\n\r\n"
@@ -296,7 +329,7 @@ fn spawn_global_attach(host: &str, auth: &str) -> Arc<AtomicBool> {
         };
         let _ = stream.write_all(request.as_bytes());
         let _ = stream.flush();
-        
+
         // Just keep reading (server sends pings every 30s) until stopped.
         let reader = BufReader::new(stream);
         for line in reader.lines() {
@@ -308,7 +341,7 @@ fn spawn_global_attach(host: &str, auth: &str) -> Arc<AtomicBool> {
             }
         }
     });
-    
+
     stop
 }
 
@@ -318,7 +351,10 @@ fn json_emit(v: &Value) -> bool {
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     match writeln!(out, "{}", v) {
-        Ok(_) => { let _ = out.flush(); true }
+        Ok(_) => {
+            let _ = out.flush();
+            true
+        }
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
             // Downstream closed (e.g. `| head`); exit quietly, as `jq` does.
             std::process::exit(0);
@@ -338,14 +374,21 @@ fn stream_events_json(rx: mpsc::Receiver<String>) {
             Err(_) => break,
         };
         let line = raw.trim();
-        if !line.starts_with("data:") { continue; }
+        if !line.starts_with("data:") {
+            continue;
+        }
         let data = line["data:".len()..].trim();
-        if data.is_empty() || data == "ping" { continue; }
+        if data.is_empty() || data == "ping" {
+            continue;
+        }
         let ev: Value = match serde_json::from_str(data) {
-            Ok(v) => v, Err(_) => continue,
+            Ok(v) => v,
+            Err(_) => continue,
         };
         // Emit raw event as one JSON line on stdout (machine stream).
-        if !json_emit(&ev) { break; }
+        if !json_emit(&ev) {
+            break;
+        }
 
         // Approval still needs human handling even in json mode — emit to stderr
         // and block on the selector so the server isn't left hanging.
@@ -367,7 +410,9 @@ fn stream_events_json(rx: mpsc::Receiver<String>) {
             });
             // Also emit decision as JSON so the log is complete.
             let dec = json!({ "kind": "approval_decision", "id": req_id, "decision": if decision { "allow" } else { "deny" } });
-            if !json_emit(&dec) { break; }
+            if !json_emit(&dec) {
+                break;
+            }
         }
 
         if ev["kind"].as_str() == Some("turn_ended") {
@@ -398,11 +443,16 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
             Err(_) => break, // sender dropped — SSE ended
         };
         let line = raw.trim();
-        if !line.starts_with("data:") { continue; }
+        if !line.starts_with("data:") {
+            continue;
+        }
         let data = line["data:".len()..].trim();
-        if data.is_empty() || data == "ping" { continue; }
+        if data.is_empty() || data == "ping" {
+            continue;
+        }
         let ev: Value = match serde_json::from_str(data) {
-            Ok(v) => v, Err(_) => continue,
+            Ok(v) => v,
+            Err(_) => continue,
         };
 
         match ev["kind"].as_str().unwrap_or("") {
@@ -416,15 +466,18 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
 
             "tool_args_delta" => {
                 let msg_id = ev["msg_id"].as_str().unwrap_or("").to_string();
-                let idx    = ev["idx"].as_u64().unwrap_or(0) as u32;
-                let delta  = ev["delta"].as_str().unwrap_or("");
+                let idx = ev["idx"].as_u64().unwrap_or(0) as u32;
+                let delta = ev["delta"].as_str().unwrap_or("");
                 args_acc.entry((msg_id, idx)).or_default().push_str(delta);
             }
 
             "tool_started" => {
-                let call_id  = ev["call_id"].as_str().unwrap_or("?").to_string();
-                let name     = ev["name"].as_str().unwrap_or("?").to_string();
-                if in_text { eprintln!(); in_text = false; }
+                let call_id = ev["call_id"].as_str().unwrap_or("?").to_string();
+                let name = ev["name"].as_str().unwrap_or("?").to_string();
+                if in_text {
+                    eprintln!();
+                    in_text = false;
+                }
                 eprintln!("\n[tool] ▶ {name}");
                 // Use the last accumulated args block (args arrive in call order).
                 let args_json = args_acc.values().last().cloned().unwrap_or_default();
@@ -440,7 +493,7 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
 
             "tool_finished" => {
                 let is_error = ev["is_error"].as_bool().unwrap_or(false);
-                let call_id  = ev["call_id"].as_str().unwrap_or("?");
+                let call_id = ev["call_id"].as_str().unwrap_or("?");
                 if is_error {
                     let name = active_tools.get(call_id).map(|s| s.as_str()).unwrap_or("?");
                     eprintln!("[tool] ✗ {name} failed");
@@ -449,16 +502,15 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
             }
 
             "message_appended" => {
-                let msg  = &ev["msg"];
+                let msg = &ev["msg"];
                 let role = msg["role"].as_str().unwrap_or("");
                 // Tool results arrive as role="tool" messages.
                 if role == "tool" {
                     if let Some(blocks) = msg["content"].as_array() {
                         for block in blocks {
-                            let call_id  = block["id"].as_str().unwrap_or("?");
+                            let call_id = block["id"].as_str().unwrap_or("?");
                             let is_error = block["is_error"].as_bool().unwrap_or(false);
-                            let name     = active_tools.get(call_id)
-                                .map(|s| s.as_str()).unwrap_or("?");
+                            let name = active_tools.get(call_id).map(|s| s.as_str()).unwrap_or("?");
                             display_result(name, &block["content"], is_error);
                         }
                     }
@@ -467,17 +519,22 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
 
             "turn_ended" => {
                 let stop = ev["stop"].as_str().unwrap_or("stop");
-                if in_text { println!(); }
+                if in_text {
+                    println!();
+                }
                 eprintln!("---");
                 eprintln!("[kn9t chat] stop: {stop}");
                 break;
             }
 
             "approval_request" => {
-                let req_id   = ev["id"].as_str().unwrap_or("?").to_string();
-                let tool     = ev["tool"].as_str().unwrap_or("?");
+                let req_id = ev["id"].as_str().unwrap_or("?").to_string();
+                let tool = ev["tool"].as_str().unwrap_or("?");
                 let args_val = &ev["args"];
-                if in_text { eprintln!(); in_text = false; }
+                if in_text {
+                    eprintln!();
+                    in_text = false;
+                }
                 // host/auth not in scope here — pass via closure over captured strings.
                 // We pause SSE consumption; the server blocks until we POST /approve.
                 // approval_host/auth are not available in this fn signature, so we
@@ -495,8 +552,8 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
             }
 
             // Silently ignored — not relevant for CLI display.
-            "TurnStarted" | "UsageRecorded" | "ThinkingDelta"
-            | "ModelChanged" | "SessionForked" | "Compacted" => {}
+            "TurnStarted" | "UsageRecorded" | "ThinkingDelta" | "ModelChanged"
+            | "SessionForked" | "Compacted" => {}
             _ => {}
         }
     }
@@ -517,7 +574,7 @@ fn display_args(name: &str, args_json: &str) {
             eprintln!("  {path}");
         }
         "write" => {
-            let path    = args["path"].as_str().unwrap_or("?");
+            let path = args["path"].as_str().unwrap_or("?");
             let content = args["content"].as_str().unwrap_or("");
             eprintln!("  {path}");
             for line in content.lines() {
@@ -525,7 +582,7 @@ fn display_args(name: &str, args_json: &str) {
             }
         }
         "edit" => {
-            let path    = args["filePath"].as_str().unwrap_or("?");
+            let path = args["filePath"].as_str().unwrap_or("?");
             let old_str = args["oldString"].as_str().unwrap_or("");
             let new_str = args["newString"].as_str().unwrap_or("");
             eprintln!("  {path}");
@@ -543,19 +600,31 @@ fn display_args(name: &str, args_json: &str) {
 
 /// Print a minimal unified diff (removed lines then added lines).
 fn unified_diff(old: &str, new: &str) {
-    for line in old.lines() { eprintln!("  - {line}"); }
-    for line in new.lines() { eprintln!("  + {line}"); }
+    for line in old.lines() {
+        eprintln!("  - {line}");
+    }
+    for line in new.lines() {
+        eprintln!("  + {line}");
+    }
 }
 
 // ── Session helpers ───────────────────────────────────────────────────────────
 
 fn create_session(host: &str, auth: &str, provider: &str, model: &str) -> String {
-    let resp = post_json(host, auth, "/session",
-        &json!({ "model": { "provider": provider, "id": model } }), None);
-    resp["id"].as_str().unwrap_or_else(|| {
-        eprintln!("[kn9t chat] create session failed: {resp}");
-        std::process::exit(1);
-    }).to_string()
+    let resp = post_json(
+        host,
+        auth,
+        "/session",
+        &json!({ "model": { "provider": provider, "id": model } }),
+        None,
+    );
+    resp["id"]
+        .as_str()
+        .unwrap_or_else(|| {
+            eprintln!("[kn9t chat] create session failed: {resp}");
+            std::process::exit(1);
+        })
+        .to_string()
 }
 
 /// Pick the session with the highest head_seq (most recently active).
@@ -573,12 +642,15 @@ pub fn resolve_latest_session(host: &str, auth: &str) -> String {
         std::process::exit(1);
     };
     arr.iter()
-        .max_by_key(|s| (
-            s["head_seq"].as_i64().unwrap_or(0),
-            s["meta"]["created_at"].as_i64()
-                .or_else(|| s["created_at"].as_i64())
-                .unwrap_or(0),
-        ))
+        .max_by_key(|s| {
+            (
+                s["head_seq"].as_i64().unwrap_or(0),
+                s["meta"]["created_at"]
+                    .as_i64()
+                    .or_else(|| s["created_at"].as_i64())
+                    .unwrap_or(0),
+            )
+        })
         .and_then(|s| s["id"].as_str().or_else(|| s["meta"]["id"].as_str()))
         .unwrap_or_else(|| {
             eprintln!("[kn9t] error: no sessions found");
@@ -589,7 +661,7 @@ pub fn resolve_latest_session(host: &str, auth: &str) -> String {
 
 /// Acquire the write lease with exponential backoff (max ~3 s total).
 fn acquire_lease_with_backoff(host: &str, auth: &str, session_id: &str) -> String {
-    let path    = format!("/session/{session_id}/lease");
+    let path = format!("/session/{session_id}/lease");
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut wait = Duration::from_millis(100);
     loop {
@@ -608,7 +680,7 @@ fn acquire_lease_with_backoff(host: &str, auth: &str, session_id: &str) -> Strin
 
 fn release_lease(host: &str, auth: &str, session_id: &str, lease: &str) {
     // DELETE /session/{id}/lease — best effort, ignore errors.
-    let path    = format!("/session/{session_id}/lease");
+    let path = format!("/session/{session_id}/lease");
     let request = format!(
         "DELETE {path} HTTP/1.0\r\nHost: {host}\r\nAuthorization: {auth}\r\n\
          X-Lease: {lease}\r\n\r\n"
@@ -622,7 +694,12 @@ fn release_lease(host: &str, auth: &str, session_id: &str, lease: &str) {
 /// The background thread holds the TcpStream open — server counts this as an
 /// attached client. When the receiver is dropped (process exits or REPL Ctrl-D),
 /// the thread exits, TcpStream closes, server calls `client_detached`.
-fn subscribe_sse(host: &str, auth: &str, session_id: &str, from_seq: u64) -> mpsc::Receiver<String> {
+fn subscribe_sse(
+    host: &str,
+    auth: &str,
+    session_id: &str,
+    from_seq: u64,
+) -> mpsc::Receiver<String> {
     crate::http::subscribe_sse(host, auth, session_id, from_seq)
 }
 
@@ -659,15 +736,21 @@ pub fn repl_loop(session_id: &str, host: &str, auth: &str) {
         }
 
         let prompt = line.trim().to_string();
-        if prompt.is_empty() { continue; }
+        if prompt.is_empty() {
+            continue;
+        }
 
         // Acquire lease (with backoff — another client may be writing).
         let lease = acquire_lease_with_backoff(host, auth, session_id);
 
         // Send prompt.
-        post_json(host, auth,
+        post_json(
+            host,
+            auth,
             &format!("/session/{session_id}/prompt"),
-            &json!({ "text": prompt }), Some(&lease));
+            &json!({ "text": prompt }),
+            Some(&lease),
+        );
 
         // Stream events until TurnEnded.
         stream_events_until_turn_end(&rx);

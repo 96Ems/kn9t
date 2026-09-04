@@ -100,4 +100,3 @@ pub struct UiRespondReq {
     /// Opaque JSON response — forwarded verbatim to the waiting plugin
     pub payload: serde_json::Value,
 }
-

@@ -10,24 +10,24 @@ use std::io;
 use std::sync::mpsc::Sender;
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
-use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use crossterm::execute;
+use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::client::{spawn_attach_thread, AttachHandle, Client, ClientError};
 use crate::config::Config;
+use crate::event::{Event, EventLoop, TickControl};
 use crate::input_history::{InputHistory, InputSnapshot};
+use crate::keybind::{Action, Keybinds};
 use crate::kill_ring::KillRing;
+use crate::message_handler::Transcript;
+use crate::model_selector::ModelSelector;
 use crate::prompt_history::PromptHistory;
 use crate::prompt_stash::PromptStash;
 use crate::search::SearchState;
-use crate::thinking::ThinkingState;
-use crate::event::{Event, EventLoop, TickControl};
-use crate::keybind::{Action, Keybinds};
-use crate::message_handler::Transcript;
-use crate::model_selector::ModelSelector;
 use crate::session_manager::{session_matches, SessionManager};
 use crate::slash::{fuzzy_match, SlashState};
+use crate::thinking::ThinkingState;
 use crate::token_tracker::TokenTracker;
 use crate::ui::layout::LayoutState;
 use crate::ui::render::render;
@@ -52,16 +52,33 @@ pub struct ToolEntry {
 /// Overlay state.
 #[derive(Debug, Clone)]
 pub enum Overlay {
-    Approval { tool: String, args: String, selected: usize },
+    Approval {
+        tool: String,
+        args: String,
+        selected: usize,
+    },
     /// 96E-28 generic interaction — payload is plugin's opaque shape, rendered generically.
-    Interaction { id: u64, plugin: String, state: InteractionState },
+    Interaction {
+        id: u64,
+        plugin: String,
+        state: InteractionState,
+    },
     Help,
     WhichKey,
     CommandPalette,
-    ModelSelect { selected: usize, filter: String },
-    SessionSelect { selected: usize, filter: String },
+    ModelSelect {
+        selected: usize,
+        filter: String,
+    },
+    SessionSelect {
+        selected: usize,
+        filter: String,
+    },
     /// Tools manager: enable/disable tools per session, grouped by plugin.
-    ToolsManager { selected: usize, filter: String },
+    ToolsManager {
+        selected: usize,
+        filter: String,
+    },
 }
 
 /// Option for choice/multi questions.
@@ -107,25 +124,34 @@ pub enum InteractionState {
         selected: bool, // true = Yes, false = No
     },
     /// Fallback for unknown payload shapes.
-    Generic {
-        payload: String,
-        input: String,
-    },
+    Generic { payload: String, input: String },
 }
 
 impl InteractionState {
     /// Parse a JSON payload into an InteractionState.
     pub fn from_payload(payload_str: &str) -> Self {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_str) else {
-            return Self::Generic { payload: payload_str.to_string(), input: String::new() };
+            return Self::Generic {
+                payload: payload_str.to_string(),
+                input: String::new(),
+            };
         };
 
         let obj = match v.as_object() {
             Some(o) => o,
-            None => return Self::Generic { payload: payload_str.to_string(), input: String::new() },
+            None => {
+                return Self::Generic {
+                    payload: payload_str.to_string(),
+                    input: String::new(),
+                }
+            }
         };
 
-        let question = obj.get("question").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let question = obj
+            .get("question")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let header = obj.get("header").and_then(|v| v.as_str()).map(String::from);
         let qtype = obj.get("type").and_then(|v| v.as_str()).unwrap_or("text");
 
@@ -133,8 +159,15 @@ impl InteractionState {
             "text" => Self::Text {
                 question,
                 header,
-                placeholder: obj.get("placeholder").and_then(|v| v.as_str()).map(String::from),
-                input: obj.get("default").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                placeholder: obj
+                    .get("placeholder")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                input: obj
+                    .get("default")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
             },
             "choice" => {
                 let options = Self::parse_options(obj.get("options"));
@@ -143,7 +176,10 @@ impl InteractionState {
                     header,
                     options,
                     selected: 0,
-                    allow_custom: obj.get("allow_custom").and_then(|v| v.as_bool()).unwrap_or(false),
+                    allow_custom: obj
+                        .get("allow_custom")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                     custom_input: String::new(),
                     in_custom_mode: false,
                 }
@@ -175,11 +211,17 @@ impl InteractionState {
                     Self::Text {
                         question,
                         header,
-                        placeholder: obj.get("placeholder").and_then(|v| v.as_str()).map(String::from),
+                        placeholder: obj
+                            .get("placeholder")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
                         input: String::new(),
                     }
                 } else {
-                    Self::Generic { payload: payload_str.to_string(), input: String::new() }
+                    Self::Generic {
+                        payload: payload_str.to_string(),
+                        input: String::new(),
+                    }
                 }
             }
         }
@@ -199,11 +241,20 @@ impl InteractionState {
                     })
                 } else if let Some(obj) = item.as_object() {
                     let label = obj.get("label").and_then(|v| v.as_str())?.to_string();
-                    let value = obj.get("value").and_then(|v| v.as_str())
+                    let value = obj
+                        .get("value")
+                        .and_then(|v| v.as_str())
                         .map(String::from)
                         .unwrap_or_else(|| label.clone());
-                    let description = obj.get("description").and_then(|v| v.as_str()).map(String::from);
-                    Some(QuestionOption { label, value, description })
+                    let description = obj
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    Some(QuestionOption {
+                        label,
+                        value,
+                        description,
+                    })
                 } else {
                     None
                 }
@@ -215,7 +266,14 @@ impl InteractionState {
     pub fn response_value(&self) -> serde_json::Value {
         match self {
             Self::Text { input, .. } => serde_json::json!({"value": input}),
-            Self::Choice { options, selected, in_custom_mode, custom_input, allow_custom, .. } => {
+            Self::Choice {
+                options,
+                selected,
+                in_custom_mode,
+                custom_input,
+                allow_custom,
+                ..
+            } => {
                 if *in_custom_mode && *allow_custom {
                     serde_json::json!({"value": custom_input})
                 } else if let Some(opt) = options.get(*selected) {
@@ -224,8 +282,11 @@ impl InteractionState {
                     serde_json::json!({"value": null})
                 }
             }
-            Self::Multi { options, selected, .. } => {
-                let values: Vec<&str> = options.iter()
+            Self::Multi {
+                options, selected, ..
+            } => {
+                let values: Vec<&str> = options
+                    .iter()
                     .zip(selected.iter())
                     .filter(|(_, &sel)| sel)
                     .map(|(opt, _)| opt.value.as_str())
@@ -235,11 +296,9 @@ impl InteractionState {
             Self::Confirm { selected, .. } => {
                 serde_json::json!({"value": *selected})
             }
-            Self::Generic { input, .. } => {
-                serde_json::from_str::<serde_json::Value>(input)
-                    .map(|v| serde_json::json!({"value": v}))
-                    .unwrap_or_else(|_| serde_json::json!({"value": input}))
-            }
+            Self::Generic { input, .. } => serde_json::from_str::<serde_json::Value>(input)
+                .map(|v| serde_json::json!({"value": v}))
+                .unwrap_or_else(|_| serde_json::json!({"value": input})),
         }
     }
 }
@@ -298,16 +357,16 @@ pub struct App {
     pub input: String,
     pub cursor_row: usize,
     pub cursor_col: usize,
-    
+
     // Undo/redo history for input.
     input_history: InputHistory,
-    
+
     // Kill ring for Emacs-style delete/yank.
     kill_ring: KillRing,
-    
+
     // Prompt history for Up/Down navigation.
     prompt_history: PromptHistory,
-    
+
     // Prompt stash for /stash and /unstash commands.
     prompt_stash: PromptStash,
 
@@ -323,7 +382,7 @@ pub struct App {
 
     // State.
     pub streaming: bool,
-    pub aborting: bool,  // True when abort requested, waiting for TurnEnded
+    pub aborting: bool,     // True when abort requested, waiting for TurnEnded
     pub turn_phase: String, // idle|thinking|streaming|tool|retrying|failed|aborted — syncs server state machine
     pub turn_status_msg: String, // detail from TurnStatus
     pub spinner_frame: usize,
@@ -337,9 +396,9 @@ pub struct App {
 
     // Tool mode state (UI-local).
     pub tool_mode: bool,
-    pub focused_tool: Option<String>,  // call_id of focused tool
-    pub tool_hit_areas: Vec<ToolHitArea>,  // Click detection areas from last render
-    
+    pub focused_tool: Option<String>,     // call_id of focused tool
+    pub tool_hit_areas: Vec<ToolHitArea>, // Click detection areas from last render
+
     // Thinking block collapse state (UI-local).
     pub thinking_state: ThinkingState,
 
@@ -358,8 +417,8 @@ pub struct App {
     // 96E-23: structured UI directives (session-scoped, transport only until 96E-25).
     pub ui_directives: Vec<(String, String, String, serde_json::Value)>,
     // 96E-25: plugin-declared pages (rendered as side panel with tab switcher).
-    pub ui_pages: std::collections::HashMap<(String,String), crate::page_state::UiPage>,
-    pub ui_page_selected: Option<(String,String)>,
+    pub ui_pages: std::collections::HashMap<(String, String), crate::page_state::UiPage>,
+    pub ui_page_selected: Option<(String, String)>,
     // 96E-27: collapsible subagent sub-entries
     pub subagents: Vec<crate::reducer::SubagentEntry>,
     pub attached_subagent: Option<(String, Vec<crate::wire::TranscriptMessage>)>,
@@ -480,7 +539,8 @@ impl App {
     /// then enter_session() sets the new one. Do not reorder.
     fn reset_session_state(&mut self) {
         // Stop SSE stream and release lease (uses OLD session_id).
-        self.session.reset_state(self.client.as_ref(), &self.tick_ctl);
+        self.session
+            .reset_state(self.client.as_ref(), &self.tick_ctl);
 
         // Clear transcript.
         self.transcript.clear();
@@ -499,7 +559,7 @@ impl App {
         self.overlay = None;
         self.active_approval_id = None;
         self.active_interaction_id = None;
-        
+
         // Clear any queued message (don't carry over to new session).
         self.queued_message = None;
         self.queued_images.clear();
@@ -521,7 +581,9 @@ impl App {
 
     /// Find all tool call_ids in order (for navigation).
     pub fn tool_ids(&self) -> Vec<String> {
-        self.transcript.messages().iter()
+        self.transcript
+            .messages()
+            .iter()
             .flat_map(|m| m.tools.iter())
             .map(|t| t.call_id.clone())
             .collect()
@@ -529,7 +591,9 @@ impl App {
 
     /// Get mutable reference to tool by call_id.
     pub fn tool_mut(&mut self, call_id: &str) -> Option<&mut ToolCard> {
-        self.transcript.messages_mut().iter_mut()
+        self.transcript
+            .messages_mut()
+            .iter_mut()
             .flat_map(|m| m.tools.iter_mut())
             .find(|t| t.call_id == call_id)
     }
@@ -539,7 +603,7 @@ impl App {
         if let Some(tool) = self.tool_mut(call_id) {
             tool.expanded = !tool.expanded;
             if tool.expanded {
-                tool.scroll_offset = 0;  // Reset scroll on expand
+                tool.scroll_offset = 0; // Reset scroll on expand
             }
         }
     }
@@ -554,12 +618,27 @@ impl App {
     /// 96E-27: attach — fetch subagent's full transcript via session_read (host_api).
     pub fn attach_subagent(&mut self, call_id: &str) {
         // If already attached to this one, detach.
-        if self.attached_subagent.as_ref().map(|(id, _)| id == call_id).unwrap_or(false) {
+        if self
+            .attached_subagent
+            .as_ref()
+            .map(|(id, _)| id == call_id)
+            .unwrap_or(false)
+        {
             self.attached_subagent = None;
             return;
         }
         // Find subagent's session (if known) else page_id as proxy
-        let session_opt = self.subagents.iter().find(|e| e.call_id == call_id).and_then(|e| e.session_id.clone()).or_else(|| self.subagents.iter().find(|e| e.call_id == call_id).and_then(|e| e.page_key.as_ref().map(|(_, pid)| pid.clone())));
+        let session_opt = self
+            .subagents
+            .iter()
+            .find(|e| e.call_id == call_id)
+            .and_then(|e| e.session_id.clone())
+            .or_else(|| {
+                self.subagents
+                    .iter()
+                    .find(|e| e.call_id == call_id)
+                    .and_then(|e| e.page_key.as_ref().map(|(_, pid)| pid.clone()))
+            });
         if let (Some(client), Some(sess)) = (&self.client, session_opt) {
             // Try GET /session/{id} (transcript fetch)
             if let Ok(detail) = client.get_session(&sess) {
@@ -575,7 +654,7 @@ impl App {
     pub fn switch_tool_tab(&mut self, call_id: &str, tab: crate::message_handler::ToolTab) {
         if let Some(tool) = self.tool_mut(call_id) {
             tool.active_tab = tab;
-            tool.scroll_offset = 0;  // Reset scroll on tab switch
+            tool.scroll_offset = 0; // Reset scroll on tab switch
         }
     }
 
@@ -596,16 +675,20 @@ impl App {
                     ToolTab::Input => ToolTab::Output,
                 }
             };
-            tool.scroll_offset = 0;  // Reset scroll on tab switch
+            tool.scroll_offset = 0; // Reset scroll on tab switch
         }
     }
 
     /// Navigate to next/prev tool in tool mode.
     pub fn navigate_tool(&mut self, forward: bool) {
         let ids = self.tool_ids();
-        if ids.is_empty() { return; }
+        if ids.is_empty() {
+            return;
+        }
 
-        let current_idx = self.focused_tool.as_ref()
+        let current_idx = self
+            .focused_tool
+            .as_ref()
             .and_then(|id| ids.iter().position(|i| i == id));
 
         let new_idx = match (current_idx, forward) {
@@ -632,7 +715,7 @@ impl App {
                         line_count += output.lines().count();
                     }
                 }
-                let visible_lines = 20;  // Must match render constant
+                let visible_lines = 20; // Must match render constant
                 let max_scroll = line_count.saturating_sub(visible_lines);
                 tool.scroll_offset = (tool.scroll_offset as isize + delta)
                     .max(0)
@@ -659,12 +742,22 @@ impl App {
     }
 
     /// Enter a session (from welcome screen or session list).
-    pub fn enter_session(&mut self, session_id: &str, tx: Sender<Event>) -> Result<(), ClientError> {
-        let client = self.client.as_ref().ok_or(ClientError::Http("not connected".into()))?;
+    pub fn enter_session(
+        &mut self,
+        session_id: &str,
+        tx: Sender<Event>,
+    ) -> Result<(), ClientError> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or(ClientError::Http("not connected".into()))?;
 
         self.session.set_session_id(session_id.to_string());
         // Get title from sessions list (if available).
-        let title = self.session.sessions.iter()
+        let title = self
+            .session
+            .sessions
+            .iter()
             .find(|s| s.id == session_id)
             .map(|s| s.name.clone());
         self.session.set_session_title(title);
@@ -674,7 +767,11 @@ impl App {
         if let Some(ref holder) = lease_result {
             // Send initial model to session (so server uses our selected model).
             if let Some(model) = self.model_sel.current_model() {
-                crate::log!("enter_session: setting initial model {}:{}", model.provider, model.id);
+                crate::log!(
+                    "enter_session: setting initial model {}:{}",
+                    model.provider,
+                    model.id
+                );
                 match client.set_model(session_id, holder, &model.provider, &model.id) {
                     Ok(_) => crate::log!("enter_session: set_model OK"),
                     Err(e) => crate::log!("enter_session: set_model error {:?}", e),
@@ -695,7 +792,9 @@ impl App {
 
                 // Use TranscriptParser from message_handler to parse the transcript.
                 // Filter out silent messages (e.g., AGENTS.md injection).
-                let transcript_values: Vec<serde_json::Value> = detail.transcript.iter()
+                let transcript_values: Vec<serde_json::Value> = detail
+                    .transcript
+                    .iter()
                     .filter(|msg| !msg.silent)
                     .map(|msg| {
                         serde_json::json!({
@@ -708,7 +807,12 @@ impl App {
 
                 // Log summary.
                 let tool_count: usize = messages.iter().map(|m| m.tools.len()).sum();
-                crate::log!("Loaded {} messages with {} total tools, head_seq={}", messages.len(), tool_count, detail.head_seq);
+                crate::log!(
+                    "Loaded {} messages with {} total tools, head_seq={}",
+                    messages.len(),
+                    tool_count,
+                    detail.head_seq
+                );
 
                 for msg in messages {
                     self.transcript.push(msg);
@@ -723,8 +827,13 @@ impl App {
         }
 
         // Start SSE stream for this session, starting from last_seq.
-        crate::log!("enter_session: starting SSE for {} from_seq={}", session_id, self.session.state.last_seq);
-        self.session.start_sse(&self.config, session_id, self.session.state.last_seq, tx);
+        crate::log!(
+            "enter_session: starting SSE for {} from_seq={}",
+            session_id,
+            self.session.state.last_seq
+        );
+        self.session
+            .start_sse(&self.config, session_id, self.session.state.last_seq, tx);
 
         // Switch to chat screen.
         self.screen = Screen::Chat;
@@ -738,12 +847,18 @@ impl App {
     /// Create a new session and enter it.
     pub fn create_new_session(&mut self, tx: Sender<Event>) -> Result<(), ClientError> {
         crate::log!("create_new_session: starting...");
-        let client = self.client.as_ref().ok_or(ClientError::Http("not connected".into()))?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or(ClientError::Http("not connected".into()))?;
 
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".into());
-        crate::log!("create_new_session: calling server create_session cwd={}", cwd);
+        crate::log!(
+            "create_new_session: calling server create_session cwd={}",
+            cwd
+        );
         let session_id = self.session.create_session(client, &cwd)?;
         crate::log!("create_new_session: got session_id={}", &session_id);
 
@@ -796,9 +911,12 @@ impl App {
                     if session_id == self.session.state.session_id {
                         self.handle_sse(frame);
                     } else {
-                        crate::log!("SSE: ignoring event from old session {} (current={})",
+                        crate::log!(
+                            "SSE: ignoring event from old session {} (current={})",
                             &session_id[..8.min(session_id.len())],
-                            &self.session.state.session_id[..8.min(self.session.state.session_id.len())]);
+                            &self.session.state.session_id
+                                [..8.min(self.session.state.session_id.len())]
+                        );
                     }
                 }
                 Event::Tick => {
@@ -810,14 +928,33 @@ impl App {
                 Event::SseError(session_id, e) => {
                     // Phase 4 fix: R-TUI-230 — reconnect from last_seq instead of lying.
                     if session_id == self.session.state.session_id {
-                        crate::log!("SSE error: {} — reconnecting from seq {}", e, self.session.state.last_seq);
+                        crate::log!(
+                            "SSE error: {} — reconnecting from seq {}",
+                            e,
+                            self.session.state.last_seq
+                        );
                         // Show transient reconnection message in transcript (deduplicate).
-                        if !self.transcript.messages().iter().rev().take(1).any(|m| m.role == "system" && m.content.contains("reconnecting")) {
-                            self.transcript.push(Message::new("system", format!("Connection interrupted, reconnecting... ({})", e)));
+                        if !self
+                            .transcript
+                            .messages()
+                            .iter()
+                            .rev()
+                            .take(1)
+                            .any(|m| m.role == "system" && m.content.contains("reconnecting"))
+                        {
+                            self.transcript.push(Message::new(
+                                "system",
+                                format!("Connection interrupted, reconnecting... ({})", e),
+                            ));
                         }
                         // Reconnect: stop old handle (already dead) and start new from last_seq.
                         if !session_id.is_empty() {
-                            self.session.start_sse(&self.config, &session_id, self.session.state.last_seq, tx.clone());
+                            self.session.start_sse(
+                                &self.config,
+                                &session_id,
+                                self.session.state.last_seq,
+                                tx.clone(),
+                            );
                         }
                     }
                 }
@@ -844,12 +981,31 @@ impl App {
                     Event::Tick => self.spinner_frame = self.spinner_frame.wrapping_add(1),
                     Event::SseError(session_id, e) => {
                         if session_id == self.session.state.session_id {
-                            crate::log!("SSE error: {} — reconnecting from seq {}", e, self.session.state.last_seq);
-                            if !self.transcript.messages().iter().rev().take(1).any(|m| m.role == "system" && m.content.contains("reconnecting")) {
-                                self.transcript.push(Message::new("system", format!("Connection interrupted, reconnecting... ({})", e)));
+                            crate::log!(
+                                "SSE error: {} — reconnecting from seq {}",
+                                e,
+                                self.session.state.last_seq
+                            );
+                            if !self
+                                .transcript
+                                .messages()
+                                .iter()
+                                .rev()
+                                .take(1)
+                                .any(|m| m.role == "system" && m.content.contains("reconnecting"))
+                            {
+                                self.transcript.push(Message::new(
+                                    "system",
+                                    format!("Connection interrupted, reconnecting... ({})", e),
+                                ));
                             }
                             if !session_id.is_empty() {
-                                self.session.start_sse(&self.config, &session_id, self.session.state.last_seq, tx.clone());
+                                self.session.start_sse(
+                                    &self.config,
+                                    &session_id,
+                                    self.session.state.last_seq,
+                                    tx.clone(),
+                                );
                             }
                         }
                     }
@@ -871,16 +1027,23 @@ impl App {
     }
 
     fn handle_key(&mut self, key: crossterm::event::KeyEvent, tx: &Sender<Event>) {
-        crate::log!("KEY: {:?} mods={:?} screen={:?} overlay={:?} diff={:?} slash={}", 
-            key.code, key.modifiers, self.screen, self.overlay.is_some(), self.diff_viewer.is_some(), self.slash.active);
-        
+        crate::log!(
+            "KEY: {:?} mods={:?} screen={:?} overlay={:?} diff={:?} slash={}",
+            key.code,
+            key.modifiers,
+            self.screen,
+            self.overlay.is_some(),
+            self.diff_viewer.is_some(),
+            self.slash.active
+        );
+
         // Diff viewer handling (separate from overlay).
         if self.diff_viewer.is_some() {
             crate::log!("  -> diff_viewer handler");
             self.handle_overlay_key(key, tx);
             return;
         }
-        
+
         // Overlay handling.
         if self.overlay.is_some() {
             crate::log!("  -> overlay handler");
@@ -1049,20 +1212,23 @@ impl App {
 
         // Input handling.
         crate::log!("  -> input handler");
-        
+
         // Reset kill ring yank state on any non-yank input
         self.kill_ring.reset_yank();
-        
+
         match key.code {
             KeyCode::Char(c) => {
                 // Handle special control characters that terminals send.
                 // Ctrl+Backspace often sends ^H (0x08) or DEL (0x7f).
                 if c == '\x08' || c == '\x7f' {
-                    crate::log!("  -> Ctrl+Backspace detected (0x{:02x}), killing word", c as u8);
+                    crate::log!(
+                        "  -> Ctrl+Backspace detected (0x{:02x}), killing word",
+                        c as u8
+                    );
                     self.kill_word_backward();
                     return;
                 }
-                
+
                 crate::log!("  -> inserting char: {:?}", c);
                 // Reset prompt history navigation when typing
                 self.prompt_history.reset();
@@ -1070,7 +1236,7 @@ impl App {
                 self.record_input_change();
                 self.input.insert(self.cursor_pos(), c);
                 self.cursor_col += 1;
-                
+
                 // Activate slash mode if typing "/" at start.
                 if c == '/' && self.input == "/" {
                     self.slash.activate();
@@ -1103,7 +1269,11 @@ impl App {
                     self.record_input_change();
                     // pos should already be at a char boundary from cursor_pos().
                     // But ensure we remove the full character.
-                    let char_len = self.input[pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                    let char_len = self.input[pos..]
+                        .chars()
+                        .next()
+                        .map(|c| c.len_utf8())
+                        .unwrap_or(1);
                     for _ in 0..char_len {
                         if pos < self.input.len() {
                             self.input.remove(pos);
@@ -1138,7 +1308,12 @@ impl App {
                     if let Some(prev) = self.prompt_history.prev(&current, self.cursor_row) {
                         self.input = prev.to_string();
                         self.cursor_row = 0;
-                        self.cursor_col = self.input.lines().next().map(|l| l.chars().count()).unwrap_or(0);
+                        self.cursor_col = self
+                            .input
+                            .lines()
+                            .next()
+                            .map(|l| l.chars().count())
+                            .unwrap_or(0);
                     }
                 }
             }
@@ -1153,7 +1328,12 @@ impl App {
                     if let Some(next) = self.prompt_history.next(self.cursor_row, total_lines) {
                         self.input = next;
                         self.cursor_row = 0;
-                        self.cursor_col = self.input.lines().next().map(|l| l.chars().count()).unwrap_or(0);
+                        self.cursor_col = self
+                            .input
+                            .lines()
+                            .next()
+                            .map(|l| l.chars().count())
+                            .unwrap_or(0);
                     }
                 }
             }
@@ -1184,7 +1364,7 @@ impl App {
                 }
                 return;
             }
-            
+
             match key.code {
                 KeyCode::Esc => {
                     // On close, append comments to input if any
@@ -1240,41 +1420,43 @@ impl App {
             }
             return;
         }
-        
+
         match &mut self.overlay {
-            Some(Overlay::Approval { selected, .. }) => {
-                match key.code {
-                    KeyCode::Left => *selected = selected.saturating_sub(1),
-                    KeyCode::Right => *selected = (*selected + 1).min(2),
-                    KeyCode::Char('y') => {
-                        self.respond_approval("allow");
-                        self.overlay = None;
-                    }
-                    KeyCode::Char('n') | KeyCode::Esc => {
-                        self.respond_approval("deny");
-                        self.overlay = None;
-                    }
-                    KeyCode::Char('a') => {
-                        self.respond_approval("always");
-                        self.overlay = None;
-                    }
-                    KeyCode::Enter => {
-                        let decision = match *selected {
-                            0 => "allow",
-                            1 => "always",
-                            _ => "deny",
-                        };
-                        self.respond_approval(decision);
-                        self.overlay = None;
-                    }
-                    _ => {}
+            Some(Overlay::Approval { selected, .. }) => match key.code {
+                KeyCode::Left => *selected = selected.saturating_sub(1),
+                KeyCode::Right => *selected = (*selected + 1).min(2),
+                KeyCode::Char('y') => {
+                    self.respond_approval("allow");
+                    self.overlay = None;
                 }
-            }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.respond_approval("deny");
+                    self.overlay = None;
+                }
+                KeyCode::Char('a') => {
+                    self.respond_approval("always");
+                    self.overlay = None;
+                }
+                KeyCode::Enter => {
+                    let decision = match *selected {
+                        0 => "allow",
+                        1 => "always",
+                        _ => "deny",
+                    };
+                    self.respond_approval(decision);
+                    self.overlay = None;
+                }
+                _ => {}
+            },
             Some(Overlay::Interaction { ref mut state, .. }) => {
                 match key.code {
                     KeyCode::Esc => {
                         // Check if we're in custom mode for Choice - exit custom mode first
-                        if let InteractionState::Choice { ref mut in_custom_mode, .. } = state {
+                        if let InteractionState::Choice {
+                            ref mut in_custom_mode,
+                            ..
+                        } = state
+                        {
                             if *in_custom_mode {
                                 *in_custom_mode = false;
                                 return;
@@ -1285,7 +1467,12 @@ impl App {
                     }
                     KeyCode::Enter => {
                         // For Choice in custom mode, submit the custom input
-                        if let InteractionState::Choice { in_custom_mode, allow_custom, .. } = state {
+                        if let InteractionState::Choice {
+                            in_custom_mode,
+                            allow_custom,
+                            ..
+                        } = state
+                        {
                             if *in_custom_mode && *allow_custom {
                                 let response = state.response_value();
                                 self.respond_interaction(response);
@@ -1297,99 +1484,144 @@ impl App {
                         let response = state.response_value();
                         self.respond_interaction(response);
                     }
-                    KeyCode::Up => {
-                        match state {
-                            InteractionState::Choice { selected, options, in_custom_mode, allow_custom, .. } => {
-                                if !*in_custom_mode {
-                                    let max = options.len() + if *allow_custom { 1 } else { 0 };
-                                    *selected = selected.saturating_sub(1).min(max.saturating_sub(1));
-                                }
+                    KeyCode::Up => match state {
+                        InteractionState::Choice {
+                            selected,
+                            options,
+                            in_custom_mode,
+                            allow_custom,
+                            ..
+                        } => {
+                            if !*in_custom_mode {
+                                let max = options.len() + if *allow_custom { 1 } else { 0 };
+                                *selected = selected.saturating_sub(1).min(max.saturating_sub(1));
                             }
-                            InteractionState::Multi { cursor, options, .. } => {
-                                *cursor = cursor.saturating_sub(1).min(options.len().saturating_sub(1));
-                            }
-                            InteractionState::Confirm { selected, .. } => {
-                                *selected = true;
-                            }
-                            _ => {}
                         }
-                    }
-                    KeyCode::Down => {
-                        match state {
-                            InteractionState::Choice { selected, options, in_custom_mode, allow_custom, .. } => {
-                                if !*in_custom_mode {
-                                    let max = options.len() + if *allow_custom { 1 } else { 0 };
-                                    *selected = (*selected + 1).min(max.saturating_sub(1));
-                                }
-                            }
-                            InteractionState::Multi { cursor, options, .. } => {
-                                *cursor = (*cursor + 1).min(options.len().saturating_sub(1));
-                            }
-                            InteractionState::Confirm { selected, .. } => {
-                                *selected = false;
-                            }
-                            _ => {}
+                        InteractionState::Multi {
+                            cursor, options, ..
+                        } => {
+                            *cursor = cursor
+                                .saturating_sub(1)
+                                .min(options.len().saturating_sub(1));
                         }
-                    }
+                        InteractionState::Confirm { selected, .. } => {
+                            *selected = true;
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Down => match state {
+                        InteractionState::Choice {
+                            selected,
+                            options,
+                            in_custom_mode,
+                            allow_custom,
+                            ..
+                        } => {
+                            if !*in_custom_mode {
+                                let max = options.len() + if *allow_custom { 1 } else { 0 };
+                                *selected = (*selected + 1).min(max.saturating_sub(1));
+                            }
+                        }
+                        InteractionState::Multi {
+                            cursor, options, ..
+                        } => {
+                            *cursor = (*cursor + 1).min(options.len().saturating_sub(1));
+                        }
+                        InteractionState::Confirm { selected, .. } => {
+                            *selected = false;
+                        }
+                        _ => {}
+                    },
                     KeyCode::Left | KeyCode::Right => {
                         if let InteractionState::Confirm { selected, .. } = state {
                             *selected = !*selected;
                         }
                     }
-                    KeyCode::Char(' ') => {
-                        match state {
-                            InteractionState::Multi { cursor, selected, .. } => {
-                                if let Some(sel) = selected.get_mut(*cursor) {
-                                    *sel = !*sel;
-                                }
+                    KeyCode::Char(' ') => match state {
+                        InteractionState::Multi {
+                            cursor, selected, ..
+                        } => {
+                            if let Some(sel) = selected.get_mut(*cursor) {
+                                *sel = !*sel;
                             }
-                            InteractionState::Choice { selected, options, allow_custom, in_custom_mode, custom_input, .. } => {
-                                if *in_custom_mode {
-                                    custom_input.push(' ');
-                                } else if *allow_custom && *selected == options.len() {
-                                    *in_custom_mode = true;
-                                }
-                            }
-                            InteractionState::Text { input, .. } => { input.push(' '); }
-                            InteractionState::Generic { input, .. } => { input.push(' '); }
-                            _ => {}
                         }
-                    }
+                        InteractionState::Choice {
+                            selected,
+                            options,
+                            allow_custom,
+                            in_custom_mode,
+                            custom_input,
+                            ..
+                        } => {
+                            if *in_custom_mode {
+                                custom_input.push(' ');
+                            } else if *allow_custom && *selected == options.len() {
+                                *in_custom_mode = true;
+                            }
+                        }
+                        InteractionState::Text { input, .. } => {
+                            input.push(' ');
+                        }
+                        InteractionState::Generic { input, .. } => {
+                            input.push(' ');
+                        }
+                        _ => {}
+                    },
                     KeyCode::Tab => {
                         // Tab cycles through options for choice/multi
                         match state {
-                            InteractionState::Choice { selected, options, allow_custom, in_custom_mode, .. } => {
+                            InteractionState::Choice {
+                                selected,
+                                options,
+                                allow_custom,
+                                in_custom_mode,
+                                ..
+                            } => {
                                 if !*in_custom_mode {
                                     let max = options.len() + if *allow_custom { 1 } else { 0 };
                                     *selected = (*selected + 1) % max;
                                 }
                             }
-                            InteractionState::Multi { cursor, options, .. } => {
+                            InteractionState::Multi {
+                                cursor, options, ..
+                            } => {
                                 *cursor = (*cursor + 1) % options.len().max(1);
                             }
                             _ => {}
                         }
                     }
-                    KeyCode::Backspace => {
-                        match state {
-                            InteractionState::Text { input, .. } => { input.pop(); }
-                            InteractionState::Choice { custom_input, in_custom_mode, .. } if *in_custom_mode => {
-                                custom_input.pop();
-                            }
-                            InteractionState::Generic { input, .. } => { input.pop(); }
-                            _ => {}
+                    KeyCode::Backspace => match state {
+                        InteractionState::Text { input, .. } => {
+                            input.pop();
                         }
-                    }
-                    KeyCode::Char(c) => {
-                        match state {
-                            InteractionState::Text { input, .. } => { input.push(c); }
-                            InteractionState::Choice { custom_input, in_custom_mode, .. } if *in_custom_mode => {
-                                custom_input.push(c);
-                            }
-                            InteractionState::Generic { input, .. } => { input.push(c); }
-                            _ => {}
+                        InteractionState::Choice {
+                            custom_input,
+                            in_custom_mode,
+                            ..
+                        } if *in_custom_mode => {
+                            custom_input.pop();
                         }
-                    }
+                        InteractionState::Generic { input, .. } => {
+                            input.pop();
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Char(c) => match state {
+                        InteractionState::Text { input, .. } => {
+                            input.push(c);
+                        }
+                        InteractionState::Choice {
+                            custom_input,
+                            in_custom_mode,
+                            ..
+                        } if *in_custom_mode => {
+                            custom_input.push(c);
+                        }
+                        InteractionState::Generic { input, .. } => {
+                            input.push(c);
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -1400,33 +1632,54 @@ impl App {
             Some(Overlay::WhichKey) => {
                 use crossterm::event::KeyCode;
                 let groups = crate::which_key::get_keybindings(self.tool_mode);
-                crate::log!("WHICH-KEY: key={:?} selected_idx={}", key.code, self.which_key_panel.selected_idx);
+                crate::log!(
+                    "WHICH-KEY: key={:?} selected_idx={}",
+                    key.code,
+                    self.which_key_panel.selected_idx
+                );
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => {
                         self.overlay = None;
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.which_key_panel.select_prev(&groups);
-                        crate::log!("WHICH-KEY: after prev, selected_idx={}", self.which_key_panel.selected_idx);
+                        crate::log!(
+                            "WHICH-KEY: after prev, selected_idx={}",
+                            self.which_key_panel.selected_idx
+                        );
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
                         self.which_key_panel.select_next(&groups);
-                        crate::log!("WHICH-KEY: after next, selected_idx={}", self.which_key_panel.selected_idx);
+                        crate::log!(
+                            "WHICH-KEY: after next, selected_idx={}",
+                            self.which_key_panel.selected_idx
+                        );
                     }
                     _ => {}
                 }
             }
-            Some(Overlay::ModelSelect { ref mut selected, ref mut filter }) => {
-                crate::log!("  ModelSelect overlay: key={:?} selected={} filter={}", key.code, *selected, filter);
+            Some(Overlay::ModelSelect {
+                ref mut selected,
+                ref mut filter,
+            }) => {
+                crate::log!(
+                    "  ModelSelect overlay: key={:?} selected={} filter={}",
+                    key.code,
+                    *selected,
+                    filter
+                );
 
                 // Get filtered models count for bounds checking.
                 // Filter matches on display name OR provider.
-                let filtered: Vec<usize> = self.model_sel.models().iter()
+                let filtered: Vec<usize> = self
+                    .model_sel
+                    .models()
+                    .iter()
                     .enumerate()
                     .filter(|(_, m)| {
                         filter.is_empty()
-                        || fuzzy_match(&m.display_name(), filter)
-                        || fuzzy_match(&m.provider, filter)
+                            || fuzzy_match(&m.display_name(), filter)
+                            || fuzzy_match(&m.provider, filter)
                     })
                     .map(|(i, _)| i)
                     .collect();
@@ -1471,18 +1724,34 @@ impl App {
                                 crate::log!("  ModelSelect: model={}:{}", provider, id);
                                 let session_id = self.session.state.session_id.clone();
                                 let lease = self.session.state.lease.clone();
-                                crate::log!("  ModelSelect: client={} lease={} session_id={}",
-                                    self.client.is_some(), lease.is_some(), &session_id);
+                                crate::log!(
+                                    "  ModelSelect: client={} lease={} session_id={}",
+                                    self.client.is_some(),
+                                    lease.is_some(),
+                                    &session_id
+                                );
                                 if let Some(client) = &self.client {
                                     // Persist selection to server preferences.
                                     let _ = client.set_pref("last_model", &id);
                                     // Send model change to current session (requires lease).
                                     if let Some(ref holder) = lease {
                                         if !session_id.is_empty() {
-                                            crate::log!("MODEL CHANGE: session={} provider={} id={}", &session_id, &provider, &id);
-                                            match client.set_model(&session_id, holder, &provider, &id) {
+                                            crate::log!(
+                                                "MODEL CHANGE: session={} provider={} id={}",
+                                                &session_id,
+                                                &provider,
+                                                &id
+                                            );
+                                            match client.set_model(
+                                                &session_id,
+                                                holder,
+                                                &provider,
+                                                &id,
+                                            ) {
                                                 Ok(_) => crate::log!("MODEL CHANGE: success"),
-                                                Err(e) => crate::log!("MODEL CHANGE: error {:?}", e),
+                                                Err(e) => {
+                                                    crate::log!("MODEL CHANGE: error {:?}", e)
+                                                }
                                             }
                                         } else {
                                             crate::log!("MODEL CHANGE: no session_id");
@@ -1502,12 +1771,23 @@ impl App {
                     }
                 }
             }
-            Some(Overlay::SessionSelect { ref mut selected, ref mut filter }) => {
-                crate::log!("  SessionSelect overlay: key={:?} selected={} filter={}", key.code, *selected, filter);
+            Some(Overlay::SessionSelect {
+                ref mut selected,
+                ref mut filter,
+            }) => {
+                crate::log!(
+                    "  SessionSelect overlay: key={:?} selected={} filter={}",
+                    key.code,
+                    *selected,
+                    filter
+                );
 
                 // Get filtered sessions for bounds checking.
                 // Selection index 0 = "New session", 1+ = filtered sessions.
-                let filtered: Vec<usize> = self.session.sessions.iter()
+                let filtered: Vec<usize> = self
+                    .session
+                    .sessions
+                    .iter()
                     .enumerate()
                     .filter(|(_, s)| session_matches(s, filter))
                     .map(|(i, _)| i)
@@ -1538,16 +1818,20 @@ impl App {
                         // 96E-19: when the filter matches, highlight the FIRST match
                         // (not "New session") so Enter opens it — previously typing a
                         // filter then Enter always created a new session.
-                        let matches = self.session.sessions.iter().any(|s| {
-                            session_matches(s, filter)
-                        });
+                        let matches = self
+                            .session
+                            .sessions
+                            .iter()
+                            .any(|s| session_matches(s, filter));
                         *selected = if matches { 1 } else { 0 };
                     }
                     KeyCode::Char(c) => {
                         filter.push(c);
-                        let matches = self.session.sessions.iter().any(|s| {
-                            session_matches(s, filter)
-                        });
+                        let matches = self
+                            .session
+                            .sessions
+                            .iter()
+                            .any(|s| session_matches(s, filter));
                         *selected = if matches { 1 } else { 0 };
                     }
                     KeyCode::Delete => {
@@ -1572,21 +1856,34 @@ impl App {
                     KeyCode::Enter => {
                         crate::log!("  SessionSelect: ENTER pressed, selected={}", *selected);
                         let is_new = *selected == 0;
-                        let target_idx = if !is_new { filtered.get(*selected - 1).copied() } else { None };
+                        let target_idx = if !is_new {
+                            filtered.get(*selected - 1).copied()
+                        } else {
+                            None
+                        };
                         self.overlay = None;
                         if is_new {
                             crate::log!("  SessionSelect: creating new session");
                             self.reset_session_state();
                             if let Err(e) = self.create_new_session(tx.clone()) {
-                                self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
+                                self.transcript.push(Message::new(
+                                    "error",
+                                    format!("Failed to create session: {}", e),
+                                ));
                             }
                         } else if let Some(session_idx) = target_idx {
                             if session_idx < self.session.sessions.len() {
                                 let new_session = self.session.sessions[session_idx].id.clone();
-                                crate::log!("SESSION SWITCH: -> {}", &new_session[..8.min(new_session.len())]);
+                                crate::log!(
+                                    "SESSION SWITCH: -> {}",
+                                    &new_session[..8.min(new_session.len())]
+                                );
                                 self.reset_session_state();
                                 if let Err(e) = self.enter_session(&new_session, tx.clone()) {
-                                    self.transcript.push(Message::new("error", format!("Failed to switch session: {}", e)));
+                                    self.transcript.push(Message::new(
+                                        "error",
+                                        format!("Failed to switch session: {}", e),
+                                    ));
                                 }
                             }
                         }
@@ -1594,45 +1891,50 @@ impl App {
                     _ => {}
                 }
             }
-            Some(Overlay::CommandPalette) => {
-                match key.code {
-                    KeyCode::Esc => {
+            Some(Overlay::CommandPalette) => match key.code {
+                KeyCode::Esc => {
+                    self.command_palette.close();
+                    self.overlay = None;
+                }
+                KeyCode::Up => {
+                    self.command_palette.select_prev();
+                }
+                KeyCode::Down => {
+                    self.command_palette.select_next();
+                }
+                KeyCode::Backspace => {
+                    self.command_palette.pop_char();
+                }
+                KeyCode::Char(c) => {
+                    self.command_palette.push_char(c);
+                }
+                KeyCode::Enter => {
+                    if let Some(cmd) = self.command_palette.selected_command() {
+                        let cmd_id = cmd.id;
                         self.command_palette.close();
                         self.overlay = None;
+                        self.execute_palette_command(cmd_id, tx);
                     }
-                    KeyCode::Up => {
-                        self.command_palette.select_prev();
-                    }
-                    KeyCode::Down => {
-                        self.command_palette.select_next();
-                    }
-                    KeyCode::Backspace => {
-                        self.command_palette.pop_char();
-                    }
-                    KeyCode::Char(c) => {
-                        self.command_palette.push_char(c);
-                    }
-                    KeyCode::Enter => {
-                        if let Some(cmd) = self.command_palette.selected_command() {
-                            let cmd_id = cmd.id;
-                            self.command_palette.close();
-                            self.overlay = None;
-                            self.execute_palette_command(cmd_id, tx);
-                        }
-                    }
-                    _ => {}
                 }
-            }
-            Some(Overlay::ToolsManager { ref mut selected, ref mut filter }) => {
+                _ => {}
+            },
+            Some(Overlay::ToolsManager {
+                ref mut selected,
+                ref mut filter,
+            }) => {
                 // Tools are grouped by plugin; flat list for selection.
                 // Filter matches on tool name or plugin name.
-                let filtered: Vec<usize> = self.tools
+                let filtered: Vec<usize> = self
+                    .tools
                     .iter()
                     .enumerate()
                     .filter(|(_, t)| {
                         filter.is_empty()
                             || fuzzy_match(&t.name, filter)
-                            || t.plugin.as_ref().map(|p| fuzzy_match(p, filter)).unwrap_or(false)
+                            || t.plugin
+                                .as_ref()
+                                .map(|p| fuzzy_match(p, filter))
+                                .unwrap_or(false)
                     })
                     .map(|(i, _)| i)
                     .collect();
@@ -1684,13 +1986,13 @@ impl App {
             self.handle_overlay_key(key, tx);
             return;
         }
-        
+
         // Handle overlay (same logic as chat screen).
         if self.overlay.is_some() {
             self.handle_overlay_key(key, tx);
             return;
         }
-        
+
         // Check Ctrl+C/Q for quit, Ctrl+V for paste.
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
@@ -1712,7 +2014,7 @@ impl App {
                 _ => {}
             }
         }
-        
+
         // Slash command handling (same as chat).
         if self.slash.active {
             match key.code {
@@ -1762,7 +2064,7 @@ impl App {
                 _ => return,
             }
         }
-        
+
         // Check keybinds for word navigation and model cycling actions.
         if let Some(action) = self.keybinds.match_key(key) {
             match action {
@@ -1794,7 +2096,7 @@ impl App {
                 _ => {}
             }
         }
-        
+
         // Input handling.
         match key.code {
             KeyCode::Esc => {
@@ -1820,7 +2122,9 @@ impl App {
             KeyCode::Backspace => {
                 if self.cursor_col > 0 {
                     // Convert char index to byte index.
-                    let byte_idx = self.input.char_indices()
+                    let byte_idx = self
+                        .input
+                        .char_indices()
                         .nth(self.cursor_col - 1)
                         .map(|(i, _)| i)
                         .unwrap_or(0);
@@ -1841,7 +2145,9 @@ impl App {
             }
             KeyCode::Char(c) => {
                 // Convert char index to byte index for insert.
-                let byte_idx = self.input.char_indices()
+                let byte_idx = self
+                    .input
+                    .char_indices()
                     .nth(self.cursor_col)
                     .map(|(i, _)| i)
                     .unwrap_or(self.input.len());
@@ -1853,7 +2159,10 @@ impl App {
                     // No input - create new empty session immediately (Phase 4.4c: no queued buffers).
                     crate::log!("ENTER: creating new session (empty input)");
                     if let Err(e) = self.create_new_session(tx.clone()) {
-                        self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
+                        self.transcript.push(Message::new(
+                            "error",
+                            format!("Failed to create session: {}", e),
+                        ));
                     }
                 } else {
                     // Has input - create session and send message immediately.
@@ -1866,7 +2175,8 @@ impl App {
                             crate::log!("Sending first message: {}", &msg);
                             let images = std::mem::take(&mut self.staged_images);
                             let image_count = images.len();
-                            self.transcript.push(Message::with_images("user", &msg, image_count));
+                            self.transcript
+                                .push(Message::with_images("user", &msg, image_count));
                             let session_id = self.session.state.session_id.clone();
                             let lease = self.session.state.lease.clone().unwrap_or_default();
                             if let Some(client) = &self.client {
@@ -1878,13 +2188,19 @@ impl App {
                                     }
                                     Err(e) => {
                                         crate::log!("prompt FAILED: {:?}", e);
-                                        self.transcript.push(Message::new("error", format!("Failed to send message: {}", e)));
+                                        self.transcript.push(Message::new(
+                                            "error",
+                                            format!("Failed to send message: {}", e),
+                                        ));
                                     }
                                 }
                             }
                         }
                         Err(e) => {
-                            self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
+                            self.transcript.push(Message::new(
+                                "error",
+                                format!("Failed to create session: {}", e),
+                            ));
                         }
                     }
                 }
@@ -1938,13 +2254,19 @@ impl App {
             Action::ToggleLeft => {
                 // Left sidebar removed - sessions accessed via /session command.
                 // Open session picker instead.
-                self.overlay = Some(Overlay::SessionSelect { selected: 0, filter: String::new() });
+                self.overlay = Some(Overlay::SessionSelect {
+                    selected: 0,
+                    filter: String::new(),
+                });
             }
             Action::NewSession => {
                 // Phase 4.4c: create immediately (no queued buffer).
                 self.reset_session_state();
                 if let Err(e) = self.create_new_session(tx.clone()) {
-                    self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
+                    self.transcript.push(Message::new(
+                        "error",
+                        format!("Failed to create session: {}", e),
+                    ));
                 }
             }
             Action::ToolMode => {
@@ -2014,8 +2336,11 @@ impl App {
                 self.cycle_model_prev();
             }
             // Search mode actions are handled in handle_search_key, not here.
-            Action::CloseSearch | Action::NextMatch | Action::PrevMatch
-            | Action::ToggleRegex | Action::ToggleCase => {}
+            Action::CloseSearch
+            | Action::NextMatch
+            | Action::PrevMatch
+            | Action::ToggleRegex
+            | Action::ToggleCase => {}
             _ => {}
         }
     }
@@ -2145,7 +2470,7 @@ impl App {
             }
             return;
         }
-        
+
         match mouse.kind {
             MouseEventKind::Moved => {
                 // Right sidebar stays expanded — no hover behavior needed.
@@ -2178,7 +2503,9 @@ impl App {
                             let mut line_count = tool.progress_lines.len();
                             if let Some(ref output) = tool.output {
                                 if !output.is_empty() {
-                                    if line_count > 0 { line_count += 1; }
+                                    if line_count > 0 {
+                                        line_count += 1;
+                                    }
                                     line_count += output.lines().count();
                                 }
                             }
@@ -2207,7 +2534,7 @@ impl App {
         }
         None
     }
-    
+
     fn handle_click(&mut self, x: u16, y: u16) {
         // Right sidebar: tools are now server-driven (GET /tools), not togglable locally.
         // The previous dead `enabled` toggle (F9) has been removed — clicks here are no-ops
@@ -2220,12 +2547,16 @@ impl App {
             } else {
                 Some(self.session.state.session_id.as_str())
             };
-            if let Some(entries) = self.client.as_ref().and_then(|c| c.get_tools(session_id).ok()) {
+            if let Some(entries) = self
+                .client
+                .as_ref()
+                .and_then(|c| c.get_tools(session_id).ok())
+            {
                 self.tools = entries;
             }
             return;
         }
-        
+
         // Check tool card clicks
         for hit in &self.tool_hit_areas.clone() {
             // Click on header line - toggle expand/collapse
@@ -2235,7 +2566,10 @@ impl App {
             }
 
             // Click on tabs (only if expanded)
-            let is_expanded = self.transcript.messages().iter()
+            let is_expanded = self
+                .transcript
+                .messages()
+                .iter()
                 .flat_map(|m| m.tools.iter())
                 .find(|t| t.call_id == hit.call_id)
                 .map(|t| t.expanded)
@@ -2268,7 +2602,10 @@ impl App {
 
     /// Paste image from system clipboard (fallback when bracketed paste is empty).
     fn paste_image_from_clipboard(&mut self) {
-        crate::log!("PASTE IMAGE: starting, current staged_images.len={}", self.staged_images.len());
+        crate::log!(
+            "PASTE IMAGE: starting, current staged_images.len={}",
+            self.staged_images.len()
+        );
         let mut clipboard = match arboard::Clipboard::new() {
             Ok(c) => c,
             Err(e) => {
@@ -2286,7 +2623,7 @@ impl App {
                     self.staged_images.push(base64);
                     let img_num = self.staged_images.len();
                     crate::log!("PASTE IMAGE: encoded, staged_images.len={}", img_num);
-                    
+
                     // Insert [imgN: WxH PNG] marker at cursor position.
                     let marker = format!("[img{}: {}x{} PNG]", img_num, width, height);
                     let pos = self.cursor_pos();
@@ -2328,7 +2665,10 @@ impl App {
     fn handle_sse(&mut self, frame: SseFrame) {
         // Pure reducer owns the state machine — App is a thin shell that syncs
         // tick_ctl/aborting on top (fix 4.5: live path now delegates to reducer).
-        let needs_tick_sync = matches!(frame, SseFrame::TurnStarted{..} | SseFrame::TurnEnded{..} | SseFrame::TurnStatus{..});
+        let needs_tick_sync = matches!(
+            frame,
+            SseFrame::TurnStarted { .. } | SseFrame::TurnEnded { .. } | SseFrame::TurnStatus { .. }
+        );
         let was_streaming = self.streaming;
         // Bridge App fields into pure State, delegate, then copy back.
         let mut st = crate::reducer::State {
@@ -2336,7 +2676,10 @@ impl App {
             turn_phase: self.turn_phase.clone(),
             turn_status_msg: self.turn_status_msg.clone(),
             last_seq: self.session.state.last_seq,
-            transcript: std::mem::replace(&mut self.transcript, crate::message_handler::Transcript::new()),
+            transcript: std::mem::replace(
+                &mut self.transcript,
+                crate::message_handler::Transcript::new(),
+            ),
             tokens: std::mem::replace(&mut self.tokens, crate::token_tracker::TokenTracker::new()),
             active_approval_id: self.active_approval_id,
             active_interaction_id: self.active_interaction_id,
@@ -2379,13 +2722,13 @@ impl App {
         if needs_tick_sync || was_streaming != self.streaming {
             self.tick_ctl.set_streaming(self.streaming);
         }
-        
+
         // Queuing: if turn just ended (was_streaming && !streaming) and we have a queued message,
         // send it now to retrigger the agent.
         if was_streaming && !self.streaming && self.queued_message.is_some() {
             self.process_queued_message();
         }
-        
+
         // R-PLUG2-110: refresh tools if a plugin re-declared (done last to avoid borrow issues)
         if st.tools_need_refresh {
             if let Some(client) = self.client.as_ref() {
@@ -2396,7 +2739,10 @@ impl App {
                 };
                 if let Ok(entries) = client.get_tools(session_id) {
                     self.tools = entries;
-                    crate::log!("TOOLS: hot-refreshed {} tools after plugin declare", self.tools.len());
+                    crate::log!(
+                        "TOOLS: hot-refreshed {} tools after plugin declare",
+                        self.tools.len()
+                    );
                 }
             }
         }
@@ -2415,10 +2761,10 @@ impl App {
             let image_count = images.len();
             self.cursor_row = 0;
             self.cursor_col = 0;
-            
+
             // Add to prompt history
             self.prompt_history.add(text.clone());
-            
+
             // Clear undo/redo history for new prompt
             self.input_history.clear();
 
@@ -2427,7 +2773,8 @@ impl App {
             if self.streaming {
                 crate::log!("STEER: injecting message while streaming");
                 // Add user message locally (SSE will echo it back with seq).
-                self.transcript.push(Message::with_images("user", &text, image_count));
+                self.transcript
+                    .push(Message::with_images("user", &text, image_count));
                 // Steer: POST /session/{id}/steer (images not supported for steer, only text).
                 match client.steer(&session_id, &holder, &text) {
                     Ok(seq) => {
@@ -2445,54 +2792,59 @@ impl App {
 
             // Normal case: agent is idle, send prompt.
             // Add user message locally with image count (don't wait for SSE).
-            self.transcript.push(Message::with_images("user", &text, image_count));
+            self.transcript
+                .push(Message::with_images("user", &text, image_count));
 
             // Send to server.
             let _ = client.prompt(&session_id, &holder, &text, images);
         }
     }
-    
+
     /// Queue a message to be sent when the agent goes idle.
     /// Unlike steer (which injects into the current turn), queue waits for turn end.
     fn queue_prompt(&mut self) {
         if self.input.trim().is_empty() && self.staged_images.is_empty() {
             return;
         }
-        
+
         let text = std::mem::take(&mut self.input);
         let images = std::mem::take(&mut self.staged_images);
         self.cursor_row = 0;
         self.cursor_col = 0;
-        
+
         // Add to prompt history
         self.prompt_history.add(text.clone());
-        
+
         // Clear undo/redo history
         self.input_history.clear();
-        
+
         // Store for later (will be sent when TurnEnded is received)
         self.queued_message = Some(text.clone());
         self.queued_images = images;
-        
+
         // Visual feedback: show the queued message in transcript with a marker
-        self.transcript.push(Message::new("system", &format!("⏳ Queued: {}", &text[..text.len().min(50)])));
+        self.transcript.push(Message::new(
+            "system",
+            &format!("⏳ Queued: {}", &text[..text.len().min(50)]),
+        ));
         crate::log!("QUEUE: message queued for post-idle send");
     }
-    
+
     /// Process any queued message after turn ends. Called from handle_sse on TurnEnded.
     fn process_queued_message(&mut self) {
         if let Some(text) = self.queued_message.take() {
             let images = std::mem::take(&mut self.queued_images);
             let session_id = self.session.state.session_id.clone();
             let lease = self.session.state.lease.clone();
-            
+
             if let (Some(client), Some(holder)) = (&self.client, lease) {
                 let image_count = images.len();
                 crate::log!("QUEUE: sending queued message now that turn ended");
-                
+
                 // Add user message locally
-                self.transcript.push(Message::with_images("user", &text, image_count));
-                
+                self.transcript
+                    .push(Message::with_images("user", &text, image_count));
+
                 // Send to server
                 match client.prompt(&session_id, &holder, &text, images) {
                     Ok(_) => {
@@ -2502,7 +2854,10 @@ impl App {
                     }
                     Err(e) => {
                         crate::log!("QUEUE: prompt failed: {:?}", e);
-                        self.transcript.push(Message::new("error", format!("Failed to send queued message: {}", e)));
+                        self.transcript.push(Message::new(
+                            "error",
+                            format!("Failed to send queued message: {}", e),
+                        ));
                     }
                 }
             }
@@ -2512,7 +2867,9 @@ impl App {
     fn respond_approval(&mut self, decision: &str) {
         let session_id = self.session.state.session_id.clone();
         let lease = self.session.state.lease.clone();
-        if let (Some(client), Some(holder), Some(id)) = (&self.client, lease, self.active_approval_id) {
+        if let (Some(client), Some(holder), Some(id)) =
+            (&self.client, lease, self.active_approval_id)
+        {
             let _ = client.approve(&session_id, &holder, id, decision);
             self.active_approval_id = None;
         }
@@ -2538,7 +2895,8 @@ impl App {
         let Some(client) = &self.client else { return };
 
         // Collect disabled tool names.
-        let disabled: Vec<String> = self.tools
+        let disabled: Vec<String> = self
+            .tools
             .iter()
             .filter(|t| !t.enabled)
             .map(|t| t.name.clone())
@@ -2572,7 +2930,8 @@ impl App {
         for (i, line) in self.input.lines().enumerate() {
             if i == self.cursor_row {
                 // Convert char col to byte offset within line.
-                let byte_col = line.char_indices()
+                let byte_col = line
+                    .char_indices()
                     .nth(self.cursor_col)
                     .map(|(idx, _)| idx)
                     .unwrap_or(line.len());
@@ -2585,7 +2944,11 @@ impl App {
 
     /// Get current line length in characters (not bytes).
     fn current_line_len(&self) -> usize {
-        self.input.lines().nth(self.cursor_row).map(|l| l.chars().count()).unwrap_or(0)
+        self.input
+            .lines()
+            .nth(self.cursor_row)
+            .map(|l| l.chars().count())
+            .unwrap_or(0)
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -2647,12 +3010,12 @@ impl App {
         self.kill_ring.reset_yank();
         let pos = self.cursor_pos();
         let line_end = self.line_end_pos();
-        
+
         if pos >= line_end {
             // At end of line, kill the newline
             if pos < self.input.len() {
                 self.record_input_boundary();
-                let killed = self.input[pos..pos+1].to_string();
+                let killed = self.input[pos..pos + 1].to_string();
                 self.input.remove(pos);
                 self.kill_ring.kill(killed, false);
             }
@@ -2670,7 +3033,7 @@ impl App {
         self.kill_ring.reset_yank();
         let pos = self.cursor_pos();
         let line_start = self.line_start_pos();
-        
+
         if pos > line_start {
             self.record_input_boundary();
             let killed: String = self.input[line_start..pos].to_string();
@@ -2691,10 +3054,11 @@ impl App {
         // Find word boundary (skip whitespace, then non-whitespace)
         let before = &self.input[..pos];
         let trimmed = before.trim_end();
-        let word_start = trimmed.rfind(|c: char| c.is_whitespace())
+        let word_start = trimmed
+            .rfind(|c: char| c.is_whitespace())
             .map(|i| i + 1)
             .unwrap_or(0);
-        
+
         let word_start = if trimmed.len() < before.len() {
             // There was trailing whitespace
             trimmed.len().saturating_sub(trimmed.len() - word_start)
@@ -2704,7 +3068,7 @@ impl App {
 
         // Calculate how many chars we're removing
         let chars_removed = before[word_start..].chars().count();
-        
+
         self.record_input_boundary();
         let killed: String = self.input[word_start..pos].to_string();
         self.input.replace_range(word_start..pos, "");
@@ -2720,7 +3084,7 @@ impl App {
             Some(t) => t.to_string(),
             None => return,
         };
-        
+
         self.record_input_boundary();
         let chars_added = text.chars().count();
         self.input.insert_str(pos, &text);
@@ -2735,8 +3099,11 @@ impl App {
         }
 
         // Get yank_pop result and last_yank_pos separately to avoid borrow issues
-        let yank_result = self.kill_ring.yank_pop().map(|(len, text)| (len, text.to_string()));
-        
+        let yank_result = self
+            .kill_ring
+            .yank_pop()
+            .map(|(len, text)| (len, text.to_string()));
+
         if let Some((remove_len, new_text)) = yank_result {
             // Re-query last_yank_pos after the mutable borrow is released
             if let Some((start_pos, _)) = self.kill_ring.last_yank_pos() {
@@ -2746,7 +3113,11 @@ impl App {
                     self.input.replace_range(start_pos..end_pos, &new_text);
                     let chars_diff = new_text.chars().count() as isize - remove_len as isize;
                     self.cursor_col = (self.cursor_col as isize + chars_diff).max(0) as usize;
-                    crate::log!("YANK-POP: replaced {} bytes with {} chars", remove_len, new_text.len());
+                    crate::log!(
+                        "YANK-POP: replaced {} bytes with {} chars",
+                        remove_len,
+                        new_text.len()
+                    );
                 }
             }
         }
@@ -2755,42 +3126,42 @@ impl App {
     // ═══════════════════════════════════════════════════════════════════════
     // Word Navigation (Ctrl+Left/Right, Ctrl+Delete)
     // ═══════════════════════════════════════════════════════════════════════
-    
+
     /// Move cursor to previous word boundary.
     fn word_left(&mut self) {
-        use crate::word_segmenter::{prev_word_boundary, byte_to_char_offset};
-        
+        use crate::word_segmenter::{byte_to_char_offset, prev_word_boundary};
+
         let byte_pos = self.cursor_pos();
         if byte_pos == 0 {
             return;
         }
-        
+
         let new_byte_pos = prev_word_boundary(&self.input, byte_pos);
         self.cursor_col = byte_to_char_offset(&self.input, new_byte_pos);
     }
-    
+
     /// Move cursor to next word boundary.
     fn word_right(&mut self) {
-        use crate::word_segmenter::{next_word_boundary, byte_to_char_offset};
-        
+        use crate::word_segmenter::{byte_to_char_offset, next_word_boundary};
+
         let byte_pos = self.cursor_pos();
         if byte_pos >= self.input.len() {
             return;
         }
-        
+
         let new_byte_pos = next_word_boundary(&self.input, byte_pos);
         self.cursor_col = byte_to_char_offset(&self.input, new_byte_pos);
     }
-    
+
     /// Delete word forward (Ctrl+Delete).
     fn delete_word_forward(&mut self) {
         use crate::word_segmenter::next_word_boundary;
-        
+
         let pos = self.cursor_pos();
         if pos >= self.input.len() {
             return;
         }
-        
+
         let word_end = next_word_boundary(&self.input, pos);
         if word_end > pos {
             self.record_input_boundary();
@@ -2799,85 +3170,89 @@ impl App {
             self.kill_ring.kill(killed, false);
         }
     }
-    
+
     // ═══════════════════════════════════════════════════════════════════════
     // Semantic Navigation (Ctrl+Up/Down to jump user/assistant messages)
     // ═══════════════════════════════════════════════════════════════════════
-    
+
     /// Jump to previous user message in transcript.
     fn jump_to_prev_user_message(&mut self) {
         let messages = self.transcript.messages();
         if messages.is_empty() {
             return;
         }
-        
+
         // Find user message indices
-        let user_indices: Vec<usize> = messages.iter()
+        let user_indices: Vec<usize> = messages
+            .iter()
             .enumerate()
             .filter(|(_, m)| m.role == "user")
             .map(|(i, _)| i)
             .collect();
-        
+
         if user_indices.is_empty() {
             return;
         }
-        
+
         // Estimate current view position based on scroll
         // (scroll is lines-from-bottom, higher = earlier messages)
         let current_scroll = self.transcript.scroll();
         let total_messages = messages.len();
         let lines_per_msg = 4usize; // rough estimate
-        
+
         // Convert scroll to approximate message index (from end)
         let msgs_from_bottom = current_scroll / lines_per_msg;
         let approx_visible_idx = total_messages.saturating_sub(msgs_from_bottom + 1);
-        
+
         // Find previous user message before current position
-        let target_idx = user_indices.iter()
+        let target_idx = user_indices
+            .iter()
             .rev()
             .find(|&&i| i < approx_visible_idx)
             .or_else(|| user_indices.last())
             .copied();
-        
+
         if let Some(idx) = target_idx {
             // Scroll to show this message
             let lines_from_bottom = (total_messages.saturating_sub(idx + 1)) * lines_per_msg;
             self.transcript.set_scroll(lines_from_bottom);
         }
     }
-    
+
     /// Jump to next user message in transcript.
     fn jump_to_next_user_message(&mut self) {
         let messages = self.transcript.messages();
         if messages.is_empty() {
             return;
         }
-        
+
         // Find user message indices
-        let user_indices: Vec<usize> = messages.iter()
+        let user_indices: Vec<usize> = messages
+            .iter()
             .enumerate()
             .filter(|(_, m)| m.role == "user")
             .map(|(i, _)| i)
             .collect();
-        
+
         if user_indices.is_empty() {
             return;
         }
-        
+
         // Estimate current view position
         let current_scroll = self.transcript.scroll();
         let total_messages = messages.len();
         let lines_per_msg = 4usize;
-        
+
         let msgs_from_bottom = current_scroll / lines_per_msg;
         let approx_visible_idx = total_messages.saturating_sub(msgs_from_bottom + 1);
-        
+
         // Find next user message after current position
-        let target_idx = user_indices.iter()
+        let target_idx = user_indices
+            .iter()
             .find(|&&i| i > approx_visible_idx)
             .or_else(|| user_indices.first())
             .copied();
-        
+
         if let Some(idx) = target_idx {
             let lines_from_bottom = (total_messages.saturating_sub(idx + 1)) * lines_per_msg;
             self.transcript.set_scroll(lines_from_bottom);
@@ -2887,91 +3262,114 @@ impl App {
     // ═══════════════════════════════════════════════════════════════════════
     // Model Cycling (F2 / Shift+F2)
     // ═══════════════════════════════════════════════════════════════════════
-    
+
     /// Cycle to next model and apply immediately.
     fn cycle_model_next(&mut self) {
         if self.model_sel.model_count() == 0 {
-            self.transcript.push(Message::new("system", "No models available"));
+            self.transcript
+                .push(Message::new("system", "No models available"));
             return;
         }
-        
+
         self.model_sel.select_next();
         self.apply_current_model();
     }
-    
+
     /// Cycle to previous model and apply immediately.
     fn cycle_model_prev(&mut self) {
         if self.model_sel.model_count() == 0 {
-            self.transcript.push(Message::new("system", "No models available"));
+            self.transcript
+                .push(Message::new("system", "No models available"));
             return;
         }
-        
+
         self.model_sel.select_prev();
         self.apply_current_model();
     }
-    
+
     /// Apply the currently selected model to the session.
     fn apply_current_model(&mut self) {
         let Some(model) = self.model_sel.current_model() else {
             return;
         };
-        
+
         let provider = model.provider.clone();
         let id = model.id.clone();
         let display_name = model.display_name();
-        
+
         let session_id = self.session.state.session_id.clone();
         let lease = self.session.state.lease.clone();
-        
+
         if let Some(client) = &self.client {
             // Persist selection to server preferences.
             let _ = client.set_pref("last_model", &id);
-            
+
             // Send model change to current session (requires lease).
             if let Some(ref holder) = lease {
                 if !session_id.is_empty() {
-                    crate::log!("MODEL CYCLE: session={} provider={} id={}", &session_id, &provider, &id);
+                    crate::log!(
+                        "MODEL CYCLE: session={} provider={} id={}",
+                        &session_id,
+                        &provider,
+                        &id
+                    );
                     match client.set_model(&session_id, holder, &provider, &id) {
                         Ok(_) => {
                             crate::log!("MODEL CYCLE: success");
-                            self.transcript.push(Message::new("system", &format!("Model: {}", display_name)));
+                            self.transcript
+                                .push(Message::new("system", &format!("Model: {}", display_name)));
                         }
                         Err(e) => {
                             crate::log!("MODEL CYCLE: error {:?}", e);
-                            self.transcript.push(Message::new("system", &format!("Failed to set model: {:?}", e)));
+                            self.transcript.push(Message::new(
+                                "system",
+                                &format!("Failed to set model: {:?}", e),
+                            ));
                         }
                     }
                 } else {
                     // No session yet - just show the selection.
-                    self.transcript.push(Message::new("system", &format!("Model: {} (will apply on next message)", display_name)));
+                    self.transcript.push(Message::new(
+                        "system",
+                        &format!("Model: {} (will apply on next message)", display_name),
+                    ));
                 }
             } else {
                 // No lease - just show the selection.
-                self.transcript.push(Message::new("system", &format!("Model: {} (will apply on next message)", display_name)));
+                self.transcript.push(Message::new(
+                    "system",
+                    &format!("Model: {} (will apply on next message)", display_name),
+                ));
             }
         } else {
-            self.transcript.push(Message::new("system", &format!("Model: {} (not connected)", display_name)));
+            self.transcript.push(Message::new(
+                "system",
+                &format!("Model: {} (not connected)", display_name),
+            ));
         }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // Prompt Stash (/stash and /unstash commands)
     // ═══════════════════════════════════════════════════════════════════════
-    
+
     /// Stash current prompt state.
     fn stash_prompt(&mut self) {
         if self.input.is_empty() {
-            self.transcript.push(Message::new("system", "Nothing to stash (input is empty)"));
+            self.transcript
+                .push(Message::new("system", "Nothing to stash (input is empty)"));
             return;
         }
-        self.prompt_stash.stash(&self.input, self.cursor_row, self.cursor_col);
+        self.prompt_stash
+            .stash(&self.input, self.cursor_row, self.cursor_col);
         let len = self.input.len();
         self.input.clear();
         self.cursor_row = 0;
         self.cursor_col = 0;
-        self.transcript.push(Message::new("system", &format!("Stashed {} chars", len)));
+        self.transcript
+            .push(Message::new("system", &format!("Stashed {} chars", len)));
     }
-    
+
     /// Restore prompt from stash.
     fn unstash_prompt(&mut self) {
         if let Some((text, row, col)) = self.prompt_stash.unstash() {
@@ -2981,13 +3379,15 @@ impl App {
                 let cur_row = self.cursor_row;
                 let cur_col = self.cursor_col;
                 self.prompt_stash.stash(&current, cur_row, cur_col);
-                self.transcript.push(Message::new("system", "Swapped stash with current input"));
+                self.transcript
+                    .push(Message::new("system", "Swapped stash with current input"));
             }
             self.input = text;
             self.cursor_row = row;
             self.cursor_col = col.min(self.current_line_len());
         } else {
-            self.transcript.push(Message::new("system", "Stash is empty"));
+            self.transcript
+                .push(Message::new("system", "Stash is empty"));
         }
     }
 
@@ -3005,7 +3405,7 @@ impl App {
                 }
             }
         }
-        
+
         // Also count in live delta
         let segments = crate::thinking::parse_content(self.transcript.live_delta());
         for seg in segments {
@@ -3013,7 +3413,7 @@ impl App {
                 count += 1;
             }
         }
-        
+
         // Toggle: if any expanded, collapse all. Otherwise expand all.
         let any_expanded = (0..count).any(|i| !self.thinking_state.is_collapsed(i));
         if any_expanded {
@@ -3048,19 +3448,28 @@ impl App {
         }
         self.input.len()
     }
-    
+
     fn execute_slash_command(&mut self, cmd: &str, tx: &Sender<Event>) {
         match cmd {
             "session" => {
-                self.overlay = Some(Overlay::SessionSelect { selected: 0, filter: String::new() });
+                self.overlay = Some(Overlay::SessionSelect {
+                    selected: 0,
+                    filter: String::new(),
+                });
             }
             "models" | "model" => {
-                self.overlay = Some(Overlay::ModelSelect { selected: self.model_sel.selected(), filter: String::new() });
+                self.overlay = Some(Overlay::ModelSelect {
+                    selected: self.model_sel.selected(),
+                    filter: String::new(),
+                });
             }
             "new" => {
                 self.reset_session_state();
                 if let Err(e) = self.create_new_session(tx.clone()) {
-                    self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
+                    self.transcript.push(Message::new(
+                        "error",
+                        format!("Failed to create session: {}", e),
+                    ));
                 }
             }
             "clear" => {
@@ -3088,21 +3497,30 @@ impl App {
                 let sid = self.session.state.session_id.clone();
                 let lease = self.session.state.lease.clone();
                 if sid.is_empty() {
-                    self.transcript.push(Message::new("system", "No active session to compact."));
+                    self.transcript
+                        .push(Message::new("system", "No active session to compact."));
                 } else if let (Some(client), Some(holder)) = (&self.client, lease) {
                     match client.compact_session(&sid, &holder) {
-                        Ok(seq) => self.transcript.push(Message::new("system", format!("Compacted (seq={})", seq))),
-                        Err(e) => self.transcript.push(Message::new("system", format!("Compact failed: {}", e))),
+                        Ok(seq) => self
+                            .transcript
+                            .push(Message::new("system", format!("Compacted (seq={})", seq))),
+                        Err(e) => self
+                            .transcript
+                            .push(Message::new("system", format!("Compact failed: {}", e))),
                     }
                 } else {
-                    self.transcript.push(Message::new("system", "No lease — cannot compact (acquire lease first)."));
+                    self.transcript.push(Message::new(
+                        "system",
+                        "No lease — cannot compact (acquire lease first).",
+                    ));
                 }
             }
             "export" => {
                 // Phase 4: GET /session/{id}/export (replaces placeholder).
                 let sid = self.session.state.session_id.clone();
                 if sid.is_empty() {
-                    self.transcript.push(Message::new("system", "No active session to export."));
+                    self.transcript
+                        .push(Message::new("system", "No active session to export."));
                 } else if let Some(client) = &self.client {
                     // Support `/export <path>` args in raw input.
                     let raw = self.input.clone();
@@ -3114,13 +3532,22 @@ impl App {
                             } else {
                                 arg_path.to_string()
                             };
-                            let json = serde_json::to_string_pretty(&val).unwrap_or_else(|_| "{}".into());
+                            let json =
+                                serde_json::to_string_pretty(&val).unwrap_or_else(|_| "{}".into());
                             match std::fs::write(&out_path, json) {
-                                Ok(_) => self.transcript.push(Message::new("system", format!("Exported to {}", out_path))),
-                                Err(e) => self.transcript.push(Message::new("system", format!("Export write failed: {}", e))),
+                                Ok(_) => self.transcript.push(Message::new(
+                                    "system",
+                                    format!("Exported to {}", out_path),
+                                )),
+                                Err(e) => self.transcript.push(Message::new(
+                                    "system",
+                                    format!("Export write failed: {}", e),
+                                )),
                             }
                         }
-                        Err(e) => self.transcript.push(Message::new("system", format!("Export failed: {}", e))),
+                        Err(e) => self
+                            .transcript
+                            .push(Message::new("system", format!("Export failed: {}", e))),
                     }
                 }
             }
@@ -3141,9 +3568,11 @@ impl App {
             }
             "theme" => {
                 // TODO: theme selector overlay
-                self.transcript.push(Message::new("system",
+                self.transcript.push(Message::new(
+                    "system",
                     "Theme selector is planned for a future release. \
-                     Configure theme in ~/.kn9t/config.toml"));
+                     Configure theme in ~/.kn9t/config.toml",
+                ));
             }
             "stash" => {
                 self.stash_prompt();
@@ -3154,22 +3583,31 @@ impl App {
             "rename" => {
                 // Parse `/rename <title>` args from raw input before it was cleared.
                 let raw = self.input.clone();
-                let title = raw.trim_start_matches('/').trim_start_matches("rename").trim();
+                let title = raw
+                    .trim_start_matches('/')
+                    .trim_start_matches("rename")
+                    .trim();
                 let sid = self.session.state.session_id.clone();
                 if sid.is_empty() {
-                    self.transcript.push(Message::new("system", "No active session to rename."));
+                    self.transcript
+                        .push(Message::new("system", "No active session to rename."));
                 } else if title.is_empty() {
-                    self.transcript.push(Message::new("system", "Usage: /rename <new title>"));
+                    self.transcript
+                        .push(Message::new("system", "Usage: /rename <new title>"));
                 } else if let Some(client) = &self.client {
                     match client.rename_session(&sid, title) {
                         Ok(_) => {
                             self.session.set_session_title(Some(title.to_string()));
-                            if let Some(s) = self.session.sessions.iter_mut().find(|s| s.id == sid) {
+                            if let Some(s) = self.session.sessions.iter_mut().find(|s| s.id == sid)
+                            {
                                 s.name = title.to_string();
                             }
-                            self.transcript.push(Message::new("system", format!("Renamed to '{}'", title)));
+                            self.transcript
+                                .push(Message::new("system", format!("Renamed to '{}'", title)));
                         }
-                        Err(e) => self.transcript.push(Message::new("system", format!("Rename failed: {}", e))),
+                        Err(e) => self
+                            .transcript
+                            .push(Message::new("system", format!("Rename failed: {}", e))),
                     }
                 }
             }
@@ -3188,16 +3626,22 @@ impl App {
             "jump_bottom" => self.transcript.scroll_bottom(),
             "prev_message" => self.transcript.scroll_up(10),
             "next_message" => self.transcript.scroll_down(10),
-            
+
             // Session
             "new_session" => {
                 self.reset_session_state();
                 if let Err(e) = self.create_new_session(tx.clone()) {
-                    self.transcript.push(Message::new("error", format!("Failed to create session: {}", e)));
+                    self.transcript.push(Message::new(
+                        "error",
+                        format!("Failed to create session: {}", e),
+                    ));
                 }
             }
             "session_list" => {
-                self.overlay = Some(Overlay::SessionSelect { selected: 0, filter: String::new() });
+                self.overlay = Some(Overlay::SessionSelect {
+                    selected: 0,
+                    filter: String::new(),
+                });
             }
             "abort" => {
                 if self.streaming && !self.aborting {
@@ -3209,12 +3653,12 @@ impl App {
                     }
                 }
             }
-            
+
             // Edit - these require cursor context, handled via keybinds
             "undo" | "redo" | "kill_line" | "kill_word" | "yank" => {
                 // These require cursor context; user should use keybinds instead
             }
-            
+
             // View
             "search" => {
                 self.open_search();
@@ -3234,47 +3678,69 @@ impl App {
             "toggle_sidebar" => {
                 // Hide if visible, show if hidden/collapsed — flips right_enabled.
                 // When showing, ensure Expanded so it isn't stuck in Collapsed/Hidden state.
-                if self.layout.right_enabled && self.layout.right != crate::ui::layout::Sidebar::Hidden {
+                if self.layout.right_enabled
+                    && self.layout.right != crate::ui::layout::Sidebar::Hidden
+                {
                     self.layout.right_enabled = false;
                 } else {
                     self.layout.right_enabled = true;
                     self.layout.right = crate::ui::layout::Sidebar::Expanded;
                 }
             }
-            
+
             // Tools
             "models" => {
-                self.overlay = Some(Overlay::ModelSelect { selected: self.model_sel.selected(), filter: String::new() });
+                self.overlay = Some(Overlay::ModelSelect {
+                    selected: self.model_sel.selected(),
+                    filter: String::new(),
+                });
             }
             "compact" => {
                 let sid = self.session.state.session_id.clone();
                 let lease = self.session.state.lease.clone();
                 if sid.is_empty() {
-                    self.transcript.push(Message::new("system", "No active session to compact."));
+                    self.transcript
+                        .push(Message::new("system", "No active session to compact."));
                 } else if let (Some(client), Some(holder)) = (&self.client, lease) {
                     match client.compact_session(&sid, &holder) {
-                        Ok(seq) => self.transcript.push(Message::new("system", format!("Compacted (seq={})", seq))),
-                        Err(e) => self.transcript.push(Message::new("system", format!("Compact failed: {}", e))),
+                        Ok(seq) => self
+                            .transcript
+                            .push(Message::new("system", format!("Compacted (seq={})", seq))),
+                        Err(e) => self
+                            .transcript
+                            .push(Message::new("system", format!("Compact failed: {}", e))),
                     }
                 } else {
-                    self.transcript.push(Message::new("system", "No lease — cannot compact."));
+                    self.transcript
+                        .push(Message::new("system", "No lease — cannot compact."));
                 }
             }
             "export" => {
                 let sid = self.session.state.session_id.clone();
                 if sid.is_empty() {
-                    self.transcript.push(Message::new("system", "No active session to export."));
+                    self.transcript
+                        .push(Message::new("system", "No active session to export."));
                 } else if let Some(client) = &self.client {
                     match client.export_session(&sid) {
                         Ok(val) => {
-                            let out_path = format!("/tmp/kn9t-export-{}.json", &sid[..8.min(sid.len())]);
-                            let json = serde_json::to_string_pretty(&val).unwrap_or_else(|_| "{}".into());
+                            let out_path =
+                                format!("/tmp/kn9t-export-{}.json", &sid[..8.min(sid.len())]);
+                            let json =
+                                serde_json::to_string_pretty(&val).unwrap_or_else(|_| "{}".into());
                             match std::fs::write(&out_path, json) {
-                                Ok(_) => self.transcript.push(Message::new("system", format!("Exported to {}", out_path))),
-                                Err(e) => self.transcript.push(Message::new("system", format!("Export write failed: {}", e))),
+                                Ok(_) => self.transcript.push(Message::new(
+                                    "system",
+                                    format!("Exported to {}", out_path),
+                                )),
+                                Err(e) => self.transcript.push(Message::new(
+                                    "system",
+                                    format!("Export write failed: {}", e),
+                                )),
                             }
                         }
-                        Err(e) => self.transcript.push(Message::new("system", format!("Export failed: {}", e))),
+                        Err(e) => self
+                            .transcript
+                            .push(Message::new("system", format!("Export failed: {}", e))),
                     }
                 }
             }
@@ -3290,19 +3756,24 @@ impl App {
                         self.tools = entries;
                     }
                 }
-                self.overlay = Some(Overlay::ToolsManager { selected: 0, filter: String::new() });
+                self.overlay = Some(Overlay::ToolsManager {
+                    selected: 0,
+                    filter: String::new(),
+                });
             }
-            
+
             // Settings
             "theme_toggle" => {
                 // TODO: implement theme toggle
-                self.transcript.push(Message::new("system",
-                    "Theme toggle is planned for a future release."));
+                self.transcript.push(Message::new(
+                    "system",
+                    "Theme toggle is planned for a future release.",
+                ));
             }
             "quit" => {
                 self.quit = true;
             }
-            
+
             _ => {}
         }
     }
@@ -3310,18 +3781,22 @@ impl App {
     /// Open diff viewer with current git diff.
     fn open_git_diff(&mut self) {
         use std::process::Command;
-        
+
         // Phase 4 fix: use the session's cwd from snapshot (not env::current_dir which is the TUI process cwd).
-        let cwd = self.session.state.cwd.as_deref()
+        let cwd = self
+            .session
+            .state
+            .cwd
+            .as_deref()
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        
+
         // Run git diff
         let output = Command::new("git")
             .args(["diff", "--no-color"])
             .current_dir(&cwd)
             .output();
-        
+
         match output {
             Ok(out) if out.status.success() => {
                 let diff_text = String::from_utf8_lossy(&out.stdout);
@@ -3331,26 +3806,29 @@ impl App {
                         .args(["diff", "--cached", "--no-color"])
                         .current_dir(&cwd)
                         .output();
-                    
+
                     match staged {
                         Ok(out) if out.status.success() && !out.stdout.is_empty() => {
                             let diff_text = String::from_utf8_lossy(&out.stdout);
                             let files = crate::diff_viewer::parse_unified_diff(&diff_text);
                             if files.is_empty() {
-                                self.transcript.push(Message::new("system", "No changes to display."));
+                                self.transcript
+                                    .push(Message::new("system", "No changes to display."));
                             } else {
                                 let viewer = crate::diff_viewer::DiffViewer::new(files);
                                 self.diff_viewer = Some(viewer);
                             }
                         }
                         _ => {
-                            self.transcript.push(Message::new("system", "No uncommitted changes."));
+                            self.transcript
+                                .push(Message::new("system", "No uncommitted changes."));
                         }
                     }
                 } else {
                     let files = crate::diff_viewer::parse_unified_diff(&diff_text);
                     if files.is_empty() {
-                        self.transcript.push(Message::new("system", "No changes to display."));
+                        self.transcript
+                            .push(Message::new("system", "No changes to display."));
                     } else {
                         let viewer = crate::diff_viewer::DiffViewer::new(files);
                         self.diff_viewer = Some(viewer);
@@ -3358,10 +3836,14 @@ impl App {
                 }
             }
             Ok(_) => {
-                self.transcript.push(Message::new("system", "Not a git repository or git command failed."));
+                self.transcript.push(Message::new(
+                    "system",
+                    "Not a git repository or git command failed.",
+                ));
             }
             Err(e) => {
-                self.transcript.push(Message::new("system", &format!("Failed to run git: {}", e)));
+                self.transcript
+                    .push(Message::new("system", &format!("Failed to run git: {}", e)));
             }
         }
     }

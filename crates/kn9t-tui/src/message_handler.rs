@@ -36,9 +36,13 @@ impl Message {
             image_count: 0,
         }
     }
-    
+
     /// Create a message with images.
-    pub fn with_images(role: impl Into<String>, content: impl Into<String>, image_count: usize) -> Self {
+    pub fn with_images(
+        role: impl Into<String>,
+        content: impl Into<String>,
+        image_count: usize,
+    ) -> Self {
         Self {
             role: role.into(),
             content: content.into(),
@@ -46,7 +50,7 @@ impl Message {
             image_count,
         }
     }
-    
+
     /// Add tools to a message (builder pattern).
     pub fn with_tools(mut self, tools: Vec<ToolCard>) -> Self {
         self.tools = tools;
@@ -62,7 +66,7 @@ pub struct ToolCard {
     pub args: String,
     pub status: String, // "pending", "running", "done", "error"
     pub output: Option<String>,
-    pub progress_lines: Vec<String>,  // Accumulated progress notes (e.g., diff lines)
+    pub progress_lines: Vec<String>, // Accumulated progress notes (e.g., diff lines)
     pub expanded: bool,
     pub active_tab: ToolTab,
     pub scroll_offset: usize,
@@ -222,7 +226,7 @@ impl Transcript {
                 status: "running".into(),
                 output: None,
                 progress_lines: Vec::new(),
-                expanded: true,  // Auto-expand while running
+                expanded: true, // Auto-expand while running
                 active_tab: ToolTab::Output,
                 scroll_offset: 0,
             });
@@ -419,9 +423,13 @@ impl TranscriptParser {
                     } else {
                         "done".into()
                     },
-                    output: if output.is_empty() { None } else { Some(output) },
-                    progress_lines: Vec::new(),  // Not available when loading from DB
-                    expanded: true,  // Expanded by default so tool output visible (fix: collapsed hid output, user reports no collapse line)
+                    output: if output.is_empty() {
+                        None
+                    } else {
+                        Some(output)
+                    },
+                    progress_lines: Vec::new(), // Not available when loading from DB
+                    expanded: true, // Expanded by default so tool output visible (fix: collapsed hid output, user reports no collapse line)
                     active_tab: ToolTab::Output,
                     scroll_offset: 0,
                 });
@@ -608,7 +616,10 @@ mod tests {
 
         // Tool result message should be skipped (content matched to tool card).
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].tools[0].output, Some("file1.txt\nfile2.txt".into()));
+        assert_eq!(
+            messages[0].tools[0].output,
+            Some("file1.txt\nfile2.txt".into())
+        );
         assert_eq!(messages[0].tools[0].status, "done");
     }
 }

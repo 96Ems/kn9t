@@ -24,13 +24,12 @@ pub mod api;
 pub mod auth;
 pub mod bus;
 pub mod config;
-pub mod interaction;
-pub mod ui_pages;
-pub mod policy;
-pub mod http_util;
 pub mod host_api;
+pub mod http_util;
+pub mod interaction;
 pub mod lease;
 pub mod log;
+pub mod policy;
 pub mod router;
 pub mod routes;
 pub mod spawn;
@@ -39,6 +38,7 @@ pub mod state;
 pub mod system_prompt;
 pub mod tools;
 pub mod turn;
+pub mod ui_pages;
 
 use std::io;
 use std::net::{SocketAddr, TcpListener};
@@ -86,9 +86,7 @@ impl ServerHandle {
                 if shutdown.load(Ordering::SeqCst) {
                     return;
                 }
-                if state.idle.should_exit()
-                    || state.stop_requested.load(Ordering::SeqCst)
-                {
+                if state.idle.should_exit() || state.stop_requested.load(Ordering::SeqCst) {
                     shutdown.store(true, Ordering::SeqCst);
                     server.unblock();
                     return;

@@ -1,14 +1,17 @@
 //! R-STOR-040, R-STOR-050 — append + snapshot.
 
 use kn9t_core::{Event, ModelRef, SessionId, SessionSnapshot, StoreErr};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::db::SqliteStore;
 use crate::project;
 
 fn now_ts() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 /// R-STOR-040 — single-transaction append.
@@ -22,9 +25,13 @@ pub fn append(store: &SqliteStore, session: &SessionId, event: Event) -> Result<
     let ts = now_ts();
     let kind = event_kind_name(&event);
 
-    let conn = store.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|_| StoreErr("lock poisoned".into()))?;
 
-    conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| StoreErr(format!("begin: {e}")))?;
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| StoreErr(format!("begin: {e}")))?;
 
     let head_seq: i64 = conn
         .query_row(
@@ -41,13 +48,17 @@ pub fn append(store: &SqliteStore, session: &SessionId, event: Event) -> Result<
     // (the reproject source of truth, G2) and every projection row carry the
     // authoritative, gapless seq rather than the caller's placeholder.
     let event = event.with_seq(seq);
-    let payload = serde_json::to_string(&event)
-        .map_err(|e| StoreErr(format!("serialize event: {e}")))?;
+    let payload =
+        serde_json::to_string(&event).map_err(|e| StoreErr(format!("serialize event: {e}")))?;
 
     conn.execute(
         "INSERT INTO events(session_id,seq,ts,kind,payload) VALUES(?1,?2,?3,?4,?5)",
         params![sid, seq as i64, ts, kind, payload],
-    ).map_err(|e| { let _ = conn.execute_batch("ROLLBACK"); StoreErr(format!("insert event: {e}")) })?;
+    )
+    .map_err(|e| {
+        let _ = conn.execute_batch("ROLLBACK");
+        StoreErr(format!("insert event: {e}"))
+    })?;
 
     let rows = project::project(&sid, ts, &event);
     if let Err(e) = project::write_rows(&conn, rows) {
@@ -67,9 +78,14 @@ pub fn append(store: &SqliteStore, session: &SessionId, event: Event) -> Result<
     conn.execute(
         "UPDATE sessions SET head_seq = ?1 WHERE id = ?2",
         params![seq as i64, sid],
-    ).map_err(|e| { let _ = conn.execute_batch("ROLLBACK"); StoreErr(format!("update head_seq: {e}")) })?;
+    )
+    .map_err(|e| {
+        let _ = conn.execute_batch("ROLLBACK");
+        StoreErr(format!("update head_seq: {e}"))
+    })?;
 
-    conn.execute_batch("COMMIT").map_err(|e| StoreErr(format!("commit: {e}")))?;
+    conn.execute_batch("COMMIT")
+        .map_err(|e| StoreErr(format!("commit: {e}")))?;
 
     // 96E-18: notify the after-append observer (SSE echo) OUTSIDE the connection
     // lock — the callback must never block or deadlock other store users.
@@ -85,7 +101,10 @@ pub fn append(store: &SqliteStore, session: &SessionId, event: Event) -> Result<
 /// R-CORE-250 snapshot.
 pub fn snapshot(store: &SqliteStore, session: &SessionId) -> Result<SessionSnapshot, StoreErr> {
     let sid = session.0.clone();
-    let conn = store.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|_| StoreErr("lock poisoned".into()))?;
 
     let (head_seq, model_at_fork): (i64, Option<String>) = conn
         .query_row(
@@ -201,43 +220,47 @@ pub fn create_session(
     model: &ModelRef,
 ) -> Result<(), StoreErr> {
     let ts = now_ts();
-    let model_json = serde_json::to_string(model)
-        .map_err(|e| StoreErr(format!("serialize model: {e}")))?;
-    let conn = store.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+    let model_json =
+        serde_json::to_string(model).map_err(|e| StoreErr(format!("serialize model: {e}")))?;
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|_| StoreErr("lock poisoned".into()))?;
     conn.execute(
         "INSERT INTO sessions(id,created_at,cwd,model_at_fork,head_seq) VALUES(?1,?2,?3,?4,0)",
         params![id.0.clone(), ts, cwd, model_json],
-    ).map_err(|e| StoreErr(format!("create session: {e}")))?;
+    )
+    .map_err(|e| StoreErr(format!("create session: {e}")))?;
     Ok(())
 }
 
 fn event_kind_name(event: &Event) -> &'static str {
     match event {
-        Event::SessionForked { .. }   => "SessionForked",
+        Event::SessionForked { .. } => "SessionForked",
         Event::MessageAppended { .. } => "MessageAppended",
-        Event::ModelChanged { .. }    => "ModelChanged",
-        Event::Compacted { .. }       => "Compacted",
-        Event::Handoff { .. }         => "Handoff",
-        Event::ToolsToggled { .. }    => "ToolsToggled",
-        Event::UsageRecorded { .. }   => "UsageRecorded",
-        Event::TurnStarted { .. }     => "TurnStarted",
-        Event::TextDelta { .. }       => "TextDelta",
-        Event::ThinkingDelta { .. }   => "ThinkingDelta",
-        Event::ToolArgsDelta { .. }   => "ToolArgsDelta",
-        Event::ToolStarted { .. }     => "ToolStarted",
-        Event::ToolProgress { .. }    => "ToolProgress",
-        Event::ToolFinished { .. }    => "ToolFinished",
+        Event::ModelChanged { .. } => "ModelChanged",
+        Event::Compacted { .. } => "Compacted",
+        Event::Handoff { .. } => "Handoff",
+        Event::ToolsToggled { .. } => "ToolsToggled",
+        Event::UsageRecorded { .. } => "UsageRecorded",
+        Event::TurnStarted { .. } => "TurnStarted",
+        Event::TextDelta { .. } => "TextDelta",
+        Event::ThinkingDelta { .. } => "ThinkingDelta",
+        Event::ToolArgsDelta { .. } => "ToolArgsDelta",
+        Event::ToolStarted { .. } => "ToolStarted",
+        Event::ToolProgress { .. } => "ToolProgress",
+        Event::ToolFinished { .. } => "ToolFinished",
         Event::ApprovalRequest { .. } => "ApprovalRequest",
-        Event::TurnEnded { .. }       => "TurnEnded",
-        Event::HookFailed { .. }      => "HookFailed",
-        Event::TitleChanged { .. }        => "TitleChanged",
-        Event::Error { .. }               => "Error",
-        Event::RetryAttempt { .. }        => "RetryAttempt",
-        Event::TurnStatus { .. }          => "TurnStatus",
-        Event::PluginNotification { .. }  => "PluginNotification",
-        Event::InteractionRequest { .. }  => "InteractionRequest",
-        Event::UiDirective { .. }         => "UiDirective",
-        Event::PluginDeclared { .. }      => "PluginDeclared",
+        Event::TurnEnded { .. } => "TurnEnded",
+        Event::HookFailed { .. } => "HookFailed",
+        Event::TitleChanged { .. } => "TitleChanged",
+        Event::Error { .. } => "Error",
+        Event::RetryAttempt { .. } => "RetryAttempt",
+        Event::TurnStatus { .. } => "TurnStatus",
+        Event::PluginNotification { .. } => "PluginNotification",
+        Event::InteractionRequest { .. } => "InteractionRequest",
+        Event::UiDirective { .. } => "UiDirective",
+        Event::PluginDeclared { .. } => "PluginDeclared",
     }
 }
 
@@ -267,7 +290,9 @@ mod tests {
             msg: Message {
                 id: MsgId::new(),
                 role: Role::User,
-                content: vec![Content::Text { text: "hello".into() }],
+                content: vec![Content::Text {
+                    text: "hello".into(),
+                }],
                 silent: false,
             },
         };
@@ -294,13 +319,16 @@ mod tests {
 
     #[test]
     fn test_event_kind_name_turn_ended() {
-        let event = Event::TurnEnded { turn: 1, stop: StopReason::Stop };
+        let event = Event::TurnEnded {
+            turn: 1,
+            stop: StopReason::Stop,
+        };
         assert_eq!(event_kind_name(&event), "TurnEnded");
     }
 
     #[test]
     fn test_event_kind_name_text_delta() {
-        let event = Event::TextDelta { 
+        let event = Event::TextDelta {
             msg_id: MsgId::new(),
             idx: 0,
             delta: "hello".into(),
@@ -328,7 +356,9 @@ mod tests {
 
     #[test]
     fn test_event_kind_name_error() {
-        let event = Event::Error { message: "something went wrong".into() };
+        let event = Event::Error {
+            message: "something went wrong".into(),
+        };
         assert_eq!(event_kind_name(&event), "Error");
     }
 }

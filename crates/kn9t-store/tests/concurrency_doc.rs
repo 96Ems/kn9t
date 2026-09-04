@@ -14,8 +14,13 @@ fn p1_96e13_doc_clarifies_serialized_model() {
     );
     // Must contain clarification of intentional single-connection serialized model
     // Check for key phrases indicating intentional serialization and WAL purpose
-    let has_single = txt.contains("single") && txt.to_lowercase().contains("mutex") && txt.to_lowercase().contains("serialized");
-    let has_wal_clarify = txt.to_lowercase().contains("wal") && (txt.to_lowercase().contains("crash") || txt.to_lowercase().contains("not for") || txt.to_lowercase().contains("serialized"));
+    let has_single = txt.contains("single")
+        && txt.to_lowercase().contains("mutex")
+        && txt.to_lowercase().contains("serialized");
+    let has_wal_clarify = txt.to_lowercase().contains("wal")
+        && (txt.to_lowercase().contains("crash")
+            || txt.to_lowercase().contains("not for")
+            || txt.to_lowercase().contains("serialized"));
     assert!(
         has_single,
         "db.rs must document intentional single-connection serialized model (expected 'single' + 'Mutex' + 'serialized')"

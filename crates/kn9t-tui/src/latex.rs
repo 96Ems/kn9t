@@ -10,17 +10,47 @@ use std::sync::LazyLock;
 static GREEK: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
         // Lowercase
-        ("alpha", "α"), ("beta", "β"), ("gamma", "γ"), ("delta", "δ"),
-        ("epsilon", "ε"), ("varepsilon", "ε"), ("zeta", "ζ"), ("eta", "η"),
-        ("theta", "θ"), ("vartheta", "ϑ"), ("iota", "ι"), ("kappa", "κ"),
-        ("lambda", "λ"), ("mu", "μ"), ("nu", "ν"), ("xi", "ξ"),
-        ("pi", "π"), ("varpi", "ϖ"), ("rho", "ρ"), ("varrho", "ϱ"),
-        ("sigma", "σ"), ("varsigma", "ς"), ("tau", "τ"), ("upsilon", "υ"),
-        ("phi", "φ"), ("varphi", "ϕ"), ("chi", "χ"), ("psi", "ψ"), ("omega", "ω"),
+        ("alpha", "α"),
+        ("beta", "β"),
+        ("gamma", "γ"),
+        ("delta", "δ"),
+        ("epsilon", "ε"),
+        ("varepsilon", "ε"),
+        ("zeta", "ζ"),
+        ("eta", "η"),
+        ("theta", "θ"),
+        ("vartheta", "ϑ"),
+        ("iota", "ι"),
+        ("kappa", "κ"),
+        ("lambda", "λ"),
+        ("mu", "μ"),
+        ("nu", "ν"),
+        ("xi", "ξ"),
+        ("pi", "π"),
+        ("varpi", "ϖ"),
+        ("rho", "ρ"),
+        ("varrho", "ϱ"),
+        ("sigma", "σ"),
+        ("varsigma", "ς"),
+        ("tau", "τ"),
+        ("upsilon", "υ"),
+        ("phi", "φ"),
+        ("varphi", "ϕ"),
+        ("chi", "χ"),
+        ("psi", "ψ"),
+        ("omega", "ω"),
         // Uppercase
-        ("Gamma", "Γ"), ("Delta", "Δ"), ("Theta", "Θ"), ("Lambda", "Λ"),
-        ("Xi", "Ξ"), ("Pi", "Π"), ("Sigma", "Σ"), ("Upsilon", "Υ"),
-        ("Phi", "Φ"), ("Psi", "Ψ"), ("Omega", "Ω"),
+        ("Gamma", "Γ"),
+        ("Delta", "Δ"),
+        ("Theta", "Θ"),
+        ("Lambda", "Λ"),
+        ("Xi", "Ξ"),
+        ("Pi", "Π"),
+        ("Sigma", "Σ"),
+        ("Upsilon", "Υ"),
+        ("Phi", "Φ"),
+        ("Psi", "Ψ"),
+        ("Omega", "Ω"),
     ])
 });
 
@@ -28,60 +58,129 @@ static GREEK: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
 static OPERATORS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
         // Operators
-        ("sum", "∑"), ("prod", "∏"), ("int", "∫"), ("oint", "∮"),
-        ("iint", "∬"), ("iiint", "∭"),
-        ("partial", "∂"), ("nabla", "∇"), ("infty", "∞"),
-        ("pm", "±"), ("mp", "∓"), ("times", "×"), ("div", "÷"),
-        ("cdot", "·"), ("ast", "∗"), ("star", "⋆"),
-        ("cbrt", "∛"),  // sqrt handled specially for \sqrt[n]{x}
+        ("sum", "∑"),
+        ("prod", "∏"),
+        ("int", "∫"),
+        ("oint", "∮"),
+        ("iint", "∬"),
+        ("iiint", "∭"),
+        ("partial", "∂"),
+        ("nabla", "∇"),
+        ("infty", "∞"),
+        ("pm", "±"),
+        ("mp", "∓"),
+        ("times", "×"),
+        ("div", "÷"),
+        ("cdot", "·"),
+        ("ast", "∗"),
+        ("star", "⋆"),
+        ("cbrt", "∛"), // sqrt handled specially for \sqrt[n]{x}
         // Relations
-        ("leq", "≤"), ("le", "≤"), ("geq", "≥"), ("ge", "≥"),
-        ("neq", "≠"), ("ne", "≠"), ("approx", "≈"), ("equiv", "≡"),
-        ("sim", "∼"), ("simeq", "≃"), ("cong", "≅"),
-        ("propto", "∝"), ("ll", "≪"), ("gg", "≫"),
-        ("subset", "⊂"), ("supset", "⊃"), ("subseteq", "⊆"), ("supseteq", "⊇"),
-        ("in", "∈"), ("notin", "∉"), ("ni", "∋"),
-        ("cup", "∪"), ("cap", "∩"), ("setminus", "∖"),
-        ("emptyset", "∅"), ("varnothing", "∅"),
+        ("leq", "≤"),
+        ("le", "≤"),
+        ("geq", "≥"),
+        ("ge", "≥"),
+        ("neq", "≠"),
+        ("ne", "≠"),
+        ("approx", "≈"),
+        ("equiv", "≡"),
+        ("sim", "∼"),
+        ("simeq", "≃"),
+        ("cong", "≅"),
+        ("propto", "∝"),
+        ("ll", "≪"),
+        ("gg", "≫"),
+        ("subset", "⊂"),
+        ("supset", "⊃"),
+        ("subseteq", "⊆"),
+        ("supseteq", "⊇"),
+        ("in", "∈"),
+        ("notin", "∉"),
+        ("ni", "∋"),
+        ("cup", "∪"),
+        ("cap", "∩"),
+        ("setminus", "∖"),
+        ("emptyset", "∅"),
+        ("varnothing", "∅"),
         // Arrows
-        ("to", "→"), ("rightarrow", "→"), ("leftarrow", "←"),
-        ("Rightarrow", "⇒"), ("Leftarrow", "⇐"), ("Leftrightarrow", "⇔"),
-        ("leftrightarrow", "↔"), ("mapsto", "↦"),
-        ("uparrow", "↑"), ("downarrow", "↓"), ("updownarrow", "↕"),
+        ("to", "→"),
+        ("rightarrow", "→"),
+        ("leftarrow", "←"),
+        ("Rightarrow", "⇒"),
+        ("Leftarrow", "⇐"),
+        ("Leftrightarrow", "⇔"),
+        ("leftrightarrow", "↔"),
+        ("mapsto", "↦"),
+        ("uparrow", "↑"),
+        ("downarrow", "↓"),
+        ("updownarrow", "↕"),
         // Logic
-        ("forall", "∀"), ("exists", "∃"), ("nexists", "∄"),
-        ("land", "∧"), ("lor", "∨"), ("lnot", "¬"), ("neg", "¬"),
-        ("implies", "⟹"), ("iff", "⟺"),
+        ("forall", "∀"),
+        ("exists", "∃"),
+        ("nexists", "∄"),
+        ("land", "∧"),
+        ("lor", "∨"),
+        ("lnot", "¬"),
+        ("neg", "¬"),
+        ("implies", "⟹"),
+        ("iff", "⟺"),
         // Misc
-        ("ldots", "…"), ("cdots", "⋯"), ("vdots", "⋮"), ("ddots", "⋱"),
-        ("prime", "′"), ("degree", "°"), ("circ", "∘"),
-        ("angle", "∠"), ("perp", "⊥"), ("parallel", "∥"),
-        ("therefore", "∴"), ("because", "∵"),
-        ("aleph", "ℵ"), ("hbar", "ℏ"), ("ell", "ℓ"),
-        ("Re", "ℜ"), ("Im", "ℑ"), ("wp", "℘"),
+        ("ldots", "…"),
+        ("cdots", "⋯"),
+        ("vdots", "⋮"),
+        ("ddots", "⋱"),
+        ("prime", "′"),
+        ("degree", "°"),
+        ("circ", "∘"),
+        ("angle", "∠"),
+        ("perp", "⊥"),
+        ("parallel", "∥"),
+        ("therefore", "∴"),
+        ("because", "∵"),
+        ("aleph", "ℵ"),
+        ("hbar", "ℏ"),
+        ("ell", "ℓ"),
+        ("Re", "ℜ"),
+        ("Im", "ℑ"),
+        ("wp", "℘"),
     ])
 });
 
 /// Accents and modifiers
 static ACCENTS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
-        ("hat", "̂"), ("bar", "̄"), ("dot", "̇"), ("ddot", "̈"),
-        ("vec", "⃗"), ("tilde", "̃"),
+        ("hat", "̂"),
+        ("bar", "̄"),
+        ("dot", "̇"),
+        ("ddot", "̈"),
+        ("vec", "⃗"),
+        ("tilde", "̃"),
     ])
 });
 
 /// Font/style commands (just strip them, keep content)
 static FONT_COMMANDS: &[&str] = &[
-    "mathbf", "mathit", "mathrm", "mathsf", "mathtt", "mathcal", "mathfrak",
-    "textbf", "textit", "textrm", "textsf", "texttt",
-    "boldsymbol", "bm",
+    "mathbf",
+    "mathit",
+    "mathrm",
+    "mathsf",
+    "mathtt",
+    "mathcal",
+    "mathfrak",
+    "textbf",
+    "textit",
+    "textrm",
+    "textsf",
+    "texttt",
+    "boldsymbol",
+    "bm",
 ];
 
 /// Convert a LaTeX math expression to Unicode approximation.
 pub fn latex_to_unicode(latex: &str) -> String {
     let mut result = String::new();
     let mut chars = latex.chars().peekable();
-    
+
     while let Some(c) = chars.next() {
         if c == '\\' {
             // Parse command
@@ -93,7 +192,7 @@ pub fn latex_to_unicode(latex: &str) -> String {
                     break;
                 }
             }
-            
+
             if cmd.is_empty() {
                 // Escaped character like \{ \} \_ etc
                 if let Some(escaped) = chars.next() {
@@ -115,7 +214,7 @@ pub fn latex_to_unicode(latex: &str) -> String {
                 }
                 if chars.peek() == Some(&'{') {
                     chars.next(); // skip {
-                    // Read until matching }
+                                  // Read until matching }
                     let mut depth = 1;
                     let mut content = String::new();
                     while let Some(c) = chars.next() {
@@ -186,7 +285,7 @@ pub fn latex_to_unicode(latex: &str) -> String {
             result.push(c);
         }
     }
-    
+
     result
 }
 
@@ -200,16 +299,16 @@ fn read_braced(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
             break;
         }
     }
-    
+
     if chars.peek() != Some(&'{') {
         // Single character
         return chars.next().map(|c| c.to_string()).unwrap_or_default();
     }
-    
+
     chars.next(); // skip {
     let mut content = String::new();
     let mut depth = 1;
-    
+
     while let Some(c) = chars.next() {
         if c == '{' {
             depth += 1;
@@ -224,7 +323,7 @@ fn read_braced(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
             content.push(c);
         }
     }
-    
+
     content
 }
 
@@ -238,7 +337,7 @@ fn read_next_group(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
             break;
         }
     }
-    
+
     if chars.peek() == Some(&'{') {
         read_braced(chars)
     } else {
@@ -248,49 +347,110 @@ fn read_next_group(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
 
 /// Convert string to Unicode subscript
 fn to_subscript(s: &str) -> String {
-    s.chars().map(|c| match c {
-        '0' => '₀', '1' => '₁', '2' => '₂', '3' => '₃', '4' => '₄',
-        '5' => '₅', '6' => '₆', '7' => '₇', '8' => '₈', '9' => '₉',
-        '+' => '₊', '-' => '₋', '=' => '₌', '(' => '₍', ')' => '₎',
-        'a' => 'ₐ', 'e' => 'ₑ', 'h' => 'ₕ', 'i' => 'ᵢ', 'j' => 'ⱼ',
-        'k' => 'ₖ', 'l' => 'ₗ', 'm' => 'ₘ', 'n' => 'ₙ', 'o' => 'ₒ',
-        'p' => 'ₚ', 'r' => 'ᵣ', 's' => 'ₛ', 't' => 'ₜ', 'u' => 'ᵤ',
-        'v' => 'ᵥ', 'x' => 'ₓ',
-        _ => c, // No subscript version available
-    }).collect()
+    s.chars()
+        .map(|c| match c {
+            '0' => '₀',
+            '1' => '₁',
+            '2' => '₂',
+            '3' => '₃',
+            '4' => '₄',
+            '5' => '₅',
+            '6' => '₆',
+            '7' => '₇',
+            '8' => '₈',
+            '9' => '₉',
+            '+' => '₊',
+            '-' => '₋',
+            '=' => '₌',
+            '(' => '₍',
+            ')' => '₎',
+            'a' => 'ₐ',
+            'e' => 'ₑ',
+            'h' => 'ₕ',
+            'i' => 'ᵢ',
+            'j' => 'ⱼ',
+            'k' => 'ₖ',
+            'l' => 'ₗ',
+            'm' => 'ₘ',
+            'n' => 'ₙ',
+            'o' => 'ₒ',
+            'p' => 'ₚ',
+            'r' => 'ᵣ',
+            's' => 'ₛ',
+            't' => 'ₜ',
+            'u' => 'ᵤ',
+            'v' => 'ᵥ',
+            'x' => 'ₓ',
+            _ => c, // No subscript version available
+        })
+        .collect()
 }
 
 /// Convert string to Unicode superscript
 fn to_superscript(s: &str) -> String {
-    s.chars().map(|c| match c {
-        '0' => '⁰', '1' => '¹', '2' => '²', '3' => '³', '4' => '⁴',
-        '5' => '⁵', '6' => '⁶', '7' => '⁷', '8' => '⁸', '9' => '⁹',
-        '+' => '⁺', '-' => '⁻', '=' => '⁼', '(' => '⁽', ')' => '⁾',
-        'a' => 'ᵃ', 'b' => 'ᵇ', 'c' => 'ᶜ', 'd' => 'ᵈ', 'e' => 'ᵉ',
-        'f' => 'ᶠ', 'g' => 'ᵍ', 'h' => 'ʰ', 'i' => 'ⁱ', 'j' => 'ʲ',
-        'k' => 'ᵏ', 'l' => 'ˡ', 'm' => 'ᵐ', 'n' => 'ⁿ', 'o' => 'ᵒ',
-        'p' => 'ᵖ', 'r' => 'ʳ', 's' => 'ˢ', 't' => 'ᵗ', 'u' => 'ᵘ',
-        'v' => 'ᵛ', 'w' => 'ʷ', 'x' => 'ˣ', 'y' => 'ʸ', 'z' => 'ᶻ',
-        _ => c, // No superscript version available
-    }).collect()
+    s.chars()
+        .map(|c| match c {
+            '0' => '⁰',
+            '1' => '¹',
+            '2' => '²',
+            '3' => '³',
+            '4' => '⁴',
+            '5' => '⁵',
+            '6' => '⁶',
+            '7' => '⁷',
+            '8' => '⁸',
+            '9' => '⁹',
+            '+' => '⁺',
+            '-' => '⁻',
+            '=' => '⁼',
+            '(' => '⁽',
+            ')' => '⁾',
+            'a' => 'ᵃ',
+            'b' => 'ᵇ',
+            'c' => 'ᶜ',
+            'd' => 'ᵈ',
+            'e' => 'ᵉ',
+            'f' => 'ᶠ',
+            'g' => 'ᵍ',
+            'h' => 'ʰ',
+            'i' => 'ⁱ',
+            'j' => 'ʲ',
+            'k' => 'ᵏ',
+            'l' => 'ˡ',
+            'm' => 'ᵐ',
+            'n' => 'ⁿ',
+            'o' => 'ᵒ',
+            'p' => 'ᵖ',
+            'r' => 'ʳ',
+            's' => 'ˢ',
+            't' => 'ᵗ',
+            'u' => 'ᵘ',
+            'v' => 'ᵛ',
+            'w' => 'ʷ',
+            'x' => 'ˣ',
+            'y' => 'ʸ',
+            'z' => 'ᶻ',
+            _ => c, // No superscript version available
+        })
+        .collect()
 }
 
 /// Process text containing inline math ($...$) and display math ($$...$$)
 pub fn process_math(text: &str) -> String {
     let mut result = String::new();
     let mut chars = text.chars().peekable();
-    
+
     while let Some(c) = chars.next() {
         if c == '$' {
             let display = chars.peek() == Some(&'$');
             if display {
                 chars.next(); // skip second $
             }
-            
+
             // Collect math content
             let mut math = String::new();
             let mut found_end = false;
-            
+
             while let Some(mc) = chars.next() {
                 if mc == '$' {
                     if display {
@@ -308,7 +468,7 @@ pub fn process_math(text: &str) -> String {
                     math.push(mc);
                 }
             }
-            
+
             if found_end {
                 let converted = latex_to_unicode(&math);
                 if display {
@@ -330,7 +490,7 @@ pub fn process_math(text: &str) -> String {
             result.push(c);
         }
     }
-    
+
     result
 }
 
@@ -383,14 +543,14 @@ mod tests {
     #[test]
     fn test_sqrt() {
         assert_eq!(latex_to_unicode(r"\sqrt{x}"), "√x");
-        assert_eq!(latex_to_unicode(r"\sqrt[3]{x}"), "³√x");  // cube root: ³√x
+        assert_eq!(latex_to_unicode(r"\sqrt[3]{x}"), "³√x"); // cube root: ³√x
     }
 
     #[test]
     fn test_complex_expression() {
         let expr = r"E = mc^2";
         assert_eq!(latex_to_unicode(expr), "E = mc²");
-        
+
         let quadratic = r"x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}";
         let result = latex_to_unicode(quadratic);
         assert!(result.contains("±"));

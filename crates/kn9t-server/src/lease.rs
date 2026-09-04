@@ -171,7 +171,10 @@ mod tests {
         let holder = granted(leases.acquire("s1", false));
         assert!(leases.holds("s1", &holder), "fresh lease is held");
         std::thread::sleep(Duration::from_millis(80));
-        assert!(!leases.holds("s1", &holder), "idle-expired lease is no longer held");
+        assert!(
+            !leases.holds("s1", &holder),
+            "idle-expired lease is no longer held"
+        );
     }
 
     /// The fix: a live SSE stream calls `touch()` on every heartbeat; this keeps
@@ -186,12 +189,18 @@ mod tests {
         // touching each time as the owning SSE stream would.
         for _ in 0..4 {
             std::thread::sleep(Duration::from_millis(30));
-            assert!(leases.touch("s1", &holder), "owning stream refreshes the lease");
+            assert!(
+                leases.touch("s1", &holder),
+                "owning stream refreshes the lease"
+            );
         }
 
         // Total elapsed (~120ms) far exceeds the 50ms idle timeout, yet the lease
         // is still held because the stream kept it warm.
-        assert!(leases.holds("s1", &holder), "touched lease survives the idle window");
+        assert!(
+            leases.holds("s1", &holder),
+            "touched lease survives the idle window"
+        );
     }
 
     /// `touch()` only refreshes for the *current* holder — a stale former holder
@@ -204,7 +213,10 @@ mod tests {
         assert_ne!(holder_a, holder_b);
         assert!(!leases.touch("s1", &holder_a), "stale holder cannot touch");
         assert!(leases.touch("s1", &holder_b), "current holder can touch");
-        assert!(!leases.touch("missing", &holder_b), "unknown session is a no-op");
+        assert!(
+            !leases.touch("missing", &holder_b),
+            "unknown session is a no-op"
+        );
     }
 
     /// When the owning stream ends it releases the lease (DESIGN §12.6): after

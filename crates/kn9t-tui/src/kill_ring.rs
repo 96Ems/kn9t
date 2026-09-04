@@ -39,7 +39,7 @@ impl KillRing {
     }
 
     /// Add text to the kill ring.
-    /// 
+    ///
     /// If `append` is true and there's a recent kill, append to it instead
     /// of creating a new entry (useful for consecutive kill-line commands).
     pub fn kill(&mut self, text: String, append: bool) {
@@ -66,7 +66,7 @@ impl KillRing {
     }
 
     /// Yank (paste) the most recent kill.
-    /// 
+    ///
     /// Returns the text to insert, or None if ring is empty.
     /// Records position for potential yank-pop.
     pub fn yank(&mut self, insert_pos: usize) -> Option<&str> {
@@ -81,13 +81,13 @@ impl KillRing {
     }
 
     /// Yank pop: replace last yanked text with previous kill ring entry.
-    /// 
+    ///
     /// Only valid immediately after yank or yank-pop.
     /// Returns (text_to_remove_len, text_to_insert), or None if not in yank state.
     pub fn yank_pop(&mut self) -> Option<(usize, &str)> {
         let idx = self.yank_index?;
         let (_pos, len) = self.last_yank_pos?;
-        
+
         if self.ring.is_empty() {
             return None;
         }
@@ -95,10 +95,10 @@ impl KillRing {
         // Cycle to next entry
         let new_idx = (idx + 1) % self.ring.len();
         self.yank_index = Some(new_idx);
-        
+
         let text = &self.ring[new_idx];
         self.last_yank_pos = Some((self.last_yank_pos.unwrap().0, text.len()));
-        
+
         Some((len, text.as_str()))
     }
 
@@ -136,10 +136,10 @@ mod tests {
     #[test]
     fn test_kill_and_yank() {
         let mut ring = KillRing::new();
-        
+
         ring.kill("hello".into(), false);
         ring.kill("world".into(), false);
-        
+
         // Most recent should be "world"
         assert_eq!(ring.yank(0), Some("world"));
     }
@@ -147,24 +147,24 @@ mod tests {
     #[test]
     fn test_yank_pop() {
         let mut ring = KillRing::new();
-        
+
         ring.kill("first".into(), false);
         ring.kill("second".into(), false);
         ring.kill("third".into(), false);
-        
+
         // Yank most recent
         assert_eq!(ring.yank(0), Some("third"));
-        
+
         // Pop to previous
         let (len, text) = ring.yank_pop().unwrap();
         assert_eq!(len, 5); // "third".len()
         assert_eq!(text, "second");
-        
+
         // Pop again
         let (len, text) = ring.yank_pop().unwrap();
         assert_eq!(len, 6); // "second".len()
         assert_eq!(text, "first");
-        
+
         // Pop wraps around
         let (len, text) = ring.yank_pop().unwrap();
         assert_eq!(len, 5); // "first".len()
@@ -174,10 +174,10 @@ mod tests {
     #[test]
     fn test_append_kill() {
         let mut ring = KillRing::new();
-        
+
         ring.kill("hello".into(), false);
         ring.kill(" world".into(), true); // Append
-        
+
         assert_eq!(ring.len(), 1);
         assert_eq!(ring.yank(0), Some("hello world"));
     }
@@ -185,11 +185,11 @@ mod tests {
     #[test]
     fn test_max_size() {
         let mut ring = KillRing::new();
-        
+
         for i in 0..15 {
             ring.kill(format!("entry{}", i), false);
         }
-        
+
         assert_eq!(ring.len(), MAX_RING_SIZE);
         // Most recent should be entry14
         assert_eq!(ring.yank(0), Some("entry14"));
@@ -199,7 +199,7 @@ mod tests {
     fn test_yank_pop_without_yank() {
         let mut ring = KillRing::new();
         ring.kill("test".into(), false);
-        
+
         // Yank pop without yank should return None
         assert!(ring.yank_pop().is_none());
     }
@@ -216,7 +216,7 @@ mod tests {
         let mut ring = KillRing::new();
         ring.kill("test".into(), false);
         ring.yank(0);
-        
+
         assert!(ring.in_yank_state());
         ring.reset_yank();
         assert!(!ring.in_yank_state());

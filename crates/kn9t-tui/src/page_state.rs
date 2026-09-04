@@ -2,8 +2,8 @@
 //!
 //! Mirrors `crates/kn9t-server/src/ui_pages.rs` kinds but purely for rendering.
 
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaceholderKind {
@@ -48,8 +48,18 @@ pub struct UiPage {
 }
 
 impl UiPage {
-    pub fn new(plugin: String, page_id: String, order: Vec<String>, placeholders: HashMap<String, Placeholder>) -> Self {
-        Self { plugin, page_id, order, placeholders }
+    pub fn new(
+        plugin: String,
+        page_id: String,
+        order: Vec<String>,
+        placeholders: HashMap<String, Placeholder>,
+    ) -> Self {
+        Self {
+            plugin,
+            page_id,
+            order,
+            placeholders,
+        }
     }
 }
 
@@ -57,7 +67,12 @@ pub type PageKey = (String, String); // (plugin, page_id)
 
 /// Apply a declare_page UiDirective payload to the pages map.
 /// `layout` is Value::Array of {placeholder_id|id, kind, default?}.
-pub fn apply_declare(pages: &mut HashMap<PageKey, UiPage>, plugin: &str, page_id: &str, layout: &Value) -> Result<(), String> {
+pub fn apply_declare(
+    pages: &mut HashMap<PageKey, UiPage>,
+    plugin: &str,
+    page_id: &str,
+    layout: &Value,
+) -> Result<(), String> {
     let key = (plugin.to_string(), page_id.to_string());
     if pages.contains_key(&key) {
         return Err(format!("page {page_id:?} already declared for {plugin:?}"));
@@ -68,9 +83,18 @@ pub fn apply_declare(pages: &mut HashMap<PageKey, UiPage>, plugin: &str, page_id
     let mut seen = std::collections::HashSet::new();
     for item in arr {
         let obj = item.as_object().ok_or("layout entry must be object")?;
-        let pid = obj.get("placeholder_id").or_else(|| obj.get("id")).and_then(|v| v.as_str()).ok_or("placeholder_id required")?;
-        if !seen.insert(pid.to_string()) { return Err(format!("duplicate placeholder {pid:?}")); }
-        let kind_str = obj.get("kind").and_then(|v| v.as_str()).ok_or(format!("kind required for {pid:?}"))?;
+        let pid = obj
+            .get("placeholder_id")
+            .or_else(|| obj.get("id"))
+            .and_then(|v| v.as_str())
+            .ok_or("placeholder_id required")?;
+        if !seen.insert(pid.to_string()) {
+            return Err(format!("duplicate placeholder {pid:?}"));
+        }
+        let kind_str = obj
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .ok_or(format!("kind required for {pid:?}"))?;
         let kind = PlaceholderKind::parse(kind_str).ok_or(format!("unknown kind {kind_str:?}"))?;
         let default = obj.get("default").cloned().unwrap_or_else(|| match &kind {
             PlaceholderKind::Text => Value::String(String::new()),
@@ -78,34 +102,68 @@ pub fn apply_declare(pages: &mut HashMap<PageKey, UiPage>, plugin: &str, page_id
             PlaceholderKind::Bar => Value::Number(serde_json::Number::from(0)),
             PlaceholderKind::List => Value::Array(vec![]),
         });
-        placeholders.insert(pid.to_string(), Placeholder { kind, value: default });
+        placeholders.insert(
+            pid.to_string(),
+            Placeholder {
+                kind,
+                value: default,
+            },
+        );
         order.push(pid.to_string());
     }
-    pages.insert(key, UiPage::new(plugin.to_string(), page_id.to_string(), order, placeholders));
+    pages.insert(
+        key,
+        UiPage::new(plugin.to_string(), page_id.to_string(), order, placeholders),
+    );
     Ok(())
 }
 
-pub fn apply_write(pages: &mut HashMap<PageKey, UiPage>, plugin: &str, page_id: &str, placeholder_id: &str, value: Value) -> Result<(), String> {
+pub fn apply_write(
+    pages: &mut HashMap<PageKey, UiPage>,
+    plugin: &str,
+    page_id: &str,
+    placeholder_id: &str,
+    value: Value,
+) -> Result<(), String> {
     let key = (plugin.to_string(), page_id.to_string());
-    let page = pages.get_mut(&key).ok_or_else(|| format!("page {page_id:?} not declared for {plugin:?}"))?;
-    let ph = page.placeholders.get_mut(placeholder_id).ok_or_else(|| format!("placeholder {placeholder_id:?} not declared"))?;
+    let page = pages
+        .get_mut(&key)
+        .ok_or_else(|| format!("page {page_id:?} not declared for {plugin:?}"))?;
+    let ph = page
+        .placeholders
+        .get_mut(placeholder_id)
+        .ok_or_else(|| format!("placeholder {placeholder_id:?} not declared"))?;
     // Validate value matches kind (same as server)
     let valid = match &ph.kind {
         PlaceholderKind::Text => value.is_string(),
         PlaceholderKind::Number => value.is_number(),
-        PlaceholderKind::Bar => value.as_f64().map(|n| (0.0..=100.0).contains(&n)).unwrap_or(false),
+        PlaceholderKind::Bar => value
+            .as_f64()
+            .map(|n| (0.0..=100.0).contains(&n))
+            .unwrap_or(false),
         PlaceholderKind::List => value.is_array(),
     };
     if !valid {
-        return Err(format!("value for {placeholder_id:?} must be {}", ph.kind.as_str()));
+        return Err(format!(
+            "value for {placeholder_id:?} must be {}",
+            ph.kind.as_str()
+        ));
     }
     ph.value = value;
     Ok(())
 }
 
-pub fn apply_clear(pages: &mut HashMap<PageKey, UiPage>, plugin: &str, page_id: &str) -> Result<(), String> {
+pub fn apply_clear(
+    pages: &mut HashMap<PageKey, UiPage>,
+    plugin: &str,
+    page_id: &str,
+) -> Result<(), String> {
     let key = (plugin.to_string(), page_id.to_string());
-    if pages.remove(&key).is_some() { Ok(()) } else { Err(format!("page {page_id:?} not declared")) }
+    if pages.remove(&key).is_some() {
+        Ok(())
+    } else {
+        Err(format!("page {page_id:?} not declared"))
+    }
 }
 
 #[cfg(test)]
@@ -120,7 +178,16 @@ mod tests {
         apply_declare(&mut pages, "p", "dash", &layout).unwrap();
         assert_eq!(pages.len(), 1);
         apply_write(&mut pages, "p", "dash", "prog", json!(42)).unwrap();
-        assert_eq!(pages.get(&("p".to_string(),"dash".to_string())).unwrap().placeholders.get("prog").unwrap().value, json!(42));
+        assert_eq!(
+            pages
+                .get(&("p".to_string(), "dash".to_string()))
+                .unwrap()
+                .placeholders
+                .get("prog")
+                .unwrap()
+                .value,
+            json!(42)
+        );
         apply_clear(&mut pages, "p", "dash").unwrap();
         assert!(pages.is_empty());
     }

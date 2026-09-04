@@ -23,7 +23,7 @@ pub struct SseEvent {
     pub event: String,
     /// The value of the `data:` field(s). Multiple `data:` lines are joined
     /// with `\n`.
-    pub data:  String,
+    pub data: String,
 }
 
 /// Iterator over SSE events from any [`Read`] source.
@@ -58,7 +58,9 @@ pub struct SseReader<R: Read> {
 impl<R: Read> SseReader<R> {
     /// Wrap `r` in a buffered SSE reader.
     pub fn new(r: R) -> Self {
-        SseReader { inner: BufReader::new(r) }
+        SseReader {
+            inner: BufReader::new(r),
+        }
     }
 }
 
@@ -67,8 +69,8 @@ impl<R: Read> Iterator for SseReader<R> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut event_name = String::new();
-        let mut data_buf   = String::new();
-        let mut saw_field  = false;
+        let mut data_buf = String::new();
+        let mut saw_field = false;
 
         loop {
             let mut line = String::new();
@@ -76,7 +78,10 @@ impl<R: Read> Iterator for SseReader<R> {
                 Ok(0) => {
                     // EOF — flush if we have something
                     if saw_field {
-                        return Some(Ok(SseEvent { event: event_name, data: data_buf }));
+                        return Some(Ok(SseEvent {
+                            event: event_name,
+                            data: data_buf,
+                        }));
                     }
                     return None;
                 }
@@ -89,7 +94,10 @@ impl<R: Read> Iterator for SseReader<R> {
             if line.is_empty() {
                 // Blank line = block separator
                 if saw_field {
-                    return Some(Ok(SseEvent { event: event_name, data: data_buf }));
+                    return Some(Ok(SseEvent {
+                        event: event_name,
+                        data: data_buf,
+                    }));
                 }
                 // Empty block — keep going
                 continue;
@@ -100,7 +108,9 @@ impl<R: Read> Iterator for SseReader<R> {
             if let Some(val) = line.strip_prefix("event:") {
                 event_name = val.trim().to_string();
             } else if let Some(val) = line.strip_prefix("data:") {
-                if !data_buf.is_empty() { data_buf.push('\n'); }
+                if !data_buf.is_empty() {
+                    data_buf.push('\n');
+                }
                 data_buf.push_str(val.trim());
             }
             // Lines without a colon or with unknown fields are ignored per SSE spec.

@@ -63,9 +63,16 @@ impl SpawnLock {
         let held_path = path.with_extension("held");
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            match OpenOptions::new().create_new(true).write(true).open(&held_path) {
+            match OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&held_path)
+            {
                 Ok(_) => {
-                    return Ok(SpawnLock { _file: file, held_path });
+                    return Ok(SpawnLock {
+                        _file: file,
+                        held_path,
+                    });
                 }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                     // Reclaim a stale marker whose holder likely died.

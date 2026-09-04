@@ -15,17 +15,41 @@ mod tui {
     #[test]
     fn sse_reconnect() {
         use crate::reducer::{reduce, State};
-        use crate::wire::{SseFrame, WireMessage, WireContent};
+        use crate::wire::{SseFrame, WireContent, WireMessage};
         let mut s = State::default();
         s.session_id = "sess1".into();
         // First durable event at seq 10
-        reduce(&mut s, SseFrame::MessageAppended { seq: 10, msg: WireMessage { id: "m1".into(), role: "assistant".into(), content: vec![WireContent::Text { text: "hi".into() }], silent: false } });
+        reduce(
+            &mut s,
+            SseFrame::MessageAppended {
+                seq: 10,
+                msg: WireMessage {
+                    id: "m1".into(),
+                    role: "assistant".into(),
+                    content: vec![WireContent::Text { text: "hi".into() }],
+                    silent: false,
+                },
+            },
+        );
         assert_eq!(s.last_seq, 10);
         // Simulate disconnect and reconnect: last_seq should still be 10
         let from = s.last_seq;
         assert_eq!(from, 10);
         // Next event after reconnect at seq 11 should be processed
-        reduce(&mut s, SseFrame::MessageAppended { seq: 11, msg: WireMessage { id: "m2".into(), role: "assistant".into(), content: vec![WireContent::Text { text: "again".into() }], silent: false } });
+        reduce(
+            &mut s,
+            SseFrame::MessageAppended {
+                seq: 11,
+                msg: WireMessage {
+                    id: "m2".into(),
+                    role: "assistant".into(),
+                    content: vec![WireContent::Text {
+                        text: "again".into(),
+                    }],
+                    silent: false,
+                },
+            },
+        );
         assert_eq!(s.last_seq, 11);
         assert_eq!(s.transcript.messages().len(), 2);
     }
@@ -33,16 +57,19 @@ mod tui {
 pub mod command_palette;
 pub mod config;
 pub mod diff_viewer;
-pub mod input_history;
-pub mod kill_ring;
-pub mod prompt_history;
-pub mod prompt_stash;
 pub mod event;
+pub mod hyperlinks;
+pub mod input_history;
 pub mod keybind;
+pub mod kill_ring;
+pub mod latex;
 pub mod log;
 pub mod markdown;
 pub mod message_handler;
 pub mod model_selector;
+pub mod page_state;
+pub mod prompt_history;
+pub mod prompt_stash;
 pub mod search;
 pub mod session_manager;
 pub mod slash;
@@ -51,10 +78,7 @@ pub mod theme;
 pub mod thinking;
 pub mod token_tracker;
 pub mod ui;
-pub mod hyperlinks;
-pub mod latex;
 pub mod which_key;
-pub mod page_state;
 pub mod widgets;
 pub mod wire;
 pub mod word_segmenter;

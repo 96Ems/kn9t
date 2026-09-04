@@ -18,7 +18,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use kn9t_provider_core::{Cancel, Chunk, ProvErr, Provider, Request, sse_lines};
+use kn9t_provider_core::{sse_lines, Cancel, Chunk, ProvErr, Provider, Request};
 
 use crate::fixture::Fixture;
 // SegmentedReader stays local — a replay-specific delivery helper. `data_events`
@@ -35,8 +35,9 @@ pub struct ReplayProvider {
 impl ReplayProvider {
     /// Load a fixture from an explicit path.
     pub fn from_file(path: &Path) -> Result<Self, ProvErr> {
-        let raw = fs::read(path)
-            .map_err(|e| ProvErr::Connect(format!("replay: cannot read {}: {e}", path.display())))?;
+        let raw = fs::read(path).map_err(|e| {
+            ProvErr::Connect(format!("replay: cannot read {}: {e}", path.display()))
+        })?;
         let fixture = Fixture::parse(&raw)?;
         Ok(ReplayProvider { fixture })
     }
@@ -44,7 +45,11 @@ impl ReplayProvider {
     /// Load `crates/kn9t-provider-replay/fixtures/<provider>/<name>.fixture`, resolved
     /// relative to this crate's manifest dir (R-RPLY-020).
     pub fn from_fixture(provider: &str, name: &str) -> Result<Self, ProvErr> {
-        Self::from_file(&fixtures_dir().join(provider).join(format!("{name}.fixture")))
+        Self::from_file(
+            &fixtures_dir()
+                .join(provider)
+                .join(format!("{name}.fixture")),
+        )
     }
 
     /// Construct directly from an in-memory fixture (used by the recorder round-trip and
@@ -84,11 +89,10 @@ impl ReplayProvider {
         let reader = SegmentedReader::new(self.fixture.body.clone(), &self.fixture.chunks);
         let mut out = Vec::new();
         for item in sse_lines(reader) {
-            let payload = item
-                .map_err(|e| ProvErr::Stream(format!("replay: io while splitting sse: {e}")))?;
-            let chunk: Chunk = serde_json::from_slice(&payload).map_err(|e| {
-                ProvErr::Decode(format!("replay: bad chunk json: {e}"))
-            })?;
+            let payload =
+                item.map_err(|e| ProvErr::Stream(format!("replay: io while splitting sse: {e}")))?;
+            let chunk: Chunk = serde_json::from_slice(&payload)
+                .map_err(|e| ProvErr::Decode(format!("replay: bad chunk json: {e}")))?;
             out.push(chunk);
         }
         Ok(out)

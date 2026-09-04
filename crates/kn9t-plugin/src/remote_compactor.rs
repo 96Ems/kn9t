@@ -12,7 +12,10 @@
 //! (96E-17): no compactor = no compaction = session ends on context overflow.
 
 use crate::host::PluginHost;
-use kn9t_core::{CompactionPlan, Compactor, CompactSpan, Content, HandoffPlanData, HandoffSummary, Message, ModelRef, MsgId, Role};
+use kn9t_core::{
+    CompactSpan, CompactionPlan, Compactor, Content, HandoffPlanData, HandoffSummary, Message,
+    ModelRef, MsgId, Role,
+};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -79,7 +82,9 @@ pub fn plan_from_text(text: &str) -> CompactionPlan {
         summary: Message {
             id: MsgId::new(),
             role: Role::Assistant,
-            content: vec![Content::Text { text: text.to_string() }],
+            content: vec![Content::Text {
+                text: text.to_string(),
+            }],
             silent: false,
         },
         handoff: None,

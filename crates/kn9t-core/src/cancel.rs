@@ -157,11 +157,17 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(!result); // Not cancelled
-        // wait_timeout loops until the deadline, so it must honour the full 10ms
-        // even if the condvar wakes spuriously. A small tolerance absorbs
-        // Instant sampling jitter only.
-        assert!(elapsed >= Duration::from_millis(9), "returned too early: {elapsed:?}");
-        assert!(elapsed < Duration::from_millis(100), "waited too long: {elapsed:?}");
+                          // wait_timeout loops until the deadline, so it must honour the full 10ms
+                          // even if the condvar wakes spuriously. A small tolerance absorbs
+                          // Instant sampling jitter only.
+        assert!(
+            elapsed >= Duration::from_millis(9),
+            "returned too early: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "waited too long: {elapsed:?}"
+        );
     }
 
     #[test]
@@ -179,7 +185,10 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(result); // Was cancelled
-        assert!(elapsed < Duration::from_secs(1), "did not wake on cancel: {elapsed:?}");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "did not wake on cancel: {elapsed:?}"
+        );
 
         handle.join().unwrap();
     }

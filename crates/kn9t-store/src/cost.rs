@@ -1,24 +1,27 @@
 //! R-STOR-180 — cost analytics queries.
 
 use kn9t_core::{SessionId, StoreErr};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 
 use crate::db::SqliteStore;
 
 pub struct CostRollup {
-    pub marginal_micros:  i64,
+    pub marginal_micros: i64,
     pub effective_micros: i64,
-    pub family_micros:    i64,
+    pub family_micros: i64,
     // Deprecated float views for wire compat
-    pub marginal:  f64,
+    pub marginal: f64,
     pub effective: f64,
-    pub family:    f64,
+    pub family: f64,
 }
 
 impl SqliteStore {
     pub fn cost_rollup(&self, session: &SessionId) -> Result<CostRollup, StoreErr> {
-        let sid  = session.0.clone();
-        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+        let sid = session.0.clone();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreErr("lock poisoned".into()))?;
 
         let marginal_micros: i64 = conn
             .query_row(
@@ -37,7 +40,7 @@ impl SqliteStore {
             .map_err(|e| StoreErr(format!("inherited: {e}")))?;
 
         let effective_micros = marginal_micros + inherited_micros;
-        let family_micros    = family_cost(&conn, &sid)?;
+        let family_micros = family_cost(&conn, &sid)?;
 
         Ok(CostRollup {
             marginal_micros,
@@ -72,6 +75,6 @@ fn family_cost(conn: &rusqlite::Connection, sid: &str) -> Result<i64, StoreErr> 
 
     match origin {
         Some(parent) => Ok(own + family_cost(conn, &parent)?),
-        None         => Ok(own),
+        None => Ok(own),
     }
 }

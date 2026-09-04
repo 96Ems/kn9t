@@ -34,8 +34,20 @@ impl ReactLoop {
         if plan.compact.is_some() {
             *replans += 1;
             // Emit compaction retry so TUI spinner shows honest phase (fix 4.2: emit after increment)
-            self.bus.emit(LiveEvent::RetryAttempt { attempt: *replans, max: params.config.max_context_replans, error: "context_overflow".into(), delay_ms: 0, retry_kind: "compaction".into() });
-            self.bus.emit(LiveEvent::TurnStatus { phase: "retrying".into(), message: format!("context overflow — compaction replan {}/{}", *replans, params.config.max_context_replans) });
+            self.bus.emit(LiveEvent::RetryAttempt {
+                attempt: *replans,
+                max: params.config.max_context_replans,
+                error: "context_overflow".into(),
+                delay_ms: 0,
+                retry_kind: "compaction".into(),
+            });
+            self.bus.emit(LiveEvent::TurnStatus {
+                phase: "retrying".into(),
+                message: format!(
+                    "context overflow — compaction replan {}/{}",
+                    *replans, params.config.max_context_replans
+                ),
+            });
             if *replans > params.config.max_context_replans {
                 return Err(ReactError::CompactionLoop);
             }
@@ -51,11 +63,17 @@ impl ReactLoop {
                 }
                 Attempt::Truncated => {
                     // malformed-incomplete: explicitly distinguished from cancelled/failed
-                    self.bus.emit(LiveEvent::Error { message: "compaction truncated: malformed-incomplete".into() });
-                    return Err(ReactError::Provider("compaction truncated: malformed-incomplete".into()));
+                    self.bus.emit(LiveEvent::Error {
+                        message: "compaction truncated: malformed-incomplete".into(),
+                    });
+                    return Err(ReactError::Provider(
+                        "compaction truncated: malformed-incomplete".into(),
+                    ));
                 }
                 Attempt::ContextOverflow => {
-                    self.bus.emit(LiveEvent::Error { message: "compaction context overflow".into() });
+                    self.bus.emit(LiveEvent::Error {
+                        message: "compaction context overflow".into(),
+                    });
                     return Err(ReactError::Provider("compaction context overflow".into()));
                 }
             }
@@ -103,21 +121,38 @@ impl ReactLoop {
         cancel: &Cancel,
         model: &ModelRef,
     ) -> Result<Attempt, ReactError> {
-        self.bus.emit(LiveEvent::TurnStatus { phase: "thinking".into(), message: String::new() });
-        let stream = match self.provider.stream_with_sink(req, cancel, Some(self.bus.as_ref())) {
+        self.bus.emit(LiveEvent::TurnStatus {
+            phase: "thinking".into(),
+            message: String::new(),
+        });
+        let stream = match self
+            .provider
+            .stream_with_sink(req, cancel, Some(self.bus.as_ref()))
+        {
             Ok(s) => {
-                self.bus.emit(LiveEvent::TurnStatus { phase: "streaming".into(), message: String::new() });
+                self.bus.emit(LiveEvent::TurnStatus {
+                    phase: "streaming".into(),
+                    message: String::new(),
+                });
                 s
             }
             Err(ProvErr::ContextOverflow) => return Ok(Attempt::ContextOverflow),
             Err(ProvErr::Truncated) => return Ok(Attempt::Truncated),
             Err(e) => {
                 if cancel.cancelled() {
-                    self.bus.emit(LiveEvent::TurnStatus { phase: "aborted".into(), message: String::new() });
+                    self.bus.emit(LiveEvent::TurnStatus {
+                        phase: "aborted".into(),
+                        message: String::new(),
+                    });
                     return Ok(Attempt::AbortedInStream(estimated_assembled(model)));
                 }
-                self.bus.emit(LiveEvent::TurnStatus { phase: "failed".into(), message: format!("{e:?}") });
-                self.bus.emit(LiveEvent::Error { message: format!("provider failed: {e:?}") });
+                self.bus.emit(LiveEvent::TurnStatus {
+                    phase: "failed".into(),
+                    message: format!("{e:?}"),
+                });
+                self.bus.emit(LiveEvent::Error {
+                    message: format!("provider failed: {e:?}"),
+                });
                 return Err(ReactError::Provider(e.to_string()));
             }
         };
@@ -125,7 +160,10 @@ impl ReactLoop {
             Ok(mut a) => {
                 a.usage.model = model.clone();
                 if cancel.cancelled() {
-                    self.bus.emit(LiveEvent::TurnStatus { phase: "aborted".into(), message: String::new() });
+                    self.bus.emit(LiveEvent::TurnStatus {
+                        phase: "aborted".into(),
+                        message: String::new(),
+                    });
                     Ok(Attempt::AbortedInStream(a))
                 } else {
                     Ok(Attempt::Completed(a))
@@ -135,12 +173,20 @@ impl ReactLoop {
             Err(ProvErr::Truncated) => Ok(Attempt::Truncated),
             Err(e) => {
                 if cancel.cancelled() {
-                    self.bus.emit(LiveEvent::TurnStatus { phase: "aborted".into(), message: String::new() });
+                    self.bus.emit(LiveEvent::TurnStatus {
+                        phase: "aborted".into(),
+                        message: String::new(),
+                    });
                     let est = estimated_assembled(model);
                     Ok(Attempt::AbortedInStream(est))
                 } else {
-                    self.bus.emit(LiveEvent::TurnStatus { phase: "failed".into(), message: format!("provider stream failed mid-stream: {e:?}") });
-                    self.bus.emit(LiveEvent::Error { message: format!("provider stream failed: {e:?}") });
+                    self.bus.emit(LiveEvent::TurnStatus {
+                        phase: "failed".into(),
+                        message: format!("provider stream failed mid-stream: {e:?}"),
+                    });
+                    self.bus.emit(LiveEvent::Error {
+                        message: format!("provider stream failed: {e:?}"),
+                    });
                     Err(ReactError::Provider(e.to_string()))
                 }
             }
@@ -166,8 +212,13 @@ impl ReactLoop {
         // Cancel is checked first: an ESC during a context-full turn is a clean abort,
         // unrelated to compactor availability.
         if cancel.cancelled() {
-            self.bus.emit(LiveEvent::TurnStatus { phase: "aborted".into(), message: String::new() });
-            return Ok(Attempt::AbortedInStream(estimated_assembled(&params.model.r#ref)));
+            self.bus.emit(LiveEvent::TurnStatus {
+                phase: "aborted".into(),
+                message: String::new(),
+            });
+            return Ok(Attempt::AbortedInStream(estimated_assembled(
+                &params.model.r#ref,
+            )));
         }
         let Some(compactor) = &self.compactor else {
             self.bus.emit(LiveEvent::Error { message: "context overflow — compaction required but no compactor plugin is installed; session cannot continue".into() });
@@ -193,8 +244,12 @@ impl ReactLoop {
                         resume_actions: handoff.resume_actions.clone(),
                     };
                     if let Err(e) = kn9t_provider_core::validate_handoff(&ev, &known) {
-                        self.bus.emit(LiveEvent::Error { message: format!("compactor handoff validation failed: {e}") });
-                        return Err(ReactError::Provider(format!("compactor handoff validation failed: {e}")));
+                        self.bus.emit(LiveEvent::Error {
+                            message: format!("compactor handoff validation failed: {e}"),
+                        });
+                        return Err(ReactError::Provider(format!(
+                            "compactor handoff validation failed: {e}"
+                        )));
                     }
                 }
                 self.append(
@@ -229,7 +284,9 @@ impl ReactLoop {
                 return Ok(Attempt::Completed(assembled));
             }
             Err(e) => {
-                self.bus.emit(LiveEvent::Error { message: format!("compactor failed: {e}") });
+                self.bus.emit(LiveEvent::Error {
+                    message: format!("compactor failed: {e}"),
+                });
                 return Err(ReactError::Provider(format!("compactor failed: {e}")));
             }
         }
@@ -289,13 +346,19 @@ impl ReactLoop {
                             args.clone(),
                             id.clone(),
                             thread::spawn(move || {
-                                bus.emit(LiveEvent::ToolStarted { call_id: id.clone(), name: name.clone() });
+                                bus.emit(LiveEvent::ToolStarted {
+                                    call_id: id.clone(),
+                                    name: name.clone(),
+                                });
                                 let out = tool.execute(&args, &ctx, &cancel);
                                 let (inner, is_error) = match out {
                                     Ok(o) => (o.content, o.is_error),
                                     Err(e) => (vec![Content::Text { text: e.0 }], true),
                                 };
-                                bus.emit(LiveEvent::ToolFinished { call_id: id.clone(), is_error });
+                                bus.emit(LiveEvent::ToolFinished {
+                                    call_id: id.clone(),
+                                    is_error,
+                                });
                                 (inner, is_error)
                             }),
                         ));
@@ -305,7 +368,8 @@ impl ReactLoop {
         }
 
         // Sequential pass for everything not launched on a thread.
-        let launched: std::collections::HashSet<usize> = handles.iter().map(|(i, _, _, _, _)| *i).collect();
+        let launched: std::collections::HashSet<usize> =
+            handles.iter().map(|(i, _, _, _, _)| *i).collect();
         for (i, call) in calls.iter().enumerate() {
             if launched.contains(&i) {
                 continue;
@@ -318,14 +382,21 @@ impl ReactLoop {
             let content = match h.join() {
                 Ok((inner, is_error)) => {
                     let patched = self.hook_after_tool_call(&name, &args, inner);
-                    Content::ToolResult { id, content: patched, is_error }
+                    Content::ToolResult {
+                        id,
+                        content: patched,
+                        is_error,
+                    }
                 }
                 Err(_) => synth_error(&id, "tool thread panicked"),
             };
             results[i] = Some(content);
         }
 
-        results.into_iter().map(|r| r.expect("every slot filled")).collect()
+        results
+            .into_iter()
+            .map(|r| r.expect("every slot filled"))
+            .collect()
     }
 
     /// Sequential execution of one call given its authorization plan.
@@ -542,45 +613,142 @@ mod tests {
     // ── 96E-8: malformed JSON must not reach Tool::execute ────────────────
     #[test]
     fn p1_96e8_authorize_malformed_json_is_deny() {
-        use kn9t_core::{Content, HookHost, LiveEvent, Message, ModelRef, Tool, ToolCtx, Cancel, ToolSpec, Store, StoreErr, SessionId, SessionSnapshot, RequestPlan, EventSink, Event, ToolRegistry, Approver, Decision, ToolCall, CallId};
-        use std::collections::HashMap;
-        use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
         use crate::loop_::RunParams;
-        use kn9t_core::{ModelSpec, Price, CacheMode, Quirks, Thinking};
+        use kn9t_core::{
+            Approver, CallId, Cancel, Content, Decision, Event, EventSink, HookHost, LiveEvent,
+            Message, ModelRef, RequestPlan, SessionId, SessionSnapshot, Store, StoreErr, Tool,
+            ToolCall, ToolCtx, ToolRegistry, ToolSpec,
+        };
+        use kn9t_core::{CacheMode, ModelSpec, Price, Quirks, Thinking};
+        use std::collections::HashMap;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
+        };
 
         struct DummyStore;
         impl Store for DummyStore {
-            fn plan_request(&self, _s: &SessionId) -> Result<RequestPlan, StoreErr> { unreachable!() }
-            fn append(&self, _s: &SessionId, _e: Event) -> Result<u64, StoreErr> { Ok(1) }
-            fn snapshot(&self, _s: &SessionId) -> Result<SessionSnapshot, StoreErr> { unreachable!() }
+            fn plan_request(&self, _s: &SessionId) -> Result<RequestPlan, StoreErr> {
+                unreachable!()
+            }
+            fn append(&self, _s: &SessionId, _e: Event) -> Result<u64, StoreErr> {
+                Ok(1)
+            }
+            fn snapshot(&self, _s: &SessionId) -> Result<SessionSnapshot, StoreErr> {
+                unreachable!()
+            }
         }
         struct DummyProvider;
         impl kn9t_core::Provider for DummyProvider {
-            fn name(&self) -> &str { "dummy" }
-            fn stream(&self, _r: &kn9t_core::Request, _c: &Cancel) -> Result<Box<dyn Iterator<Item=Result<kn9t_core::Chunk, kn9t_core::ProvErr>>+Send>, kn9t_core::ProvErr> { unreachable!() }
+            fn name(&self) -> &str {
+                "dummy"
+            }
+            fn stream(
+                &self,
+                _r: &kn9t_core::Request,
+                _c: &Cancel,
+            ) -> Result<
+                Box<dyn Iterator<Item = Result<kn9t_core::Chunk, kn9t_core::ProvErr>> + Send>,
+                kn9t_core::ProvErr,
+            > {
+                unreachable!()
+            }
         }
         struct DummyBus(Arc<Mutex<Vec<LiveEvent>>>);
-        impl EventSink for DummyBus { fn emit(&self, e: LiveEvent) { self.0.lock().unwrap().push(e); } }
+        impl EventSink for DummyBus {
+            fn emit(&self, e: LiveEvent) {
+                self.0.lock().unwrap().push(e);
+            }
+        }
         struct AllowAllApprover;
-        impl Approver for AllowAllApprover { fn request(&self, _c: &ToolCall, _cwd: &std::path::Path, _r: &str, _ctx: &kn9t_provider_core::ApprovalCtx) -> Decision { Decision::Allow } }
+        impl Approver for AllowAllApprover {
+            fn request(
+                &self,
+                _c: &ToolCall,
+                _cwd: &std::path::Path,
+                _r: &str,
+                _ctx: &kn9t_provider_core::ApprovalCtx,
+            ) -> Decision {
+                Decision::Allow
+            }
+        }
         struct CountingTool(Arc<AtomicUsize>);
         impl Tool for CountingTool {
-            fn spec(&self) -> &ToolSpec { Box::leak(Box::new(ToolSpec { name: "x".into(), description: "".into(), schema: serde_json::json!({}), hidden: false, effects: vec![], policy: Default::default() })) }
-            fn execute(&self, _a: &serde_json::Value, _c: &ToolCtx, _cancel: &Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+            fn spec(&self) -> &ToolSpec {
+                Box::leak(Box::new(ToolSpec {
+                    name: "x".into(),
+                    description: "".into(),
+                    schema: serde_json::json!({}),
+                    hidden: false,
+                    effects: vec![],
+                    policy: Default::default(),
+                }))
+            }
+            fn execute(
+                &self,
+                _a: &serde_json::Value,
+                _c: &ToolCtx,
+                _cancel: &Cancel,
+            ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Ok(kn9t_core::ToolOutput { content: vec![Content::Text { text: "ok".into() }], details: None, is_error: false })
+                Ok(kn9t_core::ToolOutput {
+                    content: vec![Content::Text { text: "ok".into() }],
+                    details: None,
+                    is_error: false,
+                })
             }
         }
         struct CountingHook(Arc<AtomicUsize>);
         impl HookHost for CountingHook {
-            fn before_tool_call(&self, _t: &str, _a: &serde_json::Value, _c: &std::path::Path) -> kn9t_core::HookVeto { self.0.fetch_add(1, Ordering::SeqCst); kn9t_core::HookVeto::Allow }
-            fn after_tool_call(&self, _t: &str, _a: &serde_json::Value, r: Vec<Content>) -> Vec<Content> { r }
-            fn before_request(&self, m: Vec<Message>, _model: &ModelRef, _s: Option<&str>) -> Vec<Message> { m }
-            fn should_stop_after_turn(&self, _s: kn9t_core::StopReason, _u: &kn9t_core::Usage, _t: u32) -> bool { false }
-            fn prepare_next_turn(&self, _s: kn9t_core::StopReason, _u: &kn9t_core::Usage) -> kn9t_core::NextTurnPatch { Default::default() }
-            fn get_steering(&self) -> Vec<Message> { vec![] }
-            fn get_followup(&self) -> Vec<Message> { vec![] }
-            fn get_api_key(&self, _p: &str) -> Option<String> { None }
+            fn before_tool_call(
+                &self,
+                _t: &str,
+                _a: &serde_json::Value,
+                _c: &std::path::Path,
+            ) -> kn9t_core::HookVeto {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                kn9t_core::HookVeto::Allow
+            }
+            fn after_tool_call(
+                &self,
+                _t: &str,
+                _a: &serde_json::Value,
+                r: Vec<Content>,
+            ) -> Vec<Content> {
+                r
+            }
+            fn before_request(
+                &self,
+                m: Vec<Message>,
+                _model: &ModelRef,
+                _s: Option<&str>,
+            ) -> Vec<Message> {
+                m
+            }
+            fn should_stop_after_turn(
+                &self,
+                _s: kn9t_core::StopReason,
+                _u: &kn9t_core::Usage,
+                _t: u32,
+            ) -> bool {
+                false
+            }
+            fn prepare_next_turn(
+                &self,
+                _s: kn9t_core::StopReason,
+                _u: &kn9t_core::Usage,
+            ) -> kn9t_core::NextTurnPatch {
+                Default::default()
+            }
+            fn get_steering(&self) -> Vec<Message> {
+                vec![]
+            }
+            fn get_followup(&self) -> Vec<Message> {
+                vec![]
+            }
+            fn get_api_key(&self, _p: &str) -> Option<String> {
+                None
+            }
         }
 
         let tool_calls = Arc::new(AtomicUsize::new(0));
@@ -594,10 +762,29 @@ mod tests {
             approver: Arc::new(AllowAllApprover),
             tools,
             hooks: Arc::new(CountingHook(hook_calls.clone())),
-            bus: Arc::new(DummyBus(bus_events.clone())), compactor: None };
+            bus: Arc::new(DummyBus(bus_events.clone())),
+            compactor: None,
+        };
         let params = RunParams {
             session: SessionId::new(),
-            model: ModelSpec { r#ref: ModelRef { provider: "test".into(), id: "m".into() }, api_id: "test".into(), ctx_window: 100000, max_out: 8000, price: Price { input: 1000000, output: 1000000, cache_read: 1000000, cache_write: 1000000 }, cache: CacheMode::None, streaming: true, quirks: Quirks::default() },
+            model: ModelSpec {
+                r#ref: ModelRef {
+                    provider: "test".into(),
+                    id: "m".into(),
+                },
+                api_id: "test".into(),
+                ctx_window: 100000,
+                max_out: 8000,
+                price: Price {
+                    input: 1000000,
+                    output: 1000000,
+                    cache_read: 1000000,
+                    cache_write: 1000000,
+                },
+                cache: CacheMode::None,
+                streaming: true,
+                quirks: Quirks::default(),
+            },
             thinking: Thinking::Off,
             max_tokens: None,
             cwd: std::env::temp_dir(),
@@ -609,26 +796,70 @@ mod tests {
             reactivation_reminder: None,
         };
         // Case 1: syntactically invalid JSON
-        let call_bad = ToolCall { id: CallId("c1".into()), name: "x".into(), args_json: "{not valid json".into() };
+        let call_bad = ToolCall {
+            id: CallId("c1".into()),
+            name: "x".into(),
+            args_json: "{not valid json".into(),
+        };
         let plan = looop.authorize(&params, &call_bad);
-        assert!(matches!(plan, CallPlan::Deny(_)), "malformed JSON must be Deny, got {:?}", match plan { CallPlan::Deny(ref s) => s, _ => "Execute" });
-        assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "tool must not be called for malformed");
-        assert_eq!(hook_calls.load(Ordering::SeqCst), 0, "hook must not be called for malformed");
+        assert!(
+            matches!(plan, CallPlan::Deny(_)),
+            "malformed JSON must be Deny, got {:?}",
+            match plan {
+                CallPlan::Deny(ref s) => s,
+                _ => "Execute",
+            }
+        );
+        assert_eq!(
+            tool_calls.load(Ordering::SeqCst),
+            0,
+            "tool must not be called for malformed"
+        );
+        assert_eq!(
+            hook_calls.load(Ordering::SeqCst),
+            0,
+            "hook must not be called for malformed"
+        );
         // Also check that run_tool_batch produces is_error ToolResult and does not call tool
         let batch = looop.run_tool_batch(&params, &[call_bad.clone()], &Cancel::new());
         assert_eq!(batch.len(), 1);
         match &batch[0] {
-            Content::ToolResult { id, is_error, content } => {
+            Content::ToolResult {
+                id,
+                is_error,
+                content,
+            } => {
                 assert_eq!(id.0, "c1");
                 assert!(*is_error, "must be is_error");
-                let txt = content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("");
-                assert!(txt.to_lowercase().contains("malformed"), "error must mention malformed, got {txt:?}");
+                let txt = content
+                    .iter()
+                    .filter_map(|c| {
+                        if let Content::Text { text } = c {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                assert!(
+                    txt.to_lowercase().contains("malformed"),
+                    "error must mention malformed, got {txt:?}"
+                );
             }
             _ => panic!("expected ToolResult"),
         }
-        assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "run_tool_batch must not call tool for malformed");
+        assert_eq!(
+            tool_calls.load(Ordering::SeqCst),
+            0,
+            "run_tool_batch must not call tool for malformed"
+        );
         // Case 2: valid JSON but not object (null)
-        let call_null = ToolCall { id: CallId("c2".into()), name: "x".into(), args_json: "null".into() };
+        let call_null = ToolCall {
+            id: CallId("c2".into()),
+            name: "x".into(),
+            args_json: "null".into(),
+        };
         let plan2 = looop.authorize(&params, &call_null);
         assert!(matches!(plan2, CallPlan::Deny(_)), "null must be Deny");
         let batch2 = looop.run_tool_batch(&params, &[call_null], &Cancel::new());
@@ -636,10 +867,17 @@ mod tests {
             Content::ToolResult { is_error, .. } => assert!(*is_error),
             _ => panic!("expected ToolResult"),
         }
-        assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "null must not reach tool");
+        assert_eq!(
+            tool_calls.load(Ordering::SeqCst),
+            0,
+            "null must not reach tool"
+        );
         // Bus must have Error events
         let evs = bus_events.lock().unwrap();
-        assert!(evs.iter().any(|e| matches!(e, LiveEvent::Error { .. })), "must emit Error");
+        assert!(
+            evs.iter().any(|e| matches!(e, LiveEvent::Error { .. })),
+            "must emit Error"
+        );
     }
 
     #[test]
@@ -648,7 +886,11 @@ mod tests {
         let result = synth_error(&call_id, "something failed");
 
         match result {
-            Content::ToolResult { id, content, is_error } => {
+            Content::ToolResult {
+                id,
+                content,
+                is_error,
+            } => {
                 assert_eq!(id.0, "call-123");
                 assert!(is_error);
                 assert_eq!(content.len(), 1);

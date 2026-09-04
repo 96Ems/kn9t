@@ -30,7 +30,7 @@ fn theme_set() -> &'static ThemeSet {
 }
 
 /// Highlight code with the given language.
-/// 
+///
 /// Returns a vector of styled Lines. If the language is not supported,
 /// falls back to plain text rendering with the provided fallback style.
 pub fn highlight_code(
@@ -41,30 +41,32 @@ pub fn highlight_code(
 ) -> Vec<Line<'static>> {
     let ss = syntax_set();
     let ts = theme_set();
-    
+
     // Choose a syntax theme based on the TUI theme
     let syntax_theme_name = if is_dark_theme(theme) {
         "base16-ocean.dark"
     } else {
         "base16-ocean.light"
     };
-    
-    let syntax_theme = ts.themes.get(syntax_theme_name)
+
+    let syntax_theme = ts
+        .themes
+        .get(syntax_theme_name)
         .unwrap_or_else(|| ts.themes.values().next().unwrap());
-    
+
     // Find syntax for language
     let syntax = language
         .and_then(|lang| ss.find_syntax_by_token(lang))
         .or_else(|| language.and_then(|lang| ss.find_syntax_by_extension(lang)))
         .unwrap_or_else(|| ss.find_syntax_plain_text());
-    
+
     let mut highlighter = HighlightLines::new(syntax, syntax_theme);
     let mut lines = Vec::new();
-    
+
     for (i, line) in code.lines().enumerate() {
         let line_num = format!("{:3} │ ", i + 1);
         let mut spans = vec![Span::styled(line_num, line_number_style)];
-        
+
         // Highlight this line
         match highlighter.highlight_line(line, ss) {
             Ok(highlighted) => {
@@ -83,10 +85,10 @@ pub fn highlight_code(
                 ));
             }
         }
-        
+
         lines.push(Line::from(spans));
     }
-    
+
     lines
 }
 
@@ -99,8 +101,13 @@ fn is_dark_theme(theme: &Theme) -> bool {
             luminance < 128
         }
         Color::Black | Color::DarkGray => true,
-        Color::White | Color::Gray | Color::LightRed | Color::LightGreen 
-        | Color::LightYellow | Color::LightBlue | Color::LightMagenta 
+        Color::White
+        | Color::Gray
+        | Color::LightRed
+        | Color::LightGreen
+        | Color::LightYellow
+        | Color::LightBlue
+        | Color::LightMagenta
         | Color::LightCyan => false,
         _ => true, // Default to dark
     }
@@ -108,14 +115,10 @@ fn is_dark_theme(theme: &Theme) -> bool {
 
 /// Convert syntect Style to ratatui Style.
 fn syntect_to_ratatui_style(style: highlighting::Style) -> Style {
-    let fg = Color::Rgb(
-        style.foreground.r,
-        style.foreground.g,
-        style.foreground.b,
-    );
-    
+    let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
+
     let mut ratatui_style = Style::default().fg(fg);
-    
+
     // Apply font style
     if style.font_style.contains(highlighting::FontStyle::BOLD) {
         ratatui_style = ratatui_style.add_modifier(ratatui::style::Modifier::BOLD);
@@ -123,10 +126,13 @@ fn syntect_to_ratatui_style(style: highlighting::Style) -> Style {
     if style.font_style.contains(highlighting::FontStyle::ITALIC) {
         ratatui_style = ratatui_style.add_modifier(ratatui::style::Modifier::ITALIC);
     }
-    if style.font_style.contains(highlighting::FontStyle::UNDERLINE) {
+    if style
+        .font_style
+        .contains(highlighting::FontStyle::UNDERLINE)
+    {
         ratatui_style = ratatui_style.add_modifier(ratatui::style::Modifier::UNDERLINED);
     }
-    
+
     ratatui_style
 }
 

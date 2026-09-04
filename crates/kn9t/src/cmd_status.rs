@@ -40,7 +40,11 @@ pub fn run(port: u16, server_token: &str) {
         for m in arr.iter().take(5) {
             let p = m.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
             let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-            let def = if m.get("is_default") == Some(&Value::Bool(true)) { " (default)" } else { "" };
+            let def = if m.get("is_default") == Some(&Value::Bool(true)) {
+                " (default)"
+            } else {
+                ""
+            };
             println!("    - {p}/{id}{def}");
         }
         if arr.len() > 5 {
@@ -49,11 +53,11 @@ pub fn run(port: u16, server_token: &str) {
     }
 
     let sessions = crate::http::get_json(&host, &auth, "/session", "status");
-    let count = sessions.get("sessions")
+    let count = sessions
+        .get("sessions")
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .or_else(|| sessions.as_array().map(|a| a.len()))
         .unwrap_or(0);
     println!("  sessions: {count}");
 }
-

@@ -3,8 +3,8 @@
 
 mod rply {
     use kn9t_provider_core::{
-        Cancel, CacheMode, Chunk, ModelRef, ModelSpec, Price, Provider, Request,
-        StopReason, Thinking,
+        CacheMode, Cancel, Chunk, ModelRef, ModelSpec, Price, Provider, Request, StopReason,
+        Thinking,
     };
     // kn9t_core::Quirks = model quirks; distinct from kn9t_provider_core::Quirks (HTTP quirks)
     use kn9t_core::Quirks;
@@ -87,7 +87,8 @@ mod rply {
     fn header_parse() {
         // A header with the three MUST fields + extras, then a verbatim body containing
         // its own blank lines and CRLFs, must round-trip with the body byte range untouched.
-        let body = b"data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"x\"}\r\n\r\ndata: [DONE]\r\n\r\n";
+        let body =
+            b"data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"x\"}\r\n\r\ndata: [DONE]\r\n\r\n";
         let mut raw = Vec::new();
         raw.extend_from_slice(b"kind: replay\n");
         raw.extend_from_slice(b"status: 200\n");
@@ -221,7 +222,10 @@ mod rply {
         let cancel = Cancel::new();
         match p.stream(&req, &cancel) {
             Err(kn9t_provider_core::ProvErr::Http { status, .. }) => assert_eq!(status, 429),
-            other => panic!("expected pre-stream Http 429, got {:?}", other.map(|_| "iter")),
+            other => panic!(
+                "expected pre-stream Http 429, got {:?}",
+                other.map(|_| "iter")
+            ),
         }
     }
 
@@ -232,12 +236,17 @@ mod rply {
         // clean context-deadline -> StopReason::Length, NOT an error.
         let (chunks, err) = drain(&ReplayProvider::from_fixture("replay", "stop_length").unwrap());
         assert!(err.is_none());
-        assert!(matches!(chunks.last(), Some(Chunk::Stop(StopReason::Length))));
+        assert!(matches!(
+            chunks.last(),
+            Some(Chunk::Stop(StopReason::Length))
+        ));
 
         // prompt too long -> ContextOverflow (via terminal-error, twin carries raw text).
-        let (_c, err) =
-            drain(&ReplayProvider::from_fixture("replay", "context_overflow").unwrap());
-        assert!(matches!(err, Some(kn9t_provider_core::ProvErr::ContextOverflow)));
+        let (_c, err) = drain(&ReplayProvider::from_fixture("replay", "context_overflow").unwrap());
+        assert!(matches!(
+            err,
+            Some(kn9t_provider_core::ProvErr::ContextOverflow)
+        ));
 
         // unfinished tool call -> Truncated.
         let (chunks, err) =
@@ -288,7 +297,10 @@ mod rply {
     #[test]
     fn recorder_redacts_secrets() {
         // R-RPLY-020: Authorization and api_key header values are redacted on write.
-        assert_eq!(redact_header_value("Authorization", "token sgp_secret"), "<redacted>");
+        assert_eq!(
+            redact_header_value("Authorization", "token sgp_secret"),
+            "<redacted>"
+        );
         assert_eq!(redact_header_value("x-api_key", "abc123"), "<redacted>");
         assert_eq!(redact_header_value("note", "keep me"), "keep me");
 

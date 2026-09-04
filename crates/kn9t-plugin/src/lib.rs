@@ -32,10 +32,21 @@ use kn9t_core::{PluginKv, StoreErr};
 pub struct NoOpPluginKv;
 
 impl PluginKv for NoOpPluginKv {
-    fn kv_get(&self, _plugin: &str, _scope: &str, _key: &str) -> Result<Option<serde_json::Value>, StoreErr> {
+    fn kv_get(
+        &self,
+        _plugin: &str,
+        _scope: &str,
+        _key: &str,
+    ) -> Result<Option<serde_json::Value>, StoreErr> {
         Ok(None)
     }
-    fn kv_set(&self, _plugin: &str, _scope: &str, _key: &str, _value: &serde_json::Value) -> Result<(), StoreErr> {
+    fn kv_set(
+        &self,
+        _plugin: &str,
+        _scope: &str,
+        _key: &str,
+        _value: &serde_json::Value,
+    ) -> Result<(), StoreErr> {
         Ok(())
     }
     fn kv_del(&self, _plugin: &str, _scope: &str, _key: &str) -> Result<(), StoreErr> {

@@ -117,7 +117,7 @@ impl SlashState {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Start slash command mode.
     pub fn activate(&mut self) {
         self.active = true;
@@ -125,7 +125,7 @@ impl SlashState {
         self.update_matches();
         self.selected = 0;
     }
-    
+
     /// Exit slash command mode.
     pub fn deactivate(&mut self) {
         self.active = false;
@@ -133,7 +133,7 @@ impl SlashState {
         self.matches.clear();
         self.selected = 0;
     }
-    
+
     /// Update query and re-filter matches.
     pub fn set_query(&mut self, query: &str) {
         self.query = query.to_lowercase();
@@ -143,12 +143,12 @@ impl SlashState {
             self.selected = 0;
         }
     }
-    
+
     /// Get currently selected command (if any).
     pub fn selected_command(&self) -> Option<&SlashCommand> {
         self.matches.get(self.selected).map(|&i| &COMMANDS[i])
     }
-    
+
     /// Move selection up.
     pub fn select_prev(&mut self) {
         if !self.matches.is_empty() {
@@ -159,14 +159,14 @@ impl SlashState {
             }
         }
     }
-    
+
     /// Move selection down.
     pub fn select_next(&mut self) {
         if !self.matches.is_empty() {
             self.selected = (self.selected + 1) % self.matches.len();
         }
     }
-    
+
     fn update_matches(&mut self) {
         self.matches = COMMANDS
             .iter()
@@ -182,7 +182,7 @@ pub fn fuzzy_match(target: &str, query: &str) -> bool {
     if query.is_empty() {
         return true;
     }
-    
+
     let mut query_chars = query.chars().peekable();
     for ch in target.chars() {
         if let Some(&qch) = query_chars.peek() {
@@ -194,14 +194,14 @@ pub fn fuzzy_match(target: &str, query: &str) -> bool {
             return true;
         }
     }
-    
+
     query_chars.peek().is_none()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_fuzzy_match() {
         assert!(fuzzy_match("model", ""));

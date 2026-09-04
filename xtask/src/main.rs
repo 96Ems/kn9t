@@ -105,6 +105,22 @@ fn generate() -> Result<(), String> {
     gen_wire::write(&root, &http)?;
     gen_markdown::write(&root, &http, &plugin)?;
     gen_stubs::write(&root, &http, &plugin)?;
+
+    // Run rustfmt on generated Rust files so they match workspace style and
+    // `cargo fmt -- --check` in CI does not flag them as drift.
+    let rust_files = [
+        root.join("crates/kn9t-server/src/api.rs"),
+        root.join("crates/kn9t-tui/src/wire.rs"),
+    ];
+    for path in &rust_files {
+        let status = std::process::Command::new("rustfmt")
+            .arg(path)
+            .status()
+            .map_err(|e| format!("rustfmt {}: {e}", path.display()))?;
+        if !status.success() {
+            return Err(format!("rustfmt {} failed", path.display()));
+        }
+    }
     Ok(())
 }
 
@@ -115,9 +131,39 @@ fn check() -> Result<(), String> {
     let root = repo_root();
     let mut failures = 0;
 
+    // Rust files get formatted before comparison so that both sides agree on style.
+    let fmt_rust = |code: String| -> Result<String, String> {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("rustfmt")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn rustfmt: {e}"))?;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(code.as_bytes())
+            .map_err(|e| format!("write to rustfmt: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait rustfmt: {e}"))?;
+        if !output.status.success() {
+            return Err("rustfmt failed".into());
+        }
+        String::from_utf8(output.stdout).map_err(|e| format!("rustfmt output: {e}"))
+    };
+
     let mut expected: Vec<(PathBuf, String)> = Vec::new();
-    expected.push((root.join("crates/kn9t-server/src/api.rs"), gen_server::generate(&http)?));
-    expected.push((root.join("crates/kn9t-tui/src/wire.rs"), gen_wire::generate(&http)?));
+    expected.push((
+        root.join("crates/kn9t-server/src/api.rs"),
+        fmt_rust(gen_server::generate(&http)?)?,
+    ));
+    expected.push((
+        root.join("crates/kn9t-tui/src/wire.rs"),
+        fmt_rust(gen_wire::generate(&http)?)?,
+    ));
     expected.push((root.join("API.md"), gen_markdown::generate(&http, &plugin)?));
     let (go, py) = gen_stubs::generate(&http, &plugin)?;
     expected.push((root.join("schema/generated/go_types.go"), go));
@@ -127,7 +173,10 @@ fn check() -> Result<(), String> {
         match std::fs::read_to_string(path) {
             Ok(have) if &have == want => {}
             Ok(_) => {
-                eprintln!("DRIFT: {} differs from schema-generated output", path.display());
+                eprintln!(
+                    "DRIFT: {} differs from schema-generated output",
+                    path.display()
+                );
                 failures += 1;
             }
             Err(_) => {
@@ -140,7 +189,9 @@ fn check() -> Result<(), String> {
         }
     }
     if failures > 0 {
-        Err(format!("{failures} generated file(s) drifted from the schema"))
+        Err(format!(
+            "{failures} generated file(s) drifted from the schema"
+        ))
     } else {
         println!("xtask --check: all generated outputs match the schema");
         Ok(())

@@ -56,12 +56,20 @@ impl Ring {
     fn recv_timeout(&self, timeout: Duration) -> Option<Event> {
         let mut st = self.queue.lock().expect("bus ring poisoned");
         loop {
-            if let Some(e) = st.buf.pop_front() { return Some(e); }
-            if st.closed { return None; }
-            let (new_st, timed_out) = self.cv.wait_timeout(st, timeout)
+            if let Some(e) = st.buf.pop_front() {
+                return Some(e);
+            }
+            if st.closed {
+                return None;
+            }
+            let (new_st, timed_out) = self
+                .cv
+                .wait_timeout(st, timeout)
                 .expect("bus ring poisoned");
             st = new_st;
-            if timed_out.timed_out() { return None; }
+            if timed_out.timed_out() {
+                return None;
+            }
         }
     }
 
@@ -187,11 +195,15 @@ mod tests {
     use std::thread;
 
     fn test_event() -> Event {
-        Event::Error { message: "test".into() }
+        Event::Error {
+            message: "test".into(),
+        }
     }
 
     fn test_live_event() -> LiveEvent {
-        LiveEvent::Error { message: "test".into() }
+        LiveEvent::Error {
+            message: "test".into(),
+        }
     }
 
     #[test]
@@ -260,9 +272,15 @@ mod tests {
         let bus = Bus::new();
         let sub = bus.subscribe(2); // Capacity of 2
 
-        bus.publish(Event::Error { message: "first".into() });
-        bus.publish(Event::Error { message: "second".into() });
-        bus.publish(Event::Error { message: "third".into() }); // Should drop "first"
+        bus.publish(Event::Error {
+            message: "first".into(),
+        });
+        bus.publish(Event::Error {
+            message: "second".into(),
+        });
+        bus.publish(Event::Error {
+            message: "third".into(),
+        }); // Should drop "first"
 
         // Should receive "second" and "third", not "first"
         let e1 = sub.try_recv().unwrap();
@@ -363,9 +381,14 @@ mod tests {
         // have durable variants and that Event::MessageAppended cannot be used as LiveEvent.
         // We verify at runtime that LiveEvent has no `seq` field and that a durable
         // Event is distinguishable.
-        let live = LiveEvent::Error { message: "x".into() };
+        let live = LiveEvent::Error {
+            message: "x".into(),
+        };
         let event: Event = live.clone().into();
-        assert!(event.seq().is_none(), "LiveEvent must be transient (no seq)");
+        assert!(
+            event.seq().is_none(),
+            "LiveEvent must be transient (no seq)"
+        );
         let durable = Event::MessageAppended {
             seq: 1,
             msg: crate::Message {

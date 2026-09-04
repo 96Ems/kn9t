@@ -18,14 +18,19 @@ fn p1_96e16_handoff_event_is_durable() {
     assert_eq!(ev2.seq(), Some(42));
     // serde roundtrip with snake_case kind
     let json = serde_json::to_string(&ev2).unwrap();
-    assert!(json.contains("\"kind\":\"handoff\"") || json.contains("\"kind\": \"handoff\""), "wire must be snake_case handoff, got {json}");
+    assert!(
+        json.contains("\"kind\":\"handoff\"") || json.contains("\"kind\": \"handoff\""),
+        "wire must be snake_case handoff, got {json}"
+    );
     let back: Event = serde_json::from_str(&json).unwrap();
     assert!(back.is_durable());
 }
 
 #[test]
 fn p1_96e17_compactor_trait_exists_model_passed() {
-    use kn9t_core::{CompactSpan, Compactor, CompactionPlan, Message, ModelRef, MsgId, Role, Content, SeqRange};
+    use kn9t_core::{
+        CompactSpan, CompactionPlan, Compactor, Content, Message, ModelRef, MsgId, Role, SeqRange,
+    };
     // Compactor trait must exist and receive the session model (96E-17 wire needs it).
     struct NoopCompactor;
     impl Compactor for NoopCompactor {
@@ -34,20 +39,35 @@ fn p1_96e17_compactor_trait_exists_model_passed() {
             let summary = Message {
                 id: MsgId::new(),
                 role: Role::Assistant,
-                content: vec![Content::Text { text: format!("summary of {} msgs via {}", span.messages.len(), model.id) }],
+                content: vec![Content::Text {
+                    text: format!("summary of {} msgs via {}", span.messages.len(), model.id),
+                }],
                 silent: false,
             };
-            Ok(CompactionPlan { summary, handoff: None })
+            Ok(CompactionPlan {
+                summary,
+                handoff: None,
+            })
         }
     }
     let c: Box<dyn Compactor> = Box::new(NoopCompactor);
     let span = CompactSpan {
         replaced: SeqRange { start: 1, end: 2 },
-        messages: vec![Message { id: MsgId::new(), role: Role::User, content: vec![Content::Text { text: "hi".into() }], silent: false }],
+        messages: vec![Message {
+            id: MsgId::new(),
+            role: Role::User,
+            content: vec![Content::Text { text: "hi".into() }],
+            silent: false,
+        }],
     };
-    let model = ModelRef { provider: "test".into(), id: "m-1".into() };
+    let model = ModelRef {
+        provider: "test".into(),
+        id: "m-1".into(),
+    };
     let plan = c.compact(span, &model).unwrap();
-    assert!(plan.summary.content.iter().any(|c| matches!(c, Content::Text { text } if text.contains("summary of 1 msgs via m-1"))));
+    assert!(plan.summary.content.iter().any(
+        |c| matches!(c, Content::Text { text } if text.contains("summary of 1 msgs via m-1"))
+    ));
     assert!(plan.handoff.is_none());
 }
 
@@ -60,12 +80,18 @@ fn p1_96e16_handoff_callid_validation() {
     let ev = Event::Handoff {
         seq: 1,
         keep: vec![CallId("keep-1".into())],
-        summarize: vec![kn9t_core::HandoffSummary { id: CallId("sum-1".into()), summary: "did X".into() }],
+        summarize: vec![kn9t_core::HandoffSummary {
+            id: CallId("sum-1".into()),
+            summary: "did X".into(),
+        }],
         drop_ids: vec![],
         resume_actions: vec![],
     };
     // This should pass validation
-    assert!(kn9t_core::validate_handoff(&ev, &known).is_ok(), "valid handoff should pass");
+    assert!(
+        kn9t_core::validate_handoff(&ev, &known).is_ok(),
+        "valid handoff should pass"
+    );
     // Unknown ID should fail
     let bad = Event::Handoff {
         seq: 1,
@@ -74,5 +100,8 @@ fn p1_96e16_handoff_callid_validation() {
         drop_ids: vec![],
         resume_actions: vec![],
     };
-    assert!(kn9t_core::validate_handoff(&bad, &known).is_err(), "hallucinated CallId must be rejected");
+    assert!(
+        kn9t_core::validate_handoff(&bad, &known).is_err(),
+        "hallucinated CallId must be rejected"
+    );
 }

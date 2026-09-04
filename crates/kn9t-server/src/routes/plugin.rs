@@ -18,16 +18,12 @@ use crate::state::ServerState;
 /// POST /plugin/{name}/reload
 pub fn reload(state: &Arc<ServerState>, name: &str) -> Reply {
     match state.reload_plugin(name) {
-        Ok((declared, tools)) => {
-            JsonResp::ok(serde_json::json!({
-                "reloaded": declared,
-                "tools": tools
-            }))
-            .into()
-        }
-        Err(e) if e.contains("not found") => {
-            JsonResp::error(404, "not_found", &e).into()
-        }
+        Ok((declared, tools)) => JsonResp::ok(serde_json::json!({
+            "reloaded": declared,
+            "tools": tools
+        }))
+        .into(),
+        Err(e) if e.contains("not found") => JsonResp::error(404, "not_found", &e).into(),
         Err(e) => {
             // respawn failure etc.
             JsonResp::error(500, "reload_failed", &e).into()

@@ -32,12 +32,16 @@ pub use event::{
 pub use hook::{HookHost, HookVeto, NextTurnPatch, NoopHookHost};
 pub use ids::{ApprovalId, CallId, MsgId, SessionId};
 pub use message::{Content, Message, Role};
-pub use model::{Effort, ModelRef, ModelSpec, MoneyMicros, Price, Quirks, Thinking, ThinkingReplay, cost_micros};
+pub use model::{
+    cost_micros, Effort, ModelRef, ModelSpec, MoneyMicros, Price, Quirks, Thinking, ThinkingReplay,
+};
 pub use provider::{Chunk, Provider, Request};
 pub use registry::ToolRegistry;
-pub use toolspec::{DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec, wildcard_match, value_to_pattern};
+pub use toolspec::{
+    value_to_pattern, wildcard_match, DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec,
+};
 pub use traits::{
-    ApprovalCtx, Approver, CompactionPlan, Compactor, CompactSpan, Decision, HandoffPlanData,
-    PluginKv, RequestPlan, SessionSnapshot, Sha256, Store, Tool, ToolCtx, ToolCall, ToolOutput,
+    ApprovalCtx, Approver, CompactSpan, CompactionPlan, Compactor, Decision, HandoffPlanData,
+    PluginKv, RequestPlan, SessionSnapshot, Sha256, Store, Tool, ToolCall, ToolCtx, ToolOutput,
 };
 pub use usage::{StopReason, Tokens, Usage};

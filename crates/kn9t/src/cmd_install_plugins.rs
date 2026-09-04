@@ -61,11 +61,16 @@ fn discover_plugins(project_root: &Path) -> Vec<DiscoveredPlugin> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let name = path.file_name()
+                let name = path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .map(|s| s.to_string());
                 if let (Some(name), Some(kind)) = (name, PluginKind::detect(&path)) {
-                    plugins.push(DiscoveredPlugin { name, dir: path, kind });
+                    plugins.push(DiscoveredPlugin {
+                        name,
+                        dir: path,
+                        kind,
+                    });
                 }
             }
         }
@@ -77,13 +82,17 @@ fn discover_plugins(project_root: &Path) -> Vec<DiscoveredPlugin> {
 // ── Build logic ───────────────────────────────────────────────────────────────
 
 fn exe_suffix() -> &'static str {
-    if cfg!(windows) { ".exe" } else { "" }
+    if cfg!(windows) {
+        ".exe"
+    } else {
+        ""
+    }
 }
 
 /// Find existing executable for a plugin (pre-built).
 fn find_existing_exe(plugin: &DiscoveredPlugin) -> Option<PathBuf> {
     let exe_name = format!("{}{}", plugin.name, exe_suffix());
-    
+
     match plugin.kind {
         PluginKind::Rust => {
             // Check target/release first, then target/debug
@@ -121,8 +130,11 @@ fn find_existing_exe(plugin: &DiscoveredPlugin) -> Option<PathBuf> {
 
 /// Build a plugin if no executable exists.
 fn build_plugin(plugin: &DiscoveredPlugin) -> Result<Option<PathBuf>, String> {
-    eprintln!("[install-plugins] building {} ({:?})...", plugin.name, plugin.kind);
-    
+    eprintln!(
+        "[install-plugins] building {} ({:?})...",
+        plugin.name, plugin.kind
+    );
+
     match plugin.kind {
         PluginKind::Rust => build_rust(plugin),
         PluginKind::Go => build_go(plugin),
@@ -138,39 +150,51 @@ fn build_rust(plugin: &DiscoveredPlugin) -> Result<Option<PathBuf>, String> {
         .stdin(Stdio::null())
         .status()
         .map_err(|e| format!("failed to run cargo: {e}"))?;
-    
+
     if !status.success() {
-        return Err(format!("cargo build failed with exit code {:?}", status.code()));
+        return Err(format!(
+            "cargo build failed with exit code {:?}",
+            status.code()
+        ));
     }
-    
+
     let exe_name = format!("{}{}", plugin.name, exe_suffix());
     let exe_path = plugin.dir.join("target").join("release").join(&exe_name);
     if exe_path.is_file() {
         Ok(Some(exe_path))
     } else {
-        Err(format!("build succeeded but executable not found at {}", exe_path.display()))
+        Err(format!(
+            "build succeeded but executable not found at {}",
+            exe_path.display()
+        ))
     }
 }
 
 fn build_go(plugin: &DiscoveredPlugin) -> Result<Option<PathBuf>, String> {
     let exe_name = format!("{}{}", plugin.name, exe_suffix());
     let output_path = plugin.dir.join(&exe_name);
-    
+
     let status = Command::new("go")
         .args(["build", "-o", &exe_name, "."])
         .current_dir(&plugin.dir)
         .stdin(Stdio::null())
         .status()
         .map_err(|e| format!("failed to run go: {e}"))?;
-    
+
     if !status.success() {
-        return Err(format!("go build failed with exit code {:?}", status.code()));
+        return Err(format!(
+            "go build failed with exit code {:?}",
+            status.code()
+        ));
     }
-    
+
     if output_path.is_file() {
         Ok(Some(output_path))
     } else {
-        Err(format!("build succeeded but executable not found at {}", output_path.display()))
+        Err(format!(
+            "build succeeded but executable not found at {}",
+            output_path.display()
+        ))
     }
 }
 
@@ -193,10 +217,14 @@ fn run_npm(args: &[&str], dir: &Path) -> Result<(), String> {
             .stdin(Stdio::null())
             .status()
     };
-    
+
     let status = status.map_err(|e| format!("failed to run npm {}: {e}", args.join(" ")))?;
     if !status.success() {
-        return Err(format!("npm {} failed with exit code {:?}", args.join(" "), status.code()));
+        return Err(format!(
+            "npm {} failed with exit code {:?}",
+            args.join(" "),
+            status.code()
+        ));
     }
     Ok(())
 }
@@ -204,7 +232,7 @@ fn run_npm(args: &[&str], dir: &Path) -> Result<(), String> {
 fn build_node(plugin: &DiscoveredPlugin) -> Result<Option<PathBuf>, String> {
     // npm install
     run_npm(&["install"], &plugin.dir)?;
-    
+
     // npm run build (if build script exists)
     let pkg_json = plugin.dir.join("package.json");
     if let Ok(content) = fs::read_to_string(&pkg_json) {
@@ -212,7 +240,7 @@ fn build_node(plugin: &DiscoveredPlugin) -> Result<Option<PathBuf>, String> {
             run_npm(&["run", "build"], &plugin.dir)?;
         }
     }
-    
+
     // For Node plugins, we return None and handle them via config
     // (they're typically run as `node dist/index.js`)
     Ok(None)
@@ -225,14 +253,15 @@ fn detect_node_entry(dir: &Path) -> Option<PathBuf> {
     let pkg_json = dir.join("package.json");
     let content = fs::read_to_string(&pkg_json).ok()?;
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-    
+
     // 1. Check "main" field
     if let Some(main) = json.get("main").and_then(|v| v.as_str()) {
         return Some(dir.join(main));
     }
-    
+
     // 2. Check "scripts.start" for "node <path>"
-    if let Some(start) = json.get("scripts")
+    if let Some(start) = json
+        .get("scripts")
         .and_then(|s| s.get("start"))
         .and_then(|v| v.as_str())
     {
@@ -242,7 +271,7 @@ fn detect_node_entry(dir: &Path) -> Option<PathBuf> {
             return Some(dir.join(parts[1]));
         }
     }
-    
+
     // 3. Fallback: check dist/main.js, then dist/index.js
     let main_js = dir.join("dist").join("main.js");
     if main_js.is_file() {
@@ -252,37 +281,45 @@ fn detect_node_entry(dir: &Path) -> Option<PathBuf> {
     if index_js.is_file() {
         return Some(index_js);
     }
-    
+
     None
 }
 
 fn install_executable(exe_path: &Path, dest_dir: &Path, name: &str) -> Result<PathBuf, String> {
     fs::create_dir_all(dest_dir)
         .map_err(|e| format!("cannot create {}: {e}", dest_dir.display()))?;
-    
+
     let dest_name = format!("{}{}", name, exe_suffix());
     let dest_path = dest_dir.join(&dest_name);
-    
-    fs::copy(exe_path, &dest_path)
-        .map_err(|e| format!("cannot copy {} to {}: {e}", exe_path.display(), dest_path.display()))?;
-    
+
+    fs::copy(exe_path, &dest_path).map_err(|e| {
+        format!(
+            "cannot copy {} to {}: {e}",
+            exe_path.display(),
+            dest_path.display()
+        )
+    })?;
+
     Ok(dest_path)
 }
 
 /// Add or update a [[plugin]] entry in config.toml for Python/Node plugins.
 fn add_plugin_config(plugin: &DiscoveredPlugin) -> Result<(), String> {
     let config_path = kn9t_home_path().join("config.toml");
-    
+
     // Read existing config
     let existing = fs::read_to_string(&config_path).unwrap_or_default();
-    
+
     // Check if plugin already configured
     let marker = format!("name = \"{}\"", plugin.name);
     if existing.contains(&marker) {
-        eprintln!("[install-plugins] {} already in config.toml, skipping", plugin.name);
+        eprintln!(
+            "[install-plugins] {} already in config.toml, skipping",
+            plugin.name
+        );
         return Ok(());
     }
-    
+
     // Generate the [[plugin]] entry
     let entry = match plugin.kind {
         PluginKind::Python => {
@@ -319,17 +356,17 @@ cmd  = ["node", "{}"]
         }
         _ => return Ok(()), // Rust/Go don't need config entries
     };
-    
+
     // Append to config
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&config_path)
         .map_err(|e| format!("cannot open {}: {e}", config_path.display()))?;
-    
+
     file.write_all(entry.as_bytes())
         .map_err(|e| format!("cannot write to {}: {e}", config_path.display()))?;
-    
+
     eprintln!("[install-plugins] added {} to config.toml", plugin.name);
     Ok(())
 }
@@ -341,7 +378,7 @@ pub fn run(args: &[String]) {
     let mut no_build = false;
     let mut force = false;
     let mut rebuild = false;
-    
+
     // Parse args
     let mut i = 0;
     while i < args.len() {
@@ -373,37 +410,47 @@ pub fn run(args: &[String]) {
         }
         i += 1;
     }
-    
+
     // Determine project root
     let project_root = project_path
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    
-    eprintln!("[install-plugins] scanning {}/plugins/", project_root.display());
-    
+
+    eprintln!(
+        "[install-plugins] scanning {}/plugins/",
+        project_root.display()
+    );
+
     // Discover plugins
     let plugins = discover_plugins(&project_root);
     if plugins.is_empty() {
-        eprintln!("[install-plugins] no plugins found in {}/plugins/", project_root.display());
+        eprintln!(
+            "[install-plugins] no plugins found in {}/plugins/",
+            project_root.display()
+        );
         return;
     }
-    
+
     eprintln!("[install-plugins] found {} plugin(s):", plugins.len());
     for p in &plugins {
         eprintln!("  - {} ({:?})", p.name, p.kind);
     }
     eprintln!();
-    
+
     let dest_dir = kn9t_home_path().join("plugins");
     let mut installed = 0;
     let mut configured = 0;
     let mut failed = 0;
-    
+
     for plugin in &plugins {
         eprintln!("[install-plugins] processing {}...", plugin.name);
-        
+
         // Check for existing executable (skip if --rebuild)
-        let mut exe_path = if rebuild { None } else { find_existing_exe(plugin) };
-        
+        let mut exe_path = if rebuild {
+            None
+        } else {
+            find_existing_exe(plugin)
+        };
+
         // Build if needed (or forced with --rebuild)
         if exe_path.is_none() && !no_build && plugin.kind != PluginKind::Python {
             match build_plugin(plugin) {
@@ -415,7 +462,7 @@ pub fn run(args: &[String]) {
                 }
             }
         }
-        
+
         // Install executable or add config
         match plugin.kind {
             PluginKind::Rust | PluginKind::Go => {
@@ -423,13 +470,20 @@ pub fn run(args: &[String]) {
                     // Check if already installed
                     let dest_path = dest_dir.join(format!("{}{}", plugin.name, exe_suffix()));
                     if dest_path.exists() && !force {
-                        eprintln!("[install-plugins] {} already installed (use --force to overwrite)", plugin.name);
+                        eprintln!(
+                            "[install-plugins] {} already installed (use --force to overwrite)",
+                            plugin.name
+                        );
                         continue;
                     }
-                    
+
                     match install_executable(&exe, &dest_dir, &plugin.name) {
                         Ok(dest) => {
-                            eprintln!("[install-plugins] installed {} → {}", plugin.name, dest.display());
+                            eprintln!(
+                                "[install-plugins] installed {} → {}",
+                                plugin.name,
+                                dest.display()
+                            );
                             installed += 1;
                         }
                         Err(e) => {
@@ -442,27 +496,27 @@ pub fn run(args: &[String]) {
                     failed += 1;
                 }
             }
-            PluginKind::Python | PluginKind::Node => {
-                match add_plugin_config(plugin) {
-                    Ok(()) => configured += 1,
-                    Err(e) => {
-                        eprintln!("[install-plugins] ERROR configuring {}: {}", plugin.name, e);
-                        failed += 1;
-                    }
+            PluginKind::Python | PluginKind::Node => match add_plugin_config(plugin) {
+                Ok(()) => configured += 1,
+                Err(e) => {
+                    eprintln!("[install-plugins] ERROR configuring {}: {}", plugin.name, e);
+                    failed += 1;
                 }
-            }
+            },
         }
     }
-    
+
     // Summary
     eprintln!();
-    eprintln!("[install-plugins] done: {} installed, {} configured, {} failed",
-        installed, configured, failed);
-    
+    eprintln!(
+        "[install-plugins] done: {} installed, {} configured, {} failed",
+        installed, configured, failed
+    );
+
     if installed > 0 || configured > 0 {
         eprintln!("[install-plugins] restart kn9t server to load new plugins (kn9t stop && kn9t)");
     }
-    
+
     if failed > 0 {
         std::process::exit(1);
     }

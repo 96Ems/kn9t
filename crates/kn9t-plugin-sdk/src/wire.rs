@@ -17,7 +17,11 @@ pub enum HostMsg {
     Hello { proto: u32, kn9t: String },
     /// Hook or tool/provider invocation. Reply with [`PluginMsg::Result`],
     /// or [`PluginMsg::Chunk`] + [`PluginMsg::Done`] if streaming.
-    Hook { id: u64, hook: String, payload: serde_json::Value },
+    Hook {
+        id: u64,
+        hook: String,
+        payload: serde_json::Value,
+    },
     /// Bus event delivered to a subscribed plugin. No reply.
     Event {
         #[serde(flatten)]
@@ -94,7 +98,12 @@ pub enum PluginMsg {
     KvGet { id: u64, scope: String, key: String },
     /// Upsert a value in the host's persistent KV store.
     /// Host replies with [`HostMsg::KvResult`].
-    KvSet { id: u64, scope: String, key: String, value: serde_json::Value },
+    KvSet {
+        id: u64,
+        scope: String,
+        key: String,
+        value: serde_json::Value,
+    },
     /// Delete a single key from the host's persistent KV store.
     /// Host replies with [`HostMsg::KvResult`].
     KvDel { id: u64, scope: String, key: String },
@@ -102,7 +111,11 @@ pub enum PluginMsg {
     /// Host replies with [`HostMsg::KvResult`].
     KvDelScope { id: u64, scope: String },
     /// 96E-17 — plugin → host API request (host_api capability). Host replies with `HostMsg::ApiResult`.
-    Request { id: u64, op: String, payload: serde_json::Value },
+    Request {
+        id: u64,
+        op: String,
+        payload: serde_json::Value,
+    },
 }
 
 // ── Shared data types ─────────────────────────────────────────────────────────
@@ -147,17 +160,17 @@ pub struct ToolPolicy {
     /// If None, the tool doesn't support pattern matching.
     #[serde(default)]
     pub pattern_field: Option<String>,
-    
+
     /// Default policy when no user config exists.
     #[serde(default)]
     pub default_policy: DefaultPolicy,
-    
+
     /// Built-in allow patterns declared by the tool author.
     /// These are checked AFTER user deny patterns but BEFORE user allow patterns,
     /// so users can override them. Example: `["git log *", "git status *"]` for a git tool.
     #[serde(default)]
     pub builtin_allow: Vec<String>,
-    
+
     /// Built-in deny patterns (always deny, even if user allows).
     /// Example: `["rm -rf /", "sudo *"]` for bash.
     /// These are "hard deny" — no approval prompt, just rejected.
@@ -217,34 +230,42 @@ pub struct ModelDecl {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PriceDecl {
     /// Input (prompt) token price per million.
-    #[serde(default)] pub input: f64,
+    #[serde(default)]
+    pub input: f64,
     /// Output (completion) token price per million.
-    #[serde(default)] pub output: f64,
+    #[serde(default)]
+    pub output: f64,
     /// Cache read token price per million.
-    #[serde(default)] pub cache_read: f64,
+    #[serde(default)]
+    pub cache_read: f64,
     /// Cache write token price per million.
-    #[serde(default)] pub cache_write: f64,
+    #[serde(default)]
+    pub cache_write: f64,
 }
 
 /// Usage counters returned in a provider `done` message.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
     /// Input (prompt) tokens consumed.
-    #[serde(default)] pub input: u64,
+    #[serde(default)]
+    pub input: u64,
     /// Output (completion) tokens generated.
-    #[serde(default)] pub output: u64,
+    #[serde(default)]
+    pub output: u64,
     /// Cache-read tokens (counted at a lower rate).
-    #[serde(default)] pub cache_read: u64,
+    #[serde(default)]
+    pub cache_read: u64,
     /// Cache-write tokens (counted at a higher rate).
-    #[serde(default)] pub cache_write: u64,
+    #[serde(default)]
+    pub cache_write: u64,
 }
 
 // ── I/O helpers ───────────────────────────────────────────────────────────────
 
 /// Write one [`HostMsg`] as a newline-terminated JSON line.
 pub fn write_host(w: &mut dyn Write, msg: &HostMsg) -> io::Result<()> {
-    let s = serde_json::to_string(msg)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let s =
+        serde_json::to_string(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     w.write_all(s.as_bytes())?;
     w.write_all(b"\n")?;
     w.flush()
@@ -252,8 +273,8 @@ pub fn write_host(w: &mut dyn Write, msg: &HostMsg) -> io::Result<()> {
 
 /// Write one [`PluginMsg`] as a newline-terminated JSON line.
 pub fn write_plugin(w: &mut dyn Write, msg: &PluginMsg) -> io::Result<()> {
-    let s = serde_json::to_string(msg)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let s =
+        serde_json::to_string(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     w.write_all(s.as_bytes())?;
     w.write_all(b"\n")?;
     w.flush()
@@ -263,18 +284,22 @@ pub fn write_plugin(w: &mut dyn Write, msg: &PluginMsg) -> io::Result<()> {
 pub fn read_host<R: Read>(r: &mut BufReader<R>) -> io::Result<HostMsg> {
     let mut line = String::new();
     if r.read_line(&mut line)? == 0 {
-        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "host closed stdin"));
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "host closed stdin",
+        ));
     }
-    serde_json::from_str(line.trim_end())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    serde_json::from_str(line.trim_end()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 /// Read one [`PluginMsg`] from a buffered reader (blocks until `\n`).
 pub fn read_plugin<R: Read>(r: &mut BufReader<R>) -> io::Result<PluginMsg> {
     let mut line = String::new();
     if r.read_line(&mut line)? == 0 {
-        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "plugin closed stdout"));
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "plugin closed stdout",
+        ));
     }
-    serde_json::from_str(line.trim_end())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    serde_json::from_str(line.trim_end()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }

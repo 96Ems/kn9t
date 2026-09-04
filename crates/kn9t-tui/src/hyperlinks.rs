@@ -33,10 +33,7 @@ pub fn terminal_supports_hyperlinks() -> bool {
     // Check TERM for known good terminals
     if let Ok(term) = env::var("TERM") {
         let term = term.to_lowercase();
-        if term.contains("kitty")
-            || term.contains("xterm-kitty")
-            || term == "xterm-256color"
-        {
+        if term.contains("kitty") || term.contains("xterm-kitty") || term == "xterm-256color" {
             // xterm-256color is very common but not all support OSC 8
             // Be conservative - only enable for known good ones
             if env::var("COLORTERM").ok().as_deref() == Some("truecolor") {
@@ -59,7 +56,7 @@ pub fn is_tmux() -> bool {
 }
 
 /// Wrap text in an OSC 8 hyperlink sequence.
-/// 
+///
 /// If the terminal doesn't support hyperlinks, returns the text unchanged.
 pub fn hyperlink(url: &str, text: &str) -> String {
     if !terminal_supports_hyperlinks() {
@@ -80,11 +77,11 @@ pub fn hyperlink(url: &str, text: &str) -> String {
 }
 
 /// Create a file:// URL from a file path.
-/// 
+///
 /// Handles Windows paths (converts backslashes, adds drive letter prefix).
 pub fn file_url(path: &str) -> String {
     let path = path.replace('\\', "/");
-    
+
     // Check if it's an absolute path
     if path.starts_with('/') {
         format!("file://{}", path)
@@ -114,7 +111,7 @@ pub fn file_link(path: &str) -> String {
 }
 
 /// Wrap a file path with line number in a hyperlink.
-/// 
+///
 /// Uses the `file://path:line` format that some editors support.
 pub fn file_line_link(path: &str, line: usize) -> String {
     let url = format!("{}:{}", file_url(path), line);
@@ -123,7 +120,7 @@ pub fn file_line_link(path: &str, line: usize) -> String {
 }
 
 /// Detect URLs in text and wrap them with hyperlinks.
-/// 
+///
 /// Returns the text with URLs wrapped in OSC 8 sequences.
 pub fn linkify_urls(text: &str) -> String {
     if !terminal_supports_hyperlinks() {
@@ -136,43 +133,47 @@ pub fn linkify_urls(text: &str) -> String {
 
     // Find URLs using a simple pattern
     let url_starts = ["http://", "https://", "file://"];
-    
+
     let mut i = 0;
     while i < text.len() {
         let remaining = &text[i..];
-        
+
         // Check if this position starts a URL
-        let url_start = url_starts.iter()
+        let url_start = url_starts
+            .iter()
             .find(|&&prefix| remaining.starts_with(prefix));
-        
+
         if let Some(&prefix) = url_start {
             // Add text before the URL
             result.push_str(&text[last_end..i]);
-            
+
             // Find the end of the URL (whitespace or certain punctuation at end)
             let url_chars: Vec<char> = remaining.chars().collect();
             let mut url_end = 0;
-            
+
             for (j, &c) in url_chars.iter().enumerate() {
                 if c.is_whitespace() || c == '<' || c == '>' || c == '"' || c == '\'' {
                     break;
                 }
                 url_end = j + 1;
             }
-            
+
             // Trim trailing punctuation that's likely not part of URL
             while url_end > prefix.len() {
                 let last = url_chars.get(url_end - 1);
-                if matches!(last, Some('.') | Some(',') | Some(')') | Some(']') | Some(';') | Some(':')) {
+                if matches!(
+                    last,
+                    Some('.') | Some(',') | Some(')') | Some(']') | Some(';') | Some(':')
+                ) {
                     url_end -= 1;
                 } else {
                     break;
                 }
             }
-            
+
             let url: String = url_chars[..url_end].iter().collect();
             result.push_str(&hyperlink(&url, &url));
-            
+
             // Calculate byte offset
             let byte_len: usize = url_chars[..url_end].iter().map(|c| c.len_utf8()).sum();
             i += byte_len;
@@ -181,7 +182,7 @@ pub fn linkify_urls(text: &str) -> String {
             i += remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
         }
     }
-    
+
     // Add remaining text
     result.push_str(&text[last_end..]);
     result
@@ -193,13 +194,22 @@ mod tests {
 
     #[test]
     fn test_file_url_unix() {
-        assert_eq!(file_url("/home/user/file.txt"), "file:///home/user/file.txt");
+        assert_eq!(
+            file_url("/home/user/file.txt"),
+            "file:///home/user/file.txt"
+        );
     }
 
     #[test]
     fn test_file_url_windows() {
-        assert_eq!(file_url("C:/Users/test/file.txt"), "file:///C:/Users/test/file.txt");
-        assert_eq!(file_url("C:\\Users\\test\\file.txt"), "file:///C:/Users/test/file.txt");
+        assert_eq!(
+            file_url("C:/Users/test/file.txt"),
+            "file:///C:/Users/test/file.txt"
+        );
+        assert_eq!(
+            file_url("C:\\Users\\test\\file.txt"),
+            "file:///C:/Users/test/file.txt"
+        );
     }
 
     #[test]
@@ -208,7 +218,7 @@ mod tests {
         let url = "https://example.com";
         let text = "click here";
         let expected = format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, text);
-        
+
         // Just verify the format is correct
         assert!(expected.contains("\x1b]8;;"));
         assert!(expected.contains(url));

@@ -71,10 +71,10 @@ pub mod subagent;
 pub mod traits;
 pub mod wire;
 
+pub use ctx::KvClient;
 pub use plugin::Plugin;
 pub use sse::{SseEvent, SseReader};
 pub use traits::{
     ContentBlock, PluginEventSink, PluginHook, PluginProvider, PluginTool, ProviderResult,
     ToolOutput,
 };
-pub use ctx::KvClient;

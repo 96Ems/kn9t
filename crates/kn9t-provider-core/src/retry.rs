@@ -7,13 +7,17 @@ use std::time::Duration;
 #[derive(Clone, Copy)]
 pub struct Backoff {
     pub initial_ms: u64,
-    pub factor:     f64,
-    pub max_ms:     u64,
+    pub factor: f64,
+    pub max_ms: u64,
 }
 
 impl Default for Backoff {
     fn default() -> Self {
-        Backoff { initial_ms: 500, factor: 2.0, max_ms: 10_000 }
+        Backoff {
+            initial_ms: 500,
+            factor: 2.0,
+            max_ms: 10_000,
+        }
     }
 }
 
@@ -48,7 +52,10 @@ where
     for n in 0..=max {
         match attempt() {
             Ok(iter) => {
-                return Ok(Box::new(OnceStartedIter { inner: iter, started: false }));
+                return Ok(Box::new(OnceStartedIter {
+                    inner: iter,
+                    started: false,
+                }));
             }
             Err(e) => {
                 if n == max {
@@ -84,17 +91,21 @@ where
 }
 
 pub fn is_retryable(e: &ProvErr) -> bool {
-    matches!(e,
+    matches!(
+        e,
         ProvErr::Connect(_)
-        | ProvErr::Http { status: 429, .. }
-        | ProvErr::Http { status: 500..=599, .. }
+            | ProvErr::Http { status: 429, .. }
+            | ProvErr::Http {
+                status: 500..=599,
+                ..
+            }
     )
 }
 
 /// Iterator that wraps an inner iterator. Once the first chunk is consumed,
 /// mid-stream errors are passed through as-is (no retry).
 struct OnceStartedIter<I: Iterator<Item = Result<Chunk, ProvErr>>> {
-    inner:   I,
+    inner: I,
     started: bool,
 }
 

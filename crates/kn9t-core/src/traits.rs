@@ -122,9 +122,20 @@ pub trait Tool: Send + Sync {
 /// not the event log.
 pub trait PluginKv: Send + Sync {
     /// Return the JSON value stored at `(plugin, scope, key)`, or `None` if absent.
-    fn kv_get(&self, plugin: &str, scope: &str, key: &str) -> Result<Option<serde_json::Value>, StoreErr>;
+    fn kv_get(
+        &self,
+        plugin: &str,
+        scope: &str,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, StoreErr>;
     /// Upsert `(plugin, scope, key)` → `value`.
-    fn kv_set(&self, plugin: &str, scope: &str, key: &str, value: &serde_json::Value) -> Result<(), StoreErr>;
+    fn kv_set(
+        &self,
+        plugin: &str,
+        scope: &str,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), StoreErr>;
     /// Delete `(plugin, scope, key)`.  A no-op if the key does not exist.
     fn kv_del(&self, plugin: &str, scope: &str, key: &str) -> Result<(), StoreErr>;
     /// Delete all keys matching `(plugin, scope)`.

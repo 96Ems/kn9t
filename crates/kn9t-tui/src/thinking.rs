@@ -70,7 +70,7 @@ pub fn parse_content(content: &str) -> Vec<ContentSegment> {
     while !remaining.is_empty() {
         // Find the earliest opening tag
         let mut earliest: Option<(usize, &str, &str)> = None;
-        
+
         for (open, close) in &tag_patterns {
             if let Some(pos) = remaining.find(open) {
                 if earliest.is_none() || pos < earliest.unwrap().0 {
@@ -88,18 +88,18 @@ pub fn parse_content(content: &str) -> Vec<ContentSegment> {
                     if start > 0 {
                         segments.push(ContentSegment::Text(remaining[..start].to_string()));
                     }
-                    
+
                     let thinking_content = &after_open[..end];
                     let tag_name = open_tag
                         .trim_start_matches('<')
                         .trim_end_matches('>')
                         .to_string();
-                    
+
                     segments.push(ContentSegment::Thinking {
                         tag: tag_name,
                         content: thinking_content.to_string(),
                     });
-                    
+
                     remaining = &after_open[end + close_tag.len()..];
                 } else {
                     // No closing tag found, treat entire remaining as text
@@ -121,19 +121,18 @@ pub fn parse_content(content: &str) -> Vec<ContentSegment> {
 }
 
 /// Render thinking block header (collapsed state).
-pub fn render_collapsed_header(
-    tag: &str,
-    line_count: usize,
-    theme: &Theme,
-) -> Line<'static> {
+pub fn render_collapsed_header(tag: &str, line_count: usize, theme: &Theme) -> Line<'static> {
     let style = Style::default()
         .fg(theme.muted)
         .add_modifier(Modifier::ITALIC);
-    
+
     Line::from(vec![
         Span::styled("▶ ", style),
         Span::styled(format!("{} ", tag), style),
-        Span::styled(format!("({} lines)", line_count), Style::default().fg(theme.muted)),
+        Span::styled(
+            format!("({} lines)", line_count),
+            Style::default().fg(theme.muted),
+        ),
     ])
 }
 
@@ -142,7 +141,7 @@ pub fn render_expanded_header(tag: &str, theme: &Theme) -> Line<'static> {
     let style = Style::default()
         .fg(theme.muted)
         .add_modifier(Modifier::ITALIC);
-    
+
     Line::from(vec![
         Span::styled("▼ ", style),
         Span::styled(tag.to_string(), style),
@@ -150,22 +149,18 @@ pub fn render_expanded_header(tag: &str, theme: &Theme) -> Line<'static> {
 }
 
 /// Render thinking block content with muted styling.
-/// 
+///
 /// Applies reduced opacity by using the muted color for text.
-pub fn render_thinking_content(
-    content: &str,
-    theme: &Theme,
-    width: usize,
-) -> Vec<Line<'static>> {
+pub fn render_thinking_content(content: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    
+
     // Use muted color and italic for "reduced opacity" effect
     let text_style = Style::default()
         .fg(theme.muted)
         .add_modifier(Modifier::ITALIC);
-    
+
     let border_style = Style::default().fg(theme.muted);
-    
+
     for line in content.lines() {
         // Wrap long lines
         let wrapped = crate::ui::render::wrap_text(line, width.saturating_sub(4));
@@ -176,7 +171,7 @@ pub fn render_thinking_content(
             ]));
         }
     }
-    
+
     lines
 }
 
@@ -197,8 +192,10 @@ mod tests {
         let segments = parse_content(content);
         assert_eq!(segments.len(), 3);
         assert!(matches!(&segments[0], ContentSegment::Text(t) if t == "Before "));
-        assert!(matches!(&segments[1], ContentSegment::Thinking { tag, content } 
-            if tag == "thinking" && content == "I'm thinking"));
+        assert!(
+            matches!(&segments[1], ContentSegment::Thinking { tag, content } 
+            if tag == "thinking" && content == "I'm thinking")
+        );
         assert!(matches!(&segments[2], ContentSegment::Text(t) if t == " After"));
     }
 

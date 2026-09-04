@@ -53,7 +53,8 @@ impl ToolRegistry {
     /// Use this for the initial system prompt / tools array sent to the LLM.
     /// Hidden tools can still be executed once discovered via meta-tools.
     pub fn visible_specs(&self) -> Vec<ToolSpec> {
-        self.0.iter()
+        self.0
+            .iter()
             .map(|t| t.spec().clone())
             .filter(|s| !s.hidden)
             .collect()

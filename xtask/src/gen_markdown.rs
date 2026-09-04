@@ -46,7 +46,8 @@ const ERRORS_TABLE: &str = "| Code | Meaning |\n\
     | `409` | Conflict (lease held by another client, or turn already running) |\n\
     | `500` | Internal server error |\n";
 
-const LEASE_PROSE: &str = "Write operations require an **X-Lease** header: the holder token minted by\n\
+const LEASE_PROSE: &str =
+    "Write operations require an **X-Lease** header: the holder token minted by\n\
     `POST /session/{id}/lease`. Routes marked **lease required** below return `409` without it.\n\
     `POST /approve` additionally needs `X-Lease-Session: <session_id>`.\n";
 
@@ -85,7 +86,9 @@ pub fn generate(http: &Value, plugin: &Value) -> Result<String, String> {
 
     // ── errors ──
     s.push_str("---\n\n## 4. Error Response Format\n\n");
-    s.push_str("All error responses return JSON: `{ \"error\": \"code\", \"message\": \"...\" }`.\n\n");
+    s.push_str(
+        "All error responses return JSON: `{ \"error\": \"code\", \"message\": \"...\" }`.\n\n",
+    );
     s.push_str(ERRORS_TABLE);
     s.push('\n');
 
@@ -102,11 +105,15 @@ pub fn generate(http: &Value, plugin: &Value) -> Result<String, String> {
 
 fn emit_route(route: &crate::schema::Route<'_>) -> String {
     let mut s = String::new();
-    let title = route
-        .description
-        .unwrap_or("(no description in schema)");
-    s.push_str(&format!("### `{} {}` — {title}\n\n", route.method, route.path));
-    s.push_str(&format!("- **Lease required:** {}\n", if route.lease { "yes" } else { "no" }));
+    let title = route.description.unwrap_or("(no description in schema)");
+    s.push_str(&format!(
+        "### `{} {}` — {title}\n\n",
+        route.method, route.path
+    ));
+    s.push_str(&format!(
+        "- **Lease required:** {}\n",
+        if route.lease { "yes" } else { "no" }
+    ));
 
     if let Some(q) = route.query {
         if !q.is_null() {
@@ -194,7 +201,11 @@ fn props_table(body: &Value, is_response: bool) -> String {
         if is_response {
             s.push_str(&format!("| `{key}` | {ty} | {desc} |\n"));
         } else {
-            let required_flag = if req.iter().any(|r| r == &key) { "yes" } else { "no" };
+            let required_flag = if req.iter().any(|r| r == &key) {
+                "yes"
+            } else {
+                "no"
+            };
             s.push_str(&format!("| `{key}` | {ty} | {required_flag} | {desc} |\n"));
         }
     }
@@ -204,28 +215,50 @@ fn props_table(body: &Value, is_response: bool) -> String {
 
 fn emit_sse(http: &Value) -> String {
     let mut s = String::new();
-    s.push_str("### `GET /session/{id}/events?from=<seq>&lease=<holder>` — Subscribe to events\n\n");
-    s.push_str("Opens a persistent `text/event-stream`. No lease required to *subscribe*. Query param\n");
-    s.push_str("`from` is the replay cursor: pass `0` for full history, or `last_seen_seq` on reconnect\n");
+    s.push_str(
+        "### `GET /session/{id}/events?from=<seq>&lease=<holder>` — Subscribe to events\n\n",
+    );
+    s.push_str(
+        "Opens a persistent `text/event-stream`. No lease required to *subscribe*. Query param\n",
+    );
+    s.push_str(
+        "`from` is the replay cursor: pass `0` for full history, or `last_seen_seq` on reconnect\n",
+    );
     s.push_str("to resume without replaying already-processed events (exact gap-free dedup on the server).\n\n");
-    s.push_str("**Wire format:** each frame is `event: <kind>\\ndata: <json>\\n\\n`. The `kind` is\n");
-    s.push_str("**snake_case** (AGENTS.md §12) and matches the `kind` discriminator inside `data`.\n\n");
+    s.push_str(
+        "**Wire format:** each frame is `event: <kind>\\ndata: <json>\\n\\n`. The `kind` is\n",
+    );
+    s.push_str(
+        "**snake_case** (AGENTS.md §12) and matches the `kind` discriminator inside `data`.\n\n",
+    );
     s.push_str("**Query params**\n\n");
     s.push_str("| Param | Type | Required | Description |\n");
     s.push_str("|-------|------|----------|-------------|\n");
     s.push_str("| `from` | u64 | no | Replay cursor; durable events with `seq > from` are replayed, then the stream goes live. Default `0` (full history). |\n");
     s.push_str("| `lease` | string | no | Lease holder token from `POST /session/{id}/lease`. If given, **this stream owns the lease**: see \"Keeping a write lease alive\" below. |\n\n");
     s.push_str("**Keeping a write lease alive (client authors: read this).**\n\n");
-    s.push_str("The write lease has an idle timeout (default 5 min, DESIGN §12.6). Only *successful\n");
+    s.push_str(
+        "The write lease has an idle timeout (default 5 min, DESIGN §12.6). Only *successful\n",
+    );
     s.push_str("writes* (`prompt`/`steer`/`abort`/`model`/`compact`) refresh it. A client that holds the\n");
-    s.push_str("lease but only reads — i.e. sits on the event stream without sending anything — would\n");
-    s.push_str("otherwise idle-lose its lease after the timeout, and its **next `prompt` would 409\n");
+    s.push_str(
+        "lease but only reads — i.e. sits on the event stream without sending anything — would\n",
+    );
+    s.push_str(
+        "otherwise idle-lose its lease after the timeout, and its **next `prompt` would 409\n",
+    );
     s.push_str("`session_busy`** even though the same client is still connected.\n\n");
-    s.push_str("To avoid this, pass your lease holder as `?lease=<holder>` when you open the stream.\n");
+    s.push_str(
+        "To avoid this, pass your lease holder as `?lease=<holder>` when you open the stream.\n",
+    );
     s.push_str("The server then treats this SSE connection as the *owner* of that lease:\n\n");
-    s.push_str("- **Kept warm while connected** — every heartbeat (`: keepalive`) refreshes the lease's\n");
+    s.push_str(
+        "- **Kept warm while connected** — every heartbeat (`: keepalive`) refreshes the lease's\n",
+    );
     s.push_str("  `last_active`, so the idle timer never fires for an attached reader.\n");
-    s.push_str("- **Released on disconnect** — when the stream ends (client close, network drop, or\n");
+    s.push_str(
+        "- **Released on disconnect** — when the stream ends (client close, network drop, or\n",
+    );
     s.push_str("  server heartbeat write failure), the server releases that lease. On reconnect you must\n");
     s.push_str("  re-acquire it via `POST /session/{id}/lease` (and pass the new holder to the new stream).\n\n");
     s.push_str("Recommended client sequence: `POST /lease` → open `GET …/events?from=<seq>&lease=<holder>`\n");
@@ -250,7 +283,9 @@ fn emit_sse(http: &Value) -> String {
         ));
     }
     s.push('\n');
-    s.push_str("**Durable events** carry `seq` and are replayed on reconnect. **Transient events** are\n");
+    s.push_str(
+        "**Durable events** carry `seq` and are replayed on reconnect. **Transient events** are\n",
+    );
     s.push_str("live only. Clients track the highest durable `seq` seen and reconnect with `from=last+1`.\n");
     s
 }
@@ -273,9 +308,13 @@ fn sse_md_type(t: &str) -> String {
 
 fn emit_plugin(plugin: &Value) -> String {
     let mut s = String::new();
-    s.push_str("All plugin communication is newline-delimited JSON (NdJSON) over stdin/stdout.\n\n");
+    s.push_str(
+        "All plugin communication is newline-delimited JSON (NdJSON) over stdin/stdout.\n\n",
+    );
     s.push_str("### 5.1 JSON convention\n\n");
-    s.push_str("**All JSON uses `snake_case`** for field names and enum variants (AGENTS.md §12).\n\n");
+    s.push_str(
+        "**All JSON uses `snake_case`** for field names and enum variants (AGENTS.md §12).\n\n",
+    );
 
     s.push_str("### 5.2 Host → Plugin messages\n\n");
     s.push_str(&msg_table(plugin.get("host_to_plugin")));
@@ -315,7 +354,11 @@ fn msg_table(obj: Option<&Value>) -> String {
             .get("description")
             .and_then(|d| d.as_str())
             .unwrap_or("");
-        s.push_str(&format!("| `{}` | {} | {notes} |\n", name.to_lowercase(), names.join(", ")));
+        s.push_str(&format!(
+            "| `{}` | {} | {notes} |\n",
+            name.to_lowercase(),
+            names.join(", ")
+        ));
     }
     s.push('\n');
     s

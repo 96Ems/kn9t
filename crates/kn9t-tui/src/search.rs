@@ -188,7 +188,8 @@ impl SearchState {
 
     /// Get matches within a specific message by index.
     pub fn matches_for_message(&self, msg_idx: usize) -> Vec<&MatchLocation> {
-        self.matches.iter()
+        self.matches
+            .iter()
             .filter(|m| m.msg_idx == msg_idx)
             .collect()
     }
@@ -197,11 +198,11 @@ impl SearchState {
     pub fn is_current_match(&self, match_idx: usize) -> bool {
         match_idx == self.current_match_idx
     }
-    
+
     /// Create spans from text with search matches highlighted.
     /// Returns Vec of Span with matches highlighted in yellow (current match in inverse).
     /// All spans contain owned Strings to avoid lifetime issues.
-    /// 
+    ///
     /// This version uses byte offsets from pre-computed matches (for user messages).
     pub fn highlight_text(
         &self,
@@ -209,26 +210,26 @@ impl SearchState {
         msg_idx: usize,
         base_style: Style,
     ) -> Vec<Span<'static>> {
-        let matches: Vec<_> = self.matches.iter()
+        let matches: Vec<_> = self
+            .matches
+            .iter()
             .enumerate()
             .filter(|(_, m)| m.msg_idx == msg_idx)
             .collect();
-        
+
         if matches.is_empty() || self.query.is_empty() {
             return vec![Span::styled(text.to_string(), base_style)];
         }
-        
-        let highlight_style = Style::default()
-            .fg(Color::Black)
-            .bg(Color::Yellow);
+
+        let highlight_style = Style::default().fg(Color::Black).bg(Color::Yellow);
         let current_highlight_style = Style::default()
             .fg(Color::Black)
             .bg(Color::Cyan)
             .add_modifier(Modifier::BOLD);
-        
+
         let mut spans = Vec::new();
         let mut last_end = 0usize;
-        
+
         for (global_match_idx, loc) in &matches {
             // Add text before this match.
             if loc.byte_offset > last_end && last_end < text.len() {
@@ -237,7 +238,7 @@ impl SearchState {
                     spans.push(Span::styled(before.to_string(), base_style));
                 }
             }
-            
+
             // Add the highlighted match.
             let match_end = (loc.byte_offset + loc.byte_len).min(text.len());
             if loc.byte_offset < text.len() {
@@ -250,24 +251,24 @@ impl SearchState {
                     spans.push(Span::styled(matched.to_string(), style));
                 }
             }
-            
+
             last_end = match_end;
         }
-        
+
         // Add remaining text after last match.
         if last_end < text.len() {
             if let Some(after) = text.get(last_end..) {
                 spans.push(Span::styled(after.to_string(), base_style));
             }
         }
-        
+
         if spans.is_empty() {
             vec![Span::styled(text.to_string(), base_style)]
         } else {
             spans
         }
     }
-    
+
     /// Highlight search query occurrences in a Line (post-process markdown output).
     /// Processes each span in the line and highlights query matches.
     /// `is_current_msg` indicates if this line is in the message containing the current match.
@@ -275,17 +276,17 @@ impl SearchState {
         if self.query.is_empty() {
             return line;
         }
-        
+
         let mut new_spans = Vec::new();
         for span in line.spans {
             let text = span.content.to_string();
             let highlighted = self.highlight_in_text(&text, span.style, is_current_msg);
             new_spans.extend(highlighted);
         }
-        
+
         Line::from(new_spans)
     }
-    
+
     /// Highlight search query occurrences directly in text (for markdown-rendered content).
     /// This searches the query string in the text rather than using pre-computed byte offsets.
     /// Returns spans with all occurrences highlighted.
@@ -299,7 +300,7 @@ impl SearchState {
         if self.query.is_empty() {
             return vec![Span::styled(text.to_string(), base_style)];
         }
-        
+
         // Yellow for normal matches, cyan for matches in the current message
         let highlight_style = if is_current_msg {
             Style::default()
@@ -307,11 +308,9 @@ impl SearchState {
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+            Style::default().fg(Color::Black).bg(Color::Yellow)
         };
-        
+
         // For case-insensitive search, we need to find matches in a case-insensitive way
         // but preserve original casing in the output.
         let search_text = if self.case_sensitive {
@@ -324,7 +323,7 @@ impl SearchState {
         } else {
             self.query.to_lowercase()
         };
-        
+
         // Find all match positions.
         let mut match_positions: Vec<(usize, usize)> = Vec::new();
         let mut start = 0;
@@ -333,14 +332,14 @@ impl SearchState {
             match_positions.push((abs_pos, abs_pos + search_query.len()));
             start = abs_pos + 1; // Move past this match to find overlapping matches
         }
-        
+
         if match_positions.is_empty() {
             return vec![Span::styled(text.to_string(), base_style)];
         }
-        
+
         let mut spans = Vec::new();
         let mut last_end = 0;
-        
+
         for (match_start, match_end) in match_positions {
             // Add text before this match.
             if match_start > last_end {
@@ -348,22 +347,22 @@ impl SearchState {
                     spans.push(Span::styled(before.to_string(), base_style));
                 }
             }
-            
+
             // Add the highlighted match (use original text casing).
             if let Some(matched) = text.get(match_start..match_end) {
                 spans.push(Span::styled(matched.to_string(), highlight_style));
             }
-            
+
             last_end = match_end;
         }
-        
+
         // Add remaining text after last match.
         if last_end < text.len() {
             if let Some(after) = text.get(last_end..) {
                 spans.push(Span::styled(after.to_string(), base_style));
             }
         }
-        
+
         if spans.is_empty() {
             vec![Span::styled(text.to_string(), base_style)]
         } else {
@@ -386,7 +385,9 @@ impl SearchState {
         // Colours.
         let border_style = Style::default().fg(Color::Cyan);
         let label_style = Style::default().fg(Color::Cyan);
-        let query_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+        let query_style = Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
         let count_style = Style::default().fg(Color::Yellow);
         let toggle_on = Style::default().fg(Color::Black).bg(Color::Cyan);
         let toggle_off = Style::default().fg(Color::DarkGray);
@@ -468,7 +469,11 @@ impl SearchState {
         }
 
         // Regex toggle "[.*]"
-        let re_style = if self.regex_mode { toggle_on } else { toggle_off };
+        let re_style = if self.regex_mode {
+            toggle_on
+        } else {
+            toggle_off
+        };
         for ch in regex_label.chars() {
             write_char(buf, col, y, ch, re_style);
             col += 1;
@@ -479,7 +484,11 @@ impl SearchState {
         col += 1;
 
         // Case toggle "[Aa]"
-        let cs_style = if self.case_sensitive { toggle_on } else { toggle_off };
+        let cs_style = if self.case_sensitive {
+            toggle_on
+        } else {
+            toggle_off
+        };
         for ch in case_label.chars() {
             write_char(buf, col, y, ch, cs_style);
             col += 1;

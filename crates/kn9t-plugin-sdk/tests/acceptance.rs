@@ -42,7 +42,10 @@ fn decode_plugin(bytes: &[u8]) -> PluginMsg {
 #[test]
 fn handshake() {
     // Host hello
-    let hello = HostMsg::Hello { proto: 1, kn9t: "0.1.0".into() };
+    let hello = HostMsg::Hello {
+        proto: 1,
+        kn9t: "0.1.0".into(),
+    };
     let bytes = encode_host(&hello);
     assert!(bytes.ends_with(b"\n"), "must be newline-terminated");
     match decode_host(&bytes) {
@@ -63,7 +66,8 @@ fn handshake() {
             description: "echoes input".into(),
             schema: json!({"type":"object","properties":{"msg":{"type":"string"}}}),
             parallel_safe: true,
-            hidden: false, effects: vec![],
+            hidden: false,
+            effects: vec![],
             policy: Default::default(),
         }],
         provider: None,
@@ -72,7 +76,14 @@ fn handshake() {
     let bytes = encode_plugin(&ph);
     assert!(bytes.ends_with(b"\n"));
     match decode_plugin(&bytes) {
-        PluginMsg::Hello { name, capabilities, hooks, tools, events, .. } => {
+        PluginMsg::Hello {
+            name,
+            capabilities,
+            hooks,
+            tools,
+            events,
+            ..
+        } => {
             assert_eq!(name, "my-plugin");
             assert!(capabilities.contains(&"streaming".to_string()));
             assert!(capabilities.contains(&"cancelable".to_string()));
@@ -93,8 +104,14 @@ fn handshake() {
 fn streaming_tool_chunks_then_done() {
     let id = 42u64;
 
-    let chunk = PluginMsg::Chunk { id, body: json!({"text": "line1\n"}) };
-    let done  = PluginMsg::Done  { id, body: json!({"content":[{"type":"text","text":"line1\nline2"}],"is_error":false}) };
+    let chunk = PluginMsg::Chunk {
+        id,
+        body: json!({"text": "line1\n"}),
+    };
+    let done = PluginMsg::Done {
+        id,
+        body: json!({"content":[{"type":"text","text":"line1\nline2"}],"is_error":false}),
+    };
 
     // Encode both into a single byte stream.
     let mut stream = Vec::new();
@@ -143,40 +160,70 @@ fn provider_chunks_assembled() {
     let mut stream = Vec::new();
 
     // text_delta
-    write_plugin(&mut stream, &PluginMsg::Chunk {
-        id, body: json!({"kind":"text_delta","text":"Hello"}),
-    }).unwrap();
+    write_plugin(
+        &mut stream,
+        &PluginMsg::Chunk {
+            id,
+            body: json!({"kind":"text_delta","text":"Hello"}),
+        },
+    )
+    .unwrap();
     // thinking_delta
-    write_plugin(&mut stream, &PluginMsg::Chunk {
-        id, body: json!({"kind":"thinking_delta","thinking":"hmm","signature":"sig1"}),
-    }).unwrap();
+    write_plugin(
+        &mut stream,
+        &PluginMsg::Chunk {
+            id,
+            body: json!({"kind":"thinking_delta","thinking":"hmm","signature":"sig1"}),
+        },
+    )
+    .unwrap();
     // tool_use_start
-    write_plugin(&mut stream, &PluginMsg::Chunk {
-        id, body: json!({"kind":"tool_use_start","call_id":"c1","name":"bash","args_json":""}),
-    }).unwrap();
+    write_plugin(
+        &mut stream,
+        &PluginMsg::Chunk {
+            id,
+            body: json!({"kind":"tool_use_start","call_id":"c1","name":"bash","args_json":""}),
+        },
+    )
+    .unwrap();
     // tool_use_delta
-    write_plugin(&mut stream, &PluginMsg::Chunk {
-        id, body: json!({"kind":"tool_use_delta","call_id":"c1","args_json":"{\"cmd\":\"ls\"}"}),
-    }).unwrap();
+    write_plugin(
+        &mut stream,
+        &PluginMsg::Chunk {
+            id,
+            body: json!({"kind":"tool_use_delta","call_id":"c1","args_json":"{\"cmd\":\"ls\"}"}),
+        },
+    )
+    .unwrap();
     // input_tokens
-    write_plugin(&mut stream, &PluginMsg::Chunk {
-        id, body: json!({"kind":"input_tokens","count":10}),
-    }).unwrap();
+    write_plugin(
+        &mut stream,
+        &PluginMsg::Chunk {
+            id,
+            body: json!({"kind":"input_tokens","count":10}),
+        },
+    )
+    .unwrap();
     // done
-    write_plugin(&mut stream, &PluginMsg::Done {
-        id, body: json!({
-            "stop": "end_turn",
-            "usage": {"input":10,"output":4,"cache_read":0,"cache_write":0},
-            "cost_usd": 0.00012
-        }),
-    }).unwrap();
+    write_plugin(
+        &mut stream,
+        &PluginMsg::Done {
+            id,
+            body: json!({
+                "stop": "end_turn",
+                "usage": {"input":10,"output":4,"cache_read":0,"cache_write":0},
+                "cost_usd": 0.00012
+            }),
+        },
+    )
+    .unwrap();
 
     let mut r = BufReader::new(Cursor::new(stream));
     let mut chunks = vec![];
     loop {
         match read_plugin(&mut r).unwrap() {
             PluginMsg::Chunk { body, .. } => chunks.push(body),
-            PluginMsg::Done  { body, .. } => {
+            PluginMsg::Done { body, .. } => {
                 assert_eq!(body["stop"].as_str().unwrap(), "end_turn");
                 assert_eq!(body["usage"]["input"].as_u64().unwrap(), 10);
                 assert!((body["cost_usd"].as_f64().unwrap() - 0.00012).abs() < 1e-9);
@@ -256,10 +303,13 @@ fn hot_reload_cancels_inflight() {
 #[test]
 fn autostart_tools_plugin() {
     let manifest = include_str!("../Cargo.toml");
-    let has_kn9t_dep = manifest.lines().any(|l| {
-        l.contains("kn9t-") && !l.contains("kn9t-plugin-sdk") && l.contains("path")
-    });
-    assert!(!has_kn9t_dep, "kn9t-plugin-sdk must not depend on any kn9t-* workspace crate");
+    let has_kn9t_dep = manifest
+        .lines()
+        .any(|l| l.contains("kn9t-") && !l.contains("kn9t-plugin-sdk") && l.contains("path"));
+    assert!(
+        !has_kn9t_dep,
+        "kn9t-plugin-sdk must not depend on any kn9t-* workspace crate"
+    );
 }
 
 // ── R-PLUG2-120: ProgressSender clone ────────────────────────────────────────
@@ -288,8 +338,10 @@ fn bash_streams_progress() {
 
     let bytes = buf.lock().unwrap().clone();
     let text = String::from_utf8(bytes).unwrap();
-    assert!(text.contains("hello from thread") || text.contains("hello from main"),
-        "at least one chunk should arrive");
+    assert!(
+        text.contains("hello from thread") || text.contains("hello from main"),
+        "at least one chunk should arrive"
+    );
 }
 
 struct WriteCollector(Arc<Mutex<Vec<u8>>>);
@@ -298,7 +350,9 @@ impl std::io::Write for WriteCollector {
         self.0.lock().unwrap().extend_from_slice(buf);
         Ok(buf.len())
     }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 // ── R-PLUG2-125: parallel tool calls ─────────────────────────────────────────
@@ -320,12 +374,12 @@ fn parallel_tool_calls() {
     let sender = ChunkSender::new(1, Arc::new(Mutex::new(writer)));
 
     // Simulate custom plugin parallel tool calls: two calls sent interleaved
-    sender.tool_use_start("toolu_1", "read", "");     // should get idx=0
-    sender.tool_use_start("toolu_2", "bash", "");     // should get idx=1
-    sender.tool_use_delta("toolu_1", r#"{"path":"#);  // should use idx=0
-    sender.tool_use_delta("toolu_2", r#"{"cmd":"#);   // should use idx=1
-    sender.tool_use_delta("toolu_1", r#"a.txt"}"#);   // should use idx=0
-    sender.tool_use_delta("toolu_2", r#"ls"}"#);      // should use idx=1
+    sender.tool_use_start("toolu_1", "read", ""); // should get idx=0
+    sender.tool_use_start("toolu_2", "bash", ""); // should get idx=1
+    sender.tool_use_delta("toolu_1", r#"{"path":"#); // should use idx=0
+    sender.tool_use_delta("toolu_2", r#"{"cmd":"#); // should use idx=1
+    sender.tool_use_delta("toolu_1", r#"a.txt"}"#); // should use idx=0
+    sender.tool_use_delta("toolu_2", r#"ls"}"#); // should use idx=1
 
     // Parse the chunks and verify idx assignment
     // Wire format uses #[serde(flatten)] so body fields are at top level
@@ -384,4 +438,3 @@ fn edit_detects_stale_read() {
     // See crates/kn9t-react/tests/acceptance.rs for the full integration path.
     // Nothing SDK-specific to assert here; the test exists to anchor the req ID.
 }
-

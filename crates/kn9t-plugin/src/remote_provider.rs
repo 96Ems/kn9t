@@ -3,14 +3,14 @@
 //! The host sends `{"t":"hook","hook":"provider_complete","payload":<Request>}`.
 //! The plugin streams `Chunk` messages then a `Done` with stop + usage.
 
-use crate::codec::{HostMsg, write_host_msg};
+use crate::codec::{write_host_msg, HostMsg};
 use crate::host::PluginHost;
 use kn9t_core::{
     CallId, Cancel, Chunk, ModelRef, ProvErr, Provider, Request, StopReason, Tokens, Usage,
 };
 use serde_json::{json, Value};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Six-hundred second timeout for a full streaming call.
@@ -30,7 +30,9 @@ impl RemoteProvider {
 }
 
 impl Provider for RemoteProvider {
-    fn name(&self) -> &str { &self.provider_id }
+    fn name(&self) -> &str {
+        &self.provider_id
+    }
 
     fn stream(
         &self,
@@ -57,23 +59,22 @@ impl Provider for RemoteProvider {
         let mut had_usage = false;
         let mut stream_err: Option<ProvErr> = None;
 
-        let done_result = self.host.wait_for_streaming_cancellable(
-            id,
-            cancel,
-            STREAM_TIMEOUT,
-            |body: Value| {
-                if stream_err.is_some() { return; }
-                match decode_chunk_body(&body) {
-                    Ok(Some(Chunk::Usage(_))) => {
-                        had_usage = true;
-                        // Defer until done so we have the complete usage.
+        let done_result =
+            self.host
+                .wait_for_streaming_cancellable(id, cancel, STREAM_TIMEOUT, |body: Value| {
+                    if stream_err.is_some() {
+                        return;
                     }
-                    Ok(Some(c)) => chunks.push(Ok(c)),
-                    Ok(None) => {}  // unknown kind — ignored
-                    Err(e) => stream_err = Some(e),
-                }
-            },
-        );
+                    match decode_chunk_body(&body) {
+                        Ok(Some(Chunk::Usage(_))) => {
+                            had_usage = true;
+                            // Defer until done so we have the complete usage.
+                        }
+                        Ok(Some(c)) => chunks.push(Ok(c)),
+                        Ok(None) => {} // unknown kind — ignored
+                        Err(e) => stream_err = Some(e),
+                    }
+                });
 
         if let Some(e) = stream_err {
             return Err(e);
@@ -94,7 +95,9 @@ impl Provider for RemoteProvider {
             Ok(done) => {
                 if let Some(err_str) = done.get("error").and_then(|e| e.as_str()) {
                     let e = err_str.to_string();
-                    if e.contains("prompt is too long") { return Err(ProvErr::ContextOverflow); }
+                    if e.contains("prompt is too long") {
+                        return Err(ProvErr::ContextOverflow);
+                    }
                     return Err(ProvErr::Stream(e));
                 }
 
@@ -136,27 +139,50 @@ fn decode_chunk_body(body: &Value) -> Result<Option<Chunk>, ProvErr> {
 
     let c = match kind {
         "text_delta" => {
-            let delta = body.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let delta = body
+                .get("text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
             Chunk::Text { idx, delta }
         }
         "thinking_delta" => {
-            let delta = body.get("thinking").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let delta = body
+                .get("thinking")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
             Chunk::Thinking { idx, delta }
         }
         "tool_use_start" => {
             let call_id = body.get("call_id").and_then(|i| i.as_str()).unwrap_or("");
-            let name = body.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-            Chunk::ToolCall { idx, id: CallId(call_id.to_string()), name }
+            let name = body
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
+            Chunk::ToolCall {
+                idx,
+                id: CallId(call_id.to_string()),
+                name,
+            }
         }
         "tool_use_delta" => {
-            let delta = body.get("args_json").and_then(|a| a.as_str()).unwrap_or("").to_string();
+            let delta = body
+                .get("args_json")
+                .and_then(|a| a.as_str())
+                .unwrap_or("")
+                .to_string();
             Chunk::ToolArgs { idx, delta }
         }
         "usage" | "input_tokens" => {
             // Signal caller to defer — pass a sentinel usage with zeros.
             Chunk::Usage(Usage {
                 tokens: Tokens::default(),
-                model: ModelRef { provider: String::new(), id: String::new() },
+                model: ModelRef {
+                    provider: String::new(),
+                    id: String::new(),
+                },
             })
         }
         "" => return Err(ProvErr::Decode("chunk body missing 'kind'".into())),
@@ -170,7 +196,10 @@ fn decode_stop(body: &Value) -> StopReason {
         s if s.to_ascii_lowercase().contains("abort") => StopReason::Aborted,
         s if s.to_ascii_lowercase().contains("tool") => StopReason::ToolUse,
         s if s.to_ascii_lowercase().contains("length")
-            || s.to_ascii_lowercase().contains("max") => StopReason::Length,
+            || s.to_ascii_lowercase().contains("max") =>
+        {
+            StopReason::Length
+        }
         _ => StopReason::Stop,
     }
 }
@@ -182,11 +211,21 @@ fn decode_tokens(u: &Value) -> Tokens {
             .unwrap_or(0) as u32
     };
     Tokens {
-        input:       get(&["input", "prompt_tokens", "input_tokens", "promptTokens"]),
-        output:      get(&["output", "completion_tokens", "output_tokens", "completionTokens"]),
-        cache_read:  get(&["cache_read", "cache_read_input_tokens", "cacheReadTokens", "cached_tokens"]),
+        input: get(&["input", "prompt_tokens", "input_tokens", "promptTokens"]),
+        output: get(&[
+            "output",
+            "completion_tokens",
+            "output_tokens",
+            "completionTokens",
+        ]),
+        cache_read: get(&[
+            "cache_read",
+            "cache_read_input_tokens",
+            "cacheReadTokens",
+            "cached_tokens",
+        ]),
         cache_write: get(&["cache_write", "cache_creation_input_tokens"]),
-        reasoning:   get(&["reasoning_tokens"]),
+        reasoning: get(&["reasoning_tokens"]),
     }
 }
 
@@ -200,15 +239,15 @@ mod tests {
         // The custom provider fix returns stop="ABORTED" when cancelled mid-stream
         let body = json!({"stop": "ABORTED"});
         assert!(matches!(decode_stop(&body), StopReason::Aborted));
-        
+
         // Also test lowercase
         let body = json!({"stop": "aborted"});
         assert!(matches!(decode_stop(&body), StopReason::Aborted));
-        
+
         // And mixed case
         let body = json!({"stop": "Aborted"});
         assert!(matches!(decode_stop(&body), StopReason::Aborted));
-        
+
         // And with prefix/suffix
         let body = json!({"stop": "user_aborted"});
         assert!(matches!(decode_stop(&body), StopReason::Aborted));
@@ -218,7 +257,7 @@ mod tests {
     fn decode_stop_handles_tool_call() {
         let body = json!({"stop": "TOOL_CALL"});
         assert!(matches!(decode_stop(&body), StopReason::ToolUse));
-        
+
         let body = json!({"stop": "tool_use"});
         assert!(matches!(decode_stop(&body), StopReason::ToolUse));
     }
@@ -227,7 +266,7 @@ mod tests {
     fn decode_stop_handles_length() {
         let body = json!({"stop": "LENGTH"});
         assert!(matches!(decode_stop(&body), StopReason::Length));
-        
+
         let body = json!({"stop": "max_tokens"});
         assert!(matches!(decode_stop(&body), StopReason::Length));
     }
@@ -236,10 +275,10 @@ mod tests {
     fn decode_stop_defaults_to_stop() {
         let body = json!({"stop": "STOP"});
         assert!(matches!(decode_stop(&body), StopReason::Stop));
-        
+
         let body = json!({"stop": "end_turn"});
         assert!(matches!(decode_stop(&body), StopReason::Stop));
-        
+
         // Missing stop field
         let body = json!({});
         assert!(matches!(decode_stop(&body), StopReason::Stop));
@@ -251,7 +290,9 @@ mod tests {
         // Edge case: what if someone sends "aborted_tool"?
         // ABORTED should match first since it's checked first
         let body = json!({"stop": "aborted_tool"});
-        assert!(matches!(decode_stop(&body), StopReason::Aborted),
-            "ABORTED should be checked before TOOL");
+        assert!(
+            matches!(decode_stop(&body), StopReason::Aborted),
+            "ABORTED should be checked before TOOL"
+        );
     }
 }

@@ -16,7 +16,7 @@ struct PriceEntry {
 fn pricing_table() -> &'static [PriceEntry] {
     use std::sync::OnceLock;
     static TABLE: OnceLock<Vec<PriceEntry>> = OnceLock::new();
-    
+
     TABLE.get_or_init(|| {
         let toml_str = include_str!("../data/models.toml");
         parse_pricing_toml(toml_str)
@@ -35,12 +35,12 @@ fn parse_pricing_toml(toml_str: &str) -> Vec<PriceEntry> {
         #[serde(default)]
         cache_write: f64,
     }
-    
+
     #[derive(serde::Deserialize)]
     struct TomlFile {
         model: Vec<TomlModel>,
     }
-    
+
     let parsed: TomlFile = match toml::from_str(toml_str) {
         Ok(p) => p,
         Err(e) => {
@@ -48,8 +48,9 @@ fn parse_pricing_toml(toml_str: &str) -> Vec<PriceEntry> {
             return Vec::new();
         }
     };
-    
-    parsed.model
+
+    parsed
+        .model
         .into_iter()
         .filter_map(|m| {
             let pattern = match regex::RegexBuilder::new(&m.pattern)
@@ -79,13 +80,13 @@ fn parse_pricing_toml(toml_str: &str) -> Vec<PriceEntry> {
 /// Returns None if no match found (caller should use zero or config price).
 pub fn lookup_price(api_id: &str) -> Option<Price> {
     let table = pricing_table();
-    
+
     for entry in table {
         if entry.pattern.is_match(api_id) {
             return Some(entry.price.clone());
         }
     }
-    
+
     None
 }
 
@@ -117,13 +118,13 @@ mod tests {
         let p = lookup_price("amazon.nova-micro-v1:0").unwrap();
         assert_eq!(p.input, 35_000);
     }
-    
+
     #[test]
     fn test_gpt4o() {
         let p = lookup_price("gpt-4o-2024-08-06").unwrap();
         assert_eq!(p.input, 2_500_000);
     }
-    
+
     #[test]
     fn test_gpt4o_mini() {
         let p = lookup_price("gpt-4o-mini").unwrap();
@@ -134,13 +135,13 @@ mod tests {
     fn test_unknown() {
         assert!(lookup_price("some-random-model-xyz").is_none());
     }
-    
+
     #[test]
     fn test_table_loads() {
         let table = pricing_table();
         assert!(!table.is_empty(), "pricing table should not be empty");
     }
-    
+
     #[test]
     fn test_custom_provider_claude_sonnet() {
         // custom provider plugin model ID format
@@ -148,14 +149,14 @@ mod tests {
         assert_eq!(p.input, 3_000_000);
         assert_eq!(p.output, 15_000_000);
     }
-    
+
     #[test]
     fn test_custom_provider_claude_opus() {
         let p = lookup_price("anthropic::2024-10-22::claude-opus-4-5-latest").unwrap();
         assert_eq!(p.input, 5_000_000);
         assert_eq!(p.output, 25_000_000);
     }
-    
+
     #[test]
     fn test_custom_provider_claude_haiku() {
         let p = lookup_price("anthropic::2024-10-22::claude-haiku-4-5-latest").unwrap();

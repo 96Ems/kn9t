@@ -9,12 +9,12 @@ use ratatui::{
 };
 
 use crate::app::{App, InteractionState, Overlay, Screen, ToolHitArea};
-use crate::which_key;
 use crate::message_handler::{ToolCard, ToolTab};
 use crate::slash::fuzzy_match;
 use crate::theme::Theme;
 use crate::thinking::{self, ContentSegment};
 use crate::ui::layout::{compute_with_input, Sidebar};
+use crate::which_key;
 use serde_json;
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -65,7 +65,7 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
     // Input.
     render_input(f, app, areas.input, theme);
-    
+
     // Slash command dropdown (above input).
     if app.slash.active {
         render_slash_dropdown(f, app, areas.input, theme);
@@ -88,7 +88,7 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         }
         return;
     }
-    
+
     // Overlay (approval, help, model select, session select, etc).
     if let Some(ref overlay) = app.overlay {
         match overlay {
@@ -122,26 +122,33 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     let input_y = center_y;
     let input_width = content_width.min(50);
     let input_x = start_x + (content_width.saturating_sub(input_width)) / 2;
-    
+
     // Inner content width (excluding borders).
     let inner_width = input_width.saturating_sub(2) as usize;
-    
+
     // Build wrapped lines for input content (image markers are inline in text).
     let (display_lines, cursor_display_row, cursor_display_col) = if app.input.is_empty() {
-        (vec!["Type a message or /models to select...".to_string()], 0, 0)
+        (
+            vec!["Type a message or /models to select...".to_string()],
+            0,
+            0,
+        )
     } else {
         wrap_input_for_welcome(&app.input, inner_width, app.cursor_col)
     };
-    
+
     // Calculate dynamic input box height (top border + content lines + bottom border).
     let content_lines = display_lines.len().min(6) as u16; // Max 6 content lines.
     let input_box_height = content_lines + 2; // +2 for top/bottom borders
-    
+
     let content_start_y = input_y + 1;
-    
+
     // Calculate cursor position before borrowing buffer.
-    let cursor_pos = if !app.slash.active && !app.input.is_empty() 
-        && input_y > area.y && input_y + input_box_height < area.y + area.height {
+    let cursor_pos = if !app.slash.active
+        && !app.input.is_empty()
+        && input_y > area.y
+        && input_y + input_box_height < area.y + area.height
+    {
         let cursor_y = content_start_y + cursor_display_row as u16;
         let cursor_x = input_x + 1 + cursor_display_col as u16;
         if cursor_x < input_x + input_width - 1 {
@@ -152,10 +159,10 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     } else {
         None
     };
-    
+
     {
         let buf = f.buffer_mut();
-        
+
         // Logo / title (centered, above input).
         let title = "kn9t";
         let title_y = center_y.saturating_sub(5);
@@ -163,7 +170,9 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         for (i, ch) in title.chars().enumerate() {
             if title_x + (i as u16) < area.x + area.width && title_y < area.y + area.height {
                 buf[(title_x + i as u16, title_y)].set_char(ch).set_style(
-                    Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(theme.primary)
+                        .add_modifier(Modifier::BOLD),
                 );
             }
         }
@@ -174,7 +183,9 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         let sub_x = start_x + (content_width.saturating_sub(subtitle.len() as u16)) / 2;
         for (i, ch) in subtitle.chars().enumerate() {
             if sub_x + (i as u16) < area.x + area.width && sub_y < area.y + area.height {
-                buf[(sub_x + i as u16, sub_y)].set_char(ch).set_fg(theme.muted);
+                buf[(sub_x + i as u16, sub_y)]
+                    .set_char(ch)
+                    .set_fg(theme.muted);
             }
         }
 
@@ -199,23 +210,31 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             // Top border.
             buf[(input_x, input_y)].set_char('╭').set_fg(theme.muted);
             for i in 1..input_width.saturating_sub(1) {
-                buf[(input_x + i, input_y)].set_char('─').set_fg(theme.muted);
+                buf[(input_x + i, input_y)]
+                    .set_char('─')
+                    .set_fg(theme.muted);
             }
-            buf[(input_x + input_width - 1, input_y)].set_char('╮').set_fg(theme.muted);
-            
+            buf[(input_x + input_width - 1, input_y)]
+                .set_char('╮')
+                .set_fg(theme.muted);
+
             // Content lines.
             let text_style = if app.input.is_empty() {
                 Style::default().fg(theme.muted)
             } else {
                 Style::default().fg(theme.fg)
             };
-            
-            for (line_idx, line) in display_lines.iter().enumerate().take(content_lines as usize) {
+
+            for (line_idx, line) in display_lines
+                .iter()
+                .enumerate()
+                .take(content_lines as usize)
+            {
                 let y = content_start_y + line_idx as u16;
-                
+
                 // Left border.
                 buf[(input_x, y)].set_char('│').set_fg(theme.muted);
-                
+
                 // Content.
                 for (i, ch) in line.chars().enumerate() {
                     let x = input_x + 1 + i as u16;
@@ -223,18 +242,24 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         buf[(x, y)].set_char(ch).set_style(text_style);
                     }
                 }
-                
+
                 // Right border.
-                buf[(input_x + input_width - 1, y)].set_char('│').set_fg(theme.muted);
+                buf[(input_x + input_width - 1, y)]
+                    .set_char('│')
+                    .set_fg(theme.muted);
             }
-            
+
             // Bottom border.
             let bottom_y = input_y + input_box_height - 1;
             buf[(input_x, bottom_y)].set_char('╰').set_fg(theme.muted);
             for i in 1..input_width.saturating_sub(1) {
-                buf[(input_x + i, bottom_y)].set_char('─').set_fg(theme.muted);
+                buf[(input_x + i, bottom_y)]
+                    .set_char('─')
+                    .set_fg(theme.muted);
             }
-            buf[(input_x + input_width - 1, bottom_y)].set_char('╯').set_fg(theme.muted);
+            buf[(input_x + input_width - 1, bottom_y)]
+                .set_char('╯')
+                .set_fg(theme.muted);
         }
 
         // Hints below input (adjust for dynamic height).
@@ -251,8 +276,12 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         // Recent sessions hint (if any).
         if !app.session.sessions.is_empty() {
             let sessions_y = hints_y + 2;
-            let sessions_hint = format!("{} recent sessions (/session to browse)", app.session.sessions.len());
-            let sessions_x = start_x + (content_width.saturating_sub(sessions_hint.len() as u16)) / 2;
+            let sessions_hint = format!(
+                "{} recent sessions (/session to browse)",
+                app.session.sessions.len()
+            );
+            let sessions_x =
+                start_x + (content_width.saturating_sub(sessions_hint.len() as u16)) / 2;
             for (i, ch) in sessions_hint.chars().enumerate() {
                 let x = sessions_x + i as u16;
                 if x < area.x + area.width && sessions_y < area.y + area.height {
@@ -261,17 +290,22 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             }
         }
     } // End of buffer borrow
-    
+
     // Set cursor position (after buffer borrow is released).
     if let Some((x, y)) = cursor_pos {
         f.set_cursor_position((x, y));
     }
-    
+
     // Render slash command dropdown if active.
     if app.slash.active {
-        render_slash_dropdown(f, app, Rect::new(input_x, input_y + input_box_height, input_width, 8), theme);
+        render_slash_dropdown(
+            f,
+            app,
+            Rect::new(input_x, input_y + input_box_height, input_width, 8),
+            theme,
+        );
     }
-    
+
     // Overlay (model select, session select, help, etc).
     if let Some(ref overlay) = app.overlay {
         match overlay {
@@ -298,7 +332,7 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             _ => {} // Other overlays not applicable on welcome
         }
     }
-    
+
     // Diff viewer (separate from overlay - needs &mut for mouse hit tracking)
     if let Some(ref mut viewer) = app.diff_viewer {
         let buf = f.buffer_mut();
@@ -316,26 +350,30 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
 /// Wrap input text for welcome screen and compute cursor position.
 /// Returns (display_lines, cursor_row, cursor_col).
-fn wrap_input_for_welcome(input: &str, width: usize, cursor_char_pos: usize) -> (Vec<String>, usize, usize) {
+fn wrap_input_for_welcome(
+    input: &str,
+    width: usize,
+    cursor_char_pos: usize,
+) -> (Vec<String>, usize, usize) {
     if width == 0 {
         return (vec![input.to_string()], 0, cursor_char_pos);
     }
-    
+
     let chars: Vec<char> = input.chars().collect();
     let mut display_lines: Vec<String> = Vec::new();
     let mut cursor_row: usize = 0;
     let mut cursor_col: usize = 0;
-    
+
     if chars.is_empty() {
         return (vec![String::new()], 0, 0);
     }
-    
+
     let mut pos = 0;
     while pos < chars.len() {
         let end = (pos + width).min(chars.len());
         let segment: String = chars[pos..end].iter().collect();
         display_lines.push(segment);
-        
+
         // Map cursor position.
         if cursor_char_pos >= pos && cursor_char_pos < end {
             cursor_row = display_lines.len() - 1;
@@ -345,14 +383,14 @@ fn wrap_input_for_welcome(input: &str, width: usize, cursor_char_pos: usize) -> 
             cursor_row = display_lines.len() - 1;
             cursor_col = end - pos;
         }
-        
+
         pos = end;
     }
-    
+
     if display_lines.is_empty() {
         display_lines.push(String::new());
     }
-    
+
     (display_lines, cursor_row, cursor_col)
 }
 
@@ -366,7 +404,12 @@ fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             }
         }
         for y in area.y..area.y + area.height {
-            buf[(area.x, y)].set_char('┃').set_style(Style::default().fg(theme.tool_focus_border).bg(theme.tool_focus_bg).add_modifier(Modifier::BOLD));
+            buf[(area.x, y)].set_char('┃').set_style(
+                Style::default()
+                    .fg(theme.tool_focus_border)
+                    .bg(theme.tool_focus_bg)
+                    .add_modifier(Modifier::BOLD),
+            );
         }
         return;
     }
@@ -382,7 +425,12 @@ fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     // Heavy left border in accent color.
     for y in area.y..area.y + area.height {
-        buf[(area.x, y)].set_char('┃').set_style(Style::default().fg(theme.tool_focus_border).bg(theme.tool_focus_bg).add_modifier(Modifier::BOLD));
+        buf[(area.x, y)].set_char('┃').set_style(
+            Style::default()
+                .fg(theme.tool_focus_border)
+                .bg(theme.tool_focus_bg)
+                .add_modifier(Modifier::BOLD),
+        );
     }
 
     // Content is inset by one column so text doesn't overwrite the border.
@@ -398,25 +446,77 @@ fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     if !app.session.state.session_id.is_empty() {
         // Show short session ID (first 8 chars).
         let sid = &app.session.state.session_id;
-        let short_id = if sid.len() > 8 { &sid[..8] } else { sid.as_str() };
-        y = render_line_at(buf, content_x, y, w, &format!("#{}", short_id), Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
+        let short_id = if sid.len() > 8 {
+            &sid[..8]
+        } else {
+            sid.as_str()
+        };
+        y = render_line_at(
+            buf,
+            content_x,
+            y,
+            w,
+            &format!("#{}", short_id),
+            Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
+        );
         // Show title if available.
         if let Some(title) = app.session.session_title() {
-            y = render_line_at(buf, content_x, y, w, title, Style::default().bg(theme.tool_focus_bg).fg(theme.primary));
+            y = render_line_at(
+                buf,
+                content_x,
+                y,
+                w,
+                title,
+                Style::default().bg(theme.tool_focus_bg).fg(theme.primary),
+            );
         }
         y += 1;
     }
 
     // Model section.
-    y = render_line_at(buf, content_x, y, w, "MODEL", Style::default().bg(theme.tool_focus_bg).fg(theme.fg).add_modifier(Modifier::BOLD));
-    y = render_line_at(buf, content_x, y, w, &app.current_model_name(), Style::default().bg(theme.tool_focus_bg).fg(theme.primary));
-    y = render_line_at(buf, content_x, y, w, &format!("${:.4}", app.tokens.cost), Style::default().bg(theme.tool_focus_bg).fg(theme.warning));
+    y = render_line_at(
+        buf,
+        content_x,
+        y,
+        w,
+        "MODEL",
+        Style::default()
+            .bg(theme.tool_focus_bg)
+            .fg(theme.fg)
+            .add_modifier(Modifier::BOLD),
+    );
+    y = render_line_at(
+        buf,
+        content_x,
+        y,
+        w,
+        &app.current_model_name(),
+        Style::default().bg(theme.tool_focus_bg).fg(theme.primary),
+    );
+    y = render_line_at(
+        buf,
+        content_x,
+        y,
+        w,
+        &format!("${:.4}", app.tokens.cost),
+        Style::default().bg(theme.tool_focus_bg).fg(theme.warning),
+    );
     y += 1;
 
     // Last turn stats - what matters for context window usage.
     // Anthropic: input = non-cached tokens, cache_read = cached tokens
     // Total context = input + cache_read; cache_hit% = cache_read / total
-    y = render_line_at(buf, content_x, y, w, "LAST TURN", Style::default().bg(theme.tool_focus_bg).fg(theme.fg).add_modifier(Modifier::BOLD));
+    y = render_line_at(
+        buf,
+        content_x,
+        y,
+        w,
+        "LAST TURN",
+        Style::default()
+            .bg(theme.tool_focus_bg)
+            .fg(theme.fg)
+            .add_modifier(Modifier::BOLD),
+    );
     let lt_input = app.tokens.last_turn_input();
     let lt_output = app.tokens.last_turn_output();
     let lt_cache_read = app.tokens.last_turn_cache_read();
@@ -425,34 +525,82 @@ fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         let total_input = lt_input + lt_cache_read;
         if lt_cache_read > 0 && total_input > 0 {
             let hit_pct = (lt_cache_read as f64 / total_input as f64 * 100.0) as u32;
-            y = render_line_at(buf, content_x, y, w,
+            y = render_line_at(
+                buf,
+                content_x,
+                y,
+                w,
                 &format!("in: {} ({}%)", format_tokens(total_input), hit_pct),
-                Style::default().bg(theme.tool_focus_bg).fg(theme.success));
+                Style::default().bg(theme.tool_focus_bg).fg(theme.success),
+            );
         } else {
-            y = render_line_at(buf, content_x, y, w,
+            y = render_line_at(
+                buf,
+                content_x,
+                y,
+                w,
                 &format!("in: {}", format_tokens(lt_input)),
-                Style::default().bg(theme.tool_focus_bg).fg(theme.fg));
+                Style::default().bg(theme.tool_focus_bg).fg(theme.fg),
+            );
         }
-        y = render_line_at(buf, content_x, y, w,
+        y = render_line_at(
+            buf,
+            content_x,
+            y,
+            w,
             &format!("out: {}", format_tokens(lt_output)),
-            Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
+            Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
+        );
         if lt_cache_read > 0 || lt_cache_write > 0 {
-            y = render_line_at(buf, content_x, y, w,
-                &format!("r:{} w:{}", format_tokens(lt_cache_read), format_tokens(lt_cache_write)),
-                Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
+            y = render_line_at(
+                buf,
+                content_x,
+                y,
+                w,
+                &format!(
+                    "r:{} w:{}",
+                    format_tokens(lt_cache_read),
+                    format_tokens(lt_cache_write)
+                ),
+                Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
+            );
         }
     } else {
-        y = render_line_at(buf, content_x, y, w, "-", Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
+        y = render_line_at(
+            buf,
+            content_x,
+            y,
+            w,
+            "-",
+            Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
+        );
     }
 
     if let Some(tps) = app.tokens.last_toks_per_sec {
-        y = render_line_at(buf, content_x, y, w, &format!("{:.0} tok/s", tps), Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
+        y = render_line_at(
+            buf,
+            content_x,
+            y,
+            w,
+            &format!("{:.0} tok/s", tps),
+            Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
+        );
     }
     y += 1;
 
     // Session totals - cumulative for billing/cost.
     // tokens_in = non-cached tokens, cache_read = cached tokens, total = both
-    y = render_line_at(buf, content_x, y, w, "SESSION", Style::default().bg(theme.tool_focus_bg).fg(theme.fg).add_modifier(Modifier::BOLD));
+    y = render_line_at(
+        buf,
+        content_x,
+        y,
+        w,
+        "SESSION",
+        Style::default()
+            .bg(theme.tool_focus_bg)
+            .fg(theme.fg)
+            .add_modifier(Modifier::BOLD),
+    );
     let s_in = app.tokens.tokens_in();
     let s_out = app.tokens.tokens_out();
     let s_cache_read = app.tokens.cache_read();
@@ -460,21 +608,49 @@ fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let session_total = s_in + s_cache_read;
     if s_cache_read > 0 && session_total > 0 {
         let session_hit_pct = (s_cache_read as f64 / session_total as f64 * 100.0) as u32;
-        y = render_line_at(buf, content_x, y, w,
-            &format!("in: {} ({}%)", format_tokens(session_total), session_hit_pct),
-            Style::default().bg(theme.tool_focus_bg).fg(theme.success));
+        y = render_line_at(
+            buf,
+            content_x,
+            y,
+            w,
+            &format!(
+                "in: {} ({}%)",
+                format_tokens(session_total),
+                session_hit_pct
+            ),
+            Style::default().bg(theme.tool_focus_bg).fg(theme.success),
+        );
     } else {
-        y = render_line_at(buf, content_x, y, w,
+        y = render_line_at(
+            buf,
+            content_x,
+            y,
+            w,
             &format!("in: {}", format_tokens(s_in)),
-            Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
+            Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
+        );
     }
-    y = render_line_at(buf, content_x, y, w,
+    y = render_line_at(
+        buf,
+        content_x,
+        y,
+        w,
         &format!("out: {}", format_tokens(s_out)),
-        Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
+        Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
+    );
     if s_cache_read > 0 || s_cache_write > 0 {
-        y = render_line_at(buf, content_x, y, w,
-            &format!("r:{} w:{}", format_tokens(s_cache_read), format_tokens(s_cache_write)),
-            Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
+        y = render_line_at(
+            buf,
+            content_x,
+            y,
+            w,
+            &format!(
+                "r:{} w:{}",
+                format_tokens(s_cache_read),
+                format_tokens(s_cache_write)
+            ),
+            Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
+        );
     }
     y += 1;
 
@@ -483,26 +659,60 @@ fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         let enabled_count = app.tools.iter().filter(|t| t.enabled).count();
         let total_count = app.tools.len();
         let header = format!("TOOLS {}/{}", enabled_count, total_count);
-        y = render_line_at(buf, content_x, y, w, &header, Style::default().bg(theme.tool_focus_bg).fg(theme.fg).add_modifier(Modifier::BOLD));
+        y = render_line_at(
+            buf,
+            content_x,
+            y,
+            w,
+            &header,
+            Style::default()
+                .bg(theme.tool_focus_bg)
+                .fg(theme.fg)
+                .add_modifier(Modifier::BOLD),
+        );
         // Hint to open tools manager.
         if y < area.y + area.height {
-            y = render_line_at(buf, content_x, y, w, "Ctrl+P → Manage", Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
+            y = render_line_at(
+                buf,
+                content_x,
+                y,
+                w,
+                "Ctrl+P → Manage",
+                Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
+            );
         }
     }
 
     // 96E-25: plugin pages (toggleable side panel, multiple pages via tabs)
     if !app.ui_pages.is_empty() && y < area.y + area.height {
-        y = render_line_at(buf, content_x, y, w, "PAGES", Style::default().bg(theme.tool_focus_bg).fg(theme.fg).add_modifier(Modifier::BOLD));
+        y = render_line_at(
+            buf,
+            content_x,
+            y,
+            w,
+            "PAGES",
+            Style::default()
+                .bg(theme.tool_focus_bg)
+                .fg(theme.fg)
+                .add_modifier(Modifier::BOLD),
+        );
         // Tab bar: show page tabs, highlight selected
-        let selected = app.ui_page_selected.clone().or_else(|| app.ui_pages.keys().next().cloned());
+        let selected = app
+            .ui_page_selected
+            .clone()
+            .or_else(|| app.ui_pages.keys().next().cloned());
         let mut tab_line: Vec<Span> = Vec::new();
         for key in app.ui_pages.keys() {
             let label = crate::widgets::page_tab_label(&key.0, &key.1, 10);
             let is_sel = selected.as_ref().map(|s| s == key).unwrap_or(false);
             let style = if is_sel {
-                Style::default().bg(theme.tab_active_bg).fg(theme.tab_active_fg)
+                Style::default()
+                    .bg(theme.tab_active_bg)
+                    .fg(theme.tab_active_fg)
             } else {
-                Style::default().bg(theme.tool_focus_bg).fg(theme.tab_inactive_fg)
+                Style::default()
+                    .bg(theme.tool_focus_bg)
+                    .fg(theme.tab_inactive_fg)
             };
             tab_line.push(Span::styled(format!(" {} ", label), style));
             tab_line.push(Span::raw(" "));
@@ -516,14 +726,28 @@ fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             if let Some(page) = app.ui_pages.get(&sel) {
                 // Page header
                 if y < area.y + area.height {
-                    y = render_line_at(buf, content_x, y, w, &format!("{}/{}", page.plugin, page.page_id), Style::default().bg(theme.tool_focus_bg).fg(theme.primary).add_modifier(Modifier::BOLD));
+                    y = render_line_at(
+                        buf,
+                        content_x,
+                        y,
+                        w,
+                        &format!("{}/{}", page.plugin, page.page_id),
+                        Style::default()
+                            .bg(theme.tool_focus_bg)
+                            .fg(theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    );
                 }
                 for pid in &page.order {
-                    if y >= area.y + area.height { break; }
+                    if y >= area.y + area.height {
+                        break;
+                    }
                     if let Some(ph) = page.placeholders.get(pid) {
                         let lines = crate::widgets::render_placeholder(pid, ph, w, theme);
                         for line in lines {
-                            if y >= area.y + area.height { break; }
+                            if y >= area.y + area.height {
+                                break;
+                            }
                             render_spanned_line_at(buf, content_x, y, w, line);
                             y += 1;
                         }
@@ -534,7 +758,14 @@ fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     }
 }
 
-fn render_line_at(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, w: usize, text: &str, style: Style) -> u16 {
+fn render_line_at(
+    buf: &mut ratatui::buffer::Buffer,
+    x: u16,
+    y: u16,
+    w: usize,
+    text: &str,
+    style: Style,
+) -> u16 {
     let truncated = truncate(text, w);
     for (i, ch) in truncated.chars().enumerate() {
         buf[(x + i as u16, y)].set_char(ch).set_style(style);
@@ -547,11 +778,15 @@ fn render_spanned_line_at(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, w: 
     let end_x = x + w as u16;
     for span in line.spans {
         for ch in span.content.chars() {
-            if cx >= end_x { break; }
+            if cx >= end_x {
+                break;
+            }
             buf[(cx, y)].set_char(ch).set_style(span.style);
             cx += 1;
         }
-        if cx >= end_x { break; }
+        if cx >= end_x {
+            break;
+        }
     }
 }
 
@@ -562,41 +797,64 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
     let mut lines: Vec<Line> = Vec::new();
     let inner_w = area.width as usize;
-    
+
     // Track tool positions for click detection.
     // We'll calculate actual screen Y after scroll adjustment.
-    let mut tool_line_info: Vec<(String, usize, usize)> = Vec::new();  // (call_id, header_line_idx, content_end_line_idx)
+    let mut tool_line_info: Vec<(String, usize, usize)> = Vec::new(); // (call_id, header_line_idx, content_end_line_idx)
 
     // Determine which message contains the current search match.
-    let current_match_msg_idx = app.search_state.as_ref()
+    let current_match_msg_idx = app
+        .search_state
+        .as_ref()
         .and_then(|s| s.current_match())
         .map(|m| m.msg_idx);
 
     for (msg_idx, msg) in app.transcript.messages().iter().enumerate() {
         // Is this the message containing the current search match?
         let is_current_match_msg = current_match_msg_idx == Some(msg_idx);
-        
+
         // Role label.
         let (role_style, prefix) = match msg.role.as_str() {
-            "user" => (Style::default().fg(theme.user).add_modifier(Modifier::BOLD), "▸ "),
-            "assistant" => (Style::default().fg(theme.assistant).add_modifier(Modifier::BOLD), "◂ "),
-            "error" => (Style::default().fg(theme.error).add_modifier(Modifier::BOLD), "✗ "),
-            "system" => (Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC), "ℹ "),
+            "user" => (
+                Style::default().fg(theme.user).add_modifier(Modifier::BOLD),
+                "▸ ",
+            ),
+            "assistant" => (
+                Style::default()
+                    .fg(theme.assistant)
+                    .add_modifier(Modifier::BOLD),
+                "◂ ",
+            ),
+            "error" => (
+                Style::default()
+                    .fg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+                "✗ ",
+            ),
+            "system" => (
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::ITALIC),
+                "ℹ ",
+            ),
             _ => (Style::default().fg(theme.muted), "  "),
         };
 
         // Add role line.
-        lines.push(Line::from(Span::styled(format!("{}{}", prefix, msg.role), role_style)));
+        lines.push(Line::from(Span::styled(
+            format!("{}{}", prefix, msg.role),
+            role_style,
+        )));
 
         // Content lines — use markdown renderer for assistant, plain for user.
         if msg.role == "assistant" && !msg.content.is_empty() {
             // Width for markdown: subtract 2 for indentation.
             let md_width = inner_w.saturating_sub(2);
-            
+
             // Parse content for thinking blocks.
             let segments = thinking::parse_content(&msg.content);
             let mut thinking_idx = 0;
-            
+
             for segment in segments {
                 match segment {
                     ContentSegment::Text(text) => {
@@ -617,7 +875,7 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                     ContentSegment::Thinking { tag, content } => {
                         let is_collapsed = app.thinking_state.is_collapsed(thinking_idx);
                         let line_count = content.lines().count();
-                        
+
                         if is_collapsed {
                             // Collapsed: show header only.
                             let header = thinking::render_collapsed_header(&tag, line_count, theme);
@@ -630,9 +888,10 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                             let mut indented = vec![Span::raw("  ")];
                             indented.extend(header.spans);
                             lines.push(Line::from(indented));
-                            
+
                             // Render thinking content with muted style.
-                            let thinking_lines = thinking::render_thinking_content(&content, theme, md_width);
+                            let thinking_lines =
+                                thinking::render_thinking_content(&content, theme, md_width);
                             for line in thinking_lines {
                                 // Apply search highlighting if active.
                                 let highlighted_line = if let Some(ref search) = app.search_state {
@@ -658,7 +917,11 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                     let line_spans = if let Some(ref search) = app.search_state {
                         let mut spans = vec![Span::raw("  ")];
                         // Use direct text search (not byte offsets) since text is wrapped
-                        spans.extend(search.highlight_in_text(&wrapped, base_style, is_current_match_msg));
+                        spans.extend(search.highlight_in_text(
+                            &wrapped,
+                            base_style,
+                            is_current_match_msg,
+                        ));
                         spans
                     } else {
                         vec![Span::styled(format!("  {}", wrapped), base_style)]
@@ -686,10 +949,21 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                 };
                 let header = Line::from(vec![
                     Span::raw("    "),
-                    Span::styled(format!("{} subagent ", indicator), Style::default().fg(theme.muted)),
-                    Span::styled(truncate(&sub.task, inner_w.saturating_sub(20)), Style::default().fg(theme.fg).add_modifier(Modifier::ITALIC)),
+                    Span::styled(
+                        format!("{} subagent ", indicator),
+                        Style::default().fg(theme.muted),
+                    ),
+                    Span::styled(
+                        truncate(&sub.task, inner_w.saturating_sub(20)),
+                        Style::default().fg(theme.fg).add_modifier(Modifier::ITALIC),
+                    ),
                     Span::styled(format!(" [{}]", vis), vis_style),
-                    Span::styled("  (a:attach ".to_string() + if collapsed { "expand" } else { "collapse" } + ")", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        "  (a:attach ".to_string()
+                            + if collapsed { "expand" } else { "collapse" }
+                            + ")",
+                        Style::default().fg(theme.muted),
+                    ),
                 ]);
                 lines.push(header);
                 if !collapsed {
@@ -698,7 +972,12 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         if let Some(page) = app.ui_pages.get(pk) {
                             for pid in &page.order {
                                 if let Some(ph) = page.placeholders.get(pid) {
-                                    let ph_lines = crate::widgets::render_placeholder(pid, ph, inner_w.saturating_sub(6), theme);
+                                    let ph_lines = crate::widgets::render_placeholder(
+                                        pid,
+                                        ph,
+                                        inner_w.saturating_sub(6),
+                                        theme,
+                                    );
                                     for l in ph_lines {
                                         let mut indented = vec![Span::raw("      ")];
                                         indented.extend(l.spans);
@@ -721,17 +1000,41 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     if let Some((ref call_id, ref transcript)) = app.attached_subagent {
         lines.push(Line::from(vec![
             Span::styled("── ", Style::default().fg(theme.muted)),
-            Span::styled(format!("Attached subagent {} ", &call_id[..8.min(call_id.len())]), Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("({} msgs)", transcript.len()), Style::default().fg(theme.muted)),
-            Span::styled(" ── (Esc to close)", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC)),
+            Span::styled(
+                format!("Attached subagent {} ", &call_id[..8.min(call_id.len())]),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({} msgs)", transcript.len()),
+                Style::default().fg(theme.muted),
+            ),
+            Span::styled(
+                " ── (Esc to close)",
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::ITALIC),
+            ),
         ]));
         for msg in transcript {
             let content_val = &msg.content;
             // Try to extract text from content JSON
-            let text = if let Some(s) = content_val.as_str() { s.to_string() } else { content_val.to_string() };
-            let role_style = if msg.role == "assistant" { Style::default().fg(theme.assistant) } else { Style::default().fg(theme.fg) };
+            let text = if let Some(s) = content_val.as_str() {
+                s.to_string()
+            } else {
+                content_val.to_string()
+            };
+            let role_style = if msg.role == "assistant" {
+                Style::default().fg(theme.assistant)
+            } else {
+                Style::default().fg(theme.fg)
+            };
             for wrapped in wrap_text(&text, inner_w.saturating_sub(4)) {
-                lines.push(Line::from(vec![Span::raw("    "), Span::styled(wrapped, role_style)]));
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(wrapped, role_style),
+                ]));
             }
         }
         lines.push(Line::from(""));
@@ -739,7 +1042,12 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
     // Live delta — render as markdown.
     if !app.transcript.live_delta().is_empty() {
-        lines.push(Line::from(Span::styled("◂ assistant", Style::default().fg(theme.assistant).add_modifier(Modifier::BOLD))));
+        lines.push(Line::from(Span::styled(
+            "◂ assistant",
+            Style::default()
+                .fg(theme.assistant)
+                .add_modifier(Modifier::BOLD),
+        )));
         let md_width = inner_w.saturating_sub(2);
         let md_lines = crate::markdown::render(app.transcript.live_delta(), theme, md_width);
         for line in md_lines {
@@ -750,31 +1058,73 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     }
 
     // Phase-synced streaming indicator — server is source of truth.
-    if app.streaming || matches!(app.turn_phase.as_str(), "retrying" | "failed" | "tool" | "thinking") {
+    if app.streaming
+        || matches!(
+            app.turn_phase.as_str(),
+            "retrying" | "failed" | "tool" | "thinking"
+        )
+    {
         let spinner = SPINNER[app.spinner_frame % SPINNER.len()];
         if app.aborting {
-            lines.push(Line::from(Span::styled(format!("  {} Aborting...", spinner), Style::default().fg(theme.error))));
+            lines.push(Line::from(Span::styled(
+                format!("  {} Aborting...", spinner),
+                Style::default().fg(theme.error),
+            )));
         } else if app.turn_phase == "retrying" {
-            let detail = if app.turn_status_msg.is_empty() { "retrying...".to_string() } else { app.turn_status_msg.clone() };
-            lines.push(Line::from(Span::styled(format!("  {} {}", spinner, detail), Style::default().fg(theme.warning))));
+            let detail = if app.turn_status_msg.is_empty() {
+                "retrying...".to_string()
+            } else {
+                app.turn_status_msg.clone()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {} {}", spinner, detail),
+                Style::default().fg(theme.warning),
+            )));
         } else if app.turn_phase == "failed" {
-            let detail = if app.turn_status_msg.is_empty() { "failed".to_string() } else { app.turn_status_msg.clone() };
-            lines.push(Line::from(Span::styled(format!("  {} failed: {}", spinner, detail), Style::default().fg(theme.error))));
+            let detail = if app.turn_status_msg.is_empty() {
+                "failed".to_string()
+            } else {
+                app.turn_status_msg.clone()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {} failed: {}", spinner, detail),
+                Style::default().fg(theme.error),
+            )));
         } else if app.turn_phase == "tool" {
-            let detail = if app.turn_status_msg.is_empty() { "running tool...".to_string() } else { app.turn_status_msg.clone() };
-            lines.push(Line::from(Span::styled(format!("  {} {}", spinner, detail), Style::default().fg(theme.warning))));
+            let detail = if app.turn_status_msg.is_empty() {
+                "running tool...".to_string()
+            } else {
+                app.turn_status_msg.clone()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {} {}", spinner, detail),
+                Style::default().fg(theme.warning),
+            )));
         } else if app.turn_phase == "thinking" {
-            lines.push(Line::from(Span::styled(format!("  {} thinking...", spinner), Style::default().fg(theme.muted))));
+            lines.push(Line::from(Span::styled(
+                format!("  {} thinking...", spinner),
+                Style::default().fg(theme.muted),
+            )));
         } else if !app.transcript.live_delta().is_empty() {
             // streaming with deltas — show spinner without extra phrase (content already visible)
-            lines.push(Line::from(Span::styled(format!("  {} streaming...", spinner), Style::default().fg(theme.muted))));
+            lines.push(Line::from(Span::styled(
+                format!("  {} streaming...", spinner),
+                Style::default().fg(theme.muted),
+            )));
         } else {
-            let phrase = &app.config.streaming_phrases[app.phrase_idx % app.config.streaming_phrases.len()];
-            lines.push(Line::from(Span::styled(format!("  {} {}", spinner, phrase), Style::default().fg(theme.muted))));
+            let phrase =
+                &app.config.streaming_phrases[app.phrase_idx % app.config.streaming_phrases.len()];
+            lines.push(Line::from(Span::styled(
+                format!("  {} {}", spinner, phrase),
+                Style::default().fg(theme.muted),
+            )));
         }
     } else if app.turn_phase == "failed" && !app.turn_status_msg.is_empty() {
         // Brief failed notice even if not streaming (TurnEnded already cleared streaming but phase stays failed until next turn)
-        lines.push(Line::from(Span::styled(format!("  ✗ {}", app.turn_status_msg), Style::default().fg(theme.error))));
+        lines.push(Line::from(Span::styled(
+            format!("  ✗ {}", app.turn_status_msg),
+            Style::default().fg(theme.error),
+        )));
     }
 
     // Scroll logic:
@@ -783,10 +1133,10 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     let total = lines.len();
     let visible = area.height as usize;
     let max_scroll = total.saturating_sub(visible);
-    
+
     // Clamp scroll to valid range
     let effective_scroll = app.transcript.scroll().min(max_scroll);
-    
+
     // scroll_offset is how many lines to skip from top
     // At bottom (scroll=0): skip max_scroll lines (show last 'visible' lines)
     // Scrolled up: skip fewer lines
@@ -809,7 +1159,7 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             } else {
                 content_y_start
             };
-            
+
             // Tab positions (approximate - tabs start at column 4)
             // Layout: "    " + " Progress " + " " + " Output " + " " + " Input "
             let tab_base_x = area.x + 4;
@@ -818,15 +1168,14 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                 header_y,
                 content_y_start,
                 content_y_end,
-                progress_tab_x: (tab_base_x, tab_base_x + 10),       // " Progress "
-                output_tab_x: (tab_base_x + 11, tab_base_x + 19),   // " Output "
-                input_tab_x: (tab_base_x + 20, tab_base_x + 28),    // " Input "
+                progress_tab_x: (tab_base_x, tab_base_x + 10), // " Progress "
+                output_tab_x: (tab_base_x + 11, tab_base_x + 19), // " Output "
+                input_tab_x: (tab_base_x + 20, tab_base_x + 28), // " Input "
             });
         }
     }
 
-    let para = Paragraph::new(lines)
-        .scroll((scroll_offset as u16, 0));
+    let para = Paragraph::new(lines).scroll((scroll_offset as u16, 0));
     f.render_widget(para, area);
 
     // Jump to end button (show when not at bottom).
@@ -837,7 +1186,8 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         let buf = f.buffer_mut();
         for (i, ch) in btn.chars().enumerate() {
             if x + (i as u16) < area.x + area.width {
-                buf[(x + i as u16, y)].set_char(ch)
+                buf[(x + i as u16, y)]
+                    .set_char(ch)
                     .set_fg(theme.bg)
                     .set_bg(theme.primary);
             }
@@ -851,7 +1201,11 @@ fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     // Prompt indicator.
     let has_lease = app.session.state.lease.is_some();
     let prompt = if has_lease { "› " } else { "○ " };
-    let prompt_style = if has_lease { Style::default().fg(theme.primary) } else { Style::default().fg(theme.muted) };
+    let prompt_style = if has_lease {
+        Style::default().fg(theme.primary)
+    } else {
+        Style::default().fg(theme.muted)
+    };
 
     // Content width after prompt.
     let prefix_width = 2; // "› "
@@ -859,7 +1213,7 @@ fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     if content_width == 0 {
         return;
     }
-    
+
     // Use input directly (image markers are already inline).
     let display_input = &app.input;
 
@@ -868,11 +1222,11 @@ fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let mut display_lines: Vec<String> = Vec::new();
     let mut cursor_display_row: usize = 0;
     let mut cursor_display_col: usize = 0;
-    
+
     // Track position for cursor mapping.
     let mut logical_row: usize = 0;
     let input_char_count = app.input.chars().count();
-    
+
     // Use display_input (with image suffix) for rendering.
     for (line_idx, line) in display_input.lines().enumerate() {
         let chars: Vec<char> = line.chars().collect();
@@ -890,11 +1244,14 @@ fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 let end = (pos + content_width).min(chars.len());
                 let segment: String = chars[pos..end].iter().collect();
                 display_lines.push(segment);
-                
+
                 // Map cursor position (only within original input, not img suffix).
                 if logical_row == app.cursor_row && line_idx == 0 {
                     let cursor_in_line = app.cursor_col;
-                    if cursor_in_line >= pos && cursor_in_line < end && cursor_in_line <= input_char_count {
+                    if cursor_in_line >= pos
+                        && cursor_in_line < end
+                        && cursor_in_line <= input_char_count
+                    {
                         cursor_display_row = display_lines.len() - 1;
                         cursor_display_col = cursor_in_line - pos;
                     } else if cursor_in_line >= end && cursor_in_line <= input_char_count {
@@ -903,13 +1260,13 @@ fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                         cursor_display_col = input_char_count.min(end) - pos;
                     }
                 }
-                
+
                 pos = end;
             }
         }
         logical_row += 1;
     }
-    
+
     // Handle empty input.
     if display_lines.is_empty() {
         display_lines.push(String::new());
@@ -923,9 +1280,9 @@ fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         if y >= area.y + area.height {
             break;
         }
-        
+
         let mut x_offset = area.x;
-        
+
         // First display line gets the prompt.
         if display_row == 0 {
             // Draw prompt.
@@ -939,7 +1296,7 @@ fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             // Continuation lines: indent to align with content.
             x_offset += prefix_width as u16;
         }
-        
+
         // Draw content.
         for ch in line.chars() {
             if x_offset >= area.x + area.width {
@@ -1000,7 +1357,10 @@ fn render_status(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         phase_disp,
     );
 
-    let para = Paragraph::new(Line::from(Span::styled(status, Style::default().fg(theme.muted))));
+    let para = Paragraph::new(Line::from(Span::styled(
+        status,
+        Style::default().fg(theme.muted),
+    )));
     f.render_widget(para, area);
 }
 
@@ -1016,7 +1376,7 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
     // Center the overlay.
     let overlay_w = 60.min(area.width.saturating_sub(4));
     let base_overlay_h = 15u16;
-    
+
     // Calculate dynamic height for Interaction overlays
     let overlay_h = if let Overlay::Interaction { state, .. } = overlay {
         let inner_w = (overlay_w.saturating_sub(4)) as usize;
@@ -1024,7 +1384,7 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
     } else {
         base_overlay_h.min(area.height.saturating_sub(4))
     };
-    
+
     let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
     let overlay_y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
 
@@ -1036,31 +1396,53 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
     }
 
     match overlay {
-        Overlay::Approval { tool, args, selected } => {
+        Overlay::Approval {
+            tool,
+            args,
+            selected,
+        } => {
             // Highly visible border — heavy box in warning color with bold.
             let border_fg = theme.warning;
-            let border_style = Style::default().fg(border_fg).bg(Color::Black).add_modifier(Modifier::BOLD);
+            let border_style = Style::default()
+                .fg(border_fg)
+                .bg(Color::Black)
+                .add_modifier(Modifier::BOLD);
             if overlay_w >= 2 && overlay_h >= 2 {
-                buf[(overlay_x, overlay_y)].set_char('┏').set_style(border_style);
-                buf[(overlay_x + overlay_w - 1, overlay_y)].set_char('┓').set_style(border_style);
-                buf[(overlay_x, overlay_y + overlay_h - 1)].set_char('┗').set_style(border_style);
-                buf[(overlay_x + overlay_w - 1, overlay_y + overlay_h - 1)].set_char('┛').set_style(border_style);
+                buf[(overlay_x, overlay_y)]
+                    .set_char('┏')
+                    .set_style(border_style);
+                buf[(overlay_x + overlay_w - 1, overlay_y)]
+                    .set_char('┓')
+                    .set_style(border_style);
+                buf[(overlay_x, overlay_y + overlay_h - 1)]
+                    .set_char('┗')
+                    .set_style(border_style);
+                buf[(overlay_x + overlay_w - 1, overlay_y + overlay_h - 1)]
+                    .set_char('┛')
+                    .set_style(border_style);
                 for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
                     buf[(x, overlay_y)].set_char('━').set_style(border_style);
-                    buf[(x, overlay_y + overlay_h - 1)].set_char('━').set_style(border_style);
+                    buf[(x, overlay_y + overlay_h - 1)]
+                        .set_char('━')
+                        .set_style(border_style);
                 }
                 for y in (overlay_y + 1)..(overlay_y + overlay_h - 1) {
                     buf[(overlay_x, y)].set_char('┃').set_style(border_style);
-                    buf[(overlay_x + overlay_w - 1, y)].set_char('┃').set_style(border_style);
+                    buf[(overlay_x + overlay_w - 1, y)]
+                        .set_char('┃')
+                        .set_style(border_style);
                 }
             }
             let mut y = overlay_y + 1;
-            
+
             // Title.
             let title = "APPROVAL REQUIRED";
             let title_x = overlay_x + (overlay_w.saturating_sub(title.len() as u16)) / 2;
             for (i, ch) in title.chars().enumerate() {
-                buf[(title_x + i as u16, y)].set_char(ch).set_fg(theme.warning).set_bg(Color::Black);
+                buf[(title_x + i as u16, y)]
+                    .set_char(ch)
+                    .set_fg(theme.warning)
+                    .set_bg(Color::Black);
             }
             y += 2;
 
@@ -1069,16 +1451,26 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
             let inner_x = overlay_x + 2;
             let body_lines = approval_body_lines(tool, args, theme, inner_w.max(1));
             for line in body_lines {
-                if y >= overlay_y + overlay_h - 2 { break; }
+                if y >= overlay_y + overlay_h - 2 {
+                    break;
+                }
                 let mut x = inner_x;
                 for span in line.spans {
-                    let style = if span.style.bg.is_none() { span.style.bg(Color::Black) } else { span.style };
+                    let style = if span.style.bg.is_none() {
+                        span.style.bg(Color::Black)
+                    } else {
+                        span.style
+                    };
                     for ch in span.content.chars() {
-                        if x >= overlay_x + overlay_w - 1 { break; }
+                        if x >= overlay_x + overlay_w - 1 {
+                            break;
+                        }
                         buf[(x, y)].set_char(ch).set_style(style);
                         x += 1;
                     }
-                    if x >= overlay_x + overlay_w - 1 { break; }
+                    if x >= overlay_x + overlay_w - 1 {
+                        break;
+                    }
                 }
                 y += 1;
             }
@@ -1108,16 +1500,21 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
         }
 
         Overlay::Interaction { plugin, state, .. } => {
-            render_interaction_overlay(buf, theme, overlay_x, overlay_y, overlay_w, overlay_h, plugin, state);
+            render_interaction_overlay(
+                buf, theme, overlay_x, overlay_y, overlay_w, overlay_h, plugin, state,
+            );
         }
 
         Overlay::Help => {
             let mut y = overlay_y + 1;
-            
+
             let title = "HELP";
             let title_x = overlay_x + (overlay_w.saturating_sub(title.len() as u16)) / 2;
             for (i, ch) in title.chars().enumerate() {
-                buf[(title_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+                buf[(title_x + i as u16, y)]
+                    .set_char(ch)
+                    .set_fg(theme.primary)
+                    .set_bg(Color::Black);
             }
             y += 2;
 
@@ -1145,19 +1542,26 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
             ];
 
             for line in help_lines {
-        if y >= overlay_y + overlay_h - 2 {
-            break;
-        }
+                if y >= overlay_y + overlay_h - 2 {
+                    break;
+                }
                 for (i, ch) in line.chars().enumerate() {
                     if (overlay_x + 2 + i as u16) < overlay_x + overlay_w {
-                        buf[(overlay_x + 2 + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                        buf[(overlay_x + 2 + i as u16, y)]
+                            .set_char(ch)
+                            .set_fg(theme.fg)
+                            .set_bg(Color::Black);
                     }
                 }
                 y += 1;
             }
         }
-        
-        Overlay::ModelSelect { .. } | Overlay::SessionSelect { .. } | Overlay::WhichKey | Overlay::CommandPalette | Overlay::ToolsManager { .. } => {
+
+        Overlay::ModelSelect { .. }
+        | Overlay::SessionSelect { .. }
+        | Overlay::WhichKey
+        | Overlay::CommandPalette
+        | Overlay::ToolsManager { .. } => {
             // These overlays are rendered elsewhere with access to app state.
         }
     }
@@ -1165,20 +1569,20 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
 
 fn render_slash_dropdown(f: &mut Frame, app: &App, input_area: Rect, theme: &Theme) {
     use crate::slash::COMMANDS;
-    
+
     let matches = &app.slash.matches;
     if matches.is_empty() {
         return;
     }
-    
+
     let buf = f.buffer_mut();
-    
+
     // Position dropdown above input.
     let dropdown_h = (matches.len() as u16).min(8);
     let dropdown_y = input_area.y.saturating_sub(dropdown_h + 1);
     let dropdown_x = input_area.x + 2; // Align with input text.
     let dropdown_w = 40.min(input_area.width.saturating_sub(4));
-    
+
     // Background.
     for y in dropdown_y..dropdown_y + dropdown_h {
         for x in dropdown_x..dropdown_x + dropdown_w {
@@ -1187,19 +1591,19 @@ fn render_slash_dropdown(f: &mut Frame, app: &App, input_area: Rect, theme: &The
             }
         }
     }
-    
+
     // Items.
     for (i, &cmd_idx) in matches.iter().enumerate().take(dropdown_h as usize) {
         let cmd = &COMMANDS[cmd_idx];
         let y = dropdown_y + i as u16;
         let is_selected = i == app.slash.selected;
-        
+
         let (fg, bg) = if is_selected {
             (theme.bg, theme.primary)
         } else {
             (theme.fg, Color::DarkGray)
         };
-        
+
         // Command name.
         let name = format!("/{}", cmd.name);
         for (j, ch) in name.chars().enumerate() {
@@ -1208,7 +1612,7 @@ fn render_slash_dropdown(f: &mut Frame, app: &App, input_area: Rect, theme: &The
                 buf[(x, y)].set_char(ch).set_fg(fg).set_bg(bg);
             }
         }
-        
+
         // Description.
         let desc_start = dropdown_x + 12;
         for (j, ch) in cmd.description.chars().enumerate() {
@@ -1218,7 +1622,7 @@ fn render_slash_dropdown(f: &mut Frame, app: &App, input_area: Rect, theme: &The
                 buf[(x, y)].set_char(ch).set_fg(desc_fg).set_bg(bg);
             }
         }
-        
+
         // Fill rest of line with bg.
         for x in (desc_start + cmd.description.len() as u16)..dropdown_x + dropdown_w {
             if x < dropdown_x + dropdown_w {
@@ -1228,26 +1632,36 @@ fn render_slash_dropdown(f: &mut Frame, app: &App, input_area: Rect, theme: &The
     }
 }
 
-fn render_model_select(f: &mut Frame, app: &App, selected: usize, filter: &str, area: Rect, theme: &Theme) {
+fn render_model_select(
+    f: &mut Frame,
+    app: &App,
+    selected: usize,
+    filter: &str,
+    area: Rect,
+    theme: &Theme,
+) {
     let buf = f.buffer_mut();
-    
+
     // Dim background.
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
             buf[(x, y)].set_fg(Color::DarkGray);
         }
     }
-    
+
     // Filter models by fuzzy match on display name OR provider.
-    let filtered: Vec<(usize, &crate::model_selector::ModelEntry)> = app.model_sel.models().iter()
+    let filtered: Vec<(usize, &crate::model_selector::ModelEntry)> = app
+        .model_sel
+        .models()
+        .iter()
         .enumerate()
         .filter(|(_, m)| {
-            filter.is_empty() 
-            || fuzzy_match(&m.display_name(), filter)
-            || fuzzy_match(&m.provider, filter)
+            filter.is_empty()
+                || fuzzy_match(&m.display_name(), filter)
+                || fuzzy_match(&m.provider, filter)
         })
         .collect();
-    
+
     // Group by provider, maintaining selection index.
     // Build display rows: either a provider header or a model entry.
     #[derive(Clone)]
@@ -1255,14 +1669,17 @@ fn render_model_select(f: &mut Frame, app: &App, selected: usize, filter: &str, 
         Header(&'a str),
         // The original index is carried for symmetry with the other pickers but
         // selection is resolved via `selected_row_idx`, so it is never read.
-        Model(#[allow(dead_code)] usize, &'a crate::model_selector::ModelEntry),
+        Model(
+            #[allow(dead_code)] usize,
+            &'a crate::model_selector::ModelEntry,
+        ),
     }
-    
+
     let mut rows: Vec<Row> = Vec::new();
     let mut current_provider: Option<&str> = None;
     let mut selectable_idx = 0usize; // Index for selection (headers don't count)
     let mut selected_row_idx: Option<usize> = None; // Row index of selected model
-    
+
     for (orig_idx, model) in &filtered {
         if current_provider != Some(&model.provider) {
             current_provider = Some(&model.provider);
@@ -1274,7 +1691,7 @@ fn render_model_select(f: &mut Frame, app: &App, selected: usize, filter: &str, 
         rows.push(Row::Model(*orig_idx, model));
         selectable_idx += 1;
     }
-    
+
     // Calculate visible window for scrolling.
     let max_visible_rows = (area.height as usize).saturating_sub(8); // title + filter + footer + padding
     let scroll_offset = if let Some(sel_row) = selected_row_idx {
@@ -1286,40 +1703,56 @@ fn render_model_select(f: &mut Frame, app: &App, selected: usize, filter: &str, 
     } else {
         0
     };
-    
+
     // Center overlay — wider to fit model names.
     let overlay_w = 50.min(area.width.saturating_sub(4));
-    let overlay_h = (rows.len() as u16 + 6).min(area.height.saturating_sub(4)).max(8);
+    let overlay_h = (rows.len() as u16 + 6)
+        .min(area.height.saturating_sub(4))
+        .max(8);
     let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
     let overlay_y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
-    
+
     // Background.
     for y in overlay_y..overlay_y + overlay_h {
         for x in overlay_x..overlay_x + overlay_w {
             buf[(x, y)].set_char(' ').set_bg(Color::Black);
         }
     }
-    
+
     // Title.
     let title = "SELECT MODEL";
     let title_x = overlay_x + (overlay_w.saturating_sub(title.len() as u16)) / 2;
     let mut y = overlay_y + 1;
     for (i, ch) in title.chars().enumerate() {
-        buf[(title_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+        buf[(title_x + i as u16, y)]
+            .set_char(ch)
+            .set_fg(theme.primary)
+            .set_bg(Color::Black);
     }
     y += 1;
-    
+
     // Filter input.
-    let filter_display = if filter.is_empty() { "Type to filter..." } else { filter };
-    let filter_style = if filter.is_empty() { theme.muted } else { theme.fg };
+    let filter_display = if filter.is_empty() {
+        "Type to filter..."
+    } else {
+        filter
+    };
+    let filter_style = if filter.is_empty() {
+        theme.muted
+    } else {
+        theme.fg
+    };
     for (i, ch) in format!("› {}", filter_display).chars().enumerate() {
         let x = overlay_x + 2 + i as u16;
         if x < overlay_x + overlay_w - 2 {
-            buf[(x, y)].set_char(ch).set_fg(filter_style).set_bg(Color::Black);
+            buf[(x, y)]
+                .set_char(ch)
+                .set_fg(filter_style)
+                .set_bg(Color::Black);
         }
     }
     y += 2;
-    
+
     // Render rows with scrolling.
     let mut model_display_idx = 0usize;
     for (row_idx, row) in rows.iter().enumerate() {
@@ -1332,7 +1765,7 @@ fn render_model_select(f: &mut Frame, app: &App, selected: usize, filter: &str, 
         if y >= overlay_y + overlay_h - 1 {
             break;
         }
-        
+
         match row {
             Row::Header(provider) => {
                 // Provider header — dimmed, not selectable.
@@ -1340,7 +1773,10 @@ fn render_model_select(f: &mut Frame, app: &App, selected: usize, filter: &str, 
                 for (j, ch) in header.chars().enumerate() {
                     let x = overlay_x + 2 + j as u16;
                     if x < overlay_x + overlay_w - 2 {
-                        buf[(x, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                        buf[(x, y)]
+                            .set_char(ch)
+                            .set_fg(theme.muted)
+                            .set_bg(Color::Black);
                     }
                 }
                 y += 1;
@@ -1352,16 +1788,19 @@ fn render_model_select(f: &mut Frame, app: &App, selected: usize, filter: &str, 
                 } else {
                     (theme.fg, Color::Black)
                 };
-                
+
                 // Indent model names under provider header.
                 let line = format!("  {} ", model.display_name());
                 let content_w = (overlay_w - 4) as usize;
                 let truncated = if line.chars().count() > content_w {
-                    line.chars().take(content_w.saturating_sub(1)).collect::<String>() + "…"
+                    line.chars()
+                        .take(content_w.saturating_sub(1))
+                        .collect::<String>()
+                        + "…"
                 } else {
                     line.clone()
                 };
-                
+
                 for (j, ch) in truncated.chars().enumerate() {
                     let x = overlay_x + 2 + j as u16;
                     if x < overlay_x + overlay_w - 2 {
@@ -1369,7 +1808,9 @@ fn render_model_select(f: &mut Frame, app: &App, selected: usize, filter: &str, 
                     }
                 }
                 // Fill rest of line.
-                for x in (overlay_x + 2 + truncated.chars().count() as u16)..overlay_x + overlay_w - 2 {
+                for x in
+                    (overlay_x + 2 + truncated.chars().count() as u16)..overlay_x + overlay_w - 2
+                {
                     buf[(x, y)].set_char(' ').set_bg(bg);
                 }
                 y += 1;
@@ -1377,110 +1818,147 @@ fn render_model_select(f: &mut Frame, app: &App, selected: usize, filter: &str, 
             }
         }
     }
-    
+
     // Show empty message if no matches.
     if filtered.is_empty() {
         let msg = "No matching models";
         for (i, ch) in msg.chars().enumerate() {
             let x = overlay_x + 2 + i as u16;
             if x < overlay_x + overlay_w - 2 {
-                buf[(x, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                buf[(x, y)]
+                    .set_char(ch)
+                    .set_fg(theme.muted)
+                    .set_bg(Color::Black);
             }
         }
     }
-    
+
     // Footer.
     let footer = "↑/↓ select · Enter confirm · Esc cancel";
     let footer_x = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
     let footer_y = overlay_y + overlay_h - 1;
     for (i, ch) in footer.chars().enumerate() {
-        buf[(footer_x + i as u16, footer_y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+        buf[(footer_x + i as u16, footer_y)]
+            .set_char(ch)
+            .set_fg(theme.muted)
+            .set_bg(Color::Black);
     }
 }
 
-fn render_session_select(f: &mut Frame, app: &App, selected: usize, filter: &str, area: Rect, theme: &Theme) {
+fn render_session_select(
+    f: &mut Frame,
+    app: &App,
+    selected: usize,
+    filter: &str,
+    area: Rect,
+    theme: &Theme,
+) {
     let buf = f.buffer_mut();
-    
+
     // Dim background.
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
             buf[(x, y)].set_fg(Color::DarkGray);
         }
     }
-    
+
     // Filter sessions (names fuzzy, ids substring — see session_matches).
-    let filtered: Vec<(usize, &crate::session_manager::SessionEntry)> = app.session.sessions.iter()
+    let filtered: Vec<(usize, &crate::session_manager::SessionEntry)> = app
+        .session
+        .sessions
+        .iter()
         .enumerate()
         .filter(|(_, s)| crate::session_manager::session_matches(s, filter))
         .collect();
-    
+
     // Build rows with date headers.
     #[derive(Clone)]
     enum SessionRow<'a> {
-        DateHeader(String),  // "Today", "Yesterday", "Aug 27", etc.
+        DateHeader(String), // "Today", "Yesterday", "Aug 27", etc.
         NewSession,
-        Session(#[allow(dead_code)] usize, &'a crate::session_manager::SessionEntry),
+        Session(
+            #[allow(dead_code)] usize,
+            &'a crate::session_manager::SessionEntry,
+        ),
     }
-    
+
     let mut rows: Vec<SessionRow> = Vec::new();
-    
+
     // Add "New session" option at top.
     rows.push(SessionRow::NewSession);
-    
+
     // Group sessions by date.
     let mut current_date: Option<String> = None;
     for (orig_idx, session) in &filtered {
-        let date_label = session.created_at.as_ref()
+        let date_label = session
+            .created_at
+            .as_ref()
             .and_then(|ts| format_date_header(ts))
             .unwrap_or_else(|| "Unknown".to_string());
-        
+
         if current_date.as_ref() != Some(&date_label) {
             current_date = Some(date_label.clone());
             rows.push(SessionRow::DateHeader(date_label));
         }
         rows.push(SessionRow::Session(*orig_idx, session));
     }
-    
+
     // Center overlay.
     let overlay_w = 55.min(area.width.saturating_sub(4));
-    let overlay_h = (rows.len() as u16 + 6).min(area.height.saturating_sub(4)).max(8);
+    let overlay_h = (rows.len() as u16 + 6)
+        .min(area.height.saturating_sub(4))
+        .max(8);
     let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
     let overlay_y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
-    
+
     // Background.
     for y in overlay_y..overlay_y + overlay_h {
         for x in overlay_x..overlay_x + overlay_w {
             buf[(x, y)].set_char(' ').set_bg(Color::Black);
         }
     }
-    
+
     // Title.
     let title = "SELECT SESSION";
     let title_x = overlay_x + (overlay_w.saturating_sub(title.len() as u16)) / 2;
     let mut y = overlay_y + 1;
     for (i, ch) in title.chars().enumerate() {
-        buf[(title_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+        buf[(title_x + i as u16, y)]
+            .set_char(ch)
+            .set_fg(theme.primary)
+            .set_bg(Color::Black);
     }
     y += 1;
-    
+
     // Filter input.
-    let filter_display = if filter.is_empty() { "Type to filter..." } else { filter };
-    let filter_style = if filter.is_empty() { theme.muted } else { theme.fg };
+    let filter_display = if filter.is_empty() {
+        "Type to filter..."
+    } else {
+        filter
+    };
+    let filter_style = if filter.is_empty() {
+        theme.muted
+    } else {
+        theme.fg
+    };
     for (i, ch) in format!("› {}", filter_display).chars().enumerate() {
         let x = overlay_x + 2 + i as u16;
         if x < overlay_x + overlay_w - 2 {
-            buf[(x, y)].set_char(ch).set_fg(filter_style).set_bg(Color::Black);
+            buf[(x, y)]
+                .set_char(ch)
+                .set_fg(filter_style)
+                .set_bg(Color::Black);
         }
     }
     y += 2;
-    
+
     // Render rows.
     let mut selectable_idx = 0usize;
     for row in &rows {
         if y >= overlay_y + overlay_h - 1 {
             break;
         }
-        
+
         match row {
             SessionRow::DateHeader(label) => {
                 // Date header — dimmed, not selectable.
@@ -1488,7 +1966,10 @@ fn render_session_select(f: &mut Frame, app: &App, selected: usize, filter: &str
                 for (j, ch) in header.chars().enumerate() {
                     let x = overlay_x + 2 + j as u16;
                     if x < overlay_x + overlay_w - 2 {
-                        buf[(x, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                        buf[(x, y)]
+                            .set_char(ch)
+                            .set_fg(theme.muted)
+                            .set_bg(Color::Black);
                     }
                 }
                 y += 1;
@@ -1516,13 +1997,13 @@ fn render_session_select(f: &mut Frame, app: &App, selected: usize, filter: &str
             SessionRow::Session(_, session) => {
                 let is_selected = selectable_idx == selected;
                 let is_active = session.id == app.session.state.session_id;
-                
+
                 let (fg, bg) = if is_selected {
                     (theme.bg, theme.primary)
                 } else {
                     (theme.fg, Color::Black)
                 };
-                
+
                 // Show indicator for running/active sessions.
                 let prefix = if session.running {
                     format!("{} ", SPINNER[app.spinner_frame % SPINNER.len()])
@@ -1531,8 +2012,12 @@ fn render_session_select(f: &mut Frame, app: &App, selected: usize, filter: &str
                 } else {
                     "  ".to_string()
                 };
-                
-                let line = format!("{}{}", prefix, truncate(&session.name, (overlay_w - 8) as usize));
+
+                let line = format!(
+                    "{}{}",
+                    prefix,
+                    truncate(&session.name, (overlay_w - 8) as usize)
+                );
                 for (j, ch) in line.chars().enumerate() {
                     let x = overlay_x + 2 + j as u16;
                     if x < overlay_x + overlay_w - 2 {
@@ -1548,30 +2033,43 @@ fn render_session_select(f: &mut Frame, app: &App, selected: usize, filter: &str
             }
         }
     }
-    
+
     // Show empty message if no matches.
     if filtered.is_empty() && app.session.sessions.is_empty() {
         let msg = "No sessions yet";
         for (i, ch) in msg.chars().enumerate() {
             let x = overlay_x + 2 + i as u16;
             if x < overlay_x + overlay_w - 2 {
-                buf[(x, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                buf[(x, y)]
+                    .set_char(ch)
+                    .set_fg(theme.muted)
+                    .set_bg(Color::Black);
             }
         }
     }
-    
+
     // Footer.
     let footer = "↑/↓ select · Enter open · Del delete · Esc cancel";
     let footer_x = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
     let footer_y = overlay_y + overlay_h - 1;
     for (i, ch) in footer.chars().enumerate() {
         if footer_x + (i as u16) < overlay_x + overlay_w {
-            buf[(footer_x + i as u16, footer_y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+            buf[(footer_x + i as u16, footer_y)]
+                .set_char(ch)
+                .set_fg(theme.muted)
+                .set_bg(Color::Black);
         }
     }
 }
 
-fn render_tools_manager(f: &mut Frame, app: &App, selected: usize, filter: &str, area: Rect, theme: &Theme) {
+fn render_tools_manager(
+    f: &mut Frame,
+    app: &App,
+    selected: usize,
+    filter: &str,
+    area: Rect,
+    theme: &Theme,
+) {
     let buf = f.buffer_mut();
 
     // Dim background.
@@ -1582,13 +2080,17 @@ fn render_tools_manager(f: &mut Frame, app: &App, selected: usize, filter: &str,
     }
 
     // Filter tools by name or plugin.
-    let filtered: Vec<(usize, &crate::app::ToolEntry)> = app.tools
+    let filtered: Vec<(usize, &crate::app::ToolEntry)> = app
+        .tools
         .iter()
         .enumerate()
         .filter(|(_, t)| {
             filter.is_empty()
                 || fuzzy_match(&t.name, filter)
-                || t.plugin.as_ref().map(|p| fuzzy_match(p, filter)).unwrap_or(false)
+                || t.plugin
+                    .as_ref()
+                    .map(|p| fuzzy_match(p, filter))
+                    .unwrap_or(false)
         })
         .collect();
 
@@ -1619,7 +2121,9 @@ fn render_tools_manager(f: &mut Frame, app: &App, selected: usize, filter: &str,
 
     // Overlay dimensions (need these before scroll calculation).
     let overlay_w = 60.min(area.width.saturating_sub(4));
-    let overlay_h = (rows.len() as u16 + 6).min(area.height.saturating_sub(4)).max(10);
+    let overlay_h = (rows.len() as u16 + 6)
+        .min(area.height.saturating_sub(4))
+        .max(10);
     let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
     let overlay_y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
 
@@ -1628,7 +2132,7 @@ fn render_tools_manager(f: &mut Frame, app: &App, selected: usize, filter: &str,
     let content_start_y = overlay_y + 4; // after title + filter + spacing
     let content_end_y = overlay_y + overlay_h - 2; // before footer
     let max_visible_rows = (content_end_y.saturating_sub(content_start_y)) as usize;
-    
+
     // Scroll so selected item is visible, preferring to show it in the middle.
     let scroll_offset = if let Some(sel_row) = selected_row_idx {
         if sel_row >= max_visible_rows {
@@ -1657,17 +2161,31 @@ fn render_tools_manager(f: &mut Frame, app: &App, selected: usize, filter: &str,
     let title_x = overlay_x + (overlay_w.saturating_sub(title.len() as u16)) / 2;
     let mut y = overlay_y + 1;
     for (i, ch) in title.chars().enumerate() {
-        buf[(title_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+        buf[(title_x + i as u16, y)]
+            .set_char(ch)
+            .set_fg(theme.primary)
+            .set_bg(Color::Black);
     }
     y += 1;
 
     // Filter input.
-    let filter_display = if filter.is_empty() { "Type to filter..." } else { filter };
-    let filter_style = if filter.is_empty() { theme.muted } else { theme.fg };
+    let filter_display = if filter.is_empty() {
+        "Type to filter..."
+    } else {
+        filter
+    };
+    let filter_style = if filter.is_empty() {
+        theme.muted
+    } else {
+        theme.fg
+    };
     for (i, ch) in format!("› {}", filter_display).chars().enumerate() {
         let x = overlay_x + 2 + i as u16;
         if x < overlay_x + overlay_w - 2 {
-            buf[(x, y)].set_char(ch).set_fg(filter_style).set_bg(Color::Black);
+            buf[(x, y)]
+                .set_char(ch)
+                .set_fg(filter_style)
+                .set_bg(Color::Black);
         }
     }
     y += 2;
@@ -1690,7 +2208,10 @@ fn render_tools_manager(f: &mut Frame, app: &App, selected: usize, filter: &str,
                 for (j, ch) in header.chars().enumerate() {
                     let x = overlay_x + 2 + j as u16;
                     if x < overlay_x + overlay_w - 2 {
-                        buf[(x, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                        buf[(x, y)]
+                            .set_char(ch)
+                            .set_fg(theme.muted)
+                            .set_bg(Color::Black);
                     }
                 }
                 y += 1;
@@ -1704,7 +2225,11 @@ fn render_tools_manager(f: &mut Frame, app: &App, selected: usize, filter: &str,
                 };
 
                 let check = if tool.enabled { "☑" } else { "☐" };
-                let line = format!(" {} {}", check, truncate(&tool.name, (overlay_w - 8) as usize));
+                let line = format!(
+                    " {} {}",
+                    check,
+                    truncate(&tool.name, (overlay_w - 8) as usize)
+                );
                 for (j, ch) in line.chars().enumerate() {
                     let x = overlay_x + 2 + j as u16;
                     if x < overlay_x + overlay_w - 2 {
@@ -1727,7 +2252,10 @@ fn render_tools_manager(f: &mut Frame, app: &App, selected: usize, filter: &str,
         for (i, ch) in msg.chars().enumerate() {
             let x = overlay_x + 2 + i as u16;
             if x < overlay_x + overlay_w - 2 {
-                buf[(x, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                buf[(x, y)]
+                    .set_char(ch)
+                    .set_fg(theme.muted)
+                    .set_bg(Color::Black);
             }
         }
     }
@@ -1738,96 +2266,140 @@ fn render_tools_manager(f: &mut Frame, app: &App, selected: usize, filter: &str,
     let footer_y = overlay_y + overlay_h - 1;
     for (i, ch) in footer.chars().enumerate() {
         if footer_x + (i as u16) < overlay_x + overlay_w {
-            buf[(footer_x + i as u16, footer_y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+            buf[(footer_x + i as u16, footer_y)]
+                .set_char(ch)
+                .set_fg(theme.muted)
+                .set_bg(Color::Black);
         }
     }
 }
 
 fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     use crate::command_palette::COMMANDS;
-    
+
     let buf = f.buffer_mut();
     let palette = &app.command_palette;
-    
+
     // Dim background.
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
             buf[(x, y)].set_fg(Color::DarkGray);
         }
     }
-    
+
     // Center overlay.
     let overlay_w = 60.min(area.width.saturating_sub(4));
     let max_items = 12usize;
-    let overlay_h = (palette.matches.len().min(max_items) as u16 + 5).min(area.height.saturating_sub(4)).max(6);
+    let overlay_h = (palette.matches.len().min(max_items) as u16 + 5)
+        .min(area.height.saturating_sub(4))
+        .max(6);
     let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
     let overlay_y = area.y + (area.height.saturating_sub(overlay_h)) / 3; // Upper third
-    
+
     // Draw background.
     for y in overlay_y..overlay_y + overlay_h {
         for x in overlay_x..overlay_x + overlay_w {
             buf[(x, y)].set_char(' ').set_bg(Color::Black);
         }
     }
-    
+
     // Draw border.
     // Top.
-    buf[(overlay_x, overlay_y)].set_char('╭').set_fg(theme.primary).set_bg(Color::Black);
-    buf[(overlay_x + overlay_w - 1, overlay_y)].set_char('╮').set_fg(theme.primary).set_bg(Color::Black);
+    buf[(overlay_x, overlay_y)]
+        .set_char('╭')
+        .set_fg(theme.primary)
+        .set_bg(Color::Black);
+    buf[(overlay_x + overlay_w - 1, overlay_y)]
+        .set_char('╮')
+        .set_fg(theme.primary)
+        .set_bg(Color::Black);
     for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
-        buf[(x, overlay_y)].set_char('─').set_fg(theme.primary).set_bg(Color::Black);
+        buf[(x, overlay_y)]
+            .set_char('─')
+            .set_fg(theme.primary)
+            .set_bg(Color::Black);
     }
     // Bottom.
-    buf[(overlay_x, overlay_y + overlay_h - 1)].set_char('╰').set_fg(theme.primary).set_bg(Color::Black);
-    buf[(overlay_x + overlay_w - 1, overlay_y + overlay_h - 1)].set_char('╯').set_fg(theme.primary).set_bg(Color::Black);
+    buf[(overlay_x, overlay_y + overlay_h - 1)]
+        .set_char('╰')
+        .set_fg(theme.primary)
+        .set_bg(Color::Black);
+    buf[(overlay_x + overlay_w - 1, overlay_y + overlay_h - 1)]
+        .set_char('╯')
+        .set_fg(theme.primary)
+        .set_bg(Color::Black);
     for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
-        buf[(x, overlay_y + overlay_h - 1)].set_char('─').set_fg(theme.primary).set_bg(Color::Black);
+        buf[(x, overlay_y + overlay_h - 1)]
+            .set_char('─')
+            .set_fg(theme.primary)
+            .set_bg(Color::Black);
     }
     // Sides.
     for y in (overlay_y + 1)..(overlay_y + overlay_h - 1) {
-        buf[(overlay_x, y)].set_char('│').set_fg(theme.primary).set_bg(Color::Black);
-        buf[(overlay_x + overlay_w - 1, y)].set_char('│').set_fg(theme.primary).set_bg(Color::Black);
+        buf[(overlay_x, y)]
+            .set_char('│')
+            .set_fg(theme.primary)
+            .set_bg(Color::Black);
+        buf[(overlay_x + overlay_w - 1, y)]
+            .set_char('│')
+            .set_fg(theme.primary)
+            .set_bg(Color::Black);
     }
-    
+
     // Title.
     let title = " Command Palette ";
     let title_x = overlay_x + (overlay_w.saturating_sub(title.len() as u16)) / 2;
     for (i, ch) in title.chars().enumerate() {
-        buf[(title_x + i as u16, overlay_y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+        buf[(title_x + i as u16, overlay_y)]
+            .set_char(ch)
+            .set_fg(theme.primary)
+            .set_bg(Color::Black);
     }
-    
+
     // Search input.
     let input_y = overlay_y + 1;
     let prompt = "> ";
     for (i, ch) in prompt.chars().enumerate() {
-        buf[(overlay_x + 2 + i as u16, input_y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+        buf[(overlay_x + 2 + i as u16, input_y)]
+            .set_char(ch)
+            .set_fg(theme.muted)
+            .set_bg(Color::Black);
     }
     let query = &palette.query;
     for (i, ch) in query.chars().enumerate() {
         let x = overlay_x + 4 + i as u16;
         if x < overlay_x + overlay_w - 2 {
-            buf[(x, input_y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+            buf[(x, input_y)]
+                .set_char(ch)
+                .set_fg(theme.fg)
+                .set_bg(Color::Black);
         }
     }
     // Cursor.
     let cursor_x = overlay_x + 4 + query.chars().count() as u16;
     if cursor_x < overlay_x + overlay_w - 2 {
-        buf[(cursor_x, input_y)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
+        buf[(cursor_x, input_y)]
+            .set_char('▏')
+            .set_fg(theme.primary)
+            .set_bg(Color::Black);
     }
-    
+
     // Separator.
     let sep_y = overlay_y + 2;
     for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
-        buf[(x, sep_y)].set_char('─').set_fg(Color::DarkGray).set_bg(Color::Black);
+        buf[(x, sep_y)]
+            .set_char('─')
+            .set_fg(Color::DarkGray)
+            .set_bg(Color::Black);
     }
-    
+
     // Command list.
     let mut y = overlay_y + 3;
     for (i, &cmd_idx) in palette.matches.iter().enumerate().take(max_items) {
         if y >= overlay_y + overlay_h - 1 {
             break;
         }
-        
+
         let cmd = &COMMANDS[cmd_idx];
         let is_selected = i == palette.selected;
         let (fg, bg) = if is_selected {
@@ -1835,12 +2407,12 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         } else {
             (theme.fg, Color::Black)
         };
-        
+
         // Clear line.
         for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
             buf[(x, y)].set_char(' ').set_bg(bg);
         }
-        
+
         // Command label.
         let label = cmd.label;
         for (j, ch) in label.chars().enumerate() {
@@ -1849,26 +2421,32 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
                 buf[(x, y)].set_char(ch).set_fg(fg).set_bg(bg);
             }
         }
-        
+
         // Keybinding (right-aligned).
         if let Some(kb) = cmd.keybinding {
             let kb_x = overlay_x + overlay_w - 2 - kb.len() as u16;
             let kb_fg = if is_selected { theme.bg } else { theme.muted };
             for (j, ch) in kb.chars().enumerate() {
-                buf[(kb_x + j as u16, y)].set_char(ch).set_fg(kb_fg).set_bg(bg);
+                buf[(kb_x + j as u16, y)]
+                    .set_char(ch)
+                    .set_fg(kb_fg)
+                    .set_bg(bg);
             }
         }
-        
+
         y += 1;
     }
-    
+
     // Show match count if filtered.
     if !palette.query.is_empty() {
         let count = format!("{} matches", palette.matches.len());
         let count_x = overlay_x + overlay_w - 2 - count.len() as u16;
         let count_y = overlay_y + overlay_h - 1;
         for (i, ch) in count.chars().enumerate() {
-            buf[(count_x + i as u16, count_y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+            buf[(count_x + i as u16, count_y)]
+                .set_char(ch)
+                .set_fg(theme.muted)
+                .set_bg(Color::Black);
         }
     }
 }
@@ -1893,28 +2471,28 @@ fn format_date_header(timestamp: &str) -> Option<String> {
     if parts.len() != 3 {
         return None;
     }
-    
+
     let year: i32 = parts[0].parse().ok()?;
     let month: u32 = parts[1].parse().ok()?;
     let day: u32 = parts[2].parse().ok()?;
-    
+
     // Get current date (approximation using system time).
     use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-    
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+
     // Days since epoch for session date.
     // Simplified: assume 365.25 days/year, 30.44 days/month.
     let session_days = (year as i64 - 1970) * 365 + (month as i64 - 1) * 30 + day as i64;
     let today_days = (now / 86400) as i64;
     let diff = today_days - session_days;
-    
-    let month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", 
-                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let month_name = month_names.get(month.saturating_sub(1) as usize).unwrap_or(&"???");
-    
+
+    let month_names = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month_name = month_names
+        .get(month.saturating_sub(1) as usize)
+        .unwrap_or(&"???");
+
     // Approximate comparison (may be off by a day due to timezone, but good enough).
     if diff <= 0 {
         Some("Today".to_string())
@@ -1987,7 +2565,7 @@ fn render_tool_card(
     let name_color = match card.status.as_str() {
         "done" => theme.success,
         "error" => theme.error,
-        _ => theme.tool,  // Running or unknown
+        _ => theme.tool, // Running or unknown
     };
 
     // Status indicator
@@ -2012,9 +2590,15 @@ fn render_tool_card(
 
     // Build header line (clone strings to avoid lifetime issues)
     let header_spans = vec![
-        Span::styled(format!("  {} ", expand_indicator), Style::default().fg(theme.muted)),
+        Span::styled(
+            format!("  {} ", expand_indicator),
+            Style::default().fg(theme.muted),
+        ),
         Span::styled(format!("{} ", status_ch), Style::default().fg(status_color)),
-        Span::styled(card.name.clone(), Style::default().fg(name_color).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            card.name.clone(),
+            Style::default().fg(name_color).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(format!("  {}", key_arg), Style::default().fg(theme.muted)),
     ];
 
@@ -2029,17 +2613,23 @@ fn render_tool_card(
     if card.expanded {
         // Tab bar: Progress | Output | Input
         let progress_style = if card.active_tab == ToolTab::Progress {
-            Style::default().fg(theme.tab_active_fg).bg(theme.tab_active_bg)
+            Style::default()
+                .fg(theme.tab_active_fg)
+                .bg(theme.tab_active_bg)
         } else {
             Style::default().fg(theme.tab_inactive_fg)
         };
         let output_style = if card.active_tab == ToolTab::Output {
-            Style::default().fg(theme.tab_active_fg).bg(theme.tab_active_bg)
+            Style::default()
+                .fg(theme.tab_active_fg)
+                .bg(theme.tab_active_bg)
         } else {
             Style::default().fg(theme.tab_inactive_fg)
         };
         let input_style = if card.active_tab == ToolTab::Input {
-            Style::default().fg(theme.tab_active_fg).bg(theme.tab_active_bg)
+            Style::default()
+                .fg(theme.tab_active_fg)
+                .bg(theme.tab_active_bg)
         } else {
             Style::default().fg(theme.tab_inactive_fg)
         };
@@ -2052,7 +2642,8 @@ fn render_tool_card(
                 Span::styled(" Output ", output_style),
                 Span::raw(" "),
                 Span::styled(" Input ", input_style),
-            ]).style(Style::default().bg(theme.tool_focus_bg))
+            ])
+            .style(Style::default().bg(theme.tool_focus_bg))
         } else {
             Line::from(vec![
                 Span::raw("    "),
@@ -2100,10 +2691,13 @@ fn render_tool_progress(
         } else {
             "(no progress output)"
         };
-        lines.push(Line::from(Span::styled(
-            format!("    │ {}", msg),
-            Style::default().fg(theme.muted),
-        )).style(bg_style));
+        lines.push(
+            Line::from(Span::styled(
+                format!("    │ {}", msg),
+                Style::default().fg(theme.muted),
+            ))
+            .style(bg_style),
+        );
         return;
     }
 
@@ -2113,7 +2707,7 @@ fn render_tool_progress(
 
     for (i, line) in card.progress_lines[start..end].iter().enumerate() {
         let line_num = start + i + 1;
-        
+
         // Color diff lines appropriately
         let line_color = if line.starts_with('+') && !line.starts_with("+++") {
             theme.diff_add
@@ -2124,20 +2718,34 @@ fn render_tool_progress(
         } else {
             theme.fg
         };
-        
-        lines.push(Line::from(Span::styled(
-            format!("    │ {:>4}: {}", line_num, truncate(line, inner_w.saturating_sub(14))),
-            Style::default().fg(line_color),
-        )).style(bg_style));
+
+        lines.push(
+            Line::from(Span::styled(
+                format!(
+                    "    │ {:>4}: {}",
+                    line_num,
+                    truncate(line, inner_w.saturating_sub(14))
+                ),
+                Style::default().fg(line_color),
+            ))
+            .style(bg_style),
+        );
     }
 
     // Scroll indicator
     if total_lines > TOOL_OUTPUT_VISIBLE_LINES {
-        let pct = if total_lines > 0 { (end * 100) / total_lines } else { 100 };
-        lines.push(Line::from(Span::styled(
-            format!("    └─ [{}/{}] {}%", end, total_lines, pct),
-            Style::default().fg(theme.muted),
-        )).style(bg_style));
+        let pct = if total_lines > 0 {
+            (end * 100) / total_lines
+        } else {
+            100
+        };
+        lines.push(
+            Line::from(Span::styled(
+                format!("    └─ [{}/{}] {}%", end, total_lines, pct),
+                Style::default().fg(theme.muted),
+            ))
+            .style(bg_style),
+        );
     }
 }
 
@@ -2164,10 +2772,13 @@ fn render_tool_output(
             } else {
                 "(no output)"
             };
-            lines.push(Line::from(Span::styled(
-                format!("    │ {}", msg),
-                Style::default().fg(theme.muted),
-            )).style(bg_style));
+            lines.push(
+                Line::from(Span::styled(
+                    format!("    │ {}", msg),
+                    Style::default().fg(theme.muted),
+                ))
+                .style(bg_style),
+            );
             return;
         }
     };
@@ -2186,19 +2797,33 @@ fn render_tool_output(
 
     for (i, line) in output_lines[start..end].iter().enumerate() {
         let line_num = start + i + 1;
-        lines.push(Line::from(Span::styled(
-            format!("    │ {:>4}: {}", line_num, truncate(line, inner_w.saturating_sub(14))),
-            Style::default().fg(base_color),
-        )).style(bg_style));
+        lines.push(
+            Line::from(Span::styled(
+                format!(
+                    "    │ {:>4}: {}",
+                    line_num,
+                    truncate(line, inner_w.saturating_sub(14))
+                ),
+                Style::default().fg(base_color),
+            ))
+            .style(bg_style),
+        );
     }
 
     // Scroll indicator
     if total_lines > TOOL_OUTPUT_VISIBLE_LINES {
-        let pct = if total_lines > 0 { (end * 100) / total_lines } else { 100 };
-        lines.push(Line::from(Span::styled(
-            format!("    └─ [{}/{}] {}%", end, total_lines, pct),
-            Style::default().fg(theme.muted),
-        )).style(bg_style));
+        let pct = if total_lines > 0 {
+            (end * 100) / total_lines
+        } else {
+            100
+        };
+        lines.push(
+            Line::from(Span::styled(
+                format!("    └─ [{}/{}] {}%", end, total_lines, pct),
+                Style::default().fg(theme.muted),
+            ))
+            .style(bg_style),
+        );
     }
 }
 
@@ -2230,49 +2855,73 @@ fn render_tool_input(
                 if value_lines.len() <= 1 {
                     // Single line value
                     let max_val_len = inner_w.saturating_sub(key.len() + 12);
-                    lines.push(Line::from(vec![
-                        Span::raw("    │ "),
-                        Span::styled(format!("{}: ", key), Style::default().fg(theme.input_key)),
-                        Span::styled(
-                            truncate(&value_str, max_val_len),
-                            Style::default().fg(theme.input_value),
-                        ),
-                    ]).style(bg_style));
+                    lines.push(
+                        Line::from(vec![
+                            Span::raw("    │ "),
+                            Span::styled(
+                                format!("{}: ", key),
+                                Style::default().fg(theme.input_key),
+                            ),
+                            Span::styled(
+                                truncate(&value_str, max_val_len),
+                                Style::default().fg(theme.input_value),
+                            ),
+                        ])
+                        .style(bg_style),
+                    );
                 } else {
                     // Multi-line value - show key then indented lines
-                    lines.push(Line::from(vec![
-                        Span::raw("    │ "),
-                        Span::styled(format!("{}:", key), Style::default().fg(theme.input_key)),
-                    ]).style(bg_style));
+                    lines.push(
+                        Line::from(vec![
+                            Span::raw("    │ "),
+                            Span::styled(format!("{}:", key), Style::default().fg(theme.input_key)),
+                        ])
+                        .style(bg_style),
+                    );
 
-                    let max_show = 30;  // Limit displayed lines for very long content
+                    let max_show = 30; // Limit displayed lines for very long content
                     for vline in value_lines.iter().take(max_show) {
-                        lines.push(Line::from(Span::styled(
-                            format!("    │   {}", truncate(vline, inner_w.saturating_sub(12))),
-                            Style::default().fg(theme.input_value),
-                        )).style(bg_style));
+                        lines.push(
+                            Line::from(Span::styled(
+                                format!("    │   {}", truncate(vline, inner_w.saturating_sub(12))),
+                                Style::default().fg(theme.input_value),
+                            ))
+                            .style(bg_style),
+                        );
                     }
                     if value_lines.len() > max_show {
-                        lines.push(Line::from(Span::styled(
-                            format!("    │   ... ({} more lines)", value_lines.len() - max_show),
-                            Style::default().fg(theme.muted),
-                        )).style(bg_style));
+                        lines.push(
+                            Line::from(Span::styled(
+                                format!(
+                                    "    │   ... ({} more lines)",
+                                    value_lines.len() - max_show
+                                ),
+                                Style::default().fg(theme.muted),
+                            ))
+                            .style(bg_style),
+                        );
                     }
                 }
             }
         } else {
             // Not an object, show raw
-            lines.push(Line::from(Span::styled(
-                format!("    │ {}", truncate(&card.args, inner_w.saturating_sub(8))),
-                Style::default().fg(theme.muted),
-            )).style(bg_style));
+            lines.push(
+                Line::from(Span::styled(
+                    format!("    │ {}", truncate(&card.args, inner_w.saturating_sub(8))),
+                    Style::default().fg(theme.muted),
+                ))
+                .style(bg_style),
+            );
         }
     } else {
         // Parse failed, show raw args
-        lines.push(Line::from(Span::styled(
-            format!("    │ {}", truncate(&card.args, inner_w.saturating_sub(8))),
-            Style::default().fg(theme.muted),
-        )).style(bg_style));
+        lines.push(
+            Line::from(Span::styled(
+                format!("    │ {}", truncate(&card.args, inner_w.saturating_sub(8))),
+                Style::default().fg(theme.muted),
+            ))
+            .style(bg_style),
+        );
     }
 }
 
@@ -2281,8 +2930,16 @@ fn format_tool_key_arg(args_json: &str, max_len: usize) -> String {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(args_json) {
         if let serde_json::Value::Object(map) = &v {
             // Priority order for key args.
-            let key_priority = ["path", "filePath", "file_path", "command", "content", "query", "url"];
-            
+            let key_priority = [
+                "path",
+                "filePath",
+                "file_path",
+                "command",
+                "content",
+                "query",
+                "url",
+            ];
+
             for key in key_priority {
                 if let Some(val) = map.get(key) {
                     let val_str = match val {
@@ -2292,7 +2949,7 @@ fn format_tool_key_arg(args_json: &str, max_len: usize) -> String {
                     return format!("{}={}", key, truncate(&val_str, max_len));
                 }
             }
-            
+
             // Fallback: show first key.
             if let Some((k, v)) = map.iter().next() {
                 let val_str = match v {
@@ -2306,8 +2963,6 @@ fn format_tool_key_arg(args_json: &str, max_len: usize) -> String {
     truncate(args_json, max_len)
 }
 
-
-
 // ── Approval nice display + dangerous highlighting ────────────
 fn approval_reason(tool: &str, args: &str) -> Option<String> {
     let val: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
@@ -2315,9 +2970,41 @@ fn approval_reason(tool: &str, args: &str) -> Option<String> {
         "bash" => {
             let cmd = val.get("cmd").and_then(|v| v.as_str()).unwrap_or(args);
             let lower = cmd.to_lowercase();
-            let always_ask = ["rm","mv","cp","chmod","chown","kill","dd","curl","wget","ssh","scp","sh","bash","zsh","python","python3","node","perl","ruby","eval","pwsh","powershell","iex","sudo","mkfs","fdisk","reboot","shutdown"];
+            let always_ask = [
+                "rm",
+                "mv",
+                "cp",
+                "chmod",
+                "chown",
+                "kill",
+                "dd",
+                "curl",
+                "wget",
+                "ssh",
+                "scp",
+                "sh",
+                "bash",
+                "zsh",
+                "python",
+                "python3",
+                "node",
+                "perl",
+                "ruby",
+                "eval",
+                "pwsh",
+                "powershell",
+                "iex",
+                "sudo",
+                "mkfs",
+                "fdisk",
+                "reboot",
+                "shutdown",
+            ];
             for w in always_ask {
-                if lower.split_whitespace().any(|tok| tok.eq_ignore_ascii_case(w)) {
+                if lower
+                    .split_whitespace()
+                    .any(|tok| tok.eq_ignore_ascii_case(w))
+                {
                     return Some(format!("Uses `{}` (always requires approval)", w));
                 }
             }
@@ -2331,19 +3018,48 @@ fn approval_reason(tool: &str, args: &str) -> Option<String> {
                 return Some("Uses `sudo` (never permitted without explicit approval)".into());
             }
             return Some("Potentially destructive shell command".into());
-        },
+        }
         "write" | "edit" => {
             let path = val.get("path").and_then(|v| v.as_str()).unwrap_or("");
             if !path.is_empty() {
                 return Some(format!("Writes to `{}`", path));
             }
             return Some("Writes to file".into());
-        },
+        }
         _ => None,
     }
 }
 fn bash_highlight_spans(cmd: &str, theme: &Theme) -> Vec<Span<'static>> {
-    let always_ask = ["rm","mv","cp","chmod","chown","kill","dd","curl","wget","ssh","scp","sh","bash","zsh","python","python3","node","perl","ruby","eval","pwsh","powershell","iex","sudo","mkfs","fdisk","reboot","shutdown"];
+    let always_ask = [
+        "rm",
+        "mv",
+        "cp",
+        "chmod",
+        "chown",
+        "kill",
+        "dd",
+        "curl",
+        "wget",
+        "ssh",
+        "scp",
+        "sh",
+        "bash",
+        "zsh",
+        "python",
+        "python3",
+        "node",
+        "perl",
+        "ruby",
+        "eval",
+        "pwsh",
+        "powershell",
+        "iex",
+        "sudo",
+        "mkfs",
+        "fdisk",
+        "reboot",
+        "shutdown",
+    ];
     let mut spans = Vec::new();
     let mut current = String::new();
     for ch in cmd.chars() {
@@ -2351,20 +3067,44 @@ fn bash_highlight_spans(cmd: &str, theme: &Theme) -> Vec<Span<'static>> {
             if !current.is_empty() {
                 let lower = current.to_lowercase();
                 let is_dangerous = always_ask.iter().any(|w| lower == *w);
-                let style = if is_dangerous { Style::default().fg(theme.error).add_modifier(Modifier::BOLD) } else { Style::default().fg(theme.fg) };
+                let style = if is_dangerous {
+                    Style::default()
+                        .fg(theme.error)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.fg)
+                };
                 spans.push(Span::styled(current.clone(), style));
                 current.clear();
             }
             spans.push(Span::raw(ch.to_string()));
-        } else if ch == '>' || ch == '<' || ch == '|' || ch == ';' || ch == '&' || ch == '$' || ch == '`' {
+        } else if ch == '>'
+            || ch == '<'
+            || ch == '|'
+            || ch == ';'
+            || ch == '&'
+            || ch == '$'
+            || ch == '`'
+        {
             if !current.is_empty() {
                 let lower = current.to_lowercase();
                 let is_dangerous = always_ask.iter().any(|w| lower == *w);
-                let style = if is_dangerous { Style::default().fg(theme.error).add_modifier(Modifier::BOLD) } else { Style::default().fg(theme.fg) };
+                let style = if is_dangerous {
+                    Style::default()
+                        .fg(theme.error)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.fg)
+                };
                 spans.push(Span::styled(current.clone(), style));
                 current.clear();
             }
-            spans.push(Span::styled(ch.to_string(), Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(
+                ch.to_string(),
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ));
         } else {
             current.push(ch);
         }
@@ -2372,7 +3112,13 @@ fn bash_highlight_spans(cmd: &str, theme: &Theme) -> Vec<Span<'static>> {
     if !current.is_empty() {
         let lower = current.to_lowercase();
         let is_dangerous = always_ask.iter().any(|w| lower == *w);
-        let style = if is_dangerous { Style::default().fg(theme.error).add_modifier(Modifier::BOLD) } else { Style::default().fg(theme.fg) };
+        let style = if is_dangerous {
+            Style::default()
+                .fg(theme.error)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg)
+        };
         spans.push(Span::styled(current, style));
     }
     if spans.is_empty() {
@@ -2382,16 +3128,27 @@ fn bash_highlight_spans(cmd: &str, theme: &Theme) -> Vec<Span<'static>> {
 }
 fn approval_body_lines(tool: &str, args: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
-    let val: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::String(args.to_string()));
+    let val: serde_json::Value =
+        serde_json::from_str(args).unwrap_or(serde_json::Value::String(args.to_string()));
     match tool {
         "bash" => {
             let cmd = val.get("cmd").and_then(|v| v.as_str()).unwrap_or(args);
             if let Some(reason) = approval_reason(tool, args) {
                 for w in wrap_text(&format!("Reason: {}", reason), width) {
-                    lines.push(Line::from(vec![Span::styled(w, Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC))]));
+                    lines.push(Line::from(vec![Span::styled(
+                        w,
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::ITALIC),
+                    )]));
                 }
             }
-            lines.push(Line::from(vec![Span::styled("Command:", Style::default().fg(theme.muted).add_modifier(Modifier::BOLD))]));
+            lines.push(Line::from(vec![Span::styled(
+                "Command:",
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::BOLD),
+            )]));
             if cmd.len() <= width {
                 lines.push(Line::from(bash_highlight_spans(cmd, theme)));
             } else {
@@ -2400,48 +3157,145 @@ fn approval_body_lines(tool: &str, args: &str, theme: &Theme, width: usize) -> V
                 }
             }
             if let Some(t) = val.get("timeout_secs").and_then(|v| v.as_u64()) {
-                lines.push(Line::from(vec![Span::styled(format!("Timeout: {}s", t), Style::default().fg(theme.muted))]));
+                lines.push(Line::from(vec![Span::styled(
+                    format!("Timeout: {}s", t),
+                    Style::default().fg(theme.muted),
+                )]));
             }
-        },
+        }
         "read" => {
             let path = val.get("path").and_then(|v| v.as_str()).unwrap_or(args);
-            lines.push(Line::from(vec![Span::styled("Path: ", Style::default().fg(theme.muted).add_modifier(Modifier::BOLD)), Span::styled(path.to_string(), Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))]));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "Path: ",
+                    Style::default()
+                        .fg(theme.muted)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    path.to_string(),
+                    Style::default()
+                        .fg(theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
             if let Some(reason) = approval_reason(tool, args) {
-                lines.push(Line::from(vec![Span::styled(reason, Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC))]));
+                lines.push(Line::from(vec![Span::styled(
+                    reason,
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::ITALIC),
+                )]));
             }
             if let Some(off) = val.get("offset").and_then(|v| v.as_u64()) {
-                lines.push(Line::from(vec![Span::styled(format!("Offset: {}", off), Style::default().fg(theme.muted))]));
+                lines.push(Line::from(vec![Span::styled(
+                    format!("Offset: {}", off),
+                    Style::default().fg(theme.muted),
+                )]));
             }
-        },
+        }
         "write" => {
             let path = val.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            lines.push(Line::from(vec![Span::styled("Path: ", Style::default().fg(theme.muted).add_modifier(Modifier::BOLD)), Span::styled(path.to_string(), Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))]));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "Path: ",
+                    Style::default()
+                        .fg(theme.muted)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    path.to_string(),
+                    Style::default()
+                        .fg(theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
             if let Some(reason) = approval_reason(tool, args) {
-                lines.push(Line::from(vec![Span::styled(reason, Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC))]));
+                lines.push(Line::from(vec![Span::styled(
+                    reason,
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::ITALIC),
+                )]));
             }
             let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
             let preview: String = content.lines().take(3).collect::<Vec<_>>().join(" ⏎ ");
-            let preview = if preview.len() > width*2 { format!("{}…", &preview[..width*2-1]) } else { preview };
-            lines.push(Line::from(vec![Span::styled("Content: ", Style::default().fg(theme.muted).add_modifier(Modifier::BOLD)), Span::styled(truncate(&preview, width.saturating_sub(9)), Style::default().fg(theme.fg))]));
-        },
+            let preview = if preview.len() > width * 2 {
+                format!("{}…", &preview[..width * 2 - 1])
+            } else {
+                preview
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "Content: ",
+                    Style::default()
+                        .fg(theme.muted)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    truncate(&preview, width.saturating_sub(9)),
+                    Style::default().fg(theme.fg),
+                ),
+            ]));
+        }
         "edit" => {
             let path = val.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            lines.push(Line::from(vec![Span::styled("Path: ", Style::default().fg(theme.muted).add_modifier(Modifier::BOLD)), Span::styled(path.to_string(), Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))]));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "Path: ",
+                    Style::default()
+                        .fg(theme.muted)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    path.to_string(),
+                    Style::default()
+                        .fg(theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
             if let Some(reason) = approval_reason(tool, args) {
-                lines.push(Line::from(vec![Span::styled(reason, Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC))]));
+                lines.push(Line::from(vec![Span::styled(
+                    reason,
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::ITALIC),
+                )]));
             }
             let old = val.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
             let new = val.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
             let old_preview = old.lines().next().unwrap_or("").trim();
             let new_preview = new.lines().next().unwrap_or("").trim();
-            lines.push(Line::from(vec![Span::styled("Old: ", Style::default().fg(theme.error).add_modifier(Modifier::BOLD)), Span::styled(truncate(old_preview, width.saturating_sub(5)), Style::default().fg(theme.error))]));
-            lines.push(Line::from(vec![Span::styled("New: ", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)), Span::styled(truncate(new_preview, width.saturating_sub(5)), Style::default().fg(theme.success))]));
-        },
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "Old: ",
+                    Style::default()
+                        .fg(theme.error)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    truncate(old_preview, width.saturating_sub(5)),
+                    Style::default().fg(theme.error),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "New: ",
+                    Style::default()
+                        .fg(theme.success)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    truncate(new_preview, width.saturating_sub(5)),
+                    Style::default().fg(theme.success),
+                ),
+            ]));
+        }
         _ => {
             let pretty = match &val {
                 serde_json::Value::Object(map) => {
                     let mut parts = Vec::new();
-                    for (k,v) in map {
+                    for (k, v) in map {
                         let v_str = match v {
                             serde_json::Value::String(s) => format!("\"{}\"", truncate(s, 40)),
                             _ => truncate(&v.to_string(), 40),
@@ -2449,14 +3303,22 @@ fn approval_body_lines(tool: &str, args: &str, theme: &Theme, width: usize) -> V
                         parts.push(format!("{}: {}", k, v_str));
                     }
                     parts.join(", ")
-                },
-                _ => truncate(&val.to_string(), width*2),
+                }
+                _ => truncate(&val.to_string(), width * 2),
             };
             for w in wrap_text(&pretty, width) {
-                lines.push(Line::from(Span::styled(w, Style::default().fg(theme.muted))));
+                lines.push(Line::from(Span::styled(
+                    w,
+                    Style::default().fg(theme.muted),
+                )));
             }
             if let Some(reason) = approval_reason(tool, args) {
-                lines.push(Line::from(vec![Span::styled(reason, Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC))]));
+                lines.push(Line::from(vec![Span::styled(
+                    reason,
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::ITALIC),
+                )]));
             }
         }
     }
@@ -2467,40 +3329,69 @@ fn approval_body_lines(tool: &str, args: &str, theme: &Theme, width: usize) -> V
 fn compute_interaction_height(state: &InteractionState, inner_w: usize, max_h: u16) -> u16 {
     let prompt_len = 2; // "› "
     let input_w = inner_w.saturating_sub(prompt_len);
-    
+
     let content_lines: usize = match state {
-        InteractionState::Text { question, header, input, .. } => {
+        InteractionState::Text {
+            question,
+            header,
+            input,
+            ..
+        } => {
             let header_lines = if header.is_some() { 1 } else { 0 };
             let question_lines = wrap_text(question, inner_w.max(1)).len();
             let input_lines = if input_w > 0 {
                 ((input.chars().count().max(1) + input_w - 1) / input_w).max(1)
-            } else { 1 };
+            } else {
+                1
+            };
             // title + header + question + gap + input lines + footer
             1 + header_lines + question_lines + 1 + input_lines + 2
         }
-        InteractionState::Choice { question, header, options, allow_custom, in_custom_mode, .. } => {
+        InteractionState::Choice {
+            question,
+            header,
+            options,
+            allow_custom,
+            in_custom_mode,
+            ..
+        } => {
             let header_lines = if header.is_some() { 1 } else { 0 };
             let question_lines = wrap_text(question, inner_w.max(1)).len();
             let mut opt_lines = 0;
             for opt in options {
                 opt_lines += 1; // label
-                if opt.description.is_some() { opt_lines += 1; } // desc
+                if opt.description.is_some() {
+                    opt_lines += 1;
+                } // desc
             }
-            if *allow_custom { opt_lines += 1; } // "Other..."
-            if *in_custom_mode { opt_lines += 1; } // custom input line
+            if *allow_custom {
+                opt_lines += 1;
+            } // "Other..."
+            if *in_custom_mode {
+                opt_lines += 1;
+            } // custom input line
             1 + header_lines + question_lines + 1 + opt_lines + 2
         }
-        InteractionState::Multi { question, header, options, .. } => {
+        InteractionState::Multi {
+            question,
+            header,
+            options,
+            ..
+        } => {
             let header_lines = if header.is_some() { 1 } else { 0 };
             let question_lines = wrap_text(question, inner_w.max(1)).len();
             let mut opt_lines = 0;
             for opt in options {
                 opt_lines += 1;
-                if opt.description.is_some() { opt_lines += 1; }
+                if opt.description.is_some() {
+                    opt_lines += 1;
+                }
             }
             1 + header_lines + question_lines + 1 + opt_lines + 2
         }
-        InteractionState::Confirm { question, header, .. } => {
+        InteractionState::Confirm {
+            question, header, ..
+        } => {
             let header_lines = if header.is_some() { 1 } else { 0 };
             let question_lines = wrap_text(question, inner_w.max(1)).len();
             // title + header + question + gap + buttons + footer
@@ -2510,11 +3401,13 @@ fn compute_interaction_height(state: &InteractionState, inner_w: usize, max_h: u
             let payload_lines = wrap_text(payload, inner_w.max(1)).len();
             let input_lines = if input_w > 0 {
                 ((input.chars().count().max(1) + input_w - 1) / input_w).max(1)
-            } else { 1 };
+            } else {
+                1
+            };
             1 + payload_lines + 1 + input_lines + 2
         }
     };
-    
+
     // Add border (2 lines) + some padding
     let total = (content_lines + 4) as u16;
     total.min(max_h).max(8)
@@ -2532,21 +3425,36 @@ fn render_interaction_overlay(
     state: &InteractionState,
 ) {
     let border_fg = theme.primary;
-    let border_style = Style::default().fg(border_fg).bg(Color::Black).add_modifier(Modifier::BOLD);
-    
+    let border_style = Style::default()
+        .fg(border_fg)
+        .bg(Color::Black)
+        .add_modifier(Modifier::BOLD);
+
     // Draw border
     if overlay_w >= 2 && overlay_h >= 2 {
-        buf[(overlay_x, overlay_y)].set_char('┏').set_style(border_style);
-        buf[(overlay_x + overlay_w - 1, overlay_y)].set_char('┓').set_style(border_style);
-        buf[(overlay_x, overlay_y + overlay_h - 1)].set_char('┗').set_style(border_style);
-        buf[(overlay_x + overlay_w - 1, overlay_y + overlay_h - 1)].set_char('┛').set_style(border_style);
+        buf[(overlay_x, overlay_y)]
+            .set_char('┏')
+            .set_style(border_style);
+        buf[(overlay_x + overlay_w - 1, overlay_y)]
+            .set_char('┓')
+            .set_style(border_style);
+        buf[(overlay_x, overlay_y + overlay_h - 1)]
+            .set_char('┗')
+            .set_style(border_style);
+        buf[(overlay_x + overlay_w - 1, overlay_y + overlay_h - 1)]
+            .set_char('┛')
+            .set_style(border_style);
         for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
             buf[(x, overlay_y)].set_char('━').set_style(border_style);
-            buf[(x, overlay_y + overlay_h - 1)].set_char('━').set_style(border_style);
+            buf[(x, overlay_y + overlay_h - 1)]
+                .set_char('━')
+                .set_style(border_style);
         }
         for y in (overlay_y + 1)..(overlay_y + overlay_h - 1) {
             buf[(overlay_x, y)].set_char('┃').set_style(border_style);
-            buf[(overlay_x + overlay_w - 1, y)].set_char('┃').set_style(border_style);
+            buf[(overlay_x + overlay_w - 1, y)]
+                .set_char('┃')
+                .set_style(border_style);
         }
     }
 
@@ -2558,25 +3466,43 @@ fn render_interaction_overlay(
     let title = format!("{} asks:", plugin);
     let title_x = overlay_x + (overlay_w.saturating_sub(title.len() as u16)) / 2;
     for (i, ch) in title.chars().enumerate() {
-        buf[(title_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+        buf[(title_x + i as u16, y)]
+            .set_char(ch)
+            .set_fg(theme.primary)
+            .set_bg(Color::Black);
     }
     y += 2;
 
     match state {
-        InteractionState::Text { question, header, placeholder, input } => {
+        InteractionState::Text {
+            question,
+            header,
+            placeholder,
+            input,
+        } => {
             // Optional header
             if let Some(h) = header {
                 for (i, ch) in h.chars().take(inner_w).enumerate() {
-                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+                    buf[(inner_x + i as u16, y)]
+                        .set_char(ch)
+                        .set_fg(theme.primary)
+                        .set_bg(Color::Black);
                 }
                 y += 1;
             }
             // Question
             for line in wrap_text(question, inner_w.max(1)) {
-                if y >= overlay_y + overlay_h - 3 { break; }
+                if y >= overlay_y + overlay_h - 3 {
+                    break;
+                }
                 for (i, ch) in line.chars().enumerate() {
-                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 { break; }
-                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 {
+                        break;
+                    }
+                    buf[(inner_x + i as u16, y)]
+                        .set_char(ch)
+                        .set_fg(theme.fg)
+                        .set_bg(Color::Black);
                 }
                 y += 1;
             }
@@ -2584,36 +3510,59 @@ fn render_interaction_overlay(
             // Input lines (wrapped)
             let prompt = "› ";
             let input_w = inner_w.saturating_sub(prompt.len());
-            let display = if input.is_empty() { placeholder.as_deref().unwrap_or("") } else { input };
-            let input_fg = if input.is_empty() { theme.muted } else { theme.fg };
+            let display = if input.is_empty() {
+                placeholder.as_deref().unwrap_or("")
+            } else {
+                input
+            };
+            let input_fg = if input.is_empty() {
+                theme.muted
+            } else {
+                theme.fg
+            };
             let input_lines = wrap_text(display, input_w.max(1));
             let cursor_pos = input.chars().count();
             let cursor_line = cursor_pos / input_w.max(1);
             let cursor_col = cursor_pos % input_w.max(1);
-            
+
             for (line_idx, line) in input_lines.iter().enumerate() {
-                if y >= overlay_y + overlay_h - 2 { break; }
+                if y >= overlay_y + overlay_h - 2 {
+                    break;
+                }
                 // Draw prompt on first line only
                 if line_idx == 0 {
                     for (i, ch) in prompt.chars().enumerate() {
-                        buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                        buf[(inner_x + i as u16, y)]
+                            .set_char(ch)
+                            .set_fg(theme.muted)
+                            .set_bg(Color::Black);
                     }
                 } else {
                     // Indent continuation lines
                     for i in 0..prompt.len() {
-                        buf[(inner_x + i as u16, y)].set_char(' ').set_bg(Color::Black);
+                        buf[(inner_x + i as u16, y)]
+                            .set_char(' ')
+                            .set_bg(Color::Black);
                     }
                 }
                 let input_x = inner_x + prompt.len() as u16;
                 for (i, ch) in line.chars().enumerate() {
-                    if input_x + i as u16 >= overlay_x + overlay_w - 2 { break; }
-                    buf[(input_x + i as u16, y)].set_char(ch).set_fg(input_fg).set_bg(Color::Black);
+                    if input_x + i as u16 >= overlay_x + overlay_w - 2 {
+                        break;
+                    }
+                    buf[(input_x + i as u16, y)]
+                        .set_char(ch)
+                        .set_fg(input_fg)
+                        .set_bg(Color::Black);
                 }
                 // Draw cursor on the right line
                 if line_idx == cursor_line && !input.is_empty() {
                     let cx = input_x + cursor_col as u16;
                     if cx < overlay_x + overlay_w - 1 {
-                        buf[(cx, y)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
+                        buf[(cx, y)]
+                            .set_char('▏')
+                            .set_fg(theme.primary)
+                            .set_bg(Color::Black);
                     }
                 }
                 y += 1;
@@ -2622,7 +3571,10 @@ fn render_interaction_overlay(
             if input.is_empty() {
                 let cx = inner_x + prompt.len() as u16;
                 if cx < overlay_x + overlay_w - 1 && y > overlay_y + 1 {
-                    buf[(cx, y - 1)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
+                    buf[(cx, y - 1)]
+                        .set_char('▏')
+                        .set_fg(theme.primary)
+                        .set_bg(Color::Black);
                 }
             }
             // Footer
@@ -2630,29 +3582,52 @@ fn render_interaction_overlay(
             let fx = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
             let fy = overlay_y + overlay_h - 1;
             for (i, ch) in footer.chars().enumerate() {
-                buf[(fx + i as u16, fy)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                buf[(fx + i as u16, fy)]
+                    .set_char(ch)
+                    .set_fg(theme.muted)
+                    .set_bg(Color::Black);
             }
         }
 
-        InteractionState::Choice { question, header, options, selected, allow_custom, custom_input, in_custom_mode } => {
+        InteractionState::Choice {
+            question,
+            header,
+            options,
+            selected,
+            allow_custom,
+            custom_input,
+            in_custom_mode,
+        } => {
             if let Some(h) = header {
                 for (i, ch) in h.chars().take(inner_w).enumerate() {
-                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+                    buf[(inner_x + i as u16, y)]
+                        .set_char(ch)
+                        .set_fg(theme.primary)
+                        .set_bg(Color::Black);
                 }
                 y += 1;
             }
             for line in wrap_text(question, inner_w.max(1)) {
-                if y >= overlay_y + overlay_h - 4 { break; }
+                if y >= overlay_y + overlay_h - 4 {
+                    break;
+                }
                 for (i, ch) in line.chars().enumerate() {
-                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 { break; }
-                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 {
+                        break;
+                    }
+                    buf[(inner_x + i as u16, y)]
+                        .set_char(ch)
+                        .set_fg(theme.fg)
+                        .set_bg(Color::Black);
                 }
                 y += 1;
             }
             y += 1;
             // Options list
             for (i, opt) in options.iter().enumerate() {
-                if y >= overlay_y + overlay_h - 2 { break; }
+                if y >= overlay_y + overlay_h - 2 {
+                    break;
+                }
                 let is_sel = i == *selected && !*in_custom_mode;
                 let marker = if is_sel { "● " } else { "○ " };
                 let style = if is_sel {
@@ -2671,10 +3646,16 @@ fn render_interaction_overlay(
                         let indent = "    ";
                         let desc_w = inner_w.saturating_sub(indent.len());
                         for (j, ch) in indent.chars().enumerate() {
-                            buf[(inner_x + j as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                            buf[(inner_x + j as u16, y)]
+                                .set_char(ch)
+                                .set_fg(theme.muted)
+                                .set_bg(Color::Black);
                         }
                         for (j, ch) in desc.chars().take(desc_w).enumerate() {
-                            buf[(inner_x + indent.len() as u16 + j as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                            buf[(inner_x + indent.len() as u16 + j as u16, y)]
+                                .set_char(ch)
+                                .set_fg(theme.muted)
+                                .set_bg(Color::Black);
                         }
                         y += 1;
                     }
@@ -2684,7 +3665,11 @@ fn render_interaction_overlay(
             if *allow_custom {
                 if y < overlay_y + overlay_h - 2 {
                     let is_sel = *selected == options.len() || *in_custom_mode;
-                    let marker = if is_sel && !*in_custom_mode { "● " } else { "○ " };
+                    let marker = if is_sel && !*in_custom_mode {
+                        "● "
+                    } else {
+                        "○ "
+                    };
                     let style = if is_sel && !*in_custom_mode {
                         Style::default().fg(Color::Black).bg(theme.primary)
                     } else {
@@ -2699,48 +3684,84 @@ fn render_interaction_overlay(
                     if *in_custom_mode && y < overlay_y + overlay_h - 2 {
                         let prompt = "  › ";
                         for (j, ch) in prompt.chars().enumerate() {
-                            buf[(inner_x + j as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                            buf[(inner_x + j as u16, y)]
+                                .set_char(ch)
+                                .set_fg(theme.muted)
+                                .set_bg(Color::Black);
                         }
                         let input_x = inner_x + prompt.len() as u16;
                         for (j, ch) in custom_input.chars().enumerate() {
-                            if input_x + j as u16 >= overlay_x + overlay_w - 2 { break; }
-                            buf[(input_x + j as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                            if input_x + j as u16 >= overlay_x + overlay_w - 2 {
+                                break;
+                            }
+                            buf[(input_x + j as u16, y)]
+                                .set_char(ch)
+                                .set_fg(theme.fg)
+                                .set_bg(Color::Black);
                         }
                         let cx = input_x + custom_input.chars().count() as u16;
                         if cx < overlay_x + overlay_w - 1 {
-                            buf[(cx, y)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
+                            buf[(cx, y)]
+                                .set_char('▏')
+                                .set_fg(theme.primary)
+                                .set_bg(Color::Black);
                         }
                     }
                 }
             }
             // Footer
-            let footer = if *in_custom_mode { "Enter send · Esc back" } else { "↑↓ select · Enter confirm · Esc cancel" };
+            let footer = if *in_custom_mode {
+                "Enter send · Esc back"
+            } else {
+                "↑↓ select · Enter confirm · Esc cancel"
+            };
             let fx = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
             let fy = overlay_y + overlay_h - 1;
             for (i, ch) in footer.chars().enumerate() {
-                buf[(fx + i as u16, fy)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                buf[(fx + i as u16, fy)]
+                    .set_char(ch)
+                    .set_fg(theme.muted)
+                    .set_bg(Color::Black);
             }
         }
 
-        InteractionState::Multi { question, header, options, cursor, selected } => {
+        InteractionState::Multi {
+            question,
+            header,
+            options,
+            cursor,
+            selected,
+        } => {
             if let Some(h) = header {
                 for (i, ch) in h.chars().take(inner_w).enumerate() {
-                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+                    buf[(inner_x + i as u16, y)]
+                        .set_char(ch)
+                        .set_fg(theme.primary)
+                        .set_bg(Color::Black);
                 }
                 y += 1;
             }
             for line in wrap_text(question, inner_w.max(1)) {
-                if y >= overlay_y + overlay_h - 4 { break; }
+                if y >= overlay_y + overlay_h - 4 {
+                    break;
+                }
                 for (i, ch) in line.chars().enumerate() {
-                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 { break; }
-                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 {
+                        break;
+                    }
+                    buf[(inner_x + i as u16, y)]
+                        .set_char(ch)
+                        .set_fg(theme.fg)
+                        .set_bg(Color::Black);
                 }
                 y += 1;
             }
             y += 1;
             // Options with checkboxes
             for (i, opt) in options.iter().enumerate() {
-                if y >= overlay_y + overlay_h - 2 { break; }
+                if y >= overlay_y + overlay_h - 2 {
+                    break;
+                }
                 let is_cursor = i == *cursor;
                 let is_checked = selected.get(i).copied().unwrap_or(false);
                 let checkbox = if is_checked { "☑ " } else { "☐ " };
@@ -2760,10 +3781,16 @@ fn render_interaction_overlay(
                         let indent = "    ";
                         let desc_w = inner_w.saturating_sub(indent.len());
                         for (j, ch) in indent.chars().enumerate() {
-                            buf[(inner_x + j as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                            buf[(inner_x + j as u16, y)]
+                                .set_char(ch)
+                                .set_fg(theme.muted)
+                                .set_bg(Color::Black);
                         }
                         for (j, ch) in desc.chars().take(desc_w).enumerate() {
-                            buf[(inner_x + indent.len() as u16 + j as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                            buf[(inner_x + indent.len() as u16 + j as u16, y)]
+                                .set_char(ch)
+                                .set_fg(theme.muted)
+                                .set_bg(Color::Black);
                         }
                         y += 1;
                     }
@@ -2773,22 +3800,39 @@ fn render_interaction_overlay(
             let fx = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
             let fy = overlay_y + overlay_h - 1;
             for (i, ch) in footer.chars().enumerate() {
-                buf[(fx + i as u16, fy)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                buf[(fx + i as u16, fy)]
+                    .set_char(ch)
+                    .set_fg(theme.muted)
+                    .set_bg(Color::Black);
             }
         }
 
-        InteractionState::Confirm { question, header, selected } => {
+        InteractionState::Confirm {
+            question,
+            header,
+            selected,
+        } => {
             if let Some(h) = header {
                 for (i, ch) in h.chars().take(inner_w).enumerate() {
-                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+                    buf[(inner_x + i as u16, y)]
+                        .set_char(ch)
+                        .set_fg(theme.primary)
+                        .set_bg(Color::Black);
                 }
                 y += 1;
             }
             for line in wrap_text(question, inner_w.max(1)) {
-                if y >= overlay_y + overlay_h - 4 { break; }
+                if y >= overlay_y + overlay_h - 4 {
+                    break;
+                }
                 for (i, ch) in line.chars().enumerate() {
-                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 { break; }
-                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 {
+                        break;
+                    }
+                    buf[(inner_x + i as u16, y)]
+                        .set_char(ch)
+                        .set_fg(theme.fg)
+                        .set_bg(Color::Black);
                 }
                 y += 1;
             }
@@ -2810,27 +3854,41 @@ fn render_interaction_overlay(
             let total_w = yes_label.len() + 4 + no_label.len();
             let btn_x = inner_x + ((inner_w.saturating_sub(total_w)) / 2) as u16;
             for (j, ch) in yes_label.chars().enumerate() {
-                buf[(btn_x + j as u16, btn_y)].set_char(ch).set_style(yes_style);
+                buf[(btn_x + j as u16, btn_y)]
+                    .set_char(ch)
+                    .set_style(yes_style);
             }
             let no_x = btn_x + yes_label.len() as u16 + 4;
             for (j, ch) in no_label.chars().enumerate() {
-                buf[(no_x + j as u16, btn_y)].set_char(ch).set_style(no_style);
+                buf[(no_x + j as u16, btn_y)]
+                    .set_char(ch)
+                    .set_style(no_style);
             }
             let footer = "←→ select · Enter confirm · Esc cancel";
             let fx = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
             let fy = overlay_y + overlay_h - 1;
             for (i, ch) in footer.chars().enumerate() {
-                buf[(fx + i as u16, fy)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                buf[(fx + i as u16, fy)]
+                    .set_char(ch)
+                    .set_fg(theme.muted)
+                    .set_bg(Color::Black);
             }
         }
 
         InteractionState::Generic { payload, input } => {
             // Fallback: show raw payload and text input
             for line in wrap_text(payload, inner_w.max(1)) {
-                if y >= overlay_y + overlay_h - 3 { break; }
+                if y >= overlay_y + overlay_h - 3 {
+                    break;
+                }
                 for (i, ch) in line.chars().enumerate() {
-                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 { break; }
-                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 {
+                        break;
+                    }
+                    buf[(inner_x + i as u16, y)]
+                        .set_char(ch)
+                        .set_fg(theme.fg)
+                        .set_bg(Color::Black);
                 }
                 y += 1;
             }
@@ -2842,27 +3900,42 @@ fn render_interaction_overlay(
             let cursor_pos = input.chars().count();
             let cursor_line = cursor_pos / input_w.max(1);
             let cursor_col = cursor_pos % input_w.max(1);
-            
+
             for (line_idx, line) in input_lines.iter().enumerate() {
-                if y >= overlay_y + overlay_h - 2 { break; }
+                if y >= overlay_y + overlay_h - 2 {
+                    break;
+                }
                 if line_idx == 0 {
                     for (i, ch) in prompt.chars().enumerate() {
-                        buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                        buf[(inner_x + i as u16, y)]
+                            .set_char(ch)
+                            .set_fg(theme.muted)
+                            .set_bg(Color::Black);
                     }
                 } else {
                     for i in 0..prompt.len() {
-                        buf[(inner_x + i as u16, y)].set_char(' ').set_bg(Color::Black);
+                        buf[(inner_x + i as u16, y)]
+                            .set_char(' ')
+                            .set_bg(Color::Black);
                     }
                 }
                 let input_x = inner_x + prompt.len() as u16;
                 for (i, ch) in line.chars().enumerate() {
-                    if input_x + i as u16 >= overlay_x + overlay_w - 2 { break; }
-                    buf[(input_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                    if input_x + i as u16 >= overlay_x + overlay_w - 2 {
+                        break;
+                    }
+                    buf[(input_x + i as u16, y)]
+                        .set_char(ch)
+                        .set_fg(theme.fg)
+                        .set_bg(Color::Black);
                 }
                 if line_idx == cursor_line && !input.is_empty() {
                     let cx = input_x + cursor_col as u16;
                     if cx < overlay_x + overlay_w - 1 {
-                        buf[(cx, y)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
+                        buf[(cx, y)]
+                            .set_char('▏')
+                            .set_fg(theme.primary)
+                            .set_bg(Color::Black);
                     }
                 }
                 y += 1;
@@ -2870,14 +3943,20 @@ fn render_interaction_overlay(
             if input.is_empty() {
                 let cx = inner_x + prompt.len() as u16;
                 if cx < overlay_x + overlay_w - 1 && y > overlay_y + 1 {
-                    buf[(cx, y - 1)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
+                    buf[(cx, y - 1)]
+                        .set_char('▏')
+                        .set_fg(theme.primary)
+                        .set_bg(Color::Black);
                 }
             }
             let footer = "Enter send · Esc cancel";
             let fx = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
             let fy = overlay_y + overlay_h - 1;
             for (i, ch) in footer.chars().enumerate() {
-                buf[(fx + i as u16, fy)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                buf[(fx + i as u16, fy)]
+                    .set_char(ch)
+                    .set_fg(theme.muted)
+                    .set_bg(Color::Black);
             }
         }
     }
@@ -2890,35 +3969,54 @@ mod golden {
     use crate::theme::Theme;
     use ratatui::{backend::TestBackend, Terminal};
 
-    fn theme() -> Theme { Theme::dark() }
+    fn theme() -> Theme {
+        Theme::dark()
+    }
 
     fn render_overlay_to_string(overlay: &Overlay, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         let th = theme();
-        terminal.draw(|f| {
-            let area = f.area();
-            super::render_overlay(f, overlay, area, &th);
-        }).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                super::render_overlay(f, overlay, area, &th);
+            })
+            .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let mut out = String::new();
         for y in 0..height {
             for x in 0..width {
                 out.push_str(buffer[(x, y)].symbol());
             }
-            if y + 1 < height { out.push('\n'); }
+            if y + 1 < height {
+                out.push('\n');
+            }
         }
         out
     }
 
     #[test]
     fn golden_approval_overlay_contains_tool_and_actions() {
-        let overlay = Overlay::Approval { tool: "bash".into(), args: r#"{"cmd":"rm -rf /"}"#.into(), selected: 0 };
+        let overlay = Overlay::Approval {
+            tool: "bash".into(),
+            args: r#"{"cmd":"rm -rf /"}"#.into(),
+            selected: 0,
+        };
         let snap = render_overlay_to_string(&overlay, 60, 15);
         // Buffer must contain the command snippet and the action hints; tool name is implicit via Command line
-        assert!(snap.contains("rm -rf"), "approval overlay must show args preview, got:\n{snap}");
-        assert!(snap.contains("APPROVAL") || snap.contains("Allow"), "must show approval header or actions, got:\n{snap}");
-        assert!(snap.contains("Allow") && snap.contains("Deny"), "must show Allow/Deny actions, got:\n{snap}");
+        assert!(
+            snap.contains("rm -rf"),
+            "approval overlay must show args preview, got:\n{snap}"
+        );
+        assert!(
+            snap.contains("APPROVAL") || snap.contains("Allow"),
+            "must show approval header or actions, got:\n{snap}"
+        );
+        assert!(
+            snap.contains("Allow") && snap.contains("Deny"),
+            "must show Allow/Deny actions, got:\n{snap}"
+        );
     }
 
     #[test]
@@ -2928,20 +4026,44 @@ mod golden {
             question: "choose?".into(),
             header: None,
             options: vec![
-                crate::app::QuestionOption { label: "Option A".into(), value: "a".into(), description: None },
-                crate::app::QuestionOption { label: "Option B".into(), value: "b".into(), description: None },
+                crate::app::QuestionOption {
+                    label: "Option A".into(),
+                    value: "a".into(),
+                    description: None,
+                },
+                crate::app::QuestionOption {
+                    label: "Option B".into(),
+                    value: "b".into(),
+                    description: None,
+                },
             ],
             selected: 0,
             allow_custom: false,
             custom_input: String::new(),
             in_custom_mode: false,
         };
-        let overlay = Overlay::Interaction { id: 42, plugin: "kn9t-ask-user".into(), state };
+        let overlay = Overlay::Interaction {
+            id: 42,
+            plugin: "kn9t-ask-user".into(),
+            state,
+        };
         let snap = render_overlay_to_string(&overlay, 60, 15);
-        assert!(snap.contains("kn9t-ask-user"), "must show plugin name, got:\n{snap}");
-        assert!(snap.contains("choose?"), "must show payload question, got:\n{snap}");
-        assert!(snap.contains("Option A"), "must show first option, got:\n{snap}");
-        assert!(snap.contains("Enter") && snap.contains("Esc"), "must show footer hints, got:\n{snap}");
+        assert!(
+            snap.contains("kn9t-ask-user"),
+            "must show plugin name, got:\n{snap}"
+        );
+        assert!(
+            snap.contains("choose?"),
+            "must show payload question, got:\n{snap}"
+        );
+        assert!(
+            snap.contains("Option A"),
+            "must show first option, got:\n{snap}"
+        );
+        assert!(
+            snap.contains("Enter") && snap.contains("Esc"),
+            "must show footer hints, got:\n{snap}"
+        );
     }
 
     #[test]
@@ -2953,21 +4075,39 @@ mod golden {
             placeholder: None,
             input: String::new(),
         };
-        let overlay = Overlay::Interaction { id: 1, plugin: "p".into(), state };
+        let overlay = Overlay::Interaction {
+            id: 1,
+            plugin: "p".into(),
+            state,
+        };
         let snap = render_overlay_to_string(&overlay, 60, 15);
         // Must be renderable without panic and contain the payload
-        assert!(snap.contains("hello"), "payload must be visible, got:\n{snap}");
-        assert!(snap.contains("Esc"), "cancel hint must be present, got:\n{snap}");
+        assert!(
+            snap.contains("hello"),
+            "payload must be visible, got:\n{snap}"
+        );
+        assert!(
+            snap.contains("Esc"),
+            "cancel hint must be present, got:\n{snap}"
+        );
     }
 
     #[test]
     fn golden_help_overlay_renders() {
         let overlay = Overlay::Help;
         let snap = render_overlay_to_string(&overlay, 60, 15);
-        assert!(snap.contains("HELP") || snap.contains("Navigation") || snap.contains("Actions"), "help overlay must contain headings, got:\n{snap}");
+        assert!(
+            snap.contains("HELP") || snap.contains("Navigation") || snap.contains("Actions"),
+            "help overlay must contain headings, got:\n{snap}"
+        );
     }
 
-    fn render_sidebar_with_pages_to_string(width: u16, height: u16, pages: Vec<((String,String), crate::page_state::UiPage)>, selected: Option<(String,String)>) -> String {
+    fn render_sidebar_with_pages_to_string(
+        width: u16,
+        height: u16,
+        pages: Vec<((String, String), crate::page_state::UiPage)>,
+        selected: Option<(String, String)>,
+    ) -> String {
         use crate::app::App;
         use crate::config::Config;
         use crate::event::TickControl;
@@ -2981,62 +4121,167 @@ mod golden {
             app.ui_pages.insert(k, pg);
         }
         app.ui_page_selected = selected;
-        terminal.draw(|f| {
-            let area = Rect::new(0,0,width,height);
-            super::render_right_sidebar(f, &app, area, &th);
-        }).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, width, height);
+                super::render_right_sidebar(f, &app, area, &th);
+            })
+            .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let mut out = String::new();
         for y in 0..height {
             for x in 0..width {
                 out.push_str(buffer[(x, y)].symbol());
             }
-            if y + 1 < height { out.push('\n'); }
+            if y + 1 < height {
+                out.push('\n');
+            }
         }
         out
     }
 
     #[test]
     fn golden_pages_panel_renders_declared_page_distinct_from_transcript() {
-        use crate::page_state::{UiPage, Placeholder, PlaceholderKind};
-        use std::collections::HashMap;
+        use crate::page_state::{Placeholder, PlaceholderKind, UiPage};
         use serde_json::json;
+        use std::collections::HashMap;
         let mut ph = HashMap::new();
-        ph.insert("status".to_string(), Placeholder { kind: PlaceholderKind::Text, value: json!("running") });
-        ph.insert("prog".to_string(), Placeholder { kind: PlaceholderKind::Bar, value: json!(42) });
+        ph.insert(
+            "status".to_string(),
+            Placeholder {
+                kind: PlaceholderKind::Text,
+                value: json!("running"),
+            },
+        );
+        ph.insert(
+            "prog".to_string(),
+            Placeholder {
+                kind: PlaceholderKind::Bar,
+                value: json!(42),
+            },
+        );
         let mut ph2 = HashMap::new();
-        ph2.insert("items".to_string(), Placeholder { kind: PlaceholderKind::List, value: json!(["a","b"]) });
+        ph2.insert(
+            "items".to_string(),
+            Placeholder {
+                kind: PlaceholderKind::List,
+                value: json!(["a", "b"]),
+            },
+        );
         let pages = vec![
-            (("plug1".to_string(),"dash".to_string()), UiPage { plugin: "plug1".into(), page_id: "dash".into(), order: vec!["status".into(),"prog".into()], placeholders: ph }),
-            (("plug2".to_string(),"other".to_string()), UiPage { plugin: "plug2".into(), page_id: "other".into(), order: vec!["items".into()], placeholders: ph2 }),
+            (
+                ("plug1".to_string(), "dash".to_string()),
+                UiPage {
+                    plugin: "plug1".into(),
+                    page_id: "dash".into(),
+                    order: vec!["status".into(), "prog".into()],
+                    placeholders: ph,
+                },
+            ),
+            (
+                ("plug2".to_string(), "other".to_string()),
+                UiPage {
+                    plugin: "plug2".into(),
+                    page_id: "other".into(),
+                    order: vec!["items".into()],
+                    placeholders: ph2,
+                },
+            ),
         ];
-        let snap = render_sidebar_with_pages_to_string(30, 20, pages, Some(("plug1".to_string(),"dash".to_string())));
+        let snap = render_sidebar_with_pages_to_string(
+            30,
+            20,
+            pages,
+            Some(("plug1".to_string(), "dash".to_string())),
+        );
         // Must show PAGES header and selected page content, distinct from transcript
-        assert!(snap.contains("PAGES"), "must show PAGES section header, got:\n{snap}");
-        assert!(snap.contains("plug1/dash") || snap.contains("dash"), "must show selected page header, got:\n{snap}");
-        assert!(snap.contains("status") || snap.contains("running"), "must render text placeholder, got:\n{snap}");
-        assert!(snap.contains("42%") || snap.contains("prog"), "must render bar placeholder, got:\n{snap}");
+        assert!(
+            snap.contains("PAGES"),
+            "must show PAGES section header, got:\n{snap}"
+        );
+        assert!(
+            snap.contains("plug1/dash") || snap.contains("dash"),
+            "must show selected page header, got:\n{snap}"
+        );
+        assert!(
+            snap.contains("status") || snap.contains("running"),
+            "must render text placeholder, got:\n{snap}"
+        );
+        assert!(
+            snap.contains("42%") || snap.contains("prog"),
+            "must render bar placeholder, got:\n{snap}"
+        );
         // Must show tab switcher for multiple pages (labels truncated to 10 chars, so check prefix)
-        assert!(snap.contains("plug1/dash") && (snap.contains("plug2/oth") || snap.contains("other")), "must show tab switcher for concurrent pages, got:\n{snap}");
+        assert!(
+            snap.contains("plug1/dash") && (snap.contains("plug2/oth") || snap.contains("other")),
+            "must show tab switcher for concurrent pages, got:\n{snap}"
+        );
     }
 
     #[test]
     fn golden_placeholder_write_updates_without_full_rerender() {
         // Declare then write: verify bar value changes
-        use crate::page_state::{UiPage, Placeholder, PlaceholderKind};
-        use std::collections::HashMap;
+        use crate::page_state::{Placeholder, PlaceholderKind, UiPage};
         use serde_json::json;
+        use std::collections::HashMap;
         let mut ph = HashMap::new();
-        ph.insert("prog".to_string(), Placeholder { kind: PlaceholderKind::Bar, value: json!(0) });
-        let pages_before = vec![ (("p".to_string(),"pg".to_string()), UiPage { plugin: "p".into(), page_id: "pg".into(), order: vec!["prog".into()], placeholders: ph.clone() } ) ];
-        let snap_before = render_sidebar_with_pages_to_string(30, 20, pages_before, Some(("p".to_string(),"pg".to_string())));
-        assert!(snap_before.contains("prog"), "initial bar placeholder must be visible, got:\n{snap_before}");
+        ph.insert(
+            "prog".to_string(),
+            Placeholder {
+                kind: PlaceholderKind::Bar,
+                value: json!(0),
+            },
+        );
+        let pages_before = vec![(
+            ("p".to_string(), "pg".to_string()),
+            UiPage {
+                plugin: "p".into(),
+                page_id: "pg".into(),
+                order: vec!["prog".into()],
+                placeholders: ph.clone(),
+            },
+        )];
+        let snap_before = render_sidebar_with_pages_to_string(
+            30,
+            20,
+            pages_before,
+            Some(("p".to_string(), "pg".to_string())),
+        );
+        assert!(
+            snap_before.contains("prog"),
+            "initial bar placeholder must be visible, got:\n{snap_before}"
+        );
         // bar value numeric part must be visible (may be clipped without % due to width)
-        assert!(snap_before.contains("0"), "initial bar value must be visible, got:\n{snap_before}");
+        assert!(
+            snap_before.contains("0"),
+            "initial bar value must be visible, got:\n{snap_before}"
+        );
         let mut ph2 = HashMap::new();
-        ph2.insert("prog".to_string(), Placeholder { kind: PlaceholderKind::Bar, value: json!(85) });
-        let pages_after = vec![ (("p".to_string(),"pg".to_string()), UiPage { plugin: "p".into(), page_id: "pg".into(), order: vec!["prog".into()], placeholders: ph2 } ) ];
-        let snap_after = render_sidebar_with_pages_to_string(30, 20, pages_after, Some(("p".to_string(),"pg".to_string())));
-        assert!(snap_after.contains("85"), "updated bar value must be visible without re-declaring whole page, got:\n{snap_after}");
+        ph2.insert(
+            "prog".to_string(),
+            Placeholder {
+                kind: PlaceholderKind::Bar,
+                value: json!(85),
+            },
+        );
+        let pages_after = vec![(
+            ("p".to_string(), "pg".to_string()),
+            UiPage {
+                plugin: "p".into(),
+                page_id: "pg".into(),
+                order: vec!["prog".into()],
+                placeholders: ph2,
+            },
+        )];
+        let snap_after = render_sidebar_with_pages_to_string(
+            30,
+            20,
+            pages_after,
+            Some(("p".to_string(), "pg".to_string())),
+        );
+        assert!(
+            snap_after.contains("85"),
+            "updated bar value must be visible without re-declaring whole page, got:\n{snap_after}"
+        );
     }
 }

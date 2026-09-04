@@ -49,8 +49,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use kn9t_core::{CacheMode, ModelRef, ModelSpec, Price};
 use kn9t_core::Quirks as ModelQuirks;
+use kn9t_core::{CacheMode, ModelRef, ModelSpec, Price};
 use kn9t_provider_core::{lookup_price, Quirks as HttpQuirks};
 use kn9t_provider_openai::{OpenAiConfig, OpenAiProvider};
 use serde::Deserialize;
@@ -106,7 +106,9 @@ pub enum PolicyMode {
     ReadOnly,
 }
 impl Default for PolicyMode {
-    fn default() -> Self { PolicyMode::AskOnMutation }
+    fn default() -> Self {
+        PolicyMode::AskOnMutation
+    }
 }
 impl PolicyMode {
     pub fn parse(s: &str) -> Result<Self, String> {
@@ -184,16 +186,16 @@ pub struct RawProvider {
 /// provider-level default (which is `Quirks::default()`).
 #[derive(Debug, Deserialize, Default)]
 pub struct RawQuirks {
-    pub max_tokens_field:  Option<String>,
-    pub system_role:       Option<String>,
-    pub usage_in_stream:   Option<bool>,
-    pub finish_reason:     Option<bool>,
-    pub reasoning:         Option<String>,
-    pub tool_result_name:  Option<bool>,
-    pub thinking_style:    Option<String>,
-    pub thinking_replay:   Option<String>,
-    pub require_tools:     Option<bool>,
-    pub streaming:         Option<bool>,
+    pub max_tokens_field: Option<String>,
+    pub system_role: Option<String>,
+    pub usage_in_stream: Option<bool>,
+    pub finish_reason: Option<bool>,
+    pub reasoning: Option<String>,
+    pub tool_result_name: Option<bool>,
+    pub thinking_style: Option<String>,
+    pub thinking_replay: Option<String>,
+    pub require_tools: Option<bool>,
+    pub streaming: Option<bool>,
     pub trim_trailing_whitespace: Option<bool>,
 }
 
@@ -233,18 +235,18 @@ impl RawQuirks {
 
 #[derive(Debug, Deserialize)]
 pub struct RawModel {
-    pub provider:          String,
-    pub id:                String,
+    pub provider: String,
+    pub id: String,
     /// Wire model id sent to the API. Defaults to `id` if absent.
-    pub api_id:            Option<String>,
-    pub ctx:               u32,
-    pub max_out:           u32,
+    pub api_id: Option<String>,
+    pub ctx: u32,
+    pub max_out: u32,
     #[serde(default)]
-    pub price_in:          f64,
+    pub price_in: f64,
     #[serde(default)]
-    pub price_out:         f64,
+    pub price_out: f64,
     #[serde(default)]
-    pub price_cache_read:  f64,
+    pub price_cache_read: f64,
     #[serde(default)]
     pub price_cache_write: f64,
     /// "explicit" | "automatic" | "none"  (default: "none")
@@ -258,9 +260,15 @@ pub struct RawModel {
     pub quirks: RawQuirks,
 }
 
-fn default_cache_mode_str() -> String { "automatic".into() }
-fn default_breakpoints()    -> u8    { 4 }
-fn default_min_tokens()     -> u32   { 1024 }
+fn default_cache_mode_str() -> String {
+    "automatic".into()
+}
+fn default_breakpoints() -> u8 {
+    4
+}
+fn default_min_tokens() -> u32 {
+    1024
+}
 
 // ── Resolved output ──────────────────────────────────────────────────────────
 
@@ -268,7 +276,7 @@ fn default_min_tokens()     -> u32   { 1024 }
 #[derive(Default)]
 pub struct ResolvedConfig {
     pub providers: Vec<(String, Arc<dyn kn9t_core::Provider>)>,
-    pub models:    Vec<ModelSpec>,
+    pub models: Vec<ModelSpec>,
     /// The model id that should be the server default (first model if unspecified).
     pub default_model_id: Option<String>,
     /// Idle-exit duration from `[server] idle_exit_secs`. `None` → use default (30 min).
@@ -300,7 +308,8 @@ pub fn global_config_path() -> PathBuf {
     let home = std::env::var("KN9T_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            dirs_home().unwrap_or_else(|| PathBuf::from("."))
+            dirs_home()
+                .unwrap_or_else(|| PathBuf::from("."))
                 .join(".kn9t")
         });
     home.join("config.toml")
@@ -312,8 +321,7 @@ pub fn load(path: &Path) -> Result<ResolvedConfig, String> {
     let raw: RawConfig = if path.exists() {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("config: read {}: {e}", path.display()))?;
-        toml::from_str(&text)
-            .map_err(|e| format!("config: parse {}: {e}", path.display()))?
+        toml::from_str(&text).map_err(|e| format!("config: parse {}: {e}", path.display()))?
     } else {
         RawConfig::default()
     };
@@ -360,7 +368,8 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                 // `ModelChanged` events and the DB. It travels in the config instead
                 // and is applied per request. Only models that actually declare an
                 // override get an entry, so the common path stays untouched.
-                let model_quirks: HashMap<String, HttpQuirks> = raw.models
+                let model_quirks: HashMap<String, HttpQuirks> = raw
+                    .models
                     .iter()
                     .filter(|rm| &rm.provider == name && rm.quirks.is_set())
                     .map(|rm| (rm.id.clone(), merge_quirks(quirks.clone(), &rm.quirks)))
@@ -369,34 +378,47 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                     crate::log!("[kn9t-config] model {id:?}: per-model quirk override active");
                 }
                 let provider = OpenAiProvider::new(OpenAiConfig {
-                    name:         name.clone(),
-                    base_url:     rp.base_url.clone(),
-                    api_key:      if api_key.is_empty() { None } else { Some(api_key.clone()) },
+                    name: name.clone(),
+                    base_url: rp.base_url.clone(),
+                    api_key: if api_key.is_empty() {
+                        None
+                    } else {
+                        Some(api_key.clone())
+                    },
                     quirks,
                     model_quirks,
                     tls_insecure: rp.tls_insecure,
                     extra_headers: extra_headers.clone(),
                     ..OpenAiConfig::default()
                 });
-                
+
                 // Auto-discover models from /v1/models endpoint.
                 let discovered = fetch_openai_models(
-                    &rp.base_url, 
-                    if api_key.is_empty() { None } else { Some(&api_key) },
+                    &rp.base_url,
+                    if api_key.is_empty() {
+                        None
+                    } else {
+                        Some(&api_key)
+                    },
                     &extra_headers,
                     rp.tls_insecure,
                     name,
                 );
                 auto_models.extend(discovered);
-                
-                providers.push((name.clone(), Arc::new(provider) as Arc<dyn kn9t_core::Provider>));
+
+                providers.push((
+                    name.clone(),
+                    Arc::new(provider) as Arc<dyn kn9t_core::Provider>,
+                ));
             }
             "plugin" => {
                 let binary_name = rp.binary.as_deref().unwrap_or_else(|| {
                     crate::log!("[kn9t-config] provider {name:?}: kind=\"plugin\" requires a `binary` field; skipping");
                     ""
                 });
-                if binary_name.is_empty() { continue; }
+                if binary_name.is_empty() {
+                    continue;
+                }
 
                 // Resolve binary: absolute path or sibling of the running executable.
                 let binary_path = {
@@ -408,7 +430,9 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                             .unwrap_or_else(|_| std::path::PathBuf::from("."));
                         exe.pop();
                         exe.push(binary_name);
-                        if cfg!(windows) { exe.set_extension("exe"); }
+                        if cfg!(windows) {
+                            exe.set_extension("exe");
+                        }
                         exe
                     }
                 };
@@ -439,53 +463,77 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                     })
                     .collect();
 
-                let env_refs: Vec<(&str, &str)> = env_pairs.iter()
+                let env_refs: Vec<(&str, &str)> = env_pairs
+                    .iter()
                     .map(|(k, v)| (k.as_str(), v.as_str()))
                     .collect();
 
-                match kn9t_plugin::PluginHost::spawn(&binary_path, &env_refs, std::sync::Arc::new(kn9t_plugin::NoOpPluginKv)) {
+                match kn9t_plugin::PluginHost::spawn(
+                    &binary_path,
+                    &env_refs,
+                    std::sync::Arc::new(kn9t_plugin::NoOpPluginKv),
+                ) {
                     Ok(host) => {
-                        crate::log!("[kn9t-config] provider {name:?}: spawned plugin {}", binary_path.display());
-                        
+                        crate::log!(
+                            "[kn9t-config] provider {name:?}: spawned plugin {}",
+                            binary_path.display()
+                        );
+
                         // Extract models from plugin declaration (auto-discovery).
                         let decl = host.declaration();
-                         if let Some(ref prov_decl) = decl.provider {
-                             for model_decl in &prov_decl.models {
-                                 // Try plugin-provided price, then fallback lookup, then zero.
-                                 let price = model_decl.price.as_ref()
-                                     .and_then(|p| serde_json::from_value::<PluginPrice>(p.clone()).ok())
-                                     .filter(|p| p.input > 0.0 || p.output > 0.0)
-                                     .map(|p| Price {
-                                         input: (p.input * 1_000_000.0).round() as i64,
-                                         output: (p.output * 1_000_000.0).round() as i64,
-                                         cache_read: (p.cache_read * 1_000_000.0).round() as i64,
-                                         cache_write: (p.cache_write * 1_000_000.0).round() as i64,
-                                     })
-                                     .or_else(|| lookup_price(&model_decl.id))
-                                     .unwrap_or(Price { input: 0, output: 0, cache_read: 0, cache_write: 0 });
-                                 
-                                 let spec = ModelSpec {
-                                     r#ref: ModelRef {
-                                         provider: name.clone(),
-                                         id: model_decl.id.clone(),
-                                     },
-                                     api_id: model_decl.id.clone(),
-                                     ctx_window: model_decl.ctx_window,
-                                     max_out: model_decl.ctx_window / 4, // Default: 25% of context
-                                     price,
+                        if let Some(ref prov_decl) = decl.provider {
+                            for model_decl in &prov_decl.models {
+                                // Try plugin-provided price, then fallback lookup, then zero.
+                                let price = model_decl
+                                    .price
+                                    .as_ref()
+                                    .and_then(|p| {
+                                        serde_json::from_value::<PluginPrice>(p.clone()).ok()
+                                    })
+                                    .filter(|p| p.input > 0.0 || p.output > 0.0)
+                                    .map(|p| Price {
+                                        input: (p.input * 1_000_000.0).round() as i64,
+                                        output: (p.output * 1_000_000.0).round() as i64,
+                                        cache_read: (p.cache_read * 1_000_000.0).round() as i64,
+                                        cache_write: (p.cache_write * 1_000_000.0).round() as i64,
+                                    })
+                                    .or_else(|| lookup_price(&model_decl.id))
+                                    .unwrap_or(Price {
+                                        input: 0,
+                                        output: 0,
+                                        cache_read: 0,
+                                        cache_write: 0,
+                                    });
+
+                                let spec = ModelSpec {
+                                    r#ref: ModelRef {
+                                        provider: name.clone(),
+                                        id: model_decl.id.clone(),
+                                    },
+                                    api_id: model_decl.id.clone(),
+                                    ctx_window: model_decl.ctx_window,
+                                    max_out: model_decl.ctx_window / 4, // Default: 25% of context
+                                    price,
                                     cache: CacheMode::Automatic,
                                     streaming: true,
                                     quirks: ModelQuirks::default(),
                                 };
                                 auto_models.push(spec);
-                                crate::log!("[kn9t-config] provider {name:?}: discovered model {:?}", model_decl.id);
+                                crate::log!(
+                                    "[kn9t-config] provider {name:?}: discovered model {:?}",
+                                    model_decl.id
+                                );
                             }
                         }
-                        
+
                         let remote = kn9t_plugin::RemoteProvider::new(
-                            std::sync::Arc::new(host), name.clone()
+                            std::sync::Arc::new(host),
+                            name.clone(),
                         );
-                        providers.push((name.clone(), Arc::new(remote) as Arc<dyn kn9t_core::Provider>));
+                        providers.push((
+                            name.clone(),
+                            Arc::new(remote) as Arc<dyn kn9t_core::Provider>,
+                        ));
                     }
                     Err(e) => {
                         crate::log!("[kn9t-config] provider {name:?}: spawn failed: {e}; skipping");
@@ -515,9 +563,9 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
 
         // Use config price if any non-zero, otherwise fallback lookup.
         let config_price = Price {
-            input:       (rm.price_in * 1_000_000.0).round() as i64,
-            output:      (rm.price_out * 1_000_000.0).round() as i64,
-            cache_read:  (rm.price_cache_read * 1_000_000.0).round() as i64,
+            input: (rm.price_in * 1_000_000.0).round() as i64,
+            output: (rm.price_out * 1_000_000.0).round() as i64,
+            cache_read: (rm.price_cache_read * 1_000_000.0).round() as i64,
             cache_write: (rm.price_cache_write * 1_000_000.0).round() as i64,
         };
         let price = if config_price.input > 0 || config_price.output > 0 {
@@ -525,19 +573,19 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         } else {
             lookup_price(&api_id).unwrap_or(config_price)
         };
-        
+
         let spec = ModelSpec {
             r#ref: ModelRef {
                 provider: rm.provider.clone(),
-                id:       rm.id.clone(),
+                id: rm.id.clone(),
             },
             api_id,
             ctx_window: rm.ctx,
-            max_out:    rm.max_out,
+            max_out: rm.max_out,
             price,
             cache,
             streaming: true,
-            quirks: ModelQuirks::default(),   // model-level Quirks (kn9t-core) = default
+            quirks: ModelQuirks::default(), // model-level Quirks (kn9t-core) = default
         };
         models.push(spec);
 
@@ -552,19 +600,25 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         .iter()
         .map(|m| (m.r#ref.provider.clone(), m.r#ref.id.clone()))
         .collect();
-    
+
     for pm in auto_models {
         if !config_model_keys.contains(&(pm.r#ref.provider.clone(), pm.r#ref.id.clone())) {
             models.push(pm);
         } else {
-            crate::log!("[kn9t-config] plugin model {:?} overridden by config", pm.r#ref.id);
+            crate::log!(
+                "[kn9t-config] plugin model {:?} overridden by config",
+                pm.r#ref.id
+            );
         }
     }
 
-    let default_model_id = raw.default_model
+    let default_model_id = raw
+        .default_model
         .or_else(|| models.first().map(|m| m.r#ref.id.clone()));
 
-    let idle_exit = raw.server.idle_exit_secs
+    let idle_exit = raw
+        .server
+        .idle_exit_secs
         .map(std::time::Duration::from_secs);
 
     // Resolve [policy] — DESIGN §10.1. Absent → defaults (ask_on_mutation + BashPolicy::default).
@@ -620,8 +674,14 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         })
         .collect();
 
-
-    Ok(ResolvedConfig { providers, models, default_model_id, idle_exit, policy_mode, plugins })
+    Ok(ResolvedConfig {
+        providers,
+        models,
+        default_model_id,
+        idle_exit,
+        policy_mode,
+        plugins,
+    })
 }
 
 /// R-SRV-CFG-010: resolve `[provider.X.headers]` — same `env:VAR` syntax as api_key.
@@ -665,8 +725,7 @@ fn resolve_api_key(raw: Option<&str>) -> Result<String, String> {
         None => Ok(String::new()),
         Some(s) if s.starts_with("env:") => {
             let var = &s[4..];
-            std::env::var(var)
-                .map_err(|_| format!("api_key env var {var:?} not set"))
+            std::env::var(var).map_err(|_| format!("api_key env var {var:?} not set"))
         }
         Some(s) => Ok(s.to_owned()),
     }
@@ -676,43 +735,55 @@ fn build_http_quirks(r: &RawQuirks) -> HttpQuirks {
     let def = HttpQuirks::default();
     HttpQuirks {
         max_tokens_field: r.max_tokens_field.clone().unwrap_or(def.max_tokens_field),
-        system_role:      r.system_role.clone().unwrap_or(def.system_role),
-        usage_in_stream:  r.usage_in_stream.unwrap_or(def.usage_in_stream),
-        finish_reason:    r.finish_reason.unwrap_or(def.finish_reason),
-        reasoning:        r.reasoning.clone().unwrap_or(def.reasoning),
+        system_role: r.system_role.clone().unwrap_or(def.system_role),
+        usage_in_stream: r.usage_in_stream.unwrap_or(def.usage_in_stream),
+        finish_reason: r.finish_reason.unwrap_or(def.finish_reason),
+        reasoning: r.reasoning.clone().unwrap_or(def.reasoning),
         tool_result_name: r.tool_result_name.unwrap_or(def.tool_result_name),
-        thinking_style:   r.thinking_style.clone().unwrap_or(def.thinking_style),
-        thinking_replay:  r.thinking_replay.clone().unwrap_or(def.thinking_replay),
-        require_tools:    r.require_tools.unwrap_or(def.require_tools),
-        streaming:        r.streaming.unwrap_or(def.streaming),
-        extra_body:       serde_json::Value::Null,
-        trim_trailing_whitespace: r.trim_trailing_whitespace.unwrap_or(def.trim_trailing_whitespace),
+        thinking_style: r.thinking_style.clone().unwrap_or(def.thinking_style),
+        thinking_replay: r.thinking_replay.clone().unwrap_or(def.thinking_replay),
+        require_tools: r.require_tools.unwrap_or(def.require_tools),
+        streaming: r.streaming.unwrap_or(def.streaming),
+        extra_body: serde_json::Value::Null,
+        trim_trailing_whitespace: r
+            .trim_trailing_whitespace
+            .unwrap_or(def.trim_trailing_whitespace),
     }
 }
 
 fn merge_quirks(base: HttpQuirks, over: &RawQuirks) -> HttpQuirks {
     HttpQuirks {
-        max_tokens_field: over.max_tokens_field.clone().unwrap_or(base.max_tokens_field),
-        system_role:      over.system_role.clone().unwrap_or(base.system_role),
-        usage_in_stream:  over.usage_in_stream.unwrap_or(base.usage_in_stream),
-        finish_reason:    over.finish_reason.unwrap_or(base.finish_reason),
-        reasoning:        over.reasoning.clone().unwrap_or(base.reasoning),
+        max_tokens_field: over
+            .max_tokens_field
+            .clone()
+            .unwrap_or(base.max_tokens_field),
+        system_role: over.system_role.clone().unwrap_or(base.system_role),
+        usage_in_stream: over.usage_in_stream.unwrap_or(base.usage_in_stream),
+        finish_reason: over.finish_reason.unwrap_or(base.finish_reason),
+        reasoning: over.reasoning.clone().unwrap_or(base.reasoning),
         tool_result_name: over.tool_result_name.unwrap_or(base.tool_result_name),
-        thinking_style:   over.thinking_style.clone().unwrap_or(base.thinking_style),
-        thinking_replay:  over.thinking_replay.clone().unwrap_or(base.thinking_replay),
-        require_tools:    over.require_tools.unwrap_or(base.require_tools),
-        streaming:        over.streaming.unwrap_or(base.streaming),
-        extra_body:       serde_json::Value::Null,
-        trim_trailing_whitespace: over.trim_trailing_whitespace.unwrap_or(base.trim_trailing_whitespace),
+        thinking_style: over.thinking_style.clone().unwrap_or(base.thinking_style),
+        thinking_replay: over.thinking_replay.clone().unwrap_or(base.thinking_replay),
+        require_tools: over.require_tools.unwrap_or(base.require_tools),
+        streaming: over.streaming.unwrap_or(base.streaming),
+        extra_body: serde_json::Value::Null,
+        trim_trailing_whitespace: over
+            .trim_trailing_whitespace
+            .unwrap_or(base.trim_trailing_whitespace),
     }
 }
 
 fn parse_cache_mode(s: &str, breakpoints: u8, min_tokens: u32) -> Result<CacheMode, String> {
     match s {
-        "explicit"  => Ok(CacheMode::Explicit { max_breakpoints: breakpoints, min_tokens }),
+        "explicit" => Ok(CacheMode::Explicit {
+            max_breakpoints: breakpoints,
+            min_tokens,
+        }),
         "automatic" => Ok(CacheMode::Automatic),
-        "none"      => Ok(CacheMode::None),
-        other       => Err(format!("unknown cache mode {other:?}; use \"explicit\", \"automatic\", or \"none\"")),
+        "none" => Ok(CacheMode::None),
+        other => Err(format!(
+            "unknown cache mode {other:?}; use \"explicit\", \"automatic\", or \"none\""
+        )),
     }
 }
 
@@ -732,7 +803,11 @@ impl PolicyMode {
 /// Update `[policy] mode = ...` in the config file and return the new mode.
 pub fn set_policy_mode(mode: PolicyMode) -> Result<PolicyMode, String> {
     let path = global_config_path();
-    update_toml_field(&path, &["policy", "mode"], toml::Value::String(mode.as_str().to_string()))?;
+    update_toml_field(
+        &path,
+        &["policy", "mode"],
+        toml::Value::String(mode.as_str().to_string()),
+    )?;
     Ok(mode)
 }
 
@@ -741,20 +816,26 @@ pub fn set_policy_mode(mode: PolicyMode) -> Result<PolicyMode, String> {
 pub fn get_policy_state() -> Result<PolicyState, String> {
     let path = global_config_path();
     let val = load_toml_value(&path)?;
-    
-    let mode = val.get("policy")
+
+    let mode = val
+        .get("policy")
         .and_then(|p| p.get("mode"))
         .and_then(|m| m.as_str())
         .map(|s| PolicyMode::parse(s).unwrap_or_default())
         .unwrap_or_default();
-    
-    let approvals = val.get("policy")
+
+    let approvals = val
+        .get("policy")
         .and_then(|p| p.get("approvals"))
         .and_then(|a| a.get("always"))
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
-    
+
     Ok(PolicyState { mode, approvals })
 }
 
@@ -777,8 +858,7 @@ fn load_toml_value(path: &Path) -> Result<toml::Value, String> {
     if !path.exists() {
         return Ok(toml::Value::Table(toml::map::Map::new()));
     }
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("read config: {e}"))?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("read config: {e}"))?;
     if text.trim().is_empty() {
         return Ok(toml::Value::Table(toml::map::Map::new()));
     }
@@ -798,17 +878,19 @@ fn write_toml_value(path: &Path, val: &toml::Value) -> Result<(), String> {
 
 fn update_toml_field(path: &Path, keys: &[&str], value: toml::Value) -> Result<(), String> {
     let mut val = load_toml_value(path)?;
-    
+
     // Navigate to parent and set the final key
     let mut current = val.as_table_mut().unwrap();
     for &key in &keys[..keys.len() - 1] {
         current = current
-            .entry(key).or_insert(toml::Value::Table(toml::map::Map::new()))
-            .as_table_mut().ok_or(format!("{key} is not a table"))?;
+            .entry(key)
+            .or_insert(toml::Value::Table(toml::map::Map::new()))
+            .as_table_mut()
+            .ok_or(format!("{key} is not a table"))?;
     }
     let final_key = keys[keys.len() - 1];
     current.insert(final_key.to_string(), value);
-    
+
     write_toml_value(path, &val)
 }
 
@@ -818,11 +900,11 @@ fn fetch_openai_models(
     base_url: &str,
     api_key: Option<&str>,
     extra_headers: &[(String, String)],
-    _tls_insecure: bool,  // Note: ureq+rustls doesn't support skipping verification
+    _tls_insecure: bool, // Note: ureq+rustls doesn't support skipping verification
     provider_name: &str,
 ) -> Vec<ModelSpec> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    
+
     let mut req = ureq::get(&url);
     if let Some(key) = api_key {
         req = req.header("Authorization", &format!("Bearer {key}"));
@@ -830,7 +912,7 @@ fn fetch_openai_models(
     for (k, v) in extra_headers {
         req = req.header(k, v);
     }
-    
+
     let body: serde_json::Value = match req.call() {
         Ok(resp) => {
             let mut reader = resp.into_body().into_reader();
@@ -842,41 +924,46 @@ fn fetch_openai_models(
             match serde_json::from_str(&body_str) {
                 Ok(v) => v,
                 Err(e) => {
-                    crate::log!("[kn9t-config] provider {provider_name:?}: /models parse failed: {e}");
+                    crate::log!(
+                        "[kn9t-config] provider {provider_name:?}: /models parse failed: {e}"
+                    );
                     return Vec::new();
                 }
             }
-        },
+        }
         Err(e) => {
             crate::log!("[kn9t-config] provider {provider_name:?}: /models fetch failed: {e}");
             return Vec::new();
         }
     };
-    
+
     let models_arr = match body.get("data").and_then(|d| d.as_array()) {
         Some(arr) => arr,
         None => {
-            crate::log!("[kn9t-config] provider {provider_name:?}: /models response has no 'data' array");
+            crate::log!(
+                "[kn9t-config] provider {provider_name:?}: /models response has no 'data' array"
+            );
             return Vec::new();
         }
     };
-    
+
     let mut result = Vec::new();
     for model in models_arr {
         let id = match model.get("id").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => continue,
         };
-        
+
         // Try to extract context window if available.
-        let ctx_window = model.get("context_window")
+        let ctx_window = model
+            .get("context_window")
             .or_else(|| model.get("context_length"))
             .and_then(|v| v.as_u64())
             .unwrap_or(128_000) as u32;
-        
+
         // Use family-specific output limits or cap at a reasonable default.
         let max_out = model_max_output(&id, ctx_window);
-        
+
         let spec = ModelSpec {
             r#ref: ModelRef {
                 provider: provider_name.to_string(),
@@ -885,18 +972,26 @@ fn fetch_openai_models(
             api_id: id.clone(),
             ctx_window,
             max_out,
-            price: lookup_price(&id).unwrap_or(Price { input: 0, output: 0, cache_read: 0, cache_write: 0 }),
+            price: lookup_price(&id).unwrap_or(Price {
+                input: 0,
+                output: 0,
+                cache_read: 0,
+                cache_write: 0,
+            }),
             cache: CacheMode::Automatic,
             streaming: true,
             quirks: kn9t_core::Quirks::default(),
         };
         result.push(spec);
     }
-    
+
     if !result.is_empty() {
-        crate::log!("[kn9t-config] provider {provider_name:?}: discovered {} models from /models", result.len());
+        crate::log!(
+            "[kn9t-config] provider {provider_name:?}: discovered {} models from /models",
+            result.len()
+        );
     }
-    
+
     result
 }
 
@@ -904,22 +999,40 @@ fn fetch_openai_models(
 /// Based on OpenCode's BEDROCK_FAMILY_CONFIG and bedrockOutputLimit().
 fn model_max_output(id: &str, ctx_window: u32) -> u32 {
     // Claude models
-    if id.contains("haiku") { return 8_192; }
-    if id.contains("opus") { return 32_000; }
-    if id.contains("sonnet") { return 65_536; }
-    
+    if id.contains("haiku") {
+        return 8_192;
+    }
+    if id.contains("opus") {
+        return 32_000;
+    }
+    if id.contains("sonnet") {
+        return 65_536;
+    }
+
     // Amazon Nova
-    if id.contains("nova-micro") { return 5_120; }
-    if id.contains("nova-lite") { return 10_000; }
-    if id.contains("nova-pro") { return 5_120; }
-    if id.contains("nova") { return 5_120; }
-    
+    if id.contains("nova-micro") {
+        return 5_120;
+    }
+    if id.contains("nova-lite") {
+        return 10_000;
+    }
+    if id.contains("nova-pro") {
+        return 5_120;
+    }
+    if id.contains("nova") {
+        return 5_120;
+    }
+
     // Nvidia Nemotron
-    if id.contains("nemotron") { return 8_192; }
-    
+    if id.contains("nemotron") {
+        return 8_192;
+    }
+
     // Mistral
-    if id.contains("mistral") { return 8_192; }
-    
+    if id.contains("mistral") {
+        return 8_192;
+    }
+
     // Default: 25% of context or 8192, whichever is smaller
     std::cmp::min(ctx_window / 4, 8_192)
 }
@@ -931,15 +1044,20 @@ fn dirs_home() -> Option<PathBuf> {
 
 #[cfg(target_family = "windows")]
 fn dirs_home() -> Option<PathBuf> {
-    std::env::var("USERPROFILE").ok()
-        .or_else(|| std::env::var("HOMEDRIVE").ok().and_then(|d| {
-            std::env::var("HOMEPATH").ok().map(|p| d + &p)
-        }))
+    std::env::var("USERPROFILE")
+        .ok()
+        .or_else(|| {
+            std::env::var("HOMEDRIVE")
+                .ok()
+                .and_then(|d| std::env::var("HOMEPATH").ok().map(|p| d + &p))
+        })
         .map(PathBuf::from)
 }
 
 #[cfg(not(any(target_family = "unix", target_family = "windows")))]
-fn dirs_home() -> Option<PathBuf> { None }
+fn dirs_home() -> Option<PathBuf> {
+    None
+}
 
 #[cfg(test)]
 mod tests {
@@ -999,7 +1117,10 @@ reasoning = "adaptive"
         assert!(!raw.models[0].quirks.is_set());
         assert!(raw.models[1].quirks.is_set());
 
-        let merged = merge_quirks(build_http_quirks(&raw.provider["gw"].quirks), &raw.models[1].quirks);
+        let merged = merge_quirks(
+            build_http_quirks(&raw.provider["gw"].quirks),
+            &raw.models[1].quirks,
+        );
         // Overridden field takes the model value...
         assert_eq!(merged.reasoning, "adaptive");
         // ...while unspecified fields still inherit from the provider.
@@ -1024,9 +1145,11 @@ reasoning = "adaptive"
             ("deny_all", PolicyMode::DenyAll),
             ("readonly", PolicyMode::ReadOnly),
         ] {
-            let raw = parse_raw(&format!(r#"[policy]
+            let raw = parse_raw(&format!(
+                r#"[policy]
 mode = "{s}"
-"#));
+"#
+            ));
             let resolved = resolve(raw).unwrap();
             assert_eq!(resolved.policy_mode, expected);
         }
@@ -1034,33 +1157,42 @@ mode = "{s}"
 
     #[test]
     fn policy_mode_unknown_is_error() {
-        let raw = parse_raw(r#"[policy]
+        let raw = parse_raw(
+            r#"[policy]
 mode = "bogus"
-"#);
+"#,
+        );
         assert!(resolve(raw).is_err());
     }
 
     #[test]
     fn plugin_pinned_parses() {
-        let raw = parse_raw(r#"
+        let raw = parse_raw(
+            r#"
             [[plugin]]
             name = "my-tools"
             cmd = ["/abs/path/to/my-tools", "--flag"]
-        "#);
+        "#,
+        );
         let resolved = resolve(raw).unwrap();
         assert_eq!(resolved.plugins.len(), 1);
         assert_eq!(resolved.plugins[0].name, "my-tools");
-        assert_eq!(resolved.plugins[0].cmd.as_ref().unwrap(), &vec!["/abs/path/to/my-tools".to_string(), "--flag".to_string()]);
+        assert_eq!(
+            resolved.plugins[0].cmd.as_ref().unwrap(),
+            &vec!["/abs/path/to/my-tools".to_string(), "--flag".to_string()]
+        );
         assert!(!resolved.plugins[0].disabled);
     }
 
     #[test]
     fn plugin_disabled_via_enabled_false() {
-        let raw = parse_raw(r#"
+        let raw = parse_raw(
+            r#"
             [[plugin]]
             name = "my-tools"
             enabled = false
-        "#);
+        "#,
+        );
         let resolved = resolve(raw).unwrap();
         assert_eq!(resolved.plugins.len(), 1);
         assert_eq!(resolved.plugins[0].name, "my-tools");
@@ -1070,11 +1202,13 @@ mode = "bogus"
 
     #[test]
     fn plugin_disabled_via_disabled_true() {
-        let raw = parse_raw(r#"
+        let raw = parse_raw(
+            r#"
             [[plugin]]
             name = "my-tools"
             disabled = true
-        "#);
+        "#,
+        );
         let resolved = resolve(raw).unwrap();
         assert_eq!(resolved.plugins.len(), 1);
         assert!(resolved.plugins[0].disabled);
@@ -1082,44 +1216,63 @@ mode = "bogus"
 
     #[test]
     fn plugin_env_override_without_cmd() {
-        let raw = parse_raw(r#"
+        let raw = parse_raw(
+            r#"
             [[plugin]]
             name = "my-tools"
 
             [plugin.env]
             FOO = "bar"
-        "#);
+        "#,
+        );
         let resolved = resolve(raw).unwrap();
         assert_eq!(resolved.plugins.len(), 1);
         assert_eq!(resolved.plugins[0].name, "my-tools");
         assert!(resolved.plugins[0].cmd.is_none());
         assert!(!resolved.plugins[0].disabled);
-        assert_eq!(resolved.plugins[0].env, vec![("FOO".to_string(), "bar".to_string())]);
+        assert_eq!(
+            resolved.plugins[0].env,
+            vec![("FOO".to_string(), "bar".to_string())]
+        );
     }
 
     #[test]
     fn plugin_pinned_with_env() {
-        let raw = parse_raw(r#"
+        let raw = parse_raw(
+            r#"
             [[plugin]]
             name = "my-tools"
             cmd = ["/path/to/my-tools"]
 
             [plugin.env]
             FOO = "bar"
-        "#);
+        "#,
+        );
         let resolved = resolve(raw).unwrap();
         assert_eq!(resolved.plugins.len(), 1);
-        assert_eq!(resolved.plugins[0].cmd.as_ref().unwrap()[0], "/path/to/my-tools");
-        assert_eq!(resolved.plugins[0].env[0], ("FOO".to_string(), "bar".to_string()));
+        assert_eq!(
+            resolved.plugins[0].cmd.as_ref().unwrap()[0],
+            "/path/to/my-tools"
+        );
+        assert_eq!(
+            resolved.plugins[0].env[0],
+            ("FOO".to_string(), "bar".to_string())
+        );
     }
 
     #[test]
     fn plugin_empty_is_skipped() {
-        let raw = parse_raw(r#"
+        let raw = parse_raw(
+            r#"
             [[plugin]]
             name = "empty"
-        "#);
+        "#,
+        );
         let resolved = resolve(raw).unwrap();
-        assert_eq!(resolved.plugins.len(), 0, "plugin with no cmd/env and not disabled should be skipped");
+        assert_eq!(
+            resolved.plugins.len(),
+            0,
+            "plugin with no cmd/env and not disabled should be skipped"
+        );
     }
 }

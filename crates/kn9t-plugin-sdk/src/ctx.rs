@@ -4,9 +4,9 @@
 //! The SDK constructs them; authors only call their methods.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::io::Write;
 
 // ── CancelToken ───────────────────────────────────────────────────────────────
 
@@ -33,11 +33,17 @@ pub struct CancelToken(Arc<AtomicBool>);
 
 impl CancelToken {
     /// Create a new unfired token. Called by the SDK internally.
-    pub fn new() -> Self { Self(Arc::new(AtomicBool::new(false))) }
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
     /// Fire cancellation. Called by the SDK cancel-listener thread.
-    pub fn cancel(&self) { self.0.store(true, Ordering::Release); }
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
     /// Returns `true` if the host has requested cancellation of this call.
-    pub fn is_cancelled(&self) -> bool { self.0.load(Ordering::Acquire) }
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
 }
 
 // ── ProgressSender ────────────────────────────────────────────────────────────
@@ -263,7 +269,11 @@ impl KvClient {
         pending: Arc<Mutex<HashMap<u64, mpsc::SyncSender<KvReply>>>>,
         next_id: Arc<AtomicU64>,
     ) -> Self {
-        Self { writer, pending, next_id }
+        Self {
+            writer,
+            pending,
+            next_id,
+        }
     }
 
     /// A `KvClient` that writes to a sink and never receives a reply, for use in
@@ -296,13 +306,20 @@ impl KvClient {
             key: key.to_string(),
         };
         {
-            let mut w = self.writer.lock().map_err(|e| format!("writer lock: {e}"))?;
+            let mut w = self
+                .writer
+                .lock()
+                .map_err(|e| format!("writer lock: {e}"))?;
             crate::wire::write_plugin(&mut **w, &msg).map_err(|e| format!("kv_get write: {e}"))?;
         }
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(r) => {
                 self.pending.lock().unwrap().remove(&id);
-                if r.ok { Ok(r.value) } else { Err(r.error.unwrap_or_default()) }
+                if r.ok {
+                    Ok(r.value)
+                } else {
+                    Err(r.error.unwrap_or_default())
+                }
             }
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);
@@ -323,13 +340,20 @@ impl KvClient {
             value: value.clone(),
         };
         {
-            let mut w = self.writer.lock().map_err(|e| format!("writer lock: {e}"))?;
+            let mut w = self
+                .writer
+                .lock()
+                .map_err(|e| format!("writer lock: {e}"))?;
             crate::wire::write_plugin(&mut **w, &msg).map_err(|e| format!("kv_set write: {e}"))?;
         }
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(r) => {
                 self.pending.lock().unwrap().remove(&id);
-                if r.ok { Ok(()) } else { Err(r.error.unwrap_or_default()) }
+                if r.ok {
+                    Ok(())
+                } else {
+                    Err(r.error.unwrap_or_default())
+                }
             }
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);
@@ -349,13 +373,20 @@ impl KvClient {
             key: key.to_string(),
         };
         {
-            let mut w = self.writer.lock().map_err(|e| format!("writer lock: {e}"))?;
+            let mut w = self
+                .writer
+                .lock()
+                .map_err(|e| format!("writer lock: {e}"))?;
             crate::wire::write_plugin(&mut **w, &msg).map_err(|e| format!("kv_del write: {e}"))?;
         }
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(r) => {
                 self.pending.lock().unwrap().remove(&id);
-                if r.ok { Ok(()) } else { Err(r.error.unwrap_or_default()) }
+                if r.ok {
+                    Ok(())
+                } else {
+                    Err(r.error.unwrap_or_default())
+                }
             }
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);
@@ -375,13 +406,21 @@ impl KvClient {
             scope: scope.to_string(),
         };
         {
-            let mut w = self.writer.lock().map_err(|e| format!("writer lock: {e}"))?;
-            crate::wire::write_plugin(&mut **w, &msg).map_err(|e| format!("kv_del_scope write: {e}"))?;
+            let mut w = self
+                .writer
+                .lock()
+                .map_err(|e| format!("writer lock: {e}"))?;
+            crate::wire::write_plugin(&mut **w, &msg)
+                .map_err(|e| format!("kv_del_scope write: {e}"))?;
         }
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(r) => {
                 self.pending.lock().unwrap().remove(&id);
-                if r.ok { Ok(()) } else { Err(r.error.unwrap_or_default()) }
+                if r.ok {
+                    Ok(())
+                } else {
+                    Err(r.error.unwrap_or_default())
+                }
             }
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);
@@ -422,7 +461,12 @@ impl HostApiClient {
         next_id: Arc<AtomicU64>,
         session: Option<String>,
     ) -> Self {
-        Self { writer, pending, next_id, session }
+        Self {
+            writer,
+            pending,
+            next_id,
+            session,
+        }
     }
 
     /// Test stub — never receives a reply (always times out).
@@ -441,26 +485,45 @@ impl HostApiClient {
     /// If `payload` lacks a `"session"` key and this client has a session
     /// (from the enclosing `tool_call`), it is auto-injected — so tool authors
     /// don't need to thread session ids through their tool schemas.
-    pub fn call(&self, op: &str, mut payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    pub fn call(
+        &self,
+        op: &str,
+        mut payload: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         if let Some(sess) = &self.session {
             if let Some(obj) = payload.as_object_mut() {
                 if !obj.contains_key("session") {
-                    obj.insert("session".to_string(), serde_json::Value::String(sess.clone()));
+                    obj.insert(
+                        "session".to_string(),
+                        serde_json::Value::String(sess.clone()),
+                    );
                 }
             }
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::sync_channel(1);
         self.pending.lock().unwrap().insert(id, tx);
-        let msg = crate::wire::PluginMsg::Request { id, op: op.to_string(), payload };
+        let msg = crate::wire::PluginMsg::Request {
+            id,
+            op: op.to_string(),
+            payload,
+        };
         {
-            let mut w = self.writer.lock().map_err(|e| format!("writer lock: {e}"))?;
-            crate::wire::write_plugin(&mut **w, &msg).map_err(|e| format!("host_api write {op}: {e}"))?;
+            let mut w = self
+                .writer
+                .lock()
+                .map_err(|e| format!("writer lock: {e}"))?;
+            crate::wire::write_plugin(&mut **w, &msg)
+                .map_err(|e| format!("host_api write {op}: {e}"))?;
         }
         match rx.recv_timeout(std::time::Duration::from_secs(600)) {
             Ok(r) => {
                 self.pending.lock().unwrap().remove(&id);
-                if r.ok { Ok(r.result.unwrap_or(serde_json::Value::Null)) } else { Err(r.error.unwrap_or_else(|| format!("host_api {op} failed"))) }
+                if r.ok {
+                    Ok(r.result.unwrap_or(serde_json::Value::Null))
+                } else {
+                    Err(r.error.unwrap_or_else(|| format!("host_api {op} failed")))
+                }
             }
             Err(_) => {
                 self.pending.lock().unwrap().remove(&id);

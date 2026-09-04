@@ -1,8 +1,6 @@
 //! R-STOR-120, R-STOR-130 — session forking.
 
-use kn9t_core::{
-    Event, ForkReason, ForkSnapshot, ModelRef, SessionId, StoreErr, Thinking,
-};
+use kn9t_core::{Event, ForkReason, ForkSnapshot, ModelRef, SessionId, StoreErr, Thinking};
 use rusqlite::params;
 use rusqlite::Connection;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,7 +9,10 @@ use crate::db::SqliteStore;
 use crate::project;
 
 fn now_ts() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 /// Common fork head: compute inherited totals, create the fork session row and
@@ -30,7 +31,7 @@ fn fork_begin(
     ts: i64,
 ) -> Result<ForkSnapshot, StoreErr> {
     let origin_sid = origin.0.clone();
-    let new_sid    = new_id.0.clone();
+    let new_sid = new_id.0.clone();
 
     // Inherited totals up to origin_seq — 96E-14: use micros for determinism
     let (inh_cost_micros, inh_tok_in, inh_tok_out, inh_cache_read): (i64, i64, i64, i64) = conn
@@ -73,10 +74,10 @@ fn fork_begin(
         .ok_or_else(|| StoreErr("no model_at_fork on origin session".into()))?;
 
     let fork_reason_str = match reason {
-        ForkReason::Fork     => "fork",
-        ForkReason::Rewind   => "rewind",
+        ForkReason::Fork => "fork",
+        ForkReason::Rewind => "rewind",
         ForkReason::Subagent => "subagent",
-        ForkReason::Tree     => "tree",
+        ForkReason::Tree => "tree",
     };
 
     let budget_remaining_micros = budget_remaining_usd.map(|d| (d * 1_000_000.0).round() as i64);
@@ -84,13 +85,13 @@ fn fork_begin(
         origin_session: origin.clone(),
         origin_seq,
         reason,
-        inherited_cost_usd:   inh_cost_micros as f64 / 1_000_000.0,
+        inherited_cost_usd: inh_cost_micros as f64 / 1_000_000.0,
         inherited_cost_micros: inh_cost_micros,
-        inherited_tokens_in:  inh_tok_in  as u64,
+        inherited_tokens_in: inh_tok_in as u64,
         inherited_tokens_out: inh_tok_out as u64,
         inherited_cache_read: inh_cache_read as u64,
-        inherited_messages:   inh_messages as u32,
-        inherited_ctx_tokens: inh_ctx      as u32,
+        inherited_messages: inh_messages as u32,
+        inherited_ctx_tokens: inh_ctx as u32,
         budget_remaining_usd,
         budget_remaining_micros,
         model_at_fork: model_at_fork.clone(),
@@ -111,13 +112,17 @@ fn fork_begin(
     ).map_err(|e| StoreErr(format!("create fork session: {e}")))?;
 
     // seq=0 SessionForked event
-    let fork_event   = Event::SessionForked { seq: 0, fork: fork_snap.clone() };
+    let fork_event = Event::SessionForked {
+        seq: 0,
+        fork: fork_snap.clone(),
+    };
     let fork_payload = serde_json::to_string(&fork_event)
         .map_err(|e| StoreErr(format!("serialize SessionForked: {e}")))?;
     conn.execute(
         "INSERT INTO events(session_id,seq,ts,kind,payload) VALUES(?1,0,?2,'SessionForked',?3)",
         params![new_sid, ts, fork_payload],
-    ).map_err(|e| StoreErr(format!("insert SessionForked: {e}")))?;
+    )
+    .map_err(|e| StoreErr(format!("insert SessionForked: {e}")))?;
 
     Ok(fork_snap)
 }
@@ -135,31 +140,54 @@ pub fn fork_session(
     cwd: &str,
 ) -> Result<(), StoreErr> {
     let origin_sid = origin.0.clone();
-    let new_sid    = new_id.0.clone();
+    let new_sid = new_id.0.clone();
     let ts = now_ts();
 
-    let conn = store.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|_| StoreErr("lock poisoned".into()))?;
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(|e| StoreErr(format!("begin fork: {e}")))?;
 
-    fork_begin(&conn, origin, new_id, origin_seq, reason, budget_remaining_usd, cwd, ts)?;
+    fork_begin(
+        &conn,
+        origin,
+        new_id,
+        origin_seq,
+        reason,
+        budget_remaining_usd,
+        cwd,
+        ts,
+    )?;
 
     // Collect copyable events from origin
-    struct CopyRow { old_seq: u64, kind: String, payload: String, ts: i64 }
+    struct CopyRow {
+        old_seq: u64,
+        kind: String,
+        payload: String,
+        ts: i64,
+    }
     let copy_rows: Vec<CopyRow> = {
-        let mut stmt = conn.prepare(
-            "SELECT seq, kind, payload, ts FROM events WHERE session_id=?1 AND seq<=?2
+        let mut stmt = conn
+            .prepare(
+                "SELECT seq, kind, payload, ts FROM events WHERE session_id=?1 AND seq<=?2
              AND kind IN ('MessageAppended','ModelChanged','Compacted') ORDER BY seq",
-        ).map_err(|e| StoreErr(format!("fork copy prepare: {e}")))?;
+            )
+            .map_err(|e| StoreErr(format!("fork copy prepare: {e}")))?;
         let mut out = Vec::new();
-        let mut rows = stmt.query(params![origin_sid, origin_seq as i64])
+        let mut rows = stmt
+            .query(params![origin_sid, origin_seq as i64])
             .map_err(|e| StoreErr(format!("fork copy query: {e}")))?;
-        while let Some(r) = rows.next().map_err(|e| StoreErr(format!("fork copy row: {e}")))? {
+        while let Some(r) = rows
+            .next()
+            .map_err(|e| StoreErr(format!("fork copy row: {e}")))?
+        {
             out.push(CopyRow {
                 old_seq: r.get::<_, i64>(0).unwrap_or(0) as u64,
-                kind:    r.get(1).unwrap_or_default(),
+                kind: r.get(1).unwrap_or_default(),
                 payload: r.get(2).unwrap_or_default(),
-                ts:      r.get(3).unwrap_or(ts),
+                ts: r.get(3).unwrap_or(ts),
             });
         }
         out
@@ -178,7 +206,8 @@ pub fn fork_session(
         conn.execute(
             "INSERT INTO events(session_id,seq,ts,kind,payload) VALUES(?1,?2,?3,?4,?5)",
             params![new_sid, new_seq as i64, row.ts, row.kind, new_payload],
-        ).map_err(|e| StoreErr(format!("insert copied event: {e}")))?;
+        )
+        .map_err(|e| StoreErr(format!("insert copied event: {e}")))?;
 
         let event: Event = serde_json::from_str(&new_payload)
             .map_err(|e| StoreErr(format!("decode copied event: {e}")))?;
@@ -190,7 +219,8 @@ pub fn fork_session(
     conn.execute(
         "UPDATE sessions SET head_seq=?1 WHERE id=?2",
         params![head, new_sid],
-    ).map_err(|e| StoreErr(format!("update fork head_seq: {e}")))?;
+    )
+    .map_err(|e| StoreErr(format!("update fork head_seq: {e}")))?;
 
     conn.execute_batch("COMMIT")
         .map_err(|e| StoreErr(format!("commit fork: {e}")))?;
@@ -213,11 +243,23 @@ pub fn fork_session_empty(
 ) -> Result<(), StoreErr> {
     let ts = now_ts();
 
-    let conn = store.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|_| StoreErr("lock poisoned".into()))?;
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(|e| StoreErr(format!("begin fork empty: {e}")))?;
 
-    fork_begin(&conn, origin, new_id, origin_seq, reason, budget_remaining_usd, cwd, ts)?;
+    fork_begin(
+        &conn,
+        origin,
+        new_id,
+        origin_seq,
+        reason,
+        budget_remaining_usd,
+        cwd,
+        ts,
+    )?;
 
     // head_seq stays 0 (fork_begin inserts the row with head_seq=0).
     conn.execute_batch("COMMIT")
@@ -230,18 +272,21 @@ fn remap_event_seq(
     new_seq: u64,
     seq_map: &std::collections::HashMap<u64, u64>,
 ) -> Result<String, StoreErr> {
-    let mut v: serde_json::Value = serde_json::from_str(payload)
-        .map_err(|e| StoreErr(format!("remap parse: {e}")))?;
+    let mut v: serde_json::Value =
+        serde_json::from_str(payload).map_err(|e| StoreErr(format!("remap parse: {e}")))?;
     if let Some(obj) = v.as_object_mut() {
         obj.insert("seq".to_owned(), serde_json::json!(new_seq));
         // Remap Compacted.replaced ranges
         if let Some(replaced) = obj.get("replaced").cloned() {
             let start = replaced.get("start").and_then(|s| s.as_u64());
-            let end   = replaced.get("end").and_then(|s| s.as_u64());
+            let end = replaced.get("end").and_then(|s| s.as_u64());
             if let (Some(s), Some(e)) = (start, end) {
                 let ns = seq_map.get(&s).copied().unwrap_or(s);
                 let ne = seq_map.get(&e).copied().unwrap_or(e);
-                obj.insert("replaced".to_owned(), serde_json::json!({"start": ns, "end": ne}));
+                obj.insert(
+                    "replaced".to_owned(),
+                    serde_json::json!({"start": ns, "end": ne}),
+                );
             }
         }
     }

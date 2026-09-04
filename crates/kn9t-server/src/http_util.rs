@@ -78,9 +78,8 @@ pub fn parse_json<T: serde::de::DeserializeOwned>(req: &mut Request) -> Result<T
             "request body required for this route",
         ));
     }
-    serde_json::from_slice(&bytes).map_err(|e| {
-        JsonResp::error(400, "bad_json", &format!("invalid request body: {e}"))
-    })
+    serde_json::from_slice(&bytes)
+        .map_err(|e| JsonResp::error(400, "bad_json", &format!("invalid request body: {e}")))
 }
 
 /// Convert milliseconds-since-UNIX-epoch to an ISO8601 UTC string

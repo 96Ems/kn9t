@@ -35,6 +35,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.0
       - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt -- --check
       # AGENTS.md 8: warnings are errors. The workspace is at zero warnings
       # across all targets -- keep this a hard gate.
       - name: Build (warnings are errors)

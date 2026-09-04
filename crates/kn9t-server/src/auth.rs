@@ -85,7 +85,9 @@ fn set_mode_0600(_path: &Path) -> io::Result<()> {
 /// Extract the bearer token from an `Authorization: Bearer <token>` header value.
 pub fn parse_bearer(header_value: &str) -> Option<&str> {
     let v = header_value.trim();
-    let rest = v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer "))?;
+    let rest = v
+        .strip_prefix("Bearer ")
+        .or_else(|| v.strip_prefix("bearer "))?;
     let t = rest.trim();
     if t.is_empty() {
         None

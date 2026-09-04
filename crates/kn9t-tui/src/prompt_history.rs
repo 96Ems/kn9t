@@ -34,7 +34,7 @@ impl PromptHistory {
     pub fn new() -> Self {
         let path = Self::history_path();
         let history = Self::load_from_disk(&path).unwrap_or_default();
-        
+
         Self {
             history,
             position: None,
@@ -72,69 +72,73 @@ impl PromptHistory {
         if !self.dirty {
             return;
         }
-        
+
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        
+
         if let Ok(json) = serde_json::to_string_pretty(&self.history) {
             let _ = fs::write(&self.path, json);
         }
     }
 
     /// Add a prompt to history.
-    /// 
+    ///
     /// Deduplicates consecutive identical entries.
     pub fn add(&mut self, prompt: String) {
         if prompt.trim().is_empty() {
             return;
         }
-        
+
         // Don't add if same as last entry
         if self.history.last().map(|s| s.as_str()) == Some(prompt.as_str()) {
             return;
         }
-        
+
         self.history.push(prompt);
-        
+
         // Trim to max size
         if self.history.len() > MAX_HISTORY {
             self.history.remove(0);
         }
-        
+
         self.dirty = true;
         self.reset();
     }
 
     /// Navigate to previous prompt in history.
-    /// 
+    ///
     /// - `current_input`: current text in input box
     /// - `cursor_row`: current cursor row (0-indexed)
-    /// 
+    ///
     /// Returns the text to display, or None if at beginning of history.
     pub fn prev(&mut self, current_input: &str, cursor_row: usize) -> Option<&str> {
         // Only navigate when cursor is on first line
         if cursor_row > 0 {
             return None;
         }
-        
+
         // Filter history by prefix (what user has typed)
-        let matches: Vec<usize> = self.history.iter()
+        let matches: Vec<usize> = self
+            .history
+            .iter()
             .enumerate()
             .filter(|(_, h)| h.starts_with(&self.prefix))
             .map(|(i, _)| i)
             .collect();
-        
+
         if matches.is_empty() {
             return None;
         }
-        
+
         // First navigation: stash current input and set prefix
         if self.position.is_none() {
             self.stashed = Some(current_input.to_string());
             self.prefix = current_input.to_string();
             // Re-filter with new prefix
-            let matches: Vec<usize> = self.history.iter()
+            let matches: Vec<usize> = self
+                .history
+                .iter()
                 .enumerate()
                 .filter(|(_, h)| h.starts_with(&self.prefix))
                 .map(|(i, _)| i)
@@ -148,14 +152,11 @@ impl PromptHistory {
             self.position = Some(idx);
             return Some(&self.history[idx]);
         }
-        
+
         // Already navigating: go to previous match
         let current_pos = self.position.unwrap();
-        let prev_match = matches.iter()
-            .rev()
-            .find(|&&i| i < current_pos)
-            .copied();
-        
+        let prev_match = matches.iter().rev().find(|&&i| i < current_pos).copied();
+
         if let Some(idx) = prev_match {
             self.position = Some(idx);
             Some(&self.history[idx])
@@ -165,34 +166,34 @@ impl PromptHistory {
     }
 
     /// Navigate to next prompt in history.
-    /// 
+    ///
     /// - `cursor_row`: current cursor row (0-indexed)
     /// - `total_lines`: total lines in input
-    /// 
+    ///
     /// Returns the text to display, or the stashed input if at end.
     pub fn next(&mut self, cursor_row: usize, total_lines: usize) -> Option<String> {
         // Only navigate when cursor is on last line
         if cursor_row < total_lines.saturating_sub(1) {
             return None;
         }
-        
+
         // Not navigating
         if self.position.is_none() {
             return None;
         }
-        
+
         // Filter history by prefix
-        let matches: Vec<usize> = self.history.iter()
+        let matches: Vec<usize> = self
+            .history
+            .iter()
             .enumerate()
             .filter(|(_, h)| h.starts_with(&self.prefix))
             .map(|(i, _)| i)
             .collect();
-        
+
         let current_pos = self.position.unwrap();
-        let next_match = matches.iter()
-            .find(|&&i| i > current_pos)
-            .copied();
-        
+        let next_match = matches.iter().find(|&&i| i > current_pos).copied();
+
         if let Some(idx) = next_match {
             self.position = Some(idx);
             Some(self.history[idx].clone())
@@ -262,11 +263,11 @@ mod tests {
     #[test]
     fn test_prev_navigation() {
         let mut h = test_history();
-        
+
         // Navigate from empty input
         let p1 = h.prev("", 0).unwrap();
         assert_eq!(p1, "fix test");
-        
+
         // Navigate further back
         let p2 = h.prev("", 0).unwrap();
         assert_eq!(p2, "fix bug");
@@ -275,14 +276,14 @@ mod tests {
     #[test]
     fn test_prefix_filter() {
         let mut h = test_history();
-        
+
         // Navigate with "fix" prefix
         let p1 = h.prev("fix", 0).unwrap();
         assert_eq!(p1, "fix test");
-        
+
         let p2 = h.prev("fix", 0).unwrap();
         assert_eq!(p2, "fix bug");
-        
+
         // No more "fix" matches
         assert!(h.prev("fix", 0).is_none());
     }
@@ -290,18 +291,18 @@ mod tests {
     #[test]
     fn test_next_returns_stashed() {
         let mut h = test_history();
-        
+
         // Navigate back with empty prefix (matches all)
         let r1 = h.prev("", 0); // stashes "", goes to "fix test" (last)
         assert_eq!(r1, Some("fix test"));
-        
+
         let r2 = h.prev("", 0); // goes to "fix bug"
         assert_eq!(r2, Some("fix bug"));
-        
+
         // Navigate forward once -> "fix test"
         let r3 = h.next(0, 1);
         assert_eq!(r3, Some("fix test".into()));
-        
+
         // Navigate forward again should return stashed (empty string)
         let r4 = h.next(0, 1);
         assert_eq!(r4, Some("".into()));
@@ -312,7 +313,7 @@ mod tests {
         let mut h = test_history();
         h.add("fix test".into()); // Same as last
         assert_eq!(h.len(), 4); // No change
-        
+
         h.add("new prompt".into());
         assert_eq!(h.len(), 5);
     }
@@ -320,10 +321,10 @@ mod tests {
     #[test]
     fn test_cursor_position_check() {
         let mut h = test_history();
-        
+
         // Not on first line, should not navigate
         assert!(h.prev("", 1).is_none());
-        
+
         // On first line, should navigate
         assert!(h.prev("", 0).is_some());
     }

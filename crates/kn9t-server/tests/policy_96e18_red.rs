@@ -39,7 +39,10 @@ fn approve_persistent_malformed_policy_shape_does_not_panic() {
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         cache.approve_persistent("bash:rm -rf /tmp/x".into())
     }));
-    assert!(res.is_ok(), "approve_persistent panicked on malformed policy shape — must return Result");
+    assert!(
+        res.is_ok(),
+        "approve_persistent panicked on malformed policy shape — must return Result"
+    );
     // If it returned Ok/Err without panicking, the shape is handled. We accept either,
     // but it must not have left a poisoned file.
     let _ = res.unwrap();

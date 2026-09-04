@@ -44,7 +44,9 @@ impl Approver for DenyAllApprover {
         reason: &str,
         _ctx: &kn9t_core::ApprovalCtx,
     ) -> Decision {
-        Decision::Deny { reason: format!("approval required ({reason}), no approver configured") }
+        Decision::Deny {
+            reason: format!("approval required ({reason}), no approver configured"),
+        }
     }
 }
 
@@ -104,9 +106,15 @@ impl IdleTracker {
     /// - If a turn is running: stay up (client may reconnect to see the result).
     /// - Otherwise: exit once `idle_exit` has elapsed since last activity.
     pub fn should_exit(&self) -> bool {
-        if self.idle_exit.is_zero() { return false; }
-        if self.attached_count() > 0 { return false; }
-        if self.running_turns() > 0  { return false; }
+        if self.idle_exit.is_zero() {
+            return false;
+        }
+        if self.attached_count() > 0 {
+            return false;
+        }
+        if self.running_turns() > 0 {
+            return false;
+        }
         let last = *self.last_activity.lock().expect("idle poisoned");
         last.elapsed() >= self.idle_exit
     }
@@ -258,7 +266,10 @@ impl ServerState {
 
     /// Record the spawn recipe for a plugin (called once at startup after discovery).
     pub fn set_plugin_spawn(&self, name: String, cmd: Vec<String>, env: Vec<(String, String)>) {
-        self.plugin_spawn.lock().expect("spawn poisoned").insert(name, (cmd, env));
+        self.plugin_spawn
+            .lock()
+            .expect("spawn poisoned")
+            .insert(name, (cmd, env));
     }
 
     /// Hot-reload a plugin by declared name (R-PLUG2-100).
@@ -276,7 +287,9 @@ impl ServerState {
         // 0. Lookup host and spawn recipe (hold lock briefly).
         let (old_host, cmd, env) = {
             let hosts = self.plugin_hosts.lock().expect("hosts poisoned");
-            let idx = hosts.iter().position(|h| h.name() == name)
+            let idx = hosts
+                .iter()
+                .position(|h| h.name() == name)
                 .ok_or_else(|| format!("plugin {name:?} not found"))?;
             let host = hosts[idx].clone();
             let spawn = self.plugin_spawn.lock().expect("spawn poisoned");
@@ -286,7 +299,11 @@ impl ServerState {
             (host, cmd, env)
         };
 
-        crate::log!("hot-reload: plugin '{}' cancel/shutdown ({} in-flight)", name, old_host.pending_count());
+        crate::log!(
+            "hot-reload: plugin '{}' cancel/shutdown ({} in-flight)",
+            name,
+            old_host.pending_count()
+        );
 
         // 1. cancel every in-flight call.
         for id in old_host.pending_ids() {
@@ -294,7 +311,8 @@ impl ServerState {
         }
 
         // 2. wait up to before_tool_call timeout (30s) for done replies.
-        let deadline = std::time::Instant::now() + kn9t_plugin::host::default_timeout(kn9t_core::HookName::BeforeToolCall);
+        let deadline = std::time::Instant::now()
+            + kn9t_plugin::host::default_timeout(kn9t_core::HookName::BeforeToolCall);
         while std::time::Instant::now() < deadline {
             if old_host.pending_count() == 0 {
                 break;
@@ -311,17 +329,24 @@ impl ServerState {
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         // 4. respawn from the same cmd.
-        let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let env_refs: Vec<(&str, &str)> =
+            env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         crate::log!("hot-reload: respawning plugin '{}' from {:?}", name, cmd);
-        let new_host = crate::tools::spawn_with_cmd_public(&cmd, &env_refs, self.store.clone() as Arc<dyn kn9t_core::PluginKv>)
-            .map_err(|e| format!("respawn failed: {e}"))?;
+        let new_host = crate::tools::spawn_with_cmd_public(
+            &cmd,
+            &env_refs,
+            self.store.clone() as Arc<dyn kn9t_core::PluginKv>,
+        )
+        .map_err(|e| format!("respawn failed: {e}"))?;
         let new_decl_name = new_host.name();
         if new_decl_name != name {
             crate::log!("hot-reload: warning: plugin declared name '{}' differs from requested '{}' — using declared name for registry", new_decl_name, name);
         }
         let new_host = Arc::new(new_host);
         // 96E-17: the respawned host gets the plugin → host API handler too.
-        new_host.set_api_handler(Arc::new(crate::host_api::ServerHostApi { state: self.clone() }));
+        new_host.set_api_handler(Arc::new(crate::host_api::ServerHostApi {
+            state: self.clone(),
+        }));
         let new_tools = crate::tools::extract_tools_public(&new_host);
 
         // 5. swap host and rebuild registry (dedup, first wins, same as startup).
@@ -357,7 +382,11 @@ impl ServerState {
             let registry = ToolRegistry::from_tools(all_tools);
             let n = registry.len();
             *self.tools.lock().expect("tools poisoned") = registry;
-            crate::log!("hot-reload: plugin '{}' re-registered, total tools now {}", name, n);
+            crate::log!(
+                "hot-reload: plugin '{}' re-registered, total tools now {}",
+                name,
+                n
+            );
             return Ok((new_decl_name, n));
         }
     }
@@ -371,7 +400,9 @@ impl ServerState {
     /// plugin host. Must be called once after `Arc::new(state)` (the handler
     /// holds an `Arc<ServerState>`).
     pub fn install_host_api(self: &Arc<Self>) {
-        let api = Arc::new(crate::host_api::ServerHostApi { state: self.clone() });
+        let api = Arc::new(crate::host_api::ServerHostApi {
+            state: self.clone(),
+        });
         for host in self.plugin_hosts.lock().expect("hosts poisoned").iter() {
             host.set_api_handler(api.clone());
         }
@@ -398,7 +429,10 @@ impl ServerState {
         cache: &Arc<ApprovalCache>,
     ) -> Arc<dyn Approver> {
         if interactive {
-            Arc::new(InteractiveApprover::with_cache(registry.clone(), cache.clone()))
+            Arc::new(InteractiveApprover::with_cache(
+                registry.clone(),
+                cache.clone(),
+            ))
         } else {
             Arc::new(NonInteractiveApprover::new(cache.clone()))
         }
@@ -433,7 +467,10 @@ impl ServerState {
     /// The hook host for a turn: the override if one was installed, else `None` so the
     /// caller composes from `plugin_hosts`.
     pub fn hooks_override_snapshot(&self) -> Option<Arc<dyn kn9t_core::HookHost>> {
-        self.hooks_override.lock().expect("hooks_override poisoned").clone()
+        self.hooks_override
+            .lock()
+            .expect("hooks_override poisoned")
+            .clone()
     }
 
     /// ADR-0008 -- snapshot the current approver for a turn.
@@ -449,8 +486,12 @@ impl ServerState {
         tools_added: Vec<String>,
         tools_removed: Vec<String>,
     ) {
-        crate::log!("plugin '{}' re-declared: +{} tools, -{} tools",
-            plugin_name, tools_added.len(), tools_removed.len());
+        crate::log!(
+            "plugin '{}' re-declared: +{} tools, -{} tools",
+            plugin_name,
+            tools_added.len(),
+            tools_removed.len()
+        );
 
         // Rebuild tool registry from all current hosts (dedup first wins, same as startup/reload).
         {
@@ -471,7 +512,11 @@ impl ServerState {
             let registry = ToolRegistry::from_tools(all_tools);
             let n = registry.len();
             *self.tools.lock().expect("tools poisoned") = registry;
-            crate::log!("plugin '{}' declare: registry rebuilt, total tools now {}", plugin_name, n);
+            crate::log!(
+                "plugin '{}' declare: registry rebuilt, total tools now {}",
+                plugin_name,
+                n
+            );
         }
 
         // Broadcast event to ALL SSE clients so TUI can refresh.

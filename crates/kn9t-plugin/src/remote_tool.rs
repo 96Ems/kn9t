@@ -90,7 +90,7 @@ impl Tool for RemoteTool {
                     .get("is_error")
                     .and_then(|v: &serde_json::Value| v.as_bool())
                     .unwrap_or(false);
-                
+
                 // Try to parse content array from plugin response.
                 let content: Vec<Content> = if let Some(c) = body.get("content") {
                     match serde_json::from_value::<Vec<Content>>(c.clone()) {
@@ -108,7 +108,7 @@ impl Tool for RemoteTool {
                         text: body.to_string(),
                     }]
                 };
-                
+
                 Ok(ToolOutput {
                     content,
                     details: None,

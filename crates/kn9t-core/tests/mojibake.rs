@@ -20,12 +20,27 @@ fn p1_96e15_no_mojibake() {
     // - Latin1 em dash C3 A2 C2 80 C2 94 -> E2 80 94
     let patterns: Vec<(&[u8], &str)> = vec![
         (b"\xc3\x82\xc2\xa7", "section-sign double-encode"),
-        (b"\xc3\xa2\xe2\x82\xac\xe2\x80\x9d", "em-dash win double-encode"),
+        (
+            b"\xc3\xa2\xe2\x82\xac\xe2\x80\x9d",
+            "em-dash win double-encode",
+        ),
         (b"\xc3\xa2\xc2\x80\xc2\x94", "em-dash latin double-encode"),
-        (b"\xc3\xa2\xe2\x82\xac\xe2\x80\x98", "left-single-quote double-encode"),
-        (b"\xc3\xa2\xe2\x82\xac\xe2\x80\x99", "right-single-quote double-encode"),
-        (b"\xc3\xa2\xe2\x82\xac\xc5\x93", "left-double-quote double-encode"),
-        (b"\xc3\xa2\xe2\x82\xac\xc2\x9d", "right-double-quote latin variant"),
+        (
+            b"\xc3\xa2\xe2\x82\xac\xe2\x80\x98",
+            "left-single-quote double-encode",
+        ),
+        (
+            b"\xc3\xa2\xe2\x82\xac\xe2\x80\x99",
+            "right-single-quote double-encode",
+        ),
+        (
+            b"\xc3\xa2\xe2\x82\xac\xc5\x93",
+            "left-double-quote double-encode",
+        ),
+        (
+            b"\xc3\xa2\xe2\x82\xac\xc2\x9d",
+            "right-double-quote latin variant",
+        ),
     ];
 
     let mut offenders = Vec::new();
@@ -36,7 +51,12 @@ fn p1_96e15_no_mojibake() {
         let bytes = std::fs::read(&entry).unwrap();
         for (pat, name) in &patterns {
             if bytes.windows(pat.len()).any(|w| w == *pat) {
-                offenders.push(format!("{}: contains {} ({:?})", entry.display(), name, pat));
+                offenders.push(format!(
+                    "{}: contains {} ({:?})",
+                    entry.display(),
+                    name,
+                    pat
+                ));
                 break;
             }
         }

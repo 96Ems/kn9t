@@ -86,7 +86,10 @@ fn go_types(requests: &[(String, &Value)], defs: &[(String, &Value)]) -> String 
             } else {
                 format!("`json:\"{key}\"`")
             };
-            s.push_str(&format!("\t{key_go} {ty} {json_tag}\n", key_go = go_ident(&key)));
+            s.push_str(&format!(
+                "\t{key_go} {ty} {json_tag}\n",
+                key_go = go_ident(&key)
+            ));
         }
         s.push_str("}\n\n");
     }
@@ -103,7 +106,10 @@ fn go_types(requests: &[(String, &Value)], defs: &[(String, &Value)]) -> String 
             } else {
                 format!("`json:\"{key}\"`")
             };
-            s.push_str(&format!("\t{key_go} {ty} {json_tag}\n", key_go = go_ident(&key)));
+            s.push_str(&format!(
+                "\t{key_go} {ty} {json_tag}\n",
+                key_go = go_ident(&key)
+            ));
         }
         s.push_str("}\n\n");
     }
@@ -160,7 +166,11 @@ fn go_prim(prop: &Value) -> String {
         "number" => "float64".to_string(),
         "boolean" => "bool".to_string(),
         "array" => {
-            let item_ty = prop.get("items").and_then(|i| i.get("type")).and_then(|t| t.as_str()).unwrap_or("object");
+            let item_ty = prop
+                .get("items")
+                .and_then(|i| i.get("type"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("object");
             match item_ty {
                 "string" => "[]string".to_string(),
                 _ => "[]map[string]any".to_string(),
@@ -192,7 +202,9 @@ fn python_types(requests: &[(String, &Value)], defs: &[(String, &Value)]) -> Str
     s.push_str("    id: str\n");
 
     for (name, obj) in requests {
-        s.push_str(&format!("\n\n@dataclass\nclass {name}:\n    \"\"\"Request body.\"\"\"\n\n"));
+        s.push_str(&format!(
+            "\n\n@dataclass\nclass {name}:\n    \"\"\"Request body.\"\"\"\n\n"
+        ));
         let req = required(obj);
         for (key, prop) in properties(obj) {
             let ty = py_type(prop);
@@ -208,7 +220,9 @@ fn python_types(requests: &[(String, &Value)], defs: &[(String, &Value)]) -> Str
 
     s.push_str("\n\n# Plugin protocol definitions (schema/plugin.json).\n");
     for (name, subschema) in defs {
-        s.push_str(&format!("\n@dataclass\nclass {name}:\n    \"\"\"Plugin protocol definition.\"\"\"\n\n"));
+        s.push_str(&format!(
+            "\n@dataclass\nclass {name}:\n    \"\"\"Plugin protocol definition.\"\"\"\n\n"
+        ));
         let req = required(subschema);
         for (key, prop) in properties(subschema) {
             let ty = py_type(prop);
@@ -247,7 +261,11 @@ fn py_type(prop: &Value) -> String {
         "number" => "float".to_string(),
         "boolean" => "bool".to_string(),
         "array" => {
-            let item_ty = prop.get("items").and_then(|i| i.get("type")).and_then(|t| t.as_str()).unwrap_or("object");
+            let item_ty = prop
+                .get("items")
+                .and_then(|i| i.get("type"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("object");
             match item_ty {
                 "string" => "List[str]".to_string(),
                 _ => "List[Dict[str, Any]]".to_string(),

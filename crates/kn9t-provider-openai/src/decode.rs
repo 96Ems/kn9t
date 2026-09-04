@@ -15,8 +15,8 @@ pub(crate) struct StreamState {
 
 #[derive(Default)]
 struct ToolState {
-    idx:  u32,
-    id:   String,
+    idx: u32,
+    id: String,
     name: String,
 }
 
@@ -30,8 +30,8 @@ pub(crate) fn decode_delta(
     quirks: &Quirks,
     model_ref: &ModelRef,
 ) -> Result<Vec<Chunk>, ProvErr> {
-    let v: Value = serde_json::from_slice(json_bytes)
-        .map_err(|e| ProvErr::Decode(format!("json: {e}")))?;
+    let v: Value =
+        serde_json::from_slice(json_bytes).map_err(|e| ProvErr::Decode(format!("json: {e}")))?;
 
     // Error from API.
     if let Some(err) = v.get("error") {
@@ -43,7 +43,10 @@ pub(crate) fn decode_delta(
     // Usage chunk (may appear at end).
     if let Some(usage) = v.get("usage") {
         let tokens = decode_usage(usage);
-        chunks.push(Chunk::Usage(Usage { tokens, model: model_ref.clone() }));
+        chunks.push(Chunk::Usage(Usage {
+            tokens,
+            model: model_ref.clone(),
+        }));
     }
 
     let choices = match v.get("choices").and_then(|c| c.as_array()) {
@@ -54,13 +57,16 @@ pub(crate) fn decode_delta(
     let choice = &choices[0];
     let delta = match choice.get("delta") {
         Some(d) => d,
-        None    => return Ok(chunks),
+        None => return Ok(chunks),
     };
 
     // Text delta.
     if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
         if !text.is_empty() {
-            chunks.push(Chunk::Text { idx: 0, delta: text.to_owned() });
+            chunks.push(Chunk::Text {
+                idx: 0,
+                delta: text.to_owned(),
+            });
         }
     }
 
@@ -68,7 +74,10 @@ pub(crate) fn decode_delta(
     if quirks.thinking_style == "reasoning_content" {
         if let Some(text) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
             if !text.is_empty() {
-                chunks.push(Chunk::Thinking { idx: 0, delta: text.to_owned() });
+                chunks.push(Chunk::Thinking {
+                    idx: 0,
+                    delta: text.to_owned(),
+                });
             }
         }
     }
@@ -90,7 +99,8 @@ pub(crate) fn decode_delta(
             if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
                 if slot.id.is_empty() {
                     slot.id = id.to_owned();
-                    let name = tc.pointer("/function/name")
+                    let name = tc
+                        .pointer("/function/name")
                         .and_then(|n| n.as_str())
                         .unwrap_or("")
                         .to_owned();
@@ -105,7 +115,10 @@ pub(crate) fn decode_delta(
 
             if let Some(args) = tc.pointer("/function/arguments").and_then(|a| a.as_str()) {
                 if !args.is_empty() {
-                    chunks.push(Chunk::ToolArgs { idx, delta: args.to_owned() });
+                    chunks.push(Chunk::ToolArgs {
+                        idx,
+                        delta: args.to_owned(),
+                    });
                 }
             }
         }
@@ -124,34 +137,40 @@ pub(crate) fn decode_delta(
 
 pub(crate) fn decode_stop(reason: &str, has_tools: bool, quirks: &Quirks) -> StopReason {
     match reason {
-        "stop"           => {
+        "stop" => {
             if !quirks.finish_reason && has_tools {
                 StopReason::ToolUse
             } else {
                 StopReason::Stop
             }
         }
-        "tool_calls"     => StopReason::ToolUse,
-        "length"         => StopReason::Length,
+        "tool_calls" => StopReason::ToolUse,
+        "length" => StopReason::Length,
         "content_filter" => StopReason::Refusal,
-        _                => StopReason::Stop,
+        _ => StopReason::Stop,
     }
 }
 
 pub fn decode_usage(u: &Value) -> Tokens {
     let prompt_tokens = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    let output = u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let output = u
+        .get("completion_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
 
     // R-NBED-060: cache counters at root or under prompt_tokens_details.
-    let cache_write = u.get("cache_creation_input_tokens")
+    let cache_write = u
+        .get("cache_creation_input_tokens")
         .or_else(|| u.pointer("/prompt_tokens_details/cache_creation_input_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
-    let cache_read = u.get("cached_tokens")
+    let cache_read = u
+        .get("cached_tokens")
         .or_else(|| u.pointer("/prompt_tokens_details/cached_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
-    let reasoning = u.get("reasoning_tokens")
+    let reasoning = u
+        .get("reasoning_tokens")
         .or_else(|| u.pointer("/completion_tokens_details/reasoning_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
@@ -161,14 +180,22 @@ pub fn decode_usage(u: &Value) -> Tokens {
     // This ensures cost formula doesn't double-bill cached tokens.
     let input = prompt_tokens.saturating_sub(cache_read + cache_write);
 
-    Tokens { input, output, cache_read, cache_write, reasoning }
+    Tokens {
+        input,
+        output,
+        cache_read,
+        cache_write,
+        reasoning,
+    }
 }
 
 /// Public stream state wrapper.
 pub struct DecodeState(StreamState);
 
 impl DecodeState {
-    pub fn new() -> Self { DecodeState(StreamState::default()) }
+    pub fn new() -> Self {
+        DecodeState(StreamState::default())
+    }
     pub fn decode(
         &mut self,
         bytes: &[u8],

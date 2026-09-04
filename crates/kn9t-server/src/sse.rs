@@ -202,7 +202,7 @@ pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kn9t_core::{Bus, Event, Message, MsgId, Role, SessionId, Content, Store};
+    use kn9t_core::{Bus, Content, Event, Message, MsgId, Role, SessionId, Store};
     use kn9t_store::SqliteStore;
     use std::sync::Arc;
     use std::time::Duration;
@@ -221,7 +221,9 @@ mod tests {
             msg: Message {
                 id: MsgId::new(),
                 role: Role::Assistant,
-                content: vec![Content::Text { text: marker.into() }],
+                content: vec![Content::Text {
+                    text: marker.into(),
+                }],
                 silent: false,
             },
         }
@@ -229,7 +231,10 @@ mod tests {
 
     fn with_seq(e: &Event, seq: u64) -> Event {
         match e {
-            Event::MessageAppended { msg, .. } => Event::MessageAppended { seq, msg: msg.clone() },
+            Event::MessageAppended { msg, .. } => Event::MessageAppended {
+                seq,
+                msg: msg.clone(),
+            },
             other => other.clone(),
         }
     }
@@ -245,7 +250,10 @@ mod tests {
         let (store, _tmp) = temp_store();
         let bus = Arc::new(Bus::new());
         let session = SessionId::new();
-        let model = kn9t_core::ModelRef { provider: "test".into(), id: "m".into() };
+        let model = kn9t_core::ModelRef {
+            provider: "test".into(),
+            id: "m".into(),
+        };
         kn9t_store::create_session(&store, &session, ".", &model).unwrap();
 
         let e1 = mk_msg("first");
@@ -291,12 +299,22 @@ mod tests {
         }
         let total_during = during_in_prelude + during_in_live;
 
-        assert_eq!(first_in_prelude, 1, "first event must appear exactly once in prelude, got {}", first_in_prelude);
+        assert_eq!(
+            first_in_prelude, 1,
+            "first event must appear exactly once in prelude, got {}",
+            first_in_prelude
+        );
         assert_eq!(total_during, 1, "interleaved event must appear exactly once total (prelude+live) — lost with buggy two-query read, got prelude={}, live={}", during_in_prelude, during_in_live);
         // head_seq is the atomic snapshot's head; with the fix it stays at seq1 (1) because
         // the concurrent append blocks. With the bug it would be seq1+1 (2) but durable misses it.
         // We only check that head_seq is consistent (seq1 or seq1+1) and that no event is lost.
-        assert!(prelude.head_seq == seq1 || prelude.head_seq == seq1 + 1, "head_seq should be {} or {}, got {}", seq1, seq1+1, prelude.head_seq);
+        assert!(
+            prelude.head_seq == seq1 || prelude.head_seq == seq1 + 1,
+            "head_seq should be {} or {}, got {}",
+            seq1,
+            seq1 + 1,
+            prelude.head_seq
+        );
     }
 
     #[test]
@@ -306,14 +324,21 @@ mod tests {
         let (store, _tmp) = temp_store();
         let bus = Arc::new(Bus::new());
         let session = SessionId::new();
-        let model = kn9t_core::ModelRef { provider: "test".into(), id: "m".into() };
+        let model = kn9t_core::ModelRef {
+            provider: "test".into(),
+            id: "m".into(),
+        };
         kn9t_store::create_session(&store, &session, ".", &model).unwrap();
         let e1 = mk_msg("only");
         let seq1 = store.append(&session, e1.clone()).unwrap();
         bus.publish(with_seq(&e1, seq1));
         let sub = bus.subscribe(1024);
         // Also publish a transient event during window
-        bus.publish(Event::TextDelta { msg_id: MsgId::new(), idx: 0, delta: "TRANSIENT".into() });
+        bus.publish(Event::TextDelta {
+            msg_id: MsgId::new(),
+            idx: 0,
+            delta: "TRANSIENT".into(),
+        });
         let prelude = build_attach_prelude(&store, &session.0, 0, &sub);
         let all = prelude.frames.join("");
         assert_eq!(all.matches("only").count(), 1);

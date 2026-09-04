@@ -66,11 +66,17 @@ pub struct ToolOutput {
 impl ToolOutput {
     /// Convenience: a single text block, not an error.
     pub fn text(s: impl Into<String>) -> Self {
-        Self { content: vec![ContentBlock::Text { text: s.into() }], is_error: false }
+        Self {
+            content: vec![ContentBlock::Text { text: s.into() }],
+            is_error: false,
+        }
     }
     /// Convenience: a single text block marking an error.
     pub fn error(s: impl Into<String>) -> Self {
-        Self { content: vec![ContentBlock::Text { text: s.into() }], is_error: true }
+        Self {
+            content: vec![ContentBlock::Text { text: s.into() }],
+            is_error: true,
+        }
     }
 }
 
@@ -156,7 +162,12 @@ impl ProviderResult {
     pub fn error(msg: impl Into<String>) -> Self {
         ProviderResult {
             stop: "error".to_string(),
-            usage: Usage { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+            usage: Usage {
+                input: 0,
+                output: 0,
+                cache_read: 0,
+                cache_write: 0,
+            },
             cost_usd: None,
             error: Some(msg.into()),
         }

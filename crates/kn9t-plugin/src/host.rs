@@ -4,7 +4,9 @@
 //! Host can send Cancel for in-flight calls on cancelable plugins.
 //! Accepts `Box<dyn Read+Send>` + `Box<dyn Write+Send>` so tests wire in-process pipes.
 
-use crate::codec::{hook_name_str, parse_hook_name, write_host_msg, HostMsg, PluginDeclaration, PluginMsg};
+use crate::codec::{
+    hook_name_str, parse_hook_name, write_host_msg, HostMsg, PluginDeclaration, PluginMsg,
+};
 use crate::host_api::HostApi;
 
 /// Internal channel message — what the reader thread delivers per-call.
@@ -69,7 +71,8 @@ type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 /// Callback invoked when a plugin sends `declare` to hot-update its declaration.
 /// The callback receives the plugin name, new declaration, added tools, and removed tools.
-pub type OnDeclareCallback = Box<dyn Fn(&str, &PluginDeclaration, Vec<String>, Vec<String>) + Send + Sync>;
+pub type OnDeclareCallback =
+    Box<dyn Fn(&str, &PluginDeclaration, Vec<String>, Vec<String>) + Send + Sync>;
 
 /// One connected plugin. Thread-safe: the writer is behind an Arc<Mutex>.
 /// The reader runs in a background thread and dispatches responses to per-call channels.
@@ -129,7 +132,8 @@ impl PluginHost {
         let kv_for_reader = Arc::clone(&kv);
 
         // 96E-10: health flag shared with reader thread
-        let unhealthy: Arc<std::sync::atomic::AtomicBool> = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let unhealthy: Arc<std::sync::atomic::AtomicBool> =
+            Arc::new(std::sync::atomic::AtomicBool::new(false));
         let poison_reason: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let api_handler: Arc<Mutex<Option<Arc<dyn HostApi>>>> = Arc::new(Mutex::new(None));
         let on_declare: Arc<Mutex<Option<OnDeclareCallback>>> = Arc::new(Mutex::new(None));
@@ -168,7 +172,9 @@ impl PluginHost {
                         unhealthy_for_reader.store(true, Ordering::SeqCst);
                         let pending = pending_for_reader.lock().unwrap();
                         for tx in pending.values() {
-                            let _ = tx.send(ReaderMsg::Err { reason: reason.clone() });
+                            let _ = tx.send(ReaderMsg::Err {
+                                reason: reason.clone(),
+                            });
                         }
                         break;
                     }
@@ -197,17 +203,42 @@ impl PluginHost {
                     // ── KV requests: handle inline, reply immediately ──────────
                     PluginMsg::KvGet { id, scope, key } => {
                         let reply = match kv_for_reader.kv_get(&plugin_name, &scope, &key) {
-                            Ok(val) => HostMsg::KvResult { id, value: val, ok: true, error: None },
-                            Err(e) => HostMsg::KvResult { id, value: None, ok: false, error: Some(e.0) },
+                            Ok(val) => HostMsg::KvResult {
+                                id,
+                                value: val,
+                                ok: true,
+                                error: None,
+                            },
+                            Err(e) => HostMsg::KvResult {
+                                id,
+                                value: None,
+                                ok: false,
+                                error: Some(e.0),
+                            },
                         };
                         if let Ok(mut w) = writer_clone.lock() {
                             let _ = write_host_msg(&mut **w, &reply);
                         }
                     }
-                    PluginMsg::KvSet { id, scope, key, value } => {
+                    PluginMsg::KvSet {
+                        id,
+                        scope,
+                        key,
+                        value,
+                    } => {
                         let reply = match kv_for_reader.kv_set(&plugin_name, &scope, &key, &value) {
-                            Ok(()) => HostMsg::KvResult { id, value: None, ok: true, error: None },
-                            Err(e) => HostMsg::KvResult { id, value: None, ok: false, error: Some(e.0) },
+                            Ok(()) => HostMsg::KvResult {
+                                id,
+                                value: None,
+                                ok: true,
+                                error: None,
+                            },
+                            Err(e) => HostMsg::KvResult {
+                                id,
+                                value: None,
+                                ok: false,
+                                error: Some(e.0),
+                            },
                         };
                         if let Ok(mut w) = writer_clone.lock() {
                             let _ = write_host_msg(&mut **w, &reply);
@@ -215,8 +246,18 @@ impl PluginHost {
                     }
                     PluginMsg::KvDel { id, scope, key } => {
                         let reply = match kv_for_reader.kv_del(&plugin_name, &scope, &key) {
-                            Ok(()) => HostMsg::KvResult { id, value: None, ok: true, error: None },
-                            Err(e) => HostMsg::KvResult { id, value: None, ok: false, error: Some(e.0) },
+                            Ok(()) => HostMsg::KvResult {
+                                id,
+                                value: None,
+                                ok: true,
+                                error: None,
+                            },
+                            Err(e) => HostMsg::KvResult {
+                                id,
+                                value: None,
+                                ok: false,
+                                error: Some(e.0),
+                            },
                         };
                         if let Ok(mut w) = writer_clone.lock() {
                             let _ = write_host_msg(&mut **w, &reply);
@@ -224,8 +265,18 @@ impl PluginHost {
                     }
                     PluginMsg::KvDelScope { id, scope } => {
                         let reply = match kv_for_reader.kv_del_scope(&plugin_name, &scope) {
-                            Ok(()) => HostMsg::KvResult { id, value: None, ok: true, error: None },
-                            Err(e) => HostMsg::KvResult { id, value: None, ok: false, error: Some(e.0) },
+                            Ok(()) => HostMsg::KvResult {
+                                id,
+                                value: None,
+                                ok: true,
+                                error: None,
+                            },
+                            Err(e) => HostMsg::KvResult {
+                                id,
+                                value: None,
+                                ok: false,
+                                error: Some(e.0),
+                            },
                         };
                         if let Ok(mut w) = writer_clone.lock() {
                             let _ = write_host_msg(&mut **w, &reply);
@@ -246,7 +297,9 @@ impl PluginHost {
                                     id,
                                     ok: false,
                                     result: None,
-                                    error: Some("host API not enabled (no handler registered)".into()),
+                                    error: Some(
+                                        "host API not enabled (no handler registered)".into(),
+                                    ),
                                 };
                                 if let Ok(mut w) = writer.lock() {
                                     let _ = write_host_msg(&mut **w, &reply);
@@ -258,7 +311,8 @@ impl PluginHost {
                                         .get("session")
                                         .and_then(|v| v.as_str())
                                         .map(|s| s.to_string());
-                                    let outcome = h.handle(&name, session.as_deref(), &op, &payload);
+                                    let outcome =
+                                        h.handle(&name, session.as_deref(), &op, &payload);
                                     let reply = match outcome {
                                         Ok(result) => HostMsg::ApiResult {
                                             id,
@@ -281,7 +335,12 @@ impl PluginHost {
                         }
                     }
                     // ── R-PLUG2-110: hot re-declaration ─────────────────────
-                    PluginMsg::Declare { capabilities, hooks, tools, events } => {
+                    PluginMsg::Declare {
+                        capabilities,
+                        hooks,
+                        tools,
+                        events,
+                    } => {
                         let mut decl = declaration_for_reader.lock().unwrap();
                         let old_tools: std::collections::HashSet<String> =
                             decl.tools.iter().map(|t| t.name.clone()).collect();
@@ -302,8 +361,10 @@ impl PluginHost {
 
                         let new_tools: std::collections::HashSet<String> =
                             decl.tools.iter().map(|t| t.name.clone()).collect();
-                        let added: Vec<String> = new_tools.difference(&old_tools).cloned().collect();
-                        let removed: Vec<String> = old_tools.difference(&new_tools).cloned().collect();
+                        let added: Vec<String> =
+                            new_tools.difference(&old_tools).cloned().collect();
+                        let removed: Vec<String> =
+                            old_tools.difference(&new_tools).cloned().collect();
 
                         // Call the callback if registered
                         if let Some(cb) = on_declare_for_reader.lock().unwrap().as_ref() {
@@ -320,12 +381,21 @@ impl PluginHost {
         // broadcast). The old "broadcast to all when untagged" leaked subagent
         // events to the master (AGENTS.md leak). If a plugin genuinely needs a
         // global event, it must use a dedicated diagnostic channel, not this.
-        let session_buses: Arc<Mutex<HashMap<String, Arc<dyn EventSink>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let session_buses: Arc<Mutex<HashMap<String, Arc<dyn EventSink>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let session_buses_for_thread = Arc::clone(&session_buses);
         std::thread::spawn(move || {
             while let Ok(event) = event_rx.recv() {
-                let sid_opt = event.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string())
-                    .or_else(|| event.get("sessionId").and_then(|v| v.as_str()).map(|s| s.to_string()));
+                let sid_opt = event
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        event
+                            .get("sessionId")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    });
                 if let Some(sid) = sid_opt {
                     if let Some(bus) = session_buses_for_thread.lock().unwrap().get(&sid) {
                         bus.emit(LiveEvent::PluginNotification { payload: event });
@@ -368,7 +438,12 @@ impl PluginHost {
 
     fn check_healthy(&self) -> Result<(), String> {
         if self.unhealthy.load(Ordering::SeqCst) {
-            let r = self.poison_reason.lock().unwrap().clone().unwrap_or_else(|| "protocol violation".to_string());
+            let r = self
+                .poison_reason
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| "protocol violation".to_string());
             return Err(format!("plugin '{}' unhealthy: {r}", self.name()));
         }
         Ok(())
@@ -409,7 +484,10 @@ impl PluginHost {
         // If bus already set on this thread, register in the per-session map
         TL_BUS.with(|c| {
             if let Some(bus) = c.borrow().as_ref() {
-                self.session_buses.lock().unwrap().insert(session_id.to_string(), bus.clone());
+                self.session_buses
+                    .lock()
+                    .unwrap()
+                    .insert(session_id.to_string(), bus.clone());
             }
         });
     }
@@ -432,40 +510,51 @@ impl PluginHost {
         let binary = binary.into();
         let mut cmd = Command::new(&binary);
         cmd.stdin(Stdio::piped())
-           .stdout(Stdio::piped())
-           .stderr(Stdio::inherit()); // plugin stderr → host terminal for debug
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit()); // plugin stderr → host terminal for debug
         for (k, v) in env_vars {
             cmd.env(k, v);
         }
 
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| format!("spawn '{}': {e}", binary.display()))?;
 
-        let stdin  = child.stdin.take()
-            .ok_or("plugin stdin not captured")?;
-        let stdout = child.stdout.take()
-            .ok_or("plugin stdout not captured")?;
+        let stdin = child.stdin.take().ok_or("plugin stdin not captured")?;
+        let stdout = child.stdout.take().ok_or("plugin stdout not captured")?;
 
         // Perform handshake over the real pipes.
         let mut reader = BufReader::new(stdout);
         let mut writer: Box<dyn Write + Send> = Box::new(stdin);
 
         // 1. Send host hello.
-        write_host_msg(&mut *writer, &HostMsg::Hello {
-            proto: 1,
-            kn9t: env!("CARGO_PKG_VERSION").to_string(),
-        }).map_err(|e| format!("hello write: {e}"))?;
+        write_host_msg(
+            &mut *writer,
+            &HostMsg::Hello {
+                proto: 1,
+                kn9t: env!("CARGO_PKG_VERSION").to_string(),
+            },
+        )
+        .map_err(|e| format!("hello write: {e}"))?;
 
         // 2. Read plugin hello (blocking; no timeout here — use OS pipe buffering).
         let mut line = String::new();
-        reader.read_line(&mut line)
+        reader
+            .read_line(&mut line)
             .map_err(|e| format!("hello read: {e}"))?;
-        let plugin_hello: PluginMsg = serde_json::from_str(line.trim_end())
-            .map_err(|e| format!("hello parse: {e}"))?;
+        let plugin_hello: PluginMsg =
+            serde_json::from_str(line.trim_end()).map_err(|e| format!("hello parse: {e}"))?;
 
         // 3. Extract declaration from hello.
         let declaration = match plugin_hello {
-            PluginMsg::Hello { name, capabilities, hooks, tools, provider, events } => {
+            PluginMsg::Hello {
+                name,
+                capabilities,
+                hooks,
+                tools,
+                provider,
+                events,
+            } => {
                 use crate::codec::parse_hook_name;
                 PluginDeclaration {
                     name,
@@ -483,7 +572,9 @@ impl PluginHost {
         // We intentionally do NOT call child.wait() here — the child lives until
         // we send Shutdown or drop the writer. Store the child handle so we can
         // reap it on Drop (avoids zombie processes).
-        std::thread::spawn(move || { let _ = child.wait(); });
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
 
         // 5. Build PluginHost from the handshaked I/O.
         let read: Box<dyn Read + Send> = Box::new(reader.into_inner());
@@ -508,7 +599,12 @@ impl PluginHost {
 
     /// 96E-17: whether the plugin declared a given capability in its hello.
     pub fn has_capability(&self, cap: &str) -> bool {
-        self.declaration.lock().unwrap().capabilities.iter().any(|c| c == cap)
+        self.declaration
+            .lock()
+            .unwrap()
+            .capabilities
+            .iter()
+            .any(|c| c == cap)
     }
 
     /// 96E-17: install the plugin → host API handler (server-side ops).
@@ -518,7 +614,12 @@ impl PluginHost {
 
     /// Whether this plugin subscribes to a given event kind string.
     pub fn has_event(&self, kind: &str) -> bool {
-        self.declaration.lock().unwrap().subscribed_events.iter().any(|e| e == kind)
+        self.declaration
+            .lock()
+            .unwrap()
+            .subscribed_events
+            .iter()
+            .any(|e| e == kind)
     }
 
     /// Whether on_event has been unsubscribed due to repeated failures.
@@ -672,17 +773,26 @@ impl PluginHost {
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                return Err(format!("plugin '{}' timed out (call {})", plugin_name, call_id));
+                return Err(format!(
+                    "plugin '{}' timed out (call {})",
+                    plugin_name, call_id
+                ));
             }
             match rx.recv_timeout(remaining) {
                 Ok(ReaderMsg::Final { body }) => return Ok(body),
                 Ok(ReaderMsg::Chunk { body }) => on_chunk(body),
                 Ok(ReaderMsg::Err { reason }) => return Err(reason),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    return Err(format!("plugin '{}' timed out (call {})", plugin_name, call_id));
+                    return Err(format!(
+                        "plugin '{}' timed out (call {})",
+                        plugin_name, call_id
+                    ));
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(format!("plugin '{}' disconnected (call {})", plugin_name, call_id));
+                    return Err(format!(
+                        "plugin '{}' disconnected (call {})",
+                        plugin_name, call_id
+                    ));
                 }
             }
         }
@@ -707,7 +817,10 @@ impl PluginHost {
             }
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                break Err(format!("plugin '{}' timed out (call {})", plugin_name, expected_id));
+                break Err(format!(
+                    "plugin '{}' timed out (call {})",
+                    plugin_name, expected_id
+                ));
             }
             let poll = remaining.min(Duration::from_millis(10));
             match rx.recv_timeout(poll) {
@@ -716,7 +829,10 @@ impl PluginHost {
                 Ok(ReaderMsg::Err { reason }) => break Err(reason),
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    break Err(format!("plugin '{}' disconnected (call {})", plugin_name, expected_id))
+                    break Err(format!(
+                        "plugin '{}' disconnected (call {})",
+                        plugin_name, expected_id
+                    ))
                 }
             }
         };
@@ -727,7 +843,9 @@ impl PluginHost {
     /// Send a cancel message for an in-flight call (R-PLUG2-050).
     /// Only sent to plugins that declared `cancelable` capability.
     pub fn cancel_call(&self, id: u64) {
-        if !self.declaration.lock().unwrap().is_cancelable() { return; }
+        if !self.declaration.lock().unwrap().is_cancelable() {
+            return;
+        }
         let mut w = self.writer.lock().unwrap();
         let _ = write_host_msg(&mut **w, &HostMsg::Cancel { id });
     }
@@ -751,7 +869,8 @@ impl PluginHost {
         if !self.has_hook(HookName::BeforeToolCall) {
             return HookVeto::Allow;
         }
-        let payload = serde_json::json!({ "session_id": self.session_id(), "tool": tool, "args": args });
+        let payload =
+            serde_json::json!({ "session_id": self.session_id(), "tool": tool, "args": args });
         let timeout = default_timeout(HookName::BeforeToolCall);
         match self.call_hook_raw(HookName::BeforeToolCall, payload, timeout) {
             Ok(body) => parse_veto(&body),
@@ -762,12 +881,7 @@ impl PluginHost {
         }
     }
 
-    pub fn after_tool_call(
-        &self,
-        tool: &str,
-        args: &Value,
-        result: Vec<Content>,
-    ) -> Vec<Content> {
+    pub fn after_tool_call(&self, tool: &str, args: &Value, result: Vec<Content>) -> Vec<Content> {
         if !self.has_hook(HookName::AfterToolCall) {
             return result;
         }
@@ -842,7 +956,8 @@ impl PluginHost {
         if !self.has_hook(HookName::PrepareNextTurn) {
             return NextTurnPatch::default();
         }
-        let payload = serde_json::json!({ "session_id": self.session_id(), "stop": stop, "usage": usage });
+        let payload =
+            serde_json::json!({ "session_id": self.session_id(), "stop": stop, "usage": usage });
         let timeout = default_timeout(HookName::PrepareNextTurn);
         match self.call_hook_raw(HookName::PrepareNextTurn, payload, timeout) {
             Ok(body) => parse_next_turn_patch(&body),
@@ -1025,25 +1140,27 @@ fn parse_messages_list(body: &Value) -> Vec<Message> {
     let Some(msgs) = body.get("messages").and_then(|v| v.as_array()) else {
         return Vec::new();
     };
-    
-    msgs.iter().filter_map(|v| {
-        // Try direct parse first (plugin provided id)
-        if let Ok(msg) = serde_json::from_value::<Message>(v.clone()) {
-            return Some(msg);
-        }
-        
-        // Parse without id, then add one
-        let role: Role = serde_json::from_value(v.get("role")?.clone()).ok()?;
-        let content: Vec<Content> = serde_json::from_value(v.get("content")?.clone()).ok()?;
-        let silent = v.get("silent").and_then(|s| s.as_bool()).unwrap_or(false);
-        
-        Some(Message {
-            id: MsgId::new(),
-            role,
-            content,
-            silent,
+
+    msgs.iter()
+        .filter_map(|v| {
+            // Try direct parse first (plugin provided id)
+            if let Ok(msg) = serde_json::from_value::<Message>(v.clone()) {
+                return Some(msg);
+            }
+
+            // Parse without id, then add one
+            let role: Role = serde_json::from_value(v.get("role")?.clone()).ok()?;
+            let content: Vec<Content> = serde_json::from_value(v.get("content")?.clone()).ok()?;
+            let silent = v.get("silent").and_then(|s| s.as_bool()).unwrap_or(false);
+
+            Some(Message {
+                id: MsgId::new(),
+                role,
+                content,
+                silent,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 fn parse_next_turn_patch(body: &Value) -> NextTurnPatch {
@@ -1114,7 +1231,10 @@ mod session_scope_tests {
 
         // run_session_turn(child) begins: capture the caller's thread-local.
         let scope = SessionScope::capture();
-        assert_eq!(TL_SESSION.with(|c| c.borrow().clone()).as_deref(), Some("parent-001"));
+        assert_eq!(
+            TL_SESSION.with(|c| c.borrow().clone()).as_deref(),
+            Some("parent-001")
+        );
         assert!(TL_BUS.with(|c| c.borrow().is_some()));
 
         // Inside the child turn, compose_loop overwrites the thread-local.

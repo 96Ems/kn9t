@@ -260,7 +260,10 @@ mod tests {
     fn session_filter_matches_id_by_substring_only() {
         let e = entry("01M1GXZDENG6JTD9C5NRK1CZXX", "hello");
         assert!(session_matches(&e, "01M1GXZ"), "prefix matches");
-        assert!(!session_matches(&e, "01M1GVZZ"), "foreign suffix must NOT fuzzy-match");
+        assert!(
+            !session_matches(&e, "01M1GVZZ"),
+            "foreign suffix must NOT fuzzy-match"
+        );
         // Fuzzy still applies to names.
         let e2 = entry("abcdef", "review commit");
         assert!(session_matches(&e2, "rvw"));

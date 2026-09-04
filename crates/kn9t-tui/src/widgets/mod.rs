@@ -3,16 +3,23 @@
 //! Each `kind` from 96E-24 (`text|number|bar|list`) gets a minimal line renderer.
 //! Used by `ui/render.rs` to draw the toggleable side panel (transcript stays primary).
 
-use ratatui::style::{Style, Modifier};
-use ratatui::text::{Line, Span};
+use crate::page_state::{Placeholder, PlaceholderKind};
 use crate::theme::Theme;
-use crate::page_state::{PlaceholderKind, Placeholder};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 /// Render one placeholder as one or more lines (list may expand).
 /// `label` is the placeholder id, `width` is the available content width.
-pub fn render_placeholder(label: &str, ph: &Placeholder, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+pub fn render_placeholder(
+    label: &str,
+    ph: &Placeholder,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    let label_style = Style::default().fg(theme.muted).add_modifier(Modifier::BOLD);
+    let label_style = Style::default()
+        .fg(theme.muted)
+        .add_modifier(Modifier::BOLD);
     let value_style = Style::default().fg(theme.fg);
     match &ph.kind {
         PlaceholderKind::Text => {
@@ -23,14 +30,26 @@ pub fn render_placeholder(label: &str, ph: &Placeholder, width: usize, theme: &T
                 lines.push(Line::from(vec![Span::styled(chunk, value_style)]));
             }
             if lines.is_empty() {
-                lines.push(Line::from(vec![Span::styled(format!("{}:", label), label_style), Span::styled(" ", value_style)]));
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{}:", label), label_style),
+                    Span::styled(" ", value_style),
+                ]));
             }
         }
         PlaceholderKind::Number => {
-            let n = ph.value.as_f64().map(|v| format!("{}", v)).unwrap_or_else(|| ph.value.to_string());
+            let n = ph
+                .value
+                .as_f64()
+                .map(|v| format!("{}", v))
+                .unwrap_or_else(|| ph.value.to_string());
             lines.push(Line::from(vec![
                 Span::styled(format!("{}: ", label), label_style),
-                Span::styled(n, Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    n,
+                    Style::default()
+                        .fg(theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]));
         }
         PlaceholderKind::Bar => {
@@ -46,18 +65,32 @@ pub fn render_placeholder(label: &str, ph: &Placeholder, width: usize, theme: &T
             ]));
         }
         PlaceholderKind::List => {
-            lines.push(Line::from(vec![Span::styled(format!("{}:", label), label_style)]));
+            lines.push(Line::from(vec![Span::styled(
+                format!("{}:", label),
+                label_style,
+            )]));
             if let Some(arr) = ph.value.as_array() {
                 if arr.is_empty() {
-                    lines.push(Line::from(vec![Span::styled("  (empty)", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))]));
+                    lines.push(Line::from(vec![Span::styled(
+                        "  (empty)",
+                        Style::default()
+                            .fg(theme.muted)
+                            .add_modifier(Modifier::ITALIC),
+                    )]));
                 } else {
                     for item in arr {
                         let s = match item {
                             serde_json::Value::String(st) => st.clone(),
                             other => other.to_string(),
                         };
-                        for chunk in crate::ui::render::wrap_text(&format!("• {}", s), width.saturating_sub(2)) {
-                            lines.push(Line::from(vec![Span::styled(format!("  {}", chunk), value_style)]));
+                        for chunk in crate::ui::render::wrap_text(
+                            &format!("• {}", s),
+                            width.saturating_sub(2),
+                        ) {
+                            lines.push(Line::from(vec![Span::styled(
+                                format!("  {}", chunk),
+                                value_style,
+                            )]));
                         }
                     }
                 }
@@ -79,18 +112,26 @@ mod tests {
     use crate::theme::Theme;
     use serde_json::json;
 
-    fn theme() -> Theme { Theme::dark() }
+    fn theme() -> Theme {
+        Theme::dark()
+    }
 
     #[test]
     fn render_text_placeholder() {
-        let ph = Placeholder { kind: PlaceholderKind::Text, value: json!("hello world") };
+        let ph = Placeholder {
+            kind: PlaceholderKind::Text,
+            value: json!("hello world"),
+        };
         let lines = render_placeholder("status", &ph, 40, &theme());
         assert!(lines.iter().any(|l| format!("{:?}", l).contains("hello")));
     }
 
     #[test]
     fn render_bar_placeholder() {
-        let ph = Placeholder { kind: PlaceholderKind::Bar, value: json!(50) };
+        let ph = Placeholder {
+            kind: PlaceholderKind::Bar,
+            value: json!(50),
+        };
         let lines = render_placeholder("prog", &ph, 40, &theme());
         let s = format!("{:?}", lines);
         assert!(s.contains("prog"));
@@ -99,7 +140,10 @@ mod tests {
 
     #[test]
     fn render_list_placeholder() {
-        let ph = Placeholder { kind: PlaceholderKind::List, value: json!(["a","b"]) };
+        let ph = Placeholder {
+            kind: PlaceholderKind::List,
+            value: json!(["a", "b"]),
+        };
         let lines = render_placeholder("items", &ph, 40, &theme());
         let s = format!("{:?}", lines);
         assert!(s.contains("items"));

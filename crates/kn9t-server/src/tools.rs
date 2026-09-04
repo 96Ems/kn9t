@@ -92,12 +92,20 @@ pub fn discover_plugin_binaries(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Spawn a pinned user plugin from [[plugin]] config (cmd is Some).
-fn spawn_user_plugin(cfg: &ResolvedPlugin, kv: Arc<dyn PluginKv>) -> Result<(Arc<PluginHost>, Vec<Arc<dyn Tool>>), String> {
-    let cmd = cfg.cmd.as_ref().expect("spawn_user_plugin called with no cmd");
+fn spawn_user_plugin(
+    cfg: &ResolvedPlugin,
+    kv: Arc<dyn PluginKv>,
+) -> Result<(Arc<PluginHost>, Vec<Arc<dyn Tool>>), String> {
+    let cmd = cfg
+        .cmd
+        .as_ref()
+        .expect("spawn_user_plugin called with no cmd");
     crate::log!("spawning user plugin '{}': {:?}", cfg.name, cmd);
 
     // Build env as slice of refs
-    let env_refs: Vec<(&str, &str)> = cfg.env.iter()
+    let env_refs: Vec<(&str, &str)> = cfg
+        .env
+        .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
 
@@ -108,12 +116,19 @@ fn spawn_user_plugin(cfg: &ResolvedPlugin, kv: Arc<dyn PluginKv>) -> Result<(Arc
     // Verify plugin name matches config (warning only)
     let decl = host.declaration();
     if decl.name != cfg.name {
-        crate::log!("warning: plugin declared name '{}' differs from config name '{}'",
-            decl.name, cfg.name);
+        crate::log!(
+            "warning: plugin declared name '{}' differs from config name '{}'",
+            decl.name,
+            cfg.name
+        );
     }
 
-    crate::log!("user plugin '{}' handshake complete: {} tools, {} hooks declared",
-        cfg.name, decl.tools.len(), decl.hooks.len());
+    crate::log!(
+        "user plugin '{}' handshake complete: {} tools, {} hooks declared",
+        cfg.name,
+        decl.tools.len(),
+        decl.hooks.len()
+    );
 
     let host = Arc::new(host);
     let tools = extract_tools(&host);
@@ -126,11 +141,19 @@ fn spawn_user_plugin(cfg: &ResolvedPlugin, kv: Arc<dyn PluginKv>) -> Result<(Arc
 }
 
 /// Handshake one auto-discovered plugin binary (single-element command array), with optional env.
-fn spawn_discovered_plugin(bin: &Path, env_vars: &[(&str, &str)], kv: Arc<dyn PluginKv>) -> Result<(Arc<PluginHost>, Vec<Arc<dyn Tool>>), String> {
+fn spawn_discovered_plugin(
+    bin: &Path,
+    env_vars: &[(&str, &str)],
+    kv: Arc<dyn PluginKv>,
+) -> Result<(Arc<PluginHost>, Vec<Arc<dyn Tool>>), String> {
     if env_vars.is_empty() {
         crate::log!("spawning discovered plugin: {}", bin.display());
     } else {
-        crate::log!("spawning discovered plugin: {} (with {} env vars)", bin.display(), env_vars.len());
+        crate::log!(
+            "spawning discovered plugin: {} (with {} env vars)",
+            bin.display(),
+            env_vars.len()
+        );
     }
 
     // Single-element cmd: the binary itself, no args. spawn_with_cmd performs the
@@ -140,8 +163,12 @@ fn spawn_discovered_plugin(bin: &Path, env_vars: &[(&str, &str)], kv: Arc<dyn Pl
         .map_err(|e| format!("failed to spawn plugin '{}': {e}", bin.display()))?;
 
     let decl = host.declaration();
-    crate::log!("discovered plugin '{}' handshake complete: {} tools, {} hooks declared",
-        decl.name, decl.tools.len(), decl.hooks.len());
+    crate::log!(
+        "discovered plugin '{}' handshake complete: {} tools, {} hooks declared",
+        decl.name,
+        decl.tools.len(),
+        decl.hooks.len()
+    );
 
     let host = Arc::new(host);
     let tools = extract_tools(&host);
@@ -149,15 +176,23 @@ fn spawn_discovered_plugin(bin: &Path, env_vars: &[(&str, &str)], kv: Arc<dyn Pl
 }
 
 /// Spawn a plugin subprocess from a command + args array — public for hot-reload (R-PLUG2-100).
-pub fn spawn_with_cmd_public(cmd: &[String], env_vars: &[(&str, &str)], kv: Arc<dyn PluginKv>) -> Result<PluginHost, String> {
+pub fn spawn_with_cmd_public(
+    cmd: &[String],
+    env_vars: &[(&str, &str)],
+    kv: Arc<dyn PluginKv>,
+) -> Result<PluginHost, String> {
     spawn_with_cmd(cmd, env_vars, kv)
 }
 
 /// Spawn a plugin subprocess from a command + args array.
-fn spawn_with_cmd(cmd: &[String], env_vars: &[(&str, &str)], kv: Arc<dyn PluginKv>) -> Result<PluginHost, String> {
+fn spawn_with_cmd(
+    cmd: &[String],
+    env_vars: &[(&str, &str)],
+    kv: Arc<dyn PluginKv>,
+) -> Result<PluginHost, String> {
+    use kn9t_plugin::codec::{write_host_msg, HostMsg, PluginMsg};
     use std::io::{BufRead, BufReader, Write};
     use std::process::Stdio;
-    use kn9t_plugin::codec::{write_host_msg, HostMsg, PluginMsg};
 
     if cmd.is_empty() {
         return Err("empty command".to_string());
@@ -167,7 +202,8 @@ fn spawn_with_cmd(cmd: &[String], env_vars: &[(&str, &str)], kv: Arc<dyn PluginK
     let args = &cmd[1..];
 
     let mut command = Command::new(program);
-    command.args(args)
+    command
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
@@ -176,7 +212,8 @@ fn spawn_with_cmd(cmd: &[String], env_vars: &[(&str, &str)], kv: Arc<dyn PluginK
         command.env(k, v);
     }
 
-    let mut child = command.spawn()
+    let mut child = command
+        .spawn()
         .map_err(|e| format!("spawn '{program}': {e}"))?;
 
     let stdin = child.stdin.take().ok_or("stdin not captured")?;
@@ -186,20 +223,32 @@ fn spawn_with_cmd(cmd: &[String], env_vars: &[(&str, &str)], kv: Arc<dyn PluginK
     let mut writer: Box<dyn Write + Send> = Box::new(stdin);
 
     // Send host hello
-    write_host_msg(&mut *writer, &HostMsg::Hello {
-        proto: 1,
-        kn9t: env!("CARGO_PKG_VERSION").to_string(),
-    }).map_err(|e| format!("hello write: {e}"))?;
+    write_host_msg(
+        &mut *writer,
+        &HostMsg::Hello {
+            proto: 1,
+            kn9t: env!("CARGO_PKG_VERSION").to_string(),
+        },
+    )
+    .map_err(|e| format!("hello write: {e}"))?;
 
     // Read plugin hello
     let mut line = String::new();
-    reader.read_line(&mut line)
+    reader
+        .read_line(&mut line)
         .map_err(|e| format!("hello read: {e}"))?;
-    let plugin_hello: PluginMsg = serde_json::from_str(line.trim_end())
-        .map_err(|e| format!("hello parse: {e}"))?;
+    let plugin_hello: PluginMsg =
+        serde_json::from_str(line.trim_end()).map_err(|e| format!("hello parse: {e}"))?;
 
     let declaration = match plugin_hello {
-        PluginMsg::Hello { name, capabilities, hooks, tools, provider, events } => {
+        PluginMsg::Hello {
+            name,
+            capabilities,
+            hooks,
+            tools,
+            provider,
+            events,
+        } => {
             use kn9t_plugin::codec::parse_hook_name;
             kn9t_plugin::PluginDeclaration {
                 name,
@@ -214,7 +263,9 @@ fn spawn_with_cmd(cmd: &[String], env_vars: &[(&str, &str)], kv: Arc<dyn PluginK
     };
 
     // Reap child in background
-    std::thread::spawn(move || { let _ = child.wait(); });
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 
     // Build PluginHost from handshaked I/O
     use std::io::Read;
@@ -231,10 +282,9 @@ pub fn extract_tools_public(host: &Arc<PluginHost>) -> Vec<Arc<dyn Tool>> {
 fn extract_tools(host: &Arc<PluginHost>) -> Vec<Arc<dyn Tool>> {
     // PluginDeclaration.tools is already Vec<kn9t_core::ToolSpec>, so no conversion needed
     let decl = host.declaration();
-    decl.tools.iter()
-        .map(|spec| {
-            Arc::new(RemoteTool::new(spec.clone(), host.clone())) as Arc<dyn Tool>
-        })
+    decl.tools
+        .iter()
+        .map(|spec| Arc::new(RemoteTool::new(spec.clone(), host.clone())) as Arc<dyn Tool>)
         .collect()
 }
 
@@ -268,7 +318,14 @@ pub fn spawn_all_plugins(
 pub fn spawn_all_plugins_with_info(
     user_plugins: &[ResolvedPlugin],
     kv: Arc<dyn PluginKv>,
-) -> Result<(Vec<Arc<PluginHost>>, ToolRegistry, HashMap<String, (Vec<String>, Vec<(String, String)>)>), String> {
+) -> Result<
+    (
+        Vec<Arc<PluginHost>>,
+        ToolRegistry,
+        HashMap<String, (Vec<String>, Vec<(String, String)>)>,
+    ),
+    String,
+> {
     spawn_all_plugins_in_dir_with_info(user_plugins, &plugin_dir(), kv)
 }
 
@@ -293,7 +350,14 @@ fn spawn_all_plugins_in_dir_with_info(
     user_plugins: &[ResolvedPlugin],
     discovery_dir: &Path,
     kv: Arc<dyn PluginKv>,
-) -> Result<(Vec<Arc<PluginHost>>, ToolRegistry, HashMap<String, (Vec<String>, Vec<(String, String)>)>), String> {
+) -> Result<
+    (
+        Vec<Arc<PluginHost>>,
+        ToolRegistry,
+        HashMap<String, (Vec<String>, Vec<(String, String)>)>,
+    ),
+    String,
+> {
     let mut all_hosts: Vec<Arc<PluginHost>> = Vec::new();
     let mut all_tools: Vec<Arc<dyn Tool>> = Vec::new();
     let mut spawn_info: HashMap<String, (Vec<String>, Vec<(String, String)>)> = HashMap::new();
@@ -376,24 +440,37 @@ fn spawn_all_plugins_in_dir_with_info(
                 discovery_dir.display()
             );
         } else {
-            crate::log!("plugin discovery: {} candidate(s) in {}", discovered.len(), discovery_dir.display());
+            crate::log!(
+                "plugin discovery: {} candidate(s) in {}",
+                discovered.len(),
+                discovery_dir.display()
+            );
         }
         for bin in &discovered {
             // Pre-handshake path dedup: if this exact path was pinned successfully, skip.
             if pinned_paths.contains(bin) {
-                crate::log!("discovered plugin {} superseded by pinned config (same path) — skipping", bin.display());
+                crate::log!(
+                    "discovered plugin {} superseded by pinned config (same path) — skipping",
+                    bin.display()
+                );
                 continue;
             }
             // Pre-handshake file-stem disabled check (cheap, covers typical case).
-            let file_stem = bin.file_stem()
+            let file_stem = bin
+                .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
             if disabled_names.contains(&file_stem) {
-                crate::log!("discovered plugin {} disabled via config (name '{}') — skipping", bin.display(), file_stem);
+                crate::log!(
+                    "discovered plugin {} disabled via config (name '{}') — skipping",
+                    bin.display(),
+                    file_stem
+                );
                 continue;
             }
             // Determine env to inject for this discovered binary (file-stem heuristic).
-            let env_for_bin: Vec<(&str, &str)> = env_overrides.get(&file_stem)
+            let env_for_bin: Vec<(&str, &str)> = env_overrides
+                .get(&file_stem)
                 .map(|v| v.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect())
                 .unwrap_or_default();
             if !env_for_bin.is_empty() {
@@ -404,7 +481,11 @@ fn spawn_all_plugins_in_dir_with_info(
                     let declared = host.name();
                     // Post-handshake disabled check (declared name may differ from file stem).
                     if disabled_names.contains(&declared) {
-                        crate::log!("discovered plugin '{}' ({}) disabled via config — discarding", declared, bin.display());
+                        crate::log!(
+                            "discovered plugin '{}' ({}) disabled via config — discarding",
+                            declared,
+                            bin.display()
+                        );
                         // Host will be dropped; child exits on pipe close. Best-effort shutdown.
                         host.shutdown();
                         continue;
@@ -416,12 +497,17 @@ fn spawn_all_plugins_in_dir_with_info(
                         continue;
                     }
                     // If declared name has an env override but file stem didn't match, warn (heuristic miss).
-                    if env_overrides.contains_key(&declared) && !env_overrides.contains_key(&file_stem) {
+                    if env_overrides.contains_key(&declared)
+                        && !env_overrides.contains_key(&file_stem)
+                    {
                         crate::log!("warning: discovered plugin '{}' ({}) matches env override for '{}' but file name '{}' did not — env not injected (rename binary to match config name or use pinned cmd)", declared, bin.display(), declared, file_stem);
                     }
                     // Record spawn info for reload (binary path + injected env).
                     let cmd = vec![bin.to_string_lossy().into_owned()];
-                    let env_owned: Vec<(String, String)> = env_for_bin.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+                    let env_owned: Vec<(String, String)> = env_for_bin
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect();
                     spawn_info.insert(declared.clone(), (cmd, env_owned));
                     // Dedup tools by name.
                     let mut filtered = Vec::new();
@@ -440,7 +526,10 @@ fn spawn_all_plugins_in_dir_with_info(
                     crate::log!("  registered {} tool(s) from {}", n, bin.display());
                 }
                 Err(e) => {
-                    crate::log!("warning: discovered plugin {} failed to start: {e}", bin.display());
+                    crate::log!(
+                        "warning: discovered plugin {} failed to start: {e}",
+                        bin.display()
+                    );
                     // Continue with other discovered plugins
                 }
             }
@@ -471,9 +560,8 @@ mod tests {
         fn new(tag: &str) -> TempDir {
             static N: AtomicUsize = AtomicUsize::new(0);
             let n = N.fetch_add(1, Ordering::SeqCst);
-            let p = std::env::temp_dir().join(format!(
-                "kn9t-discovery-{tag}-{}-{n}", std::process::id()
-            ));
+            let p = std::env::temp_dir()
+                .join(format!("kn9t-discovery-{tag}-{}-{n}", std::process::id()));
             std::fs::create_dir_all(&p).expect("create temp dir");
             TempDir(p)
         }
@@ -508,7 +596,14 @@ mod tests {
     /// Write a dummy plugin that declares its tool name based on an env var.
     /// If `env_key` is set to `env_val`, tool name is `tool_when_set`, else `tool_when_unset`.
     #[cfg(unix)]
-    fn write_env_conditional_plugin(path: &Path, name: &str, env_key: &str, env_val: &str, tool_when_set: &str, tool_when_unset: &str) {
+    fn write_env_conditional_plugin(
+        path: &Path,
+        name: &str,
+        env_key: &str,
+        env_val: &str,
+        tool_when_set: &str,
+        tool_when_unset: &str,
+    ) {
         use std::os::unix::fs::PermissionsExt;
         let script = format!(
             "#!/bin/sh\n\
@@ -561,9 +656,15 @@ mod tests {
 
         assert_eq!(hosts.len(), 1, "one discovered plugin host");
         assert_eq!(hosts[0].name(), "dummy-tools");
-        assert!(hosts[0].declaration().tools.iter().any(|t| t.name == "dummy_tool"));
-        assert!(tools.iter().any(|t| t.spec().name == "dummy_tool"),
-            "discovered tool must be registered in the merged registry");
+        assert!(hosts[0]
+            .declaration()
+            .tools
+            .iter()
+            .any(|t| t.name == "dummy_tool"));
+        assert!(
+            tools.iter().any(|t| t.spec().name == "dummy_tool"),
+            "discovered tool must be registered in the merged registry"
+        );
     }
 
     /// ADR-0004 negative: a project-relative `plugins/` directory is NEVER scanned.
@@ -593,8 +694,15 @@ mod tests {
 
         let (hosts, tools) = spawn_all_plugins_in_dir(&[], user_dir.path(), noop_kv()).unwrap();
 
-        assert!(hosts.is_empty(), "no plugin may be spawned from a project-relative dir");
-        assert_eq!(tools.len(), 0, "project-relative plugins/ must never be discovered");
+        assert!(
+            hosts.is_empty(),
+            "no plugin may be spawned from a project-relative dir"
+        );
+        assert_eq!(
+            tools.len(),
+            0,
+            "project-relative plugins/ must never be discovered"
+        );
         assert!(discover_plugin_binaries(&proj_plugins).contains(&evil),
             "sanity: evil.sh IS a valid candidate — the point is the user dir scan never looks there");
     }
@@ -619,7 +727,8 @@ mod tests {
         write_dummy_plugin(&dir.path().join("a.sh"), "a-tools", "a_tool");
 
         let discovered = discover_plugin_binaries(dir.path());
-        let names: Vec<String> = discovered.iter()
+        let names: Vec<String> = discovered
+            .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["a.sh".to_string(), "b.sh".to_string()]);
@@ -644,9 +753,13 @@ mod tests {
             env: vec![],
             disabled: true,
         };
-        let (hosts, tools) = spawn_all_plugins_in_dir(&[disabled_cfg], dir.path(), noop_kv()).unwrap();
+        let (hosts, tools) =
+            spawn_all_plugins_in_dir(&[disabled_cfg], dir.path(), noop_kv()).unwrap();
         assert!(hosts.is_empty(), "disabled plugin must not be spawned");
-        assert!(tools.is_empty(), "disabled plugin tools must not be registered");
+        assert!(
+            tools.is_empty(),
+            "disabled plugin tools must not be registered"
+        );
     }
 
     /// Phase 3.3: pinned config (cmd) supersedes discovered plugin with same declared name.
@@ -669,12 +782,19 @@ mod tests {
             env: vec![],
             disabled: false,
         };
-        let (hosts, tools) = spawn_all_plugins_in_dir(&[pinned_cfg], dir.path(), noop_kv()).unwrap();
+        let (hosts, tools) =
+            spawn_all_plugins_in_dir(&[pinned_cfg], dir.path(), noop_kv()).unwrap();
         // Only pinned host should survive; discovered suppressed.
         assert_eq!(hosts.len(), 1, "only pinned host should be registered");
         assert_eq!(hosts[0].name(), "dup-tools");
-        assert!(tools.iter().any(|t| t.spec().name == "pinned_tool"), "pinned tool must be present");
-        assert!(!tools.iter().any(|t| t.spec().name == "discovered_tool"), "discovered tool must be suppressed");
+        assert!(
+            tools.iter().any(|t| t.spec().name == "pinned_tool"),
+            "pinned tool must be present"
+        );
+        assert!(
+            !tools.iter().any(|t| t.spec().name == "discovered_tool"),
+            "discovered tool must be suppressed"
+        );
         assert_eq!(tools.len(), 1);
     }
 
@@ -693,7 +813,8 @@ mod tests {
             env: vec![],
             disabled: false,
         };
-        let (hosts, tools) = spawn_all_plugins_in_dir(&[pinned_cfg], dir.path(), noop_kv()).unwrap();
+        let (hosts, tools) =
+            spawn_all_plugins_in_dir(&[pinned_cfg], dir.path(), noop_kv()).unwrap();
         assert_eq!(hosts.len(), 1, "same path should not duplicate");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools.iter().next().unwrap().spec().name, "tool_a");
@@ -706,7 +827,14 @@ mod tests {
         let dir = TempDir::new("dis-env");
         let bin = dir.path().join("env-tools");
         // Plugin checks INJECTED env var.
-        write_env_conditional_plugin(&bin, "env-tools", "INJECTED", "yes", "when_set", "when_unset");
+        write_env_conditional_plugin(
+            &bin,
+            "env-tools",
+            "INJECTED",
+            "yes",
+            "when_set",
+            "when_unset",
+        );
 
         // Without override, tool should be when_unset.
         let (hosts, tools) = spawn_all_plugins_in_dir(&[], dir.path(), noop_kv()).unwrap();
@@ -721,7 +849,10 @@ mod tests {
             disabled: false,
         };
         let (hosts, tools) = spawn_all_plugins_in_dir(&[env_cfg], dir.path(), noop_kv()).unwrap();
-        assert!(tools.iter().any(|t| t.spec().name == "when_set"), "env injection should affect discovered plugin");
+        assert!(
+            tools.iter().any(|t| t.spec().name == "when_set"),
+            "env injection should affect discovered plugin"
+        );
         assert!(!tools.iter().any(|t| t.spec().name == "when_unset"));
         // Cleanup: hosts dropped, children exit.
         drop(hosts);
@@ -759,7 +890,11 @@ mod tests {
             disabled: false,
         };
         let (hosts, tools) = spawn_all_plugins_in_dir(&[cfg], dir.path(), noop_kv()).unwrap();
-        assert_eq!(tools.len(), 1, "kn9t-tools must not duplicate: pinned supersedes discovered");
+        assert_eq!(
+            tools.len(),
+            1,
+            "kn9t-tools must not duplicate: pinned supersedes discovered"
+        );
         assert_eq!(hosts.len(), 1);
     }
 }

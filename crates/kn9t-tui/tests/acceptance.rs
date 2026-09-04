@@ -12,7 +12,9 @@ fn tui_no_kn9t_deps() {
     for line in manifest.lines() {
         let trimmed = line.trim();
         // Skip comments.
-        if trimmed.starts_with('#') { continue; }
+        if trimmed.starts_with('#') {
+            continue;
+        }
         // A dependency on a kn9t-* crate would start with `kn9t-` as a key.
         assert!(
             !trimmed.starts_with("kn9t-"),

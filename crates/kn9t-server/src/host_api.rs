@@ -16,8 +16,8 @@
 use std::sync::Arc;
 
 use kn9t_core::{
-    cost_micros, Cancel, Decision, Event, Message, ModelSpec, Request, SessionId, Store,
-    Thinking, ToolCall, ToolCtx, UsageKind,
+    cost_micros, Cancel, Decision, Event, Message, ModelSpec, Request, SessionId, Store, Thinking,
+    ToolCall, ToolCtx, UsageKind,
 };
 use kn9t_plugin::HostApi;
 use serde_json::{json, Value};
@@ -66,7 +66,10 @@ impl ServerHostApi {
     fn session_read(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
         let session = self.require_session(session)?;
         let start = payload.get("start").and_then(|v| v.as_u64()).unwrap_or(0);
-        let end = payload.get("end").and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
+        let end = payload
+            .get("end")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(u64::MAX);
 
         let rows = self
             .state
@@ -95,14 +98,21 @@ impl ServerHostApi {
     /// sub-agent — there is no separate sub-agent concept in kn9t.
     fn session_fork(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
         let session = self.require_session(session)?;
-        let copy_events = payload.get("copy_events").and_then(|v| v.as_bool()).unwrap_or(true);
+        let copy_events = payload
+            .get("copy_events")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         let budget_usd = payload.get("budget_usd").and_then(|v| v.as_f64());
         let model_id = payload.get("model").and_then(|v| v.as_str());
         let child = SessionId::new();
         let parent = SessionId(session.to_string());
 
         let model: Option<ModelSpec> = if let Some(id) = model_id {
-            self.state.model_registry.iter().find(|m| m.r#ref.id == id).cloned()
+            self.state
+                .model_registry
+                .iter()
+                .find(|m| m.r#ref.id == id)
+                .cloned()
         } else {
             self.state.store.get_model_spec_for_session(session)
         };
@@ -156,10 +166,11 @@ impl ServerHostApi {
             .get("text")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "session_prompt requires \"text\"".to_string())?;
-        let tools = payload
-            .get("tools")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect::<Vec<_>>());
+        let tools = payload.get("tools").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        });
         let timeout = payload
             .get("timeout_s")
             .and_then(|v| v.as_u64())
@@ -173,7 +184,6 @@ impl ServerHostApi {
         )?;
         Ok(json!({ "session": session, "result": result }))
     }
-
 
     /// `tool_list` — 96E-17: registry tool names (for composing child toolsets).
     /// Reply: `{"tools":["bash","read",...]}`.
@@ -194,11 +204,19 @@ impl ServerHostApi {
     /// Emits `LiveEvent::InteractionRequest {id, plugin, payload}` to the
     /// session bus so the TUI (or any SSE client) can render it generically.
     /// Reply: `{"payload": <client response>}` — the client's opaque answer.
-    fn interaction_request(&self, session: Option<&str>, payload: &Value, plugin: &str) -> Result<Value, String> {
+    fn interaction_request(
+        &self,
+        session: Option<&str>,
+        payload: &Value,
+        plugin: &str,
+    ) -> Result<Value, String> {
         let session = self.require_session(session)?;
         // The plugin's prompt payload is `payload.payload` if wrapped, else the
         // whole payload. Accept both for SDK convenience — but require something.
-        let prompt_payload = payload.get("payload").cloned().unwrap_or_else(|| payload.clone());
+        let prompt_payload = payload
+            .get("payload")
+            .cloned()
+            .unwrap_or_else(|| payload.clone());
         // Create pending slot
         let (id, handle) = self.state.interaction_registry.create(
             session.to_string(),
@@ -228,9 +246,14 @@ impl ServerHostApi {
             .get("messages")
             .cloned()
             .and_then(|v| serde_json::from_value(v).ok())
-            .ok_or_else(|| "provider_complete requires \"messages\" (list of messages)".to_string())?;
+            .ok_or_else(|| {
+                "provider_complete requires \"messages\" (list of messages)".to_string()
+            })?;
         let system = payload.get("system").and_then(|v| v.as_str());
-        let max_tokens = payload.get("max_tokens").and_then(|v| v.as_u64()).map(|t| t as u32);
+        let max_tokens = payload
+            .get("max_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|t| t as u32);
 
         // Optional tools: either inline specs or names to look up from registry
         let tools: Vec<kn9t_core::ToolSpec> = if let Some(tools_val) = payload.get("tools") {
@@ -240,7 +263,10 @@ impl ServerHostApi {
                 if arr.first().map(|v| v.is_string()).unwrap_or(false) {
                     let names: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
                     let registry = self.state.tools_snapshot();
-                    names.iter().filter_map(|n| registry.get(n).map(|t| t.spec().clone())).collect()
+                    names
+                        .iter()
+                        .filter_map(|n| registry.get(n).map(|t| t.spec().clone()))
+                        .collect()
                 } else {
                     serde_json::from_value(tools_val.clone()).unwrap_or_default()
                 }
@@ -318,12 +344,27 @@ impl ServerHostApi {
     /// Emits `LiveEvent::UiDirective {plugin, target, op, payload}` to the session's bus,
     /// reusing 96E-21's session-scoped routing (no broadcast fallback).
     /// Reply: `{"ok":true}`.
-    fn ui_directive(&self, session: Option<&str>, payload: &Value, plugin: &str) -> Result<Value, String> {
+    fn ui_directive(
+        &self,
+        session: Option<&str>,
+        payload: &Value,
+        plugin: &str,
+    ) -> Result<Value, String> {
         let session = self.require_session(session)?;
-        let target = payload.get("target").and_then(|v| v.as_str()).ok_or_else(|| "ui_directive requires \"target\" (string)".to_string())?;
-        let op = payload.get("op").and_then(|v| v.as_str()).ok_or_else(|| "ui_directive requires \"op\" (string)".to_string())?;
-        if target.is_empty() { return Err("ui_directive: target must be non-empty".into()); }
-        if op.is_empty() { return Err("ui_directive: op must be non-empty".into()); }
+        let target = payload
+            .get("target")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "ui_directive requires \"target\" (string)".to_string())?;
+        let op = payload
+            .get("op")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "ui_directive requires \"op\" (string)".to_string())?;
+        if target.is_empty() {
+            return Err("ui_directive: target must be non-empty".into());
+        }
+        if op.is_empty() {
+            return Err("ui_directive: op must be non-empty".into());
+        }
         let inner = payload.get("payload").cloned().unwrap_or(Value::Null);
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
         sink.emit(kn9t_core::LiveEvent::UiDirective {
@@ -337,11 +378,23 @@ impl ServerHostApi {
 
     /// 96E-24 — `ui_declare_page {page_id, layout}` — declare a templated page,
     /// then `ui_write_placeholder` cheaply and `ui_clear_page` teardown.
-    fn ui_declare_page(&self, session: Option<&str>, payload: &Value, plugin: &str) -> Result<Value, String> {
+    fn ui_declare_page(
+        &self,
+        session: Option<&str>,
+        payload: &Value,
+        plugin: &str,
+    ) -> Result<Value, String> {
         let session = self.require_session(session)?;
-        let page_id = payload.get("page_id").and_then(|v| v.as_str()).ok_or_else(|| "ui_declare_page requires \"page_id\"".to_string())?;
-        let layout = payload.get("layout").ok_or_else(|| "ui_declare_page requires \"layout\"".to_string())?;
-        self.state.ui_pages.declare(plugin, session, page_id, layout)?;
+        let page_id = payload
+            .get("page_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "ui_declare_page requires \"page_id\"".to_string())?;
+        let layout = payload
+            .get("layout")
+            .ok_or_else(|| "ui_declare_page requires \"layout\"".to_string())?;
+        self.state
+            .ui_pages
+            .declare(plugin, session, page_id, layout)?;
         // Forward to TUI as a structured UiDirective (same bus, session-scoped)
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
         sink.emit(kn9t_core::LiveEvent::UiDirective {
@@ -353,12 +406,29 @@ impl ServerHostApi {
         Ok(json!({"ok": true, "page_id": page_id}))
     }
 
-    fn ui_write_placeholder(&self, session: Option<&str>, payload: &Value, plugin: &str) -> Result<Value, String> {
+    fn ui_write_placeholder(
+        &self,
+        session: Option<&str>,
+        payload: &Value,
+        plugin: &str,
+    ) -> Result<Value, String> {
         let session = self.require_session(session)?;
-        let page_id = payload.get("page_id").and_then(|v| v.as_str()).ok_or_else(|| "ui_write_placeholder requires \"page_id\"".to_string())?;
-        let placeholder_id = payload.get("placeholder_id").or_else(|| payload.get("id")).and_then(|v| v.as_str()).ok_or_else(|| "ui_write_placeholder requires \"placeholder_id\"".to_string())?;
-        let value = payload.get("value").cloned().ok_or_else(|| "ui_write_placeholder requires \"value\"".to_string())?;
-        self.state.ui_pages.write(plugin, session, page_id, placeholder_id, value.clone())?;
+        let page_id = payload
+            .get("page_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "ui_write_placeholder requires \"page_id\"".to_string())?;
+        let placeholder_id = payload
+            .get("placeholder_id")
+            .or_else(|| payload.get("id"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "ui_write_placeholder requires \"placeholder_id\"".to_string())?;
+        let value = payload
+            .get("value")
+            .cloned()
+            .ok_or_else(|| "ui_write_placeholder requires \"value\"".to_string())?;
+        self.state
+            .ui_pages
+            .write(plugin, session, page_id, placeholder_id, value.clone())?;
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
         sink.emit(kn9t_core::LiveEvent::UiDirective {
             plugin: plugin.to_string(),
@@ -369,9 +439,17 @@ impl ServerHostApi {
         Ok(json!({"ok": true}))
     }
 
-    fn ui_clear_page(&self, session: Option<&str>, payload: &Value, plugin: &str) -> Result<Value, String> {
+    fn ui_clear_page(
+        &self,
+        session: Option<&str>,
+        payload: &Value,
+        plugin: &str,
+    ) -> Result<Value, String> {
         let session = self.require_session(session)?;
-        let page_id = payload.get("page_id").and_then(|v| v.as_str()).ok_or_else(|| "ui_clear_page requires \"page_id\"".to_string())?;
+        let page_id = payload
+            .get("page_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "ui_clear_page requires \"page_id\"".to_string())?;
         self.state.ui_pages.clear(plugin, session, page_id)?;
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
         sink.emit(kn9t_core::LiveEvent::UiDirective {
@@ -395,7 +473,10 @@ impl ServerHostApi {
             .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "tool_execute requires \"name\"".to_string())?;
-        let args = payload.get("args").cloned().unwrap_or(Value::Object(Default::default()));
+        let args = payload
+            .get("args")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default()));
 
         let tool = self
             .state
@@ -406,9 +487,13 @@ impl ServerHostApi {
 
         // Normal approval path: the approver shows/answers the request.
         // 96E-22: unique per invocation — static atomic counter avoids colliding on repeated same-tool calls.
-        static TOOL_EXEC_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static TOOL_EXEC_COUNTER: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
         let call = ToolCall {
-            id: kn9t_core::CallId(format!("plugin-{name}-{}", TOOL_EXEC_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed))),
+            id: kn9t_core::CallId(format!(
+                "plugin-{name}-{}",
+                TOOL_EXEC_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )),
             name: name.to_string(),
             args_json: serde_json::to_string(&args).unwrap_or_default(),
         };
@@ -417,8 +502,16 @@ impl ServerHostApi {
         // here and every approval fell through to "no sink" -> Deny. Now the prompt actually
         // reaches the session's SSE stream.
         let approval_sink = self.sink(session);
-        let ctx = kn9t_core::ApprovalCtx { session, sink: &approval_sink };
-        match self.state.approver_snapshot().request(&call, &self.state.cwd, "plugin tool_execute", &ctx) {
+        let ctx = kn9t_core::ApprovalCtx {
+            session,
+            sink: &approval_sink,
+        };
+        match self.state.approver_snapshot().request(
+            &call,
+            &self.state.cwd,
+            "plugin tool_execute",
+            &ctx,
+        ) {
             Decision::Allow => {}
             decision => {
                 let reason = match decision {

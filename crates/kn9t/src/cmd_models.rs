@@ -19,14 +19,29 @@ pub fn run(port: u16, server_token: &str) {
         }
     };
     // Header
-    println!("{:<16}  {:<28}  {:>8}  {:>8}  {}", "PROVIDER", "MODEL", "CTX", "MAX_OUT", "DEFAULT");
+    println!(
+        "{:<16}  {:<28}  {:>8}  {:>8}  {}",
+        "PROVIDER", "MODEL", "CTX", "MAX_OUT", "DEFAULT"
+    );
     println!("{}", "-".repeat(80));
     for m in models {
         let provider = m.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
         let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-        let ctx = m.get("ctx_window").and_then(|v| v.as_u64()).map(|v| v.to_string()).unwrap_or_else(|| "-".into());
-        let max_out = m.get("max_out").and_then(|v| v.as_u64()).map(|v| v.to_string()).unwrap_or_else(|| "-".into());
-        let def = if m.get("is_default") == Some(&Value::Bool(true)) { "yes" } else { "" };
+        let ctx = m
+            .get("ctx_window")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".into());
+        let max_out = m
+            .get("max_out")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".into());
+        let def = if m.get("is_default") == Some(&Value::Bool(true)) {
+            "yes"
+        } else {
+            ""
+        };
         println!("{provider:<16}  {id:<28}  {ctx:>8}  {max_out:>8}  {def}");
     }
     // Show auth line if present.
@@ -38,4 +53,3 @@ pub fn run(port: u16, server_token: &str) {
         }
     }
 }
-

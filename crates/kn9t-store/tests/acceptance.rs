@@ -1,12 +1,12 @@
 //! Stage 04 acceptance tests — R-STOR-010..R-STOR-180.
 #![allow(clippy::unwrap_used)]
 
-use kn9t_core::{
-    CallId, Content, Event, ForkReason, Message, MsgId, ModelRef, Price, Role,
-    SessionId, Tokens, UsageKind,
-};
 use kn9t_core::Store;
-use kn9t_store::{SqliteStore, create_session, fork_session, has_orphan_tool_call};
+use kn9t_core::{
+    CallId, Content, Event, ForkReason, Message, ModelRef, MsgId, Price, Role, SessionId, Tokens,
+    UsageKind,
+};
+use kn9t_store::{create_session, fork_session, has_orphan_tool_call, SqliteStore};
 use tempfile::TempDir;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -19,7 +19,10 @@ fn tmp_store() -> (TempDir, SqliteStore) {
 }
 
 fn model_ref() -> ModelRef {
-    ModelRef { provider: "test".into(), id: "model".into() }
+    ModelRef {
+        provider: "test".into(),
+        id: "model".into(),
+    }
 }
 
 fn new_session(store: &SqliteStore) -> SessionId {
@@ -34,7 +37,8 @@ fn msg(seq: u64, text: &str) -> Event {
         msg: Message {
             id: MsgId::new(),
             role: Role::User,
-            content: vec![Content::Text { text: text.into() }], silent: false
+            content: vec![Content::Text { text: text.into() }],
+            silent: false,
         },
     }
 }
@@ -45,8 +49,17 @@ fn usage(seq: u64, tok_in: u32, tok_out: u32) -> Event {
         provider: "test".into(),
         model: "model".into(),
         kind: UsageKind::Main,
-        tokens: Tokens { input: tok_in, output: tok_out, ..Tokens::default() },
-        price_snapshot: Price { input: 3_000_000, output: 15_000_000, cache_read: 300_000, cache_write: 3_750_000 },
+        tokens: Tokens {
+            input: tok_in,
+            output: tok_out,
+            ..Tokens::default()
+        },
+        price_snapshot: Price {
+            input: 3_000_000,
+            output: 15_000_000,
+            cache_read: 300_000,
+            cache_write: 3_750_000,
+        },
         cost_micros: 0,
         cost_usd: 0.0,
         estimated: false,
@@ -58,9 +71,13 @@ fn usage(seq: u64, tok_in: u32, tok_out: u32) -> Event {
 #[test]
 fn stor_pragmas() {
     let (_dir, store) = tmp_store();
-    let jm: String = store.query_one("PRAGMA journal_mode", &[], |r| r.get(0)).unwrap();
+    let jm: String = store
+        .query_one("PRAGMA journal_mode", &[], |r| r.get(0))
+        .unwrap();
     assert_eq!(jm, "wal");
-    let fk: i64 = store.query_one("PRAGMA foreign_keys", &[], |r| r.get(0)).unwrap();
+    let fk: i64 = store
+        .query_one("PRAGMA foreign_keys", &[], |r| r.get(0))
+        .unwrap();
     assert_eq!(fk, 1);
 }
 
@@ -69,16 +86,31 @@ fn stor_pragmas() {
 #[test]
 fn stor_schema_matches() {
     let (_dir, store) = tmp_store();
-    let tables = store.query_strings(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name", &[],
-    ).unwrap();
-    for t in &["blobs", "events", "live_messages", "messages", "meta", "sessions", "usage"] {
+    let tables = store
+        .query_strings(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+            &[],
+        )
+        .unwrap();
+    for t in &[
+        "blobs",
+        "events",
+        "live_messages",
+        "messages",
+        "meta",
+        "sessions",
+        "usage",
+    ] {
         assert!(tables.contains(&t.to_string()), "missing table: {t}");
     }
     // events PK must be (session_id, seq)
-    let pk_cols: i64 = store.query_one(
-        "SELECT COUNT(*) FROM pragma_table_info('events') WHERE pk > 0", &[], |r| r.get(0),
-    ).unwrap();
+    let pk_cols: i64 = store
+        .query_one(
+            "SELECT COUNT(*) FROM pragma_table_info('events') WHERE pk > 0",
+            &[],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(pk_cols, 2);
 }
 
@@ -118,17 +150,23 @@ fn stor_project_is_total() {
     let s = new_session(&store);
 
     store.append(&s, msg(1, "hello")).unwrap();
-    let role: String = store.query_one(
-        "SELECT role FROM messages WHERE session_id=?1 AND seq=1",
-        &[&s.0], |r| r.get(0),
-    ).unwrap();
+    let role: String = store
+        .query_one(
+            "SELECT role FROM messages WHERE session_id=?1 AND seq=1",
+            &[&s.0],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(role, "user");
 
     store.append(&s, usage(2, 100, 50)).unwrap();
-    let kind: String = store.query_one(
-        "SELECT kind FROM usage WHERE session_id=?1 AND seq=2",
-        &[&s.0], |r| r.get(0),
-    ).unwrap();
+    let kind: String = store
+        .query_one(
+            "SELECT kind FROM usage WHERE session_id=?1 AND seq=2",
+            &[&s.0],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(kind, "main");
 }
 
@@ -146,23 +184,40 @@ fn stor_cost_tiered() {
         provider: "test".into(),
         model: "model".into(),
         kind: UsageKind::Main,
-        tokens: Tokens { input: 100, output: 0, cache_read: 10_000, cache_write: 0, reasoning: 0 },
-        price_snapshot: Price { input: 3_000_000, output: 15_000_000, cache_read: 300_000, cache_write: 3_750_000 },
+        tokens: Tokens {
+            input: 100,
+            output: 0,
+            cache_read: 10_000,
+            cache_write: 0,
+            reasoning: 0,
+        },
+        price_snapshot: Price {
+            input: 3_000_000,
+            output: 15_000_000,
+            cache_read: 300_000,
+            cache_write: 3_750_000,
+        },
         cost_micros: 0,
         cost_usd: 0.0,
         estimated: false,
     };
     store.append(&s, ev).unwrap();
 
-    let cost: f64 = store.query_one(
-        "SELECT cost_usd FROM usage WHERE session_id=?1 AND seq=2",
-        &[&s.0], |r| r.get(0),
-    ).unwrap();
+    let cost: f64 = store
+        .query_one(
+            "SELECT cost_usd FROM usage WHERE session_id=?1 AND seq=2",
+            &[&s.0],
+            |r| r.get(0),
+        )
+        .unwrap();
 
     // naive (input+cache_read+cache_write)*price_in/1e6 = 10100 * 3.0 / 1e6 = 0.0303
     // correct = 100*3/1e6 + 10000*0.3/1e6 = 0.0003 + 0.003 = 0.0033
     let naive = 10_100.0_f64 * 3.0 / 1e6;
-    assert!(cost < naive / 5.0, "cost {cost} must be far less than naive {naive}");
+    assert!(
+        cost < naive / 5.0,
+        "cost {cost} must be far less than naive {naive}"
+    );
 }
 
 // ── stor::reproject_rebuilds (R-STOR-080) ────────────────────────────────────
@@ -179,22 +234,31 @@ fn stor_reproject_rebuilds() {
         store.append(&s, msg(1, "hello")).unwrap();
         store.append(&s, usage(2, 10, 5)).unwrap();
         // Corrupt projection while store is open (same connection, WAL mode)
-        store.execute_raw(
-            "UPDATE messages SET role='corrupted' WHERE session_id=?1",
-            &[&sid_str],
-        ).unwrap();
+        store
+            .execute_raw(
+                "UPDATE messages SET role='corrupted' WHERE session_id=?1",
+                &[&sid_str],
+            )
+            .unwrap();
     } // store dropped — connection closed
 
     // Now reproject on a fresh connection
     let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON").unwrap();
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON")
+        .unwrap();
     kn9t_store::reproject::reproject(&conn).unwrap();
 
-    let role: String = conn.query_row(
-        "SELECT role FROM messages WHERE session_id=?1 AND seq=1",
-        rusqlite::params![sid_str], |r| r.get(0),
-    ).unwrap();
-    assert_eq!(role, "user", "reproject must restore projection from events");
+    let role: String = conn
+        .query_row(
+            "SELECT role FROM messages WHERE session_id=?1 AND seq=1",
+            rusqlite::params![sid_str],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        role, "user",
+        "reproject must restore projection from events"
+    );
 }
 
 // ── stor::reproject_check_clean (R-STOR-090) ─────────────────────────────────
@@ -245,7 +309,12 @@ fn stor_low_ctx_window_triggers_compaction_earlier() {
         api_id: "model".into(),
         ctx_window: ctx,
         max_out: 128,
-        price: Price { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+        price: Price {
+            input: 0,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+        },
         cache: CacheMode::None,
         streaming: true,
         quirks: Default::default(),
@@ -279,20 +348,50 @@ fn stor_compact_boundary() {
     // Build messages: user, assistant+ToolCall, user(ToolResult)
     let call_id = CallId("c1".into());
     let msgs = vec![
-        Message { id: MsgId::new(), role: Role::User,
-            content: vec![Content::Text { text: "q".into() }], silent: false },
-        Message { id: MsgId::new(), role: Role::Assistant,
-            content: vec![Content::ToolCall { id: call_id.clone(), name: "bash".into(), args_json: "{}".into() }], silent: false },
-        Message { id: MsgId::new(), role: Role::Tool,
-            content: vec![Content::ToolResult { id: call_id.clone(), content: vec![], is_error: false }], silent: false },
-        Message { id: MsgId::new(), role: Role::User,
-            content: vec![Content::Text { text: "done".into() }], silent: false },
+        Message {
+            id: MsgId::new(),
+            role: Role::User,
+            content: vec![Content::Text { text: "q".into() }],
+            silent: false,
+        },
+        Message {
+            id: MsgId::new(),
+            role: Role::Assistant,
+            content: vec![Content::ToolCall {
+                id: call_id.clone(),
+                name: "bash".into(),
+                args_json: "{}".into(),
+            }],
+            silent: false,
+        },
+        Message {
+            id: MsgId::new(),
+            role: Role::Tool,
+            content: vec![Content::ToolResult {
+                id: call_id.clone(),
+                content: vec![],
+                is_error: false,
+            }],
+            silent: false,
+        },
+        Message {
+            id: MsgId::new(),
+            role: Role::User,
+            content: vec![Content::Text {
+                text: "done".into(),
+            }],
+            silent: false,
+        },
     ];
     let seqs = vec![1u64, 2, 3, 4];
     // Naive cut at n/2 = 2 would orphan ToolCall; snap must extend to include ToolResult
     let span = compact_span(&seqs, &msgs);
     // The span must include both ToolCall (seq=2) and ToolResult (seq=3)
-    assert!(span.replaced.end >= 3, "snap must include ToolResult pair, end={}", span.replaced.end);
+    assert!(
+        span.replaced.end >= 3,
+        "snap must include ToolResult pair, end={}",
+        span.replaced.end
+    );
 }
 
 // ── stor::fork_no_usage (R-STOR-130a) ────────────────────────────────────────
@@ -308,19 +407,34 @@ fn stor_fork_no_usage() {
     fork_session(&store, &origin, &child, 2, ForkReason::Fork, None, "/cwd").unwrap();
 
     // Child must have zero own usage rows
-    let usage_count: i64 = store.query_one(
-        "SELECT COUNT(*) FROM usage WHERE session_id=?1", &[&child.0], |r| r.get(0),
-    ).unwrap();
+    let usage_count: i64 = store
+        .query_one(
+            "SELECT COUNT(*) FROM usage WHERE session_id=?1",
+            &[&child.0],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(usage_count, 0, "forked session must not copy usage rows");
 
     // Child must have correct inherited_cost_usd
-    let inh: f64 = store.query_one(
-        "SELECT inherited_cost_usd FROM sessions WHERE id=?1", &[&child.0], |r| r.get(0),
-    ).unwrap();
-    let origin_cost: f64 = store.query_one(
-        "SELECT COALESCE(SUM(cost_usd),0) FROM usage WHERE session_id=?1", &[&origin.0], |r| r.get(0),
-    ).unwrap();
-    assert!((inh - origin_cost).abs() < 1e-9, "inherited_cost_usd must match origin usage sum");
+    let inh: f64 = store
+        .query_one(
+            "SELECT inherited_cost_usd FROM sessions WHERE id=?1",
+            &[&child.0],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let origin_cost: f64 = store
+        .query_one(
+            "SELECT COALESCE(SUM(cost_usd),0) FROM usage WHERE session_id=?1",
+            &[&origin.0],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        (inh - origin_cost).abs() < 1e-9,
+        "inherited_cost_usd must match origin usage sum"
+    );
 }
 
 // ── stor::fork_renumber (R-STOR-130b) ────────────────────────────────────────
@@ -337,11 +451,17 @@ fn stor_fork_renumber() {
     fork_session(&store, &origin, &child, 3, ForkReason::Fork, None, "/cwd").unwrap();
 
     // seq 0 = SessionForked, then 1,2,3 = copied messages
-    let seqs: Vec<String> = store.query_strings(
-        "SELECT CAST(seq AS TEXT) FROM events WHERE session_id=?1 ORDER BY seq",
-        &[&child.0],
-    ).unwrap();
-    assert_eq!(seqs, vec!["0", "1", "2", "3"], "seqs must be contiguous from 0");
+    let seqs: Vec<String> = store
+        .query_strings(
+            "SELECT CAST(seq AS TEXT) FROM events WHERE session_id=?1 ORDER BY seq",
+            &[&child.0],
+        )
+        .unwrap();
+    assert_eq!(
+        seqs,
+        vec!["0", "1", "2", "3"],
+        "seqs must be contiguous from 0"
+    );
 }
 
 // ── stor::blob_dedup (R-STOR-140) ────────────────────────────────────────────
@@ -354,9 +474,11 @@ fn stor_blob_dedup() {
     let h2 = store.put_blob(bytes, "text/plain").unwrap();
     assert_eq!(h1, h2, "same bytes must produce same hash");
 
-    let count: i64 = store.query_one(
-        "SELECT COUNT(*) FROM blobs WHERE hash=?1", &[&h1], |r| r.get(0),
-    ).unwrap();
+    let count: i64 = store
+        .query_one("SELECT COUNT(*) FROM blobs WHERE hash=?1", &[&h1], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert_eq!(count, 1, "duplicate blob must not create duplicate row");
 }
 
@@ -371,29 +493,56 @@ fn stor_blob_refcount() {
     // Two sessions reference the blob via sha256: in content
     let s1 = new_session(&store);
     let s2 = new_session(&store);
-    let img_content = vec![Content::Image { sha256: format!("sha256:{hash}"), mime: "image/png".into() }];
+    let img_content = vec![Content::Image {
+        sha256: format!("sha256:{hash}"),
+        mime: "image/png".into(),
+    }];
 
-    store.append(&s1, Event::MessageAppended {
-        seq: 1,
-        msg: Message { id: MsgId::new(), role: Role::User, content: img_content.clone(), silent: false },
-    }).unwrap();
-    store.append(&s2, Event::MessageAppended {
-        seq: 1,
-        msg: Message { id: MsgId::new(), role: Role::User, content: img_content, silent: false },
-    }).unwrap();
+    store
+        .append(
+            &s1,
+            Event::MessageAppended {
+                seq: 1,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::User,
+                    content: img_content.clone(),
+                    silent: false,
+                },
+            },
+        )
+        .unwrap();
+    store
+        .append(
+            &s2,
+            Event::MessageAppended {
+                seq: 1,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::User,
+                    content: img_content,
+                    silent: false,
+                },
+            },
+        )
+        .unwrap();
 
     // Delete s1; blob must survive (s2 still references)
     store.delete_session(&s1).unwrap();
-    let rc: i64 = store.query_one(
-        "SELECT refcount FROM blobs WHERE hash=?1", &[&hash], |r| r.get(0),
-    ).unwrap();
+    let rc: i64 = store
+        .query_one("SELECT refcount FROM blobs WHERE hash=?1", &[&hash], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert!(rc > 0, "blob must survive first session delete, rc={rc}");
 
     // Delete s2; blob must be gone
     store.delete_session(&s2).unwrap();
-    let exists: i64 = store.query_one(
-        "SELECT COUNT(*) FROM blobs WHERE hash=?1", &[&hash], |r| r.get(0),
-    ).unwrap();
+    let exists: i64 = store
+        .query_one("SELECT COUNT(*) FROM blobs WHERE hash=?1", &[&hash], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert_eq!(exists, 0, "blob must be deleted when refcount reaches zero");
 }
 
@@ -406,24 +555,41 @@ fn stor_session_delete_blobs() {
     let hash = store.put_blob(bytes, "text/plain").unwrap();
 
     let s = new_session(&store);
-    let img_content = vec![Content::Image { sha256: format!("sha256:{hash}"), mime: "text/plain".into() }];
-    store.append(&s, Event::MessageAppended {
-        seq: 1,
-        msg: Message { id: MsgId::new(), role: Role::User, content: img_content, silent: false },
-    }).unwrap();
+    let img_content = vec![Content::Image {
+        sha256: format!("sha256:{hash}"),
+        mime: "text/plain".into(),
+    }];
+    store
+        .append(
+            &s,
+            Event::MessageAppended {
+                seq: 1,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::User,
+                    content: img_content,
+                    silent: false,
+                },
+            },
+        )
+        .unwrap();
 
     store.delete_session(&s).unwrap();
 
     // Session row must be gone
-    let count: i64 = store.query_one(
-        "SELECT COUNT(*) FROM sessions WHERE id=?1", &[&s.0], |r| r.get(0),
-    ).unwrap();
+    let count: i64 = store
+        .query_one("SELECT COUNT(*) FROM sessions WHERE id=?1", &[&s.0], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert_eq!(count, 0, "session row must be deleted");
 
     // Blob must be gone too
-    let blob_count: i64 = store.query_one(
-        "SELECT COUNT(*) FROM blobs WHERE hash=?1", &[&hash], |r| r.get(0),
-    ).unwrap();
+    let blob_count: i64 = store
+        .query_one("SELECT COUNT(*) FROM blobs WHERE hash=?1", &[&hash], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert_eq!(blob_count, 0, "blob must be GC'd on session delete");
 }
 
@@ -436,18 +602,33 @@ fn stor_debug_blob_ref() {
 
     let s = new_session(&store);
     let sha_ref = format!("sha256:{hash}");
-    let img_content = vec![Content::Image { sha256: sha_ref.clone(), mime: "image/png".into() }];
+    let img_content = vec![Content::Image {
+        sha256: sha_ref.clone(),
+        mime: "image/png".into(),
+    }];
     let content_json = serde_json::to_string(&img_content).unwrap();
     println!("content_json={content_json}");
 
-    store.append(&s, Event::MessageAppended {
-        seq: 1,
-        msg: Message { id: MsgId::new(), role: Role::User, content: img_content, silent: false },
-    }).unwrap();
+    store
+        .append(
+            &s,
+            Event::MessageAppended {
+                seq: 1,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::User,
+                    content: img_content,
+                    silent: false,
+                },
+            },
+        )
+        .unwrap();
 
-    let rc: i64 = store.query_one(
-        "SELECT refcount FROM blobs WHERE hash=?1", &[&hash], |r| r.get(0),
-    ).unwrap();
+    let rc: i64 = store
+        .query_one("SELECT refcount FROM blobs WHERE hash=?1", &[&hash], |r| {
+            r.get(0)
+        })
+        .unwrap();
     println!("refcount after append={rc}");
 }
 
@@ -460,7 +641,9 @@ fn stor_debug_extract() {
     let mut s = json;
     while let Some(idx) = s.find(prefix) {
         let rest = &s[idx + prefix.len()..];
-        let end = rest.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_hexdigit())
+            .unwrap_or(rest.len());
         if end > 0 {
             found.push(format!("{}{}", prefix, &rest[..end]));
         }
@@ -482,10 +665,16 @@ fn stor_live_truncated_on_open() {
         let s = new_session(&store);
         sid_str = s.0.clone();
         // Write a live_message row
-        store.upsert_live_message(
-            &s, &MsgId::new(), "assistant",
-            &[Content::Text { text: "partial...".into() }],
-        ).unwrap();
+        store
+            .upsert_live_message(
+                &s,
+                &MsgId::new(),
+                "assistant",
+                &[Content::Text {
+                    text: "partial...".into(),
+                }],
+            )
+            .unwrap();
         let got = store.get_live_message(&s).unwrap();
         assert!(got.is_some(), "live_message must be present before reopen");
     } // store dropped
@@ -498,7 +687,10 @@ fn stor_live_truncated_on_open() {
 
     // reproject must not be affected
     let diffs = store2.reproject_check().unwrap();
-    assert!(diffs.is_empty(), "reproject_check must be clean after reopen");
+    assert!(
+        diffs.is_empty(),
+        "reproject_check must be clean after reopen"
+    );
 }
 
 // ── stor::orphan_tool_call_detection ─────────────────────────────────────────
@@ -507,72 +699,89 @@ fn stor_live_truncated_on_open() {
 #[test]
 fn stor_has_orphan_tool_call_detects_orphan() {
     let call_id = CallId("test-call-1".into());
-    
+
     // Messages with orphaned ToolCall (no matching ToolResult)
     let msgs_with_orphan = vec![
-        Message { 
-            id: MsgId::new(), 
+        Message {
+            id: MsgId::new(),
             role: Role::User,
-            content: vec![Content::Text { text: "do something".into() }], silent: false 
+            content: vec![Content::Text {
+                text: "do something".into(),
+            }],
+            silent: false,
         },
-        Message { 
-            id: MsgId::new(), 
+        Message {
+            id: MsgId::new(),
             role: Role::Assistant,
             content: vec![
-                Content::Text { text: "I'll run a command".into() },
-                Content::ToolCall { 
-                    id: call_id.clone(), 
-                    name: "bash".into(), 
-                    args_json: r#"{"command":"ls"}"#.into() 
+                Content::Text {
+                    text: "I'll run a command".into(),
                 },
-            ], silent: false 
+                Content::ToolCall {
+                    id: call_id.clone(),
+                    name: "bash".into(),
+                    args_json: r#"{"command":"ls"}"#.into(),
+                },
+            ],
+            silent: false,
         },
         // NO ToolResult message! This is the corruption.
     ];
-    
-    assert!(has_orphan_tool_call(&msgs_with_orphan), 
-        "must detect orphaned ToolCall without matching ToolResult");
+
+    assert!(
+        has_orphan_tool_call(&msgs_with_orphan),
+        "must detect orphaned ToolCall without matching ToolResult"
+    );
 }
 
 /// Test that has_orphan_tool_call returns false when all ToolCalls have matching ToolResults.
 #[test]
 fn stor_has_orphan_tool_call_clean_transcript() {
     let call_id = CallId("test-call-1".into());
-    
+
     // Complete transcript with matching ToolResult
     let msgs_clean = vec![
-        Message { 
-            id: MsgId::new(), 
+        Message {
+            id: MsgId::new(),
             role: Role::User,
-            content: vec![Content::Text { text: "do something".into() }], silent: false 
+            content: vec![Content::Text {
+                text: "do something".into(),
+            }],
+            silent: false,
         },
-        Message { 
-            id: MsgId::new(), 
+        Message {
+            id: MsgId::new(),
             role: Role::Assistant,
             content: vec![
-                Content::Text { text: "I'll run a command".into() },
-                Content::ToolCall { 
-                    id: call_id.clone(), 
-                    name: "bash".into(), 
-                    args_json: r#"{"command":"ls"}"#.into() 
+                Content::Text {
+                    text: "I'll run a command".into(),
                 },
-            ], silent: false 
+                Content::ToolCall {
+                    id: call_id.clone(),
+                    name: "bash".into(),
+                    args_json: r#"{"command":"ls"}"#.into(),
+                },
+            ],
+            silent: false,
         },
-        Message { 
-            id: MsgId::new(), 
+        Message {
+            id: MsgId::new(),
             role: Role::Tool,
-            content: vec![
-                Content::ToolResult { 
-                    id: call_id.clone(), 
-                    content: vec![Content::Text { text: "file1.txt\nfile2.txt".into() }],
-                    is_error: false,
-                },
-            ], silent: false 
+            content: vec![Content::ToolResult {
+                id: call_id.clone(),
+                content: vec![Content::Text {
+                    text: "file1.txt\nfile2.txt".into(),
+                }],
+                is_error: false,
+            }],
+            silent: false,
         },
     ];
-    
-    assert!(!has_orphan_tool_call(&msgs_clean), 
-        "must not report orphan when ToolResult exists");
+
+    assert!(
+        !has_orphan_tool_call(&msgs_clean),
+        "must not report orphan when ToolResult exists"
+    );
 }
 
 /// Test that multiple parallel tool calls are correctly tracked.
@@ -580,60 +789,73 @@ fn stor_has_orphan_tool_call_clean_transcript() {
 fn stor_has_orphan_tool_call_parallel_tools() {
     let call1 = CallId("call-1".into());
     let call2 = CallId("call-2".into());
-    
+
     // Two parallel tool calls, only one has result
     let msgs_partial = vec![
-        Message { 
-            id: MsgId::new(), 
+        Message {
+            id: MsgId::new(),
             role: Role::User,
-            content: vec![Content::Text { text: "do two things".into() }], silent: false 
+            content: vec![Content::Text {
+                text: "do two things".into(),
+            }],
+            silent: false,
         },
-        Message { 
-            id: MsgId::new(), 
+        Message {
+            id: MsgId::new(),
             role: Role::Assistant,
             content: vec![
-                Content::ToolCall { 
-                    id: call1.clone(), 
-                    name: "read".into(), 
-                    args_json: r#"{"path":"a.txt"}"#.into() 
+                Content::ToolCall {
+                    id: call1.clone(),
+                    name: "read".into(),
+                    args_json: r#"{"path":"a.txt"}"#.into(),
                 },
-                Content::ToolCall { 
-                    id: call2.clone(), 
-                    name: "bash".into(), 
-                    args_json: r#"{"command":"pwd"}"#.into() 
+                Content::ToolCall {
+                    id: call2.clone(),
+                    name: "bash".into(),
+                    args_json: r#"{"command":"pwd"}"#.into(),
                 },
-            ], silent: false 
+            ],
+            silent: false,
         },
-        Message { 
-            id: MsgId::new(), 
+        Message {
+            id: MsgId::new(),
             role: Role::Tool,
             content: vec![
                 // Only call1 has a result, call2 is missing
-                Content::ToolResult { 
-                    id: call1.clone(), 
-                    content: vec![Content::Text { text: "contents".into() }],
+                Content::ToolResult {
+                    id: call1.clone(),
+                    content: vec![Content::Text {
+                        text: "contents".into(),
+                    }],
                     is_error: false,
                 },
-            ], silent: false 
+            ],
+            silent: false,
         },
     ];
-    
-    assert!(has_orphan_tool_call(&msgs_partial), 
-        "must detect orphan when one of multiple parallel calls is missing result");
-    
+
+    assert!(
+        has_orphan_tool_call(&msgs_partial),
+        "must detect orphan when one of multiple parallel calls is missing result"
+    );
+
     // Now add the missing result
     let mut msgs_complete = msgs_partial.clone();
     // Add call2's result to the tool message
     if let Some(tool_msg) = msgs_complete.last_mut() {
-        tool_msg.content.push(Content::ToolResult { 
-            id: call2.clone(), 
-            content: vec![Content::Text { text: "/home/user".into() }],
+        tool_msg.content.push(Content::ToolResult {
+            id: call2.clone(),
+            content: vec![Content::Text {
+                text: "/home/user".into(),
+            }],
             is_error: false,
         });
     }
-    
-    assert!(!has_orphan_tool_call(&msgs_complete), 
-        "must not report orphan when all parallel calls have results");
+
+    assert!(
+        !has_orphan_tool_call(&msgs_complete),
+        "must not report orphan when all parallel calls have results"
+    );
 }
 
 /// Simulate the exact scenario that causes the API error:
@@ -649,77 +871,111 @@ fn stor_has_orphan_tool_call_parallel_tools() {
 fn stor_orphan_from_interrupted_tool_execution() {
     let (_dir, store) = tmp_store();
     let s = new_session(&store);
-    
+
     let call1 = CallId("call-completed".into());
     let call2 = CallId("call-orphaned".into());
-    
+
     // Turn 1: Complete tool call cycle
-    store.append(&s, Event::MessageAppended {
-        seq: 1,
-        msg: Message {
-            id: MsgId::new(),
-            role: Role::User,
-            content: vec![Content::Text { text: "list files".into() }], silent: false
-        },
-    }).unwrap();
-    
-    store.append(&s, Event::MessageAppended {
-        seq: 2,
-        msg: Message {
-            id: MsgId::new(),
-            role: Role::Assistant,
-            content: vec![
-                Content::Text { text: "I'll list the files".into() },
-                Content::ToolCall { 
-                    id: call1.clone(), 
-                    name: "bash".into(), 
-                    args_json: r#"{"command":"ls"}"#.into() 
+    store
+        .append(
+            &s,
+            Event::MessageAppended {
+                seq: 1,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::User,
+                    content: vec![Content::Text {
+                        text: "list files".into(),
+                    }],
+                    silent: false,
                 },
-            ], silent: false
-        },
-    }).unwrap();
-    
-    store.append(&s, Event::MessageAppended {
-        seq: 3,
-        msg: Message {
-            id: MsgId::new(),
-            role: Role::Tool,
-            content: vec![
-                Content::ToolResult { 
-                    id: call1.clone(), 
-                    content: vec![Content::Text { text: "file1.txt\nfile2.txt".into() }],
-                    is_error: false,
+            },
+        )
+        .unwrap();
+
+    store
+        .append(
+            &s,
+            Event::MessageAppended {
+                seq: 2,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::Assistant,
+                    content: vec![
+                        Content::Text {
+                            text: "I'll list the files".into(),
+                        },
+                        Content::ToolCall {
+                            id: call1.clone(),
+                            name: "bash".into(),
+                            args_json: r#"{"command":"ls"}"#.into(),
+                        },
+                    ],
+                    silent: false,
                 },
-            ], silent: false
-        },
-    }).unwrap();
-    
+            },
+        )
+        .unwrap();
+
+    store
+        .append(
+            &s,
+            Event::MessageAppended {
+                seq: 3,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::Tool,
+                    content: vec![Content::ToolResult {
+                        id: call1.clone(),
+                        content: vec![Content::Text {
+                            text: "file1.txt\nfile2.txt".into(),
+                        }],
+                        is_error: false,
+                    }],
+                    silent: false,
+                },
+            },
+        )
+        .unwrap();
+
     // Turn 2: User sends new prompt
-    store.append(&s, Event::MessageAppended {
-        seq: 4,
-        msg: Message {
-            id: MsgId::new(),
-            role: Role::User,
-            content: vec![Content::Text { text: "now read file1.txt".into() }], silent: false
-        },
-    }).unwrap();
-    
-    // Turn 2: Assistant responds with tool_use
-    store.append(&s, Event::MessageAppended {
-        seq: 5,
-        msg: Message {
-            id: MsgId::new(),
-            role: Role::Assistant,
-            content: vec![
-                Content::ToolCall { 
-                    id: call2.clone(), 
-                    name: "read".into(), 
-                    args_json: r#"{"path":"file1.txt"}"#.into() 
+    store
+        .append(
+            &s,
+            Event::MessageAppended {
+                seq: 4,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::User,
+                    content: vec![Content::Text {
+                        text: "now read file1.txt".into(),
+                    }],
+                    silent: false,
                 },
-            ], silent: false
-        },
-    }).unwrap();
-    
+            },
+        )
+        .unwrap();
+
+    // Turn 2: Assistant responds with tool_use
+    store
+        .append(
+            &s,
+            Event::MessageAppended {
+                seq: 5,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::Assistant,
+                    content: vec![Content::ToolCall {
+                        id: call2.clone(),
+                        name: "read".into(),
+                        args_json: r#"{"path":"file1.txt"}"#.into(),
+                    }],
+                    silent: false,
+                },
+            },
+        )
+        .unwrap();
+
     // *** INTERRUPTION: the process dies here; the tool_result is NEVER persisted ***
 
     // The durable log still records the orphan honestly (append-only, GI-4).
@@ -730,8 +986,10 @@ fn stor_orphan_from_interrupted_tool_execution() {
         )
         .unwrap();
     assert!(
-        raw.iter().any(|c| c.contains("call-orphaned")) 
-            && !raw.iter().any(|c| c.contains("tool_result") && c.contains("call-orphaned")),
+        raw.iter().any(|c| c.contains("call-orphaned"))
+            && !raw
+                .iter()
+                .any(|c| c.contains("tool_result") && c.contains("call-orphaned")),
         "events/messages must keep the honest record: a tool_call with no tool_result"
     );
 
@@ -749,13 +1007,22 @@ fn stor_orphan_from_interrupted_tool_execution() {
         .messages
         .iter()
         .position(|m| {
-            m.content.iter().any(|c| matches!(c, Content::ToolCall { id, .. } if *id == call2))
+            m.content
+                .iter()
+                .any(|c| matches!(c, Content::ToolCall { id, .. } if *id == call2))
         })
         .expect("orphaned tool_call survives the fold");
     let closer = &plan.messages[opener + 1];
-    assert!(matches!(closer.role, Role::Tool), "closer must be a tool-role message");
+    assert!(
+        matches!(closer.role, Role::Tool),
+        "closer must be a tool-role message"
+    );
     match &closer.content[0] {
-        Content::ToolResult { id, is_error, content } => {
+        Content::ToolResult {
+            id,
+            is_error,
+            content,
+        } => {
             assert_eq!(*id, call2, "call id must be the provider's, verbatim");
             assert!(*is_error, "a call that never reported is an error result");
             assert!(
@@ -795,58 +1062,78 @@ fn stor_plan_repairs_unparseable_tool_args() {
     // Non-sorted keys: the untouched call must keep its exact byte order (R-CORE-062).
     let intact_args = r#"{"z":1,"a":2}"#;
 
-    store.append(&s, Event::MessageAppended {
-        seq: 0,
-        msg: Message {
-            id: MsgId::new(),
-            role: Role::User,
-            content: vec![Content::Text { text: "edit it".into() }], silent: false,
-        },
-    }).unwrap();
+    store
+        .append(
+            &s,
+            Event::MessageAppended {
+                seq: 0,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::User,
+                    content: vec![Content::Text {
+                        text: "edit it".into(),
+                    }],
+                    silent: false,
+                },
+            },
+        )
+        .unwrap();
 
-    store.append(&s, Event::MessageAppended {
-        seq: 0,
-        msg: Message {
-            id: MsgId::new(),
-            role: Role::Assistant,
-            content: vec![
-                Content::ToolCall {
-                    id: broken.clone(),
-                    name: "edit".into(),
-                    // Cut inside a JSON string value — the exact observed corruption.
-                    args_json: r#"{"path":"a.rs","new_string":"fn main("#.into(),
+    store
+        .append(
+            &s,
+            Event::MessageAppended {
+                seq: 0,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::Assistant,
+                    content: vec![
+                        Content::ToolCall {
+                            id: broken.clone(),
+                            name: "edit".into(),
+                            // Cut inside a JSON string value — the exact observed corruption.
+                            args_json: r#"{"path":"a.rs","new_string":"fn main("#.into(),
+                        },
+                        Content::ToolCall {
+                            id: intact.clone(),
+                            name: "read".into(),
+                            args_json: intact_args.into(),
+                        },
+                    ],
+                    silent: false,
                 },
-                Content::ToolCall {
-                    id: intact.clone(),
-                    name: "read".into(),
-                    args_json: intact_args.into(),
-                },
-            ],
-            silent: false,
-        },
-    }).unwrap();
+            },
+        )
+        .unwrap();
 
     // Both calls were answered — this is NOT the R-STOR-115 orphan case.
-    store.append(&s, Event::MessageAppended {
-        seq: 0,
-        msg: Message {
-            id: MsgId::new(),
-            role: Role::Tool,
-            content: vec![
-                Content::ToolResult {
-                    id: broken.clone(),
-                    content: vec![Content::Text { text: "missing 'path'".into() }],
-                    is_error: true,
+    store
+        .append(
+            &s,
+            Event::MessageAppended {
+                seq: 0,
+                msg: Message {
+                    id: MsgId::new(),
+                    role: Role::Tool,
+                    content: vec![
+                        Content::ToolResult {
+                            id: broken.clone(),
+                            content: vec![Content::Text {
+                                text: "missing 'path'".into(),
+                            }],
+                            is_error: true,
+                        },
+                        Content::ToolResult {
+                            id: intact.clone(),
+                            content: vec![Content::Text { text: "ok".into() }],
+                            is_error: false,
+                        },
+                    ],
+                    silent: false,
                 },
-                Content::ToolResult {
-                    id: intact.clone(),
-                    content: vec![Content::Text { text: "ok".into() }],
-                    is_error: false,
-                },
-            ],
-            silent: false,
-        },
-    }).unwrap();
+            },
+        )
+        .unwrap();
 
     let plan = store.plan_request(&s).unwrap();
 
@@ -871,9 +1158,14 @@ fn stor_plan_repairs_unparseable_tool_args() {
         }
     }
 
-    assert_eq!(args_for(&broken), "{}", "unparseable args must be replaced by an empty object");
     assert_eq!(
-        args_for(&intact), intact_args,
+        args_for(&broken),
+        "{}",
+        "unparseable args must be replaced by an empty object"
+    );
+    assert_eq!(
+        args_for(&intact),
+        intact_args,
         "valid args must stay byte-identical, key order included (R-CORE-062)"
     );
 
@@ -888,7 +1180,10 @@ fn stor_plan_repairs_unparseable_tool_args() {
         .flat_map(|m| &m.content)
         .filter(|c| matches!(c, Content::ToolResult { id, .. } if *id == broken))
         .count();
-    assert_eq!(results, 1, "the real result must not be duplicated by synthesis");
+    assert_eq!(
+        results, 1,
+        "the real result must not be duplicated by synthesis"
+    );
 }
 
 // ── stor::cost_rollup (R-STOR-180) ───────────────────────────────────────────
@@ -906,7 +1201,7 @@ fn stor_cost_rollup() {
     let child = SessionId::new();
     fork_session(&store, &root, &child, 2, ForkReason::Fork, None, "/cwd").unwrap();
     store.append(&child, msg(3, "q2")).unwrap();
-    store.append(&child, usage(4, 0, 1_000_000, )).unwrap(); // $15.00 out
+    store.append(&child, usage(4, 0, 1_000_000)).unwrap(); // $15.00 out
 
     // Grandchild from child
     let grand = SessionId::new();
@@ -916,12 +1211,22 @@ fn stor_cost_rollup() {
 
     let rollup = store.cost_rollup(&grand).unwrap();
     // marginal = $3.00 (grand's own spend)
-    assert!((rollup.marginal - 3.0).abs() < 0.01, "marginal={}", rollup.marginal);
+    assert!(
+        (rollup.marginal - 3.0).abs() < 0.01,
+        "marginal={}",
+        rollup.marginal
+    );
     // effective = marginal + child's inherited (which = root cost $3.00 + child own $15.00)
     // Actually effective = grand.marginal + grand.inherited_cost_usd
     // grand.inherited = child's cumulative = child.inherited($3) + child.own($15) = $18
     // effective = 3 + 18 = 21
-    assert!(rollup.effective > rollup.marginal, "effective must exceed marginal");
+    assert!(
+        rollup.effective > rollup.marginal,
+        "effective must exceed marginal"
+    );
     // family = grand + child + root own costs
-    assert!(rollup.family >= rollup.marginal, "family must be >= marginal");
+    assert!(
+        rollup.family >= rollup.marginal,
+        "family must be >= marginal"
+    );
 }

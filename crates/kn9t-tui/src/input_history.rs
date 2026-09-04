@@ -22,7 +22,11 @@ pub struct InputSnapshot {
 
 impl InputSnapshot {
     pub fn new(text: String, cursor_row: usize, cursor_col: usize) -> Self {
-        Self { text, cursor_row, cursor_col }
+        Self {
+            text,
+            cursor_row,
+            cursor_col,
+        }
     }
 }
 
@@ -56,19 +60,20 @@ impl InputHistory {
     }
 
     /// Record a snapshot before a change.
-    /// 
+    ///
     /// Call this BEFORE modifying the input. If called within the coalesce
     /// window of the previous snapshot, the previous snapshot is updated
     /// instead of adding a new one.
     pub fn record(&mut self, snapshot: InputSnapshot) {
         let now = Instant::now();
-        
+
         // Check if we should coalesce with previous snapshot
         let should_coalesce = self.coalescing
-            && self.last_snapshot_time
+            && self
+                .last_snapshot_time
                 .map(|t| now.duration_since(t) < COALESCE_WINDOW)
                 .unwrap_or(false);
-        
+
         if should_coalesce && !self.undo_stack.is_empty() {
             // Don't add new snapshot, just update timing
             self.last_snapshot_time = Some(now);
@@ -80,14 +85,14 @@ impl InputHistory {
             self.undo_stack.push(snapshot);
             self.last_snapshot_time = Some(now);
         }
-        
+
         // Clear redo stack on new change
         self.redo_stack.clear();
         self.coalescing = true;
     }
 
     /// Record a snapshot and mark it as a boundary (non-coalescing).
-    /// 
+    ///
     /// Use this for significant changes like paste, delete word, etc.
     pub fn record_boundary(&mut self, snapshot: InputSnapshot) {
         self.coalescing = false;
@@ -101,7 +106,7 @@ impl InputHistory {
     }
 
     /// Undo: restore previous state.
-    /// 
+    ///
     /// Returns the state to restore to, or None if nothing to undo.
     /// The current state should be passed in to save for redo.
     pub fn undo(&mut self, current: InputSnapshot) -> Option<InputSnapshot> {
@@ -115,7 +120,7 @@ impl InputHistory {
     }
 
     /// Redo: restore next state.
-    /// 
+    ///
     /// Returns the state to restore to, or None if nothing to redo.
     /// The current state should be passed in to save for undo.
     pub fn redo(&mut self, current: InputSnapshot) -> Option<InputSnapshot> {
@@ -164,25 +169,25 @@ mod tests {
     #[test]
     fn test_basic_undo_redo() {
         let mut history = InputHistory::new();
-        
+
         // Record state before typing "a"
         history.record_boundary(InputSnapshot::new("".into(), 0, 0));
-        
+
         // Record state before typing "b"
         history.record_boundary(InputSnapshot::new("a".into(), 0, 1));
-        
+
         // Current state is "ab"
         let current = InputSnapshot::new("ab".into(), 0, 2);
-        
+
         // Undo should restore "a"
         let prev = history.undo(current.clone()).unwrap();
         assert_eq!(prev.text, "a");
         assert_eq!(prev.cursor_col, 1);
-        
+
         // Undo again should restore ""
         let prev2 = history.undo(prev).unwrap();
         assert_eq!(prev2.text, "");
-        
+
         // Redo should restore "a"
         let next = history.redo(prev2).unwrap();
         assert_eq!(next.text, "a");
@@ -191,15 +196,15 @@ mod tests {
     #[test]
     fn test_coalescing() {
         let mut history = InputHistory::new();
-        
+
         // Initial state
         history.record(InputSnapshot::new("".into(), 0, 0));
-        
+
         // Rapid typing should coalesce
         history.record(InputSnapshot::new("a".into(), 0, 1));
         history.record(InputSnapshot::new("ab".into(), 0, 2));
         history.record(InputSnapshot::new("abc".into(), 0, 3));
-        
+
         // Should only have one undo state due to coalescing
         assert_eq!(history.undo_depth(), 1);
     }
@@ -207,14 +212,14 @@ mod tests {
     #[test]
     fn test_boundary_breaks_coalesce() {
         let mut history = InputHistory::new();
-        
+
         // Initial state
         history.record(InputSnapshot::new("".into(), 0, 0));
         history.record(InputSnapshot::new("a".into(), 0, 1));
-        
+
         // Boundary should not coalesce
         history.record_boundary(InputSnapshot::new("ab".into(), 0, 2));
-        
+
         // Should have separate states
         assert!(history.undo_depth() >= 2);
     }
@@ -222,31 +227,31 @@ mod tests {
     #[test]
     fn test_redo_cleared_on_new_change() {
         let mut history = InputHistory::new();
-        
+
         history.record_boundary(InputSnapshot::new("".into(), 0, 0));
         history.record_boundary(InputSnapshot::new("a".into(), 0, 1));
-        
+
         // Undo
         let current = InputSnapshot::new("ab".into(), 0, 2);
         let _ = history.undo(current);
-        
+
         assert!(history.can_redo());
-        
+
         // New change should clear redo
         history.record(InputSnapshot::new("x".into(), 0, 1));
-        
+
         assert!(!history.can_redo());
     }
 
     #[test]
     fn test_max_history() {
         let mut history = InputHistory::new();
-        
+
         // Add more than MAX_HISTORY entries
         for i in 0..MAX_HISTORY + 10 {
             history.record_boundary(InputSnapshot::new(format!("{}", i), 0, i));
         }
-        
+
         // Should be capped at MAX_HISTORY
         assert!(history.undo_depth() <= MAX_HISTORY);
     }

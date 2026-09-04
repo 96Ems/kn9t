@@ -79,9 +79,8 @@ fn read_groups(state: &Arc<ServerState>, sql: &str, since: i64) -> Result<Vec<Gr
     // `query_strings`-style access by serializing each row to a JSON tuple string.
     // Simpler: run the aggregate with a JSON-object projection so one string per row
     // captures all columns.
-    let json_sql = format!(
-        "SELECT json_object('g', grp, 'c', cost, 'ti', tin, 'to', tout) FROM ({sql})"
-    );
+    let json_sql =
+        format!("SELECT json_object('g', grp, 'c', cost, 'ti', tin, 'to', tout) FROM ({sql})");
     let strings = state
         .store
         .query_strings(&json_sql, &[&since])
@@ -104,11 +103,9 @@ fn read_groups(state: &Arc<ServerState>, sql: &str, since: i64) -> Result<Vec<Gr
 pub fn budget(state: &Arc<ServerState>) -> JsonResp {
     let local: f64 = state
         .store
-        .query_one(
-            "SELECT COALESCE(SUM(cost_usd),0.0) FROM usage",
-            &[],
-            |r| r.get(0),
-        )
+        .query_one("SELECT COALESCE(SUM(cost_usd),0.0) FROM usage", &[], |r| {
+            r.get(0)
+        })
         .unwrap_or(0.0);
 
     let provider_reported = *state.provider_reported_budget.lock().unwrap();

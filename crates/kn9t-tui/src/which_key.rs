@@ -199,24 +199,48 @@ impl WhichKeyPanel {
 
     fn draw_border(&self, buf: &mut Buffer, x: u16, y: u16, w: u16, h: u16) {
         // Top.
-        buf[(x, y)].set_char('┌').set_fg(Color::DarkGray).set_bg(Color::Black);
+        buf[(x, y)]
+            .set_char('┌')
+            .set_fg(Color::DarkGray)
+            .set_bg(Color::Black);
         for i in 1..w.saturating_sub(1) {
-            buf[(x + i, y)].set_char('─').set_fg(Color::DarkGray).set_bg(Color::Black);
+            buf[(x + i, y)]
+                .set_char('─')
+                .set_fg(Color::DarkGray)
+                .set_bg(Color::Black);
         }
-        buf[(x + w - 1, y)].set_char('┐').set_fg(Color::DarkGray).set_bg(Color::Black);
+        buf[(x + w - 1, y)]
+            .set_char('┐')
+            .set_fg(Color::DarkGray)
+            .set_bg(Color::Black);
 
         // Sides.
         for row in 1..h.saturating_sub(1) {
-            buf[(x, y + row)].set_char('│').set_fg(Color::DarkGray).set_bg(Color::Black);
-            buf[(x + w - 1, y + row)].set_char('│').set_fg(Color::DarkGray).set_bg(Color::Black);
+            buf[(x, y + row)]
+                .set_char('│')
+                .set_fg(Color::DarkGray)
+                .set_bg(Color::Black);
+            buf[(x + w - 1, y + row)]
+                .set_char('│')
+                .set_fg(Color::DarkGray)
+                .set_bg(Color::Black);
         }
 
         // Bottom.
-        buf[(x, y + h - 1)].set_char('└').set_fg(Color::DarkGray).set_bg(Color::Black);
+        buf[(x, y + h - 1)]
+            .set_char('└')
+            .set_fg(Color::DarkGray)
+            .set_bg(Color::Black);
         for i in 1..w.saturating_sub(1) {
-            buf[(x + i, y + h - 1)].set_char('─').set_fg(Color::DarkGray).set_bg(Color::Black);
+            buf[(x + i, y + h - 1)]
+                .set_char('─')
+                .set_fg(Color::DarkGray)
+                .set_bg(Color::Black);
         }
-        buf[(x + w - 1, y + h - 1)].set_char('┘').set_fg(Color::DarkGray).set_bg(Color::Black);
+        buf[(x + w - 1, y + h - 1)]
+            .set_char('┘')
+            .set_fg(Color::DarkGray)
+            .set_bg(Color::Black);
     }
 }
 
@@ -229,8 +253,15 @@ impl Default for WhichKeyPanel {
 // ─── Internal render line ────────────────────────────────────────────────────
 
 enum RenderLine<'a> {
-    GroupHeader { name: &'a str, selected: bool },
-    Entry { key: &'a str, desc: &'a str, group_selected: bool },
+    GroupHeader {
+        name: &'a str,
+        selected: bool,
+    },
+    Entry {
+        key: &'a str,
+        desc: &'a str,
+        group_selected: bool,
+    },
 }
 
 impl<'a> RenderLine<'a> {
@@ -238,9 +269,13 @@ impl<'a> RenderLine<'a> {
         match self {
             RenderLine::GroupHeader { name, selected } => {
                 let style = if *selected {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
                 };
                 let prefix = if *selected { "▸ " } else { "  " };
                 let text = format!("{}{}", prefix, name);
@@ -251,7 +286,11 @@ impl<'a> RenderLine<'a> {
                         .set_bg(Color::Black);
                 }
             }
-            RenderLine::Entry { key, desc, group_selected } => {
+            RenderLine::Entry {
+                key,
+                desc,
+                group_selected,
+            } => {
                 let key_style = if *group_selected {
                     Style::default().fg(Color::Yellow)
                 } else {
@@ -272,7 +311,11 @@ impl<'a> RenderLine<'a> {
 
                 // Description column: rest of width.
                 let desc_start = key_len;
-                for (i, ch) in desc.chars().take(width.saturating_sub(desc_start)).enumerate() {
+                for (i, ch) in desc
+                    .chars()
+                    .take(width.saturating_sub(desc_start))
+                    .enumerate()
+                {
                     buf[(x + desc_start as u16 + i as u16, y)]
                         .set_char(ch)
                         .set_style(desc_style)
@@ -290,76 +333,103 @@ impl<'a> RenderLine<'a> {
 pub fn get_keybindings(tool_mode: bool) -> Vec<KeyGroup> {
     if tool_mode {
         vec![
-            KeyGroup::new("Tool Mode", vec![
-                KeyEntry::new("Esc",       "Exit tool mode"),
-                KeyEntry::new("Up/Down",   "Navigate tools"),
-                KeyEntry::new("Enter/Spc", "Expand/collapse tool"),
-                KeyEntry::new("Left/Right","Cycle tabs"),
-                KeyEntry::new("PgUp/PgDn", "Scroll tool output"),
-                KeyEntry::new("Ctrl+T",    "Toggle tool mode"),
-            ]),
-            KeyGroup::new("Core", vec![
-                KeyEntry::new("Enter",     "Send message"),
-                KeyEntry::new("Ctrl+C/Q",  "Quit"),
-                KeyEntry::new("Ctrl+P",    "This help"),
-            ]),
-            KeyGroup::new("Scrolling", vec![
-                KeyEntry::new("Ctrl+↑/↓",  "Scroll transcript"),
-                KeyEntry::new("PgUp/PgDn", "Scroll transcript"),
-                KeyEntry::new("Ctrl+Home", "Scroll to top"),
-                KeyEntry::new("Ctrl+End",  "Scroll to bottom"),
-            ]),
+            KeyGroup::new(
+                "Tool Mode",
+                vec![
+                    KeyEntry::new("Esc", "Exit tool mode"),
+                    KeyEntry::new("Up/Down", "Navigate tools"),
+                    KeyEntry::new("Enter/Spc", "Expand/collapse tool"),
+                    KeyEntry::new("Left/Right", "Cycle tabs"),
+                    KeyEntry::new("PgUp/PgDn", "Scroll tool output"),
+                    KeyEntry::new("Ctrl+T", "Toggle tool mode"),
+                ],
+            ),
+            KeyGroup::new(
+                "Core",
+                vec![
+                    KeyEntry::new("Enter", "Send message"),
+                    KeyEntry::new("Ctrl+C/Q", "Quit"),
+                    KeyEntry::new("Ctrl+P", "This help"),
+                ],
+            ),
+            KeyGroup::new(
+                "Scrolling",
+                vec![
+                    KeyEntry::new("Ctrl+↑/↓", "Scroll transcript"),
+                    KeyEntry::new("PgUp/PgDn", "Scroll transcript"),
+                    KeyEntry::new("Ctrl+Home", "Scroll to top"),
+                    KeyEntry::new("Ctrl+End", "Scroll to bottom"),
+                ],
+            ),
         ]
     } else {
         vec![
-            KeyGroup::new("Session", vec![
-                KeyEntry::new("Ctrl+B",    "Switch session"),
-                KeyEntry::new("Ctrl+N",    "New session"),
-            ]),
-            KeyGroup::new("Model", vec![
-                KeyEntry::new("F2",        "Next model"),
-                KeyEntry::new("Shift+F2",  "Previous model"),
-                KeyEntry::new("/models",   "Model picker"),
-            ]),
-            KeyGroup::new("Navigation", vec![
-                KeyEntry::new("Ctrl+↑",    "Jump to prev user msg"),
-                KeyEntry::new("Ctrl+↓",    "Jump to next user msg"),
-                KeyEntry::new("Alt+K",     "Previous message"),
-                KeyEntry::new("Alt+J",     "Next message"),
-                KeyEntry::new("PgUp/PgDn", "Scroll transcript"),
-                KeyEntry::new("Ctrl+Home", "Scroll to top"),
-                KeyEntry::new("Ctrl+End",  "Scroll to bottom"),
-            ]),
-            KeyGroup::new("Input", vec![
-                KeyEntry::new("Enter",     "Send message"),
-                KeyEntry::new("Shift+Enter","New line"),
-                KeyEntry::new("Ctrl+←/→",  "Word left/right"),
-                KeyEntry::new("Ctrl+Bksp", "Delete word left"),
-                KeyEntry::new("Ctrl+Del",  "Delete word right"),
-                KeyEntry::new("Ctrl+Z",    "Undo"),
-                KeyEntry::new("Ctrl+Shift+Z","Redo"),
-                KeyEntry::new("Ctrl+K",    "Kill to end of line"),
-                KeyEntry::new("Ctrl+U",    "Kill to start of line"),
-                KeyEntry::new("Ctrl+W",    "Kill word backward"),
-                KeyEntry::new("Ctrl+Y",    "Yank (paste kill ring)"),
-                KeyEntry::new("Alt+Y",     "Yank pop (cycle ring)"),
-                KeyEntry::new("Ctrl+V/F5", "Paste image"),
-            ]),
-            KeyGroup::new("Actions", vec![
-                KeyEntry::new("Esc",       "Abort turn"),
-                KeyEntry::new("Ctrl+C/Q",  "Quit"),
-                KeyEntry::new("Ctrl+P",    "Command palette"),
-                KeyEntry::new("Ctrl+T",    "Enter tool mode"),
-                KeyEntry::new("Ctrl+E",    "Toggle thinking blocks"),
-                KeyEntry::new("Ctrl+F",    "Search transcript"),
-            ]),
-            KeyGroup::new("Slash Commands", vec![
-                KeyEntry::new("/session",  "Session picker"),
-                KeyEntry::new("/new",      "New session"),
-                KeyEntry::new("/stash",    "Stash prompt"),
-                KeyEntry::new("/pop",      "Pop stashed prompt"),
-                KeyEntry::new("/help",     "Show help"),
-            ]),
+            KeyGroup::new(
+                "Session",
+                vec![
+                    KeyEntry::new("Ctrl+B", "Switch session"),
+                    KeyEntry::new("Ctrl+N", "New session"),
+                ],
+            ),
+            KeyGroup::new(
+                "Model",
+                vec![
+                    KeyEntry::new("F2", "Next model"),
+                    KeyEntry::new("Shift+F2", "Previous model"),
+                    KeyEntry::new("/models", "Model picker"),
+                ],
+            ),
+            KeyGroup::new(
+                "Navigation",
+                vec![
+                    KeyEntry::new("Ctrl+↑", "Jump to prev user msg"),
+                    KeyEntry::new("Ctrl+↓", "Jump to next user msg"),
+                    KeyEntry::new("Alt+K", "Previous message"),
+                    KeyEntry::new("Alt+J", "Next message"),
+                    KeyEntry::new("PgUp/PgDn", "Scroll transcript"),
+                    KeyEntry::new("Ctrl+Home", "Scroll to top"),
+                    KeyEntry::new("Ctrl+End", "Scroll to bottom"),
+                ],
+            ),
+            KeyGroup::new(
+                "Input",
+                vec![
+                    KeyEntry::new("Enter", "Send message"),
+                    KeyEntry::new("Shift+Enter", "New line"),
+                    KeyEntry::new("Ctrl+←/→", "Word left/right"),
+                    KeyEntry::new("Ctrl+Bksp", "Delete word left"),
+                    KeyEntry::new("Ctrl+Del", "Delete word right"),
+                    KeyEntry::new("Ctrl+Z", "Undo"),
+                    KeyEntry::new("Ctrl+Shift+Z", "Redo"),
+                    KeyEntry::new("Ctrl+K", "Kill to end of line"),
+                    KeyEntry::new("Ctrl+U", "Kill to start of line"),
+                    KeyEntry::new("Ctrl+W", "Kill word backward"),
+                    KeyEntry::new("Ctrl+Y", "Yank (paste kill ring)"),
+                    KeyEntry::new("Alt+Y", "Yank pop (cycle ring)"),
+                    KeyEntry::new("Ctrl+V/F5", "Paste image"),
+                ],
+            ),
+            KeyGroup::new(
+                "Actions",
+                vec![
+                    KeyEntry::new("Esc", "Abort turn"),
+                    KeyEntry::new("Ctrl+C/Q", "Quit"),
+                    KeyEntry::new("Ctrl+P", "Command palette"),
+                    KeyEntry::new("Ctrl+T", "Enter tool mode"),
+                    KeyEntry::new("Ctrl+E", "Toggle thinking blocks"),
+                    KeyEntry::new("Ctrl+F", "Search transcript"),
+                ],
+            ),
+            KeyGroup::new(
+                "Slash Commands",
+                vec![
+                    KeyEntry::new("/session", "Session picker"),
+                    KeyEntry::new("/new", "New session"),
+                    KeyEntry::new("/stash", "Stash prompt"),
+                    KeyEntry::new("/pop", "Pop stashed prompt"),
+                    KeyEntry::new("/help", "Show help"),
+                ],
+            ),
         ]
     }
 }
@@ -374,12 +444,20 @@ mod tests {
     fn test_keybinding_groups() {
         let groups = get_keybindings(false);
         // Must have at least 3 groups.
-        assert!(groups.len() >= 3, "expected at least 3 groups, got {}", groups.len());
+        assert!(
+            groups.len() >= 3,
+            "expected at least 3 groups, got {}",
+            groups.len()
+        );
 
         // Every group must have a non-empty name.
         for g in &groups {
             assert!(!g.name.is_empty(), "group name must not be empty");
-            assert!(!g.entries.is_empty(), "group '{}' must have entries", g.name);
+            assert!(
+                !g.entries.is_empty(),
+                "group '{}' must have entries",
+                g.name
+            );
         }
 
         // Verify specific expected groups exist.
@@ -391,8 +469,14 @@ mod tests {
         // Verify specific entries exist in Session group.
         let session = groups.iter().find(|g| g.name == "Session").unwrap();
         let session_keys: Vec<&str> = session.entries.iter().map(|e| e.key.as_str()).collect();
-        assert!(session_keys.contains(&"Ctrl+N"), "Session group must contain Ctrl+N");
-        assert!(session_keys.contains(&"Ctrl+B"), "Session group must contain Ctrl+B");
+        assert!(
+            session_keys.contains(&"Ctrl+N"),
+            "Session group must contain Ctrl+N"
+        );
+        assert!(
+            session_keys.contains(&"Ctrl+B"),
+            "Session group must contain Ctrl+B"
+        );
     }
 
     #[test]
@@ -438,7 +522,8 @@ mod tests {
         // Tool mode must include "Tool Mode" group.
         assert!(
             tool_names.contains(&"Tool Mode"),
-            "tool mode must have 'Tool Mode' group, got: {:?}", tool_names
+            "tool mode must have 'Tool Mode' group, got: {:?}",
+            tool_names
         );
 
         // Normal mode must NOT have "Tool Mode" group.
@@ -449,9 +534,19 @@ mod tests {
 
         // Tool mode must have tool-specific entries.
         let tool_mode_group = tool_groups.iter().find(|g| g.name == "Tool Mode").unwrap();
-        let tool_keys: Vec<&str> = tool_mode_group.entries.iter().map(|e| e.key.as_str()).collect();
-        assert!(tool_keys.contains(&"Esc"), "tool mode must have Esc binding");
-        assert!(tool_keys.contains(&"Up/Down"), "tool mode must have Up/Down binding");
+        let tool_keys: Vec<&str> = tool_mode_group
+            .entries
+            .iter()
+            .map(|e| e.key.as_str())
+            .collect();
+        assert!(
+            tool_keys.contains(&"Esc"),
+            "tool mode must have Esc binding"
+        );
+        assert!(
+            tool_keys.contains(&"Up/Down"),
+            "tool mode must have Up/Down binding"
+        );
 
         // Normal mode must have Session group (not in tool mode).
         assert!(

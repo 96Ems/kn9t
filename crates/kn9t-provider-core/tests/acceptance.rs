@@ -1,6 +1,5 @@
-use kn9t_provider_core::{sse_lines, Backoff, Quirks, with_retry};
-use kn9t_core::{ProvErr, Chunk, Bus, StopReason, Tokens, Usage, ModelRef,
-    Content, CallId};
+use kn9t_core::{Bus, CallId, Chunk, Content, ModelRef, ProvErr, StopReason, Tokens, Usage};
+use kn9t_provider_core::{sse_lines, with_retry, Backoff, Quirks};
 
 // ── pcore::sse_boundary (R-PCORE-040) ────────────────────────────────────────
 
@@ -13,12 +12,13 @@ fn pcore_sse_boundary() {
     let part2 = &whole[split_at..];
     let combined: Vec<u8> = part1.iter().chain(part2.iter()).copied().collect();
 
-    let from_whole: Vec<Vec<u8>> = sse_lines(&whole[..])
-        .collect::<Result<_, _>>().unwrap();
-    let from_combined: Vec<Vec<u8>> = sse_lines(&combined[..])
-        .collect::<Result<_, _>>().unwrap();
+    let from_whole: Vec<Vec<u8>> = sse_lines(&whole[..]).collect::<Result<_, _>>().unwrap();
+    let from_combined: Vec<Vec<u8>> = sse_lines(&combined[..]).collect::<Result<_, _>>().unwrap();
 
-    assert_eq!(from_whole, from_combined, "split-reassemble must equal whole");
+    assert_eq!(
+        from_whole, from_combined,
+        "split-reassemble must equal whole"
+    );
     assert_eq!(from_whole.len(), 1);
     assert_eq!(from_whole[0], b"{\"hello\":\"world\"}");
 }
@@ -26,8 +26,7 @@ fn pcore_sse_boundary() {
 #[test]
 fn pcore_sse_done_terminates() {
     let body = b"data: {\"a\":1}\n\ndata: [DONE]\n\n";
-    let events: Vec<Vec<u8>> = sse_lines(&body[..])
-        .collect::<Result<_, _>>().unwrap();
+    let events: Vec<Vec<u8>> = sse_lines(&body[..]).collect::<Result<_, _>>().unwrap();
     assert_eq!(events.len(), 1, "[DONE] must terminate the iterator");
 }
 
@@ -38,7 +37,10 @@ fn pcore_assemble_verbatim_args() {
     use kn9t_provider_core::assemble;
 
     let bus = Bus::new();
-    let model_ref = ModelRef { provider: "test".into(), id: "m".into() };
+    let model_ref = ModelRef {
+        provider: "test".into(),
+        id: "m".into(),
+    };
 
     // Non-sorted-key arg fragments that MUST concatenate byte-identically.
     let arg_frag1 = r#"{"z":1,"#;
@@ -46,10 +48,23 @@ fn pcore_assemble_verbatim_args() {
     let expected_args = format!("{arg_frag1}{arg_frag2}");
 
     let chunks: Vec<Result<Chunk, ProvErr>> = vec![
-        Ok(Chunk::ToolCall { idx: 0, id: CallId("c1".into()), name: "bash".into() }),
-        Ok(Chunk::ToolArgs { idx: 0, delta: arg_frag1.to_owned() }),
-        Ok(Chunk::ToolArgs { idx: 0, delta: arg_frag2.to_owned() }),
-        Ok(Chunk::Usage(Usage { tokens: Tokens::default(), model: model_ref })),
+        Ok(Chunk::ToolCall {
+            idx: 0,
+            id: CallId("c1".into()),
+            name: "bash".into(),
+        }),
+        Ok(Chunk::ToolArgs {
+            idx: 0,
+            delta: arg_frag1.to_owned(),
+        }),
+        Ok(Chunk::ToolArgs {
+            idx: 0,
+            delta: arg_frag2.to_owned(),
+        }),
+        Ok(Chunk::Usage(Usage {
+            tokens: Tokens::default(),
+            model: model_ref,
+        })),
         Ok(Chunk::Stop(StopReason::ToolUse)),
     ];
 
@@ -57,7 +72,10 @@ fn pcore_assemble_verbatim_args() {
     let (msg, stop) = (res.message, res.stop);
     assert!(matches!(stop, StopReason::ToolUse));
 
-    let tool_call = msg.content.iter().find(|c| matches!(c, Content::ToolCall { .. }));
+    let tool_call = msg
+        .content
+        .iter()
+        .find(|c| matches!(c, Content::ToolCall { .. }));
     if let Some(Content::ToolCall { args_json, .. }) = tool_call {
         assert_eq!(args_json, &expected_args, "args must be verbatim concat");
     } else {
@@ -77,9 +95,16 @@ fn pcore_assemble_rejects_incomplete_args() {
 
     let bus = Bus::new();
     let chunks: Vec<Result<Chunk, ProvErr>> = vec![
-        Ok(Chunk::ToolCall { idx: 0, id: CallId("c1".into()), name: "edit".into() }),
+        Ok(Chunk::ToolCall {
+            idx: 0,
+            id: CallId("c1".into()),
+            name: "edit".into(),
+        }),
         // Cut in the middle of a JSON string value — exactly the observed failure.
-        Ok(Chunk::ToolArgs { idx: 0, delta: r#"{"path":"a.rs","new_string":"fn main("#.into() }),
+        Ok(Chunk::ToolArgs {
+            idx: 0,
+            delta: r#"{"path":"a.rs","new_string":"fn main("#.into(),
+        }),
     ];
 
     let err = assemble(chunks.into_iter(), &bus).err();
@@ -97,12 +122,20 @@ fn pcore_assemble_accepts_argless_call() {
 
     let bus = Bus::new();
     let chunks: Vec<Result<Chunk, ProvErr>> = vec![
-        Ok(Chunk::ToolCall { idx: 0, id: CallId("c1".into()), name: "status".into() }),
+        Ok(Chunk::ToolCall {
+            idx: 0,
+            id: CallId("c1".into()),
+            name: "status".into(),
+        }),
         Ok(Chunk::Stop(StopReason::ToolUse)),
     ];
 
     let res = assemble(chunks.into_iter(), &bus).expect("an argless call is complete");
-    let tool_call = res.message.content.iter().find(|c| matches!(c, Content::ToolCall { .. }));
+    let tool_call = res
+        .message
+        .content
+        .iter()
+        .find(|c| matches!(c, Content::ToolCall { .. }));
     if let Some(Content::ToolCall { args_json, .. }) = tool_call {
         assert_eq!(args_json, "{}", "no streamed args means an empty object");
     } else {
@@ -115,7 +148,10 @@ fn pcore_assemble_midstream_error_fatal() {
     use kn9t_provider_core::assemble;
     let bus = Bus::new();
     let chunks: Vec<Result<Chunk, ProvErr>> = vec![
-        Ok(Chunk::Text { idx: 0, delta: "hi".into() }),
+        Ok(Chunk::Text {
+            idx: 0,
+            delta: "hi".into(),
+        }),
         Err(ProvErr::Stream("broken pipe".into())),
     ];
     let result = assemble(chunks.into_iter(), &bus);
@@ -130,17 +166,27 @@ fn pcore_retry_pre_stream() {
     let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let counter2 = counter.clone();
 
-    let result = with_retry(2, Backoff { initial_ms: 1, factor: 1.0, max_ms: 1 }, move || {
-        let n = counter2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if n < 2 {
-            Err(ProvErr::Http { status: 429, body: "rate limit".into() })
-        } else {
-            let chunks: Vec<Result<Chunk, ProvErr>> = vec![
-                Ok(Chunk::Stop(StopReason::Stop)),
-            ];
-            Ok(Box::new(chunks.into_iter()) as Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>)
-        }
-    });
+    let result = with_retry(
+        2,
+        Backoff {
+            initial_ms: 1,
+            factor: 1.0,
+            max_ms: 1,
+        },
+        move || {
+            let n = counter2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < 2 {
+                Err(ProvErr::Http {
+                    status: 429,
+                    body: "rate limit".into(),
+                })
+            } else {
+                let chunks: Vec<Result<Chunk, ProvErr>> = vec![Ok(Chunk::Stop(StopReason::Stop))];
+                Ok(Box::new(chunks.into_iter())
+                    as Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>)
+            }
+        },
+    );
 
     assert!(result.is_ok(), "should succeed after 2 retries");
     let collected: Vec<_> = result.unwrap().collect();
@@ -153,20 +199,33 @@ fn pcore_retry_no_retry_after_chunk() {
     let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let counter2 = counter.clone();
 
-    let result = with_retry(5, Backoff { initial_ms: 1, factor: 1.0, max_ms: 1 }, move || {
-        let n = counter2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        // Always succeed on the first call, yielding a chunk then an error.
-        if n == 0 {
-            let chunks: Vec<Result<Chunk, ProvErr>> = vec![
-                Ok(Chunk::Text { idx: 0, delta: "hi".into() }),
-                Err(ProvErr::Stream("broke mid-stream".into())),
-            ];
-            Ok(Box::new(chunks.into_iter()) as Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>)
-        } else {
-            // Should never be called again.
-            Ok(Box::new(std::iter::empty()) as Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>)
-        }
-    });
+    let result = with_retry(
+        5,
+        Backoff {
+            initial_ms: 1,
+            factor: 1.0,
+            max_ms: 1,
+        },
+        move || {
+            let n = counter2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Always succeed on the first call, yielding a chunk then an error.
+            if n == 0 {
+                let chunks: Vec<Result<Chunk, ProvErr>> = vec![
+                    Ok(Chunk::Text {
+                        idx: 0,
+                        delta: "hi".into(),
+                    }),
+                    Err(ProvErr::Stream("broke mid-stream".into())),
+                ];
+                Ok(Box::new(chunks.into_iter())
+                    as Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>)
+            } else {
+                // Should never be called again.
+                Ok(Box::new(std::iter::empty())
+                    as Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>)
+            }
+        },
+    );
 
     let iter = result.unwrap();
     let items: Vec<_> = iter.collect();
@@ -174,7 +233,11 @@ fn pcore_retry_no_retry_after_chunk() {
     assert!(items[0].is_ok());
     assert!(items[1].is_err(), "mid-stream error must pass through");
     // Only 1 attempt was made (no retry).
-    assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1, "must not retry after chunk");
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "must not retry after chunk"
+    );
 }
 
 // ── pcore::auth_scheme (R-PCORE-030) ─────────────────────────────────────────
@@ -184,7 +247,7 @@ fn pcore_auth_scheme() {
     // Verify the three auth scheme strings are formed correctly.
     let key = "mykey";
     let bearer = format!("Bearer {key}");
-    let token  = format!("token {key}");
+    let token = format!("token {key}");
 
     assert!(bearer.starts_with("Bearer "));
     assert!(token.starts_with("token "));
@@ -198,11 +261,11 @@ fn pcore_tls_default_secure() {
     // The HttpRequest struct's tls_insecure defaults to false when not set.
     use kn9t_provider_core::HttpRequest;
     let req = HttpRequest {
-        method:       "POST".into(),
-        url:          "https://example.com".into(),
-        headers:      vec![],
-        body:         vec![],
-        auth:         None,
+        method: "POST".into(),
+        url: "https://example.com".into(),
+        headers: vec![],
+        body: vec![],
+        auth: None,
         tls_insecure: false, // default
     };
     assert!(!req.tls_insecure, "TLS verification must be on by default");
@@ -214,22 +277,22 @@ fn pcore_tls_default_secure() {
 fn pcore_quirks_merge() {
     let base = Quirks {
         max_tokens_field: "max_tokens".into(),
-        system_role:      "system".into(),
-        usage_in_stream:  false,
-        finish_reason:    true,
-        reasoning:        "none".into(),
+        system_role: "system".into(),
+        usage_in_stream: false,
+        finish_reason: true,
+        reasoning: "none".into(),
         tool_result_name: false,
-        thinking_style:   "none".into(),
-        thinking_replay:  "verbatim".into(),
-        require_tools:    false,
-        streaming:        true,
-        extra_body:       serde_json::Value::Null,
+        thinking_style: "none".into(),
+        thinking_replay: "verbatim".into(),
+        require_tools: false,
+        streaming: true,
+        extra_body: serde_json::Value::Null,
         trim_trailing_whitespace: false,
     };
     let model_override = Quirks {
         max_tokens_field: "max_completion_tokens".into(),
-        system_role:      "developer".into(),
-        usage_in_stream:  true,
+        system_role: "developer".into(),
+        usage_in_stream: true,
         ..Quirks::default()
     };
     let merged = base.merge(&model_override);
@@ -247,14 +310,22 @@ fn pcore_quirks_merge() {
 
 #[test]
 fn pcore_model_prices_required() {
-    use kn9t_core::{ModelSpec, ModelRef, Price, CacheMode};
+    use kn9t_core::{CacheMode, ModelRef, ModelSpec, Price};
     // A ModelSpec must carry all four price fields.
     let spec = ModelSpec {
-        r#ref: ModelRef { provider: "openai".into(), id: "gpt-4o".into() },
+        r#ref: ModelRef {
+            provider: "openai".into(),
+            id: "gpt-4o".into(),
+        },
         api_id: "gpt-4o".into(),
         ctx_window: 128_000,
         max_out: 4096,
-        price: Price { input: 2500000, output: 10000000, cache_read: 1250000, cache_write: 0 },
+        price: Price {
+            input: 2500000,
+            output: 10000000,
+            cache_read: 1250000,
+            cache_write: 0,
+        },
         cache: CacheMode::Automatic,
         streaming: true,
         quirks: kn9t_core::Quirks::default(),
@@ -275,11 +346,11 @@ fn pcore_connect_timeout() {
     use kn9t_provider_core::{send, HttpRequest};
     use std::time::{Duration, Instant};
     let req = HttpRequest {
-        method:       "POST".into(),
-        url:          "http://192.0.2.1:12345/".into(), // TEST-NET-1, always black-holes
-        headers:      vec![],
-        body:         vec![],
-        auth:         None,
+        method: "POST".into(),
+        url: "http://192.0.2.1:12345/".into(), // TEST-NET-1, always black-holes
+        headers: vec![],
+        body: vec![],
+        auth: None,
         tls_insecure: false,
     };
     let timeout = Duration::from_millis(300);
@@ -290,10 +361,16 @@ fn pcore_connect_timeout() {
     // Can't unwrap_err on Result<HttpResponse> because HttpResponse isn't Debug.
     // Use if-let instead.
     if let Err(err) = result {
-        assert!(matches!(err, ProvErr::Connect(_)), "must be ProvErr::Connect, got {err}");
+        assert!(
+            matches!(err, ProvErr::Connect(_)),
+            "must be ProvErr::Connect, got {err}"
+        );
     } else {
         panic!("expected Err but got Ok");
     }
     // Must fail within 2× the timeout (generous for slow CI).
-    assert!(elapsed < Duration::from_secs(5), "must time out promptly, took {elapsed:?}");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "must time out promptly, took {elapsed:?}"
+    );
 }

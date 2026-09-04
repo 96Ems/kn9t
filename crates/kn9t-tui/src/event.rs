@@ -102,7 +102,11 @@ impl TickControl {
         self.streaming.store(val, Ordering::Relaxed);
     }
     #[cfg(test)]
-    pub fn dummy() -> Self { Self { streaming: Arc::new(AtomicBool::new(false)) } }
+    pub fn dummy() -> Self {
+        Self {
+            streaming: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 /// Spawn tick thread — only sends when streaming.
@@ -110,13 +114,11 @@ pub fn spawn_tick_thread(tx: Sender<Event>, interval: Duration) -> TickControl {
     let streaming = Arc::new(AtomicBool::new(false));
     let flag = streaming.clone();
 
-    thread::spawn(move || {
-        loop {
-            thread::sleep(interval);
-            if flag.load(Ordering::Relaxed) {
-                if tx.send(Event::Tick).is_err() {
-                    break;
-                }
+    thread::spawn(move || loop {
+        thread::sleep(interval);
+        if flag.load(Ordering::Relaxed) {
+            if tx.send(Event::Tick).is_err() {
+                break;
             }
         }
     });

@@ -95,7 +95,11 @@ fn props_in_order(map: &Map<String, Value>) -> Vec<(String, &Value)> {
 pub fn required(obj: &Value) -> Vec<String> {
     obj.get("required")
         .and_then(|r| r.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -108,9 +112,7 @@ pub fn is_model_ref(prop: &Value) -> bool {
     if map.len() != 2 {
         return false;
     }
-    let str_prop = |v: Option<&Value>| {
-        matches!(v, Some(v) if v.get("type").and_then(|t| t.as_str()) == Some("string"))
-    };
+    let str_prop = |v: Option<&Value>| matches!(v, Some(v) if v.get("type").and_then(|t| t.as_str()) == Some("string"));
     str_prop(map.get("provider")) && str_prop(map.get("id"))
 }
 

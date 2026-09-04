@@ -19,8 +19,7 @@ pub mod sse;
 
 pub use fixture::Fixture;
 pub use record::{
-    encode_chunks_sse, redact_header_value, serialize_fixture, write_raw_fixture,
-    RecordingProvider,
+    encode_chunks_sse, redact_header_value, serialize_fixture, write_raw_fixture, RecordingProvider,
 };
 pub use replay::{fixtures_dir, ReplayProvider};
 pub use sse::{data_events, sse_lines, SegmentedReader, SseLines};

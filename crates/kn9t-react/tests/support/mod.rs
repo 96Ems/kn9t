@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use kn9t_core::{
     Approver, Cache, CacheMode, CompactSpan, Decision, Event, EventSink, LiveEvent, Message,
     ModelRef, ModelSpec, Price, Quirks, RequestPlan, SessionId, SessionSnapshot, StoreErr, Tool,
-    ToolCall, ToolSpec, ToolRegistry,
+    ToolCall, ToolRegistry, ToolSpec,
 };
 use kn9t_plugin::{PluginHost, RemoteTool};
 use kn9t_provider_replay::fixture::Fixture;
@@ -161,7 +161,12 @@ impl StubStore {
         self
     }
     pub fn appended_tags(&self) -> Vec<String> {
-        self.appended.lock().unwrap().iter().map(event_tag).collect()
+        self.appended
+            .lock()
+            .unwrap()
+            .iter()
+            .map(event_tag)
+            .collect()
     }
 }
 
@@ -281,7 +286,8 @@ pub fn fixture_from_body(body: &str) -> Fixture {
 /// Build a native fixture that ends with a `terminal-error:` header value.
 pub fn fixture_with_terminal(body: &str, terminal: &str) -> Fixture {
     let mut f = fixture_from_body(body);
-    f.extra.push(("terminal-error".to_string(), terminal.to_string()));
+    f.extra
+        .push(("terminal-error".to_string(), terminal.to_string()));
     f
 }
 
@@ -366,17 +372,27 @@ impl kn9t_core::Provider for ScriptedProvider {
 fn locate_tools_binary() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
-        .parent().unwrap()  // crates/
-        .parent().unwrap()  // <repo root>
+        .parent()
+        .unwrap() // crates/
+        .parent()
+        .unwrap() // <repo root>
         .to_path_buf();
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     let ext = if cfg!(windows) { ".exe" } else { "" };
     let name = format!("kn9t-tools{ext}");
 
     // (a) the external standalone build — the plugin now lives at
     //     plugins/kn9t-tools and is built on its own.
     let external = workspace_root
-        .join("plugins").join("kn9t-tools").join("target").join(profile).join(&name);
+        .join("plugins")
+        .join("kn9t-tools")
+        .join("target")
+        .join(profile)
+        .join(&name);
     // (b) legacy workspace-target build.
     let legacy = workspace_root.join("target").join(profile).join(&name);
 
@@ -430,7 +446,10 @@ pub fn spawn_tools_registry() -> (Arc<PluginHost>, ToolRegistry) {
         let tool_spec = kn9t_core::ToolSpec {
             name: spec.name.clone(),
             description: spec.description.clone(),
-            schema: spec.schema.clone(), hidden: false, effects: spec.effects.clone(), policy: Default::default()
+            schema: spec.schema.clone(),
+            hidden: false,
+            effects: spec.effects.clone(),
+            policy: Default::default(),
         };
         let remote = RemoteTool::new(tool_spec, host.clone());
         tools.push(Arc::new(remote));
@@ -441,7 +460,8 @@ pub fn spawn_tools_registry() -> (Arc<PluginHost>, ToolRegistry) {
 
 /// Get a specific tool from the registry by name.
 pub fn get_tool(registry: &ToolRegistry, name: &str) -> Arc<dyn Tool> {
-    registry.get(name)
+    registry
+        .get(name)
         .cloned()
         .unwrap_or_else(|| panic!("tool '{}' not found in registry", name))
 }

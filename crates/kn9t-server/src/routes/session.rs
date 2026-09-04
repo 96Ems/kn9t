@@ -12,9 +12,7 @@
 
 use std::sync::Arc;
 
-use kn9t_core::{
-    Content, Event, ForkReason, Message, ModelRef, MsgId, Role, SessionId, Store,
-};
+use kn9t_core::{Content, Event, ForkReason, Message, ModelRef, MsgId, Role, SessionId, Store};
 
 use crate::api;
 use crate::http_util::{millis_to_iso, JsonResp};
@@ -23,12 +21,17 @@ use crate::turn;
 
 /// `POST /session` — create; body `{cwd?, model?, name?}`.
 pub fn create(state: &Arc<ServerState>, req: api::CreateSessionReq) -> JsonResp {
-    let cwd = req.cwd.unwrap_or_else(|| state.cwd.to_str().unwrap_or(".").to_owned());
+    let cwd = req
+        .cwd
+        .unwrap_or_else(|| state.cwd.to_str().unwrap_or(".").to_owned());
     let name = req.name;
 
     // Resolve the model: body-supplied ref, else server default.
     let model_ref = if let Some(m) = req.model {
-        ModelRef { provider: m.provider, id: m.id }
+        ModelRef {
+            provider: m.provider,
+            id: m.id,
+        }
     } else {
         match state.default_model.as_ref() {
             Some(s) => s.r#ref.clone(),
@@ -155,7 +158,15 @@ pub fn fork(state: &Arc<ServerState>, id: &str, req: api::ForkReq) -> JsonResp {
     };
 
     let new_id = SessionId::new();
-    match kn9t_store::fork_session(&state.store, &origin, &new_id, origin_seq, reason, None, &cwd) {
+    match kn9t_store::fork_session(
+        &state.store,
+        &origin,
+        &new_id,
+        origin_seq,
+        reason,
+        None,
+        &cwd,
+    ) {
         Ok(()) => JsonResp::ok(serde_json::json!({ "id": new_id.0 })),
         Err(e) => JsonResp::error(400, "fork_failed", &e.0),
     }
@@ -164,7 +175,8 @@ pub fn fork(state: &Arc<ServerState>, id: &str, req: api::ForkReq) -> JsonResp {
 /// `DELETE /session/{id}`.
 pub fn delete(state: &Arc<ServerState>, id: &str) -> JsonResp {
     // 404 if session doesn't exist.
-    let exists: bool = state.store
+    let exists: bool = state
+        .store
         .query_one("SELECT 1 FROM sessions WHERE id=?1", &[&id], |_| Ok(1i64))
         .is_ok();
     if !exists {
@@ -190,7 +202,9 @@ pub fn lease_acquire(state: &Arc<ServerState>, id: &str, takeover: bool) -> Json
         AcquireResult::Granted(holder) => {
             JsonResp::ok(serde_json::json!({ "lease": holder, "session": id }))
         }
-        AcquireResult::Busy => JsonResp::error(409, "session_busy", "another client holds the lease"),
+        AcquireResult::Busy => {
+            JsonResp::error(409, "session_busy", "another client holds the lease")
+        }
     }
 }
 
@@ -219,7 +233,10 @@ pub fn prompt(state: &Arc<ServerState>, id: &str, req: api::PromptReq) -> JsonRe
     let images = req.images.unwrap_or_default();
     crate::log!(
         "[prompt] session={} text={} chars, blobs={}, images={}",
-        id, text.len(), blobs.len(), images.len()
+        id,
+        text.len(),
+        blobs.len(),
+        images.len()
     );
 
     // Check if a turn is already running for this session.
@@ -257,7 +274,10 @@ pub fn prompt(state: &Arc<ServerState>, id: &str, req: api::PromptReq) -> JsonRe
     // Handle inline base64 images (from clipboard paste).
     for (i, data_uri) in images.iter().enumerate() {
         if let Some((mime, data)) = parse_data_uri(data_uri) {
-            crate::log!("[prompt] image {i} parsed: mime={mime} data={} bytes", data.len());
+            crate::log!(
+                "[prompt] image {i} parsed: mime={mime} data={} bytes",
+                data.len()
+            );
             match state.store.put_blob(&data, &mime) {
                 Ok(hash) => {
                     crate::log!("[prompt] image {i} stored: hash={hash}");
@@ -272,9 +292,20 @@ pub fn prompt(state: &Arc<ServerState>, id: &str, req: api::PromptReq) -> JsonRe
             }
         }
     }
-    let msg = Message { id: MsgId::new(), role: Role::User, content, silent: false };
+    let msg = Message {
+        id: MsgId::new(),
+        role: Role::User,
+        content,
+        silent: false,
+    };
 
-    let seq = match state.store.append(&sid, Event::MessageAppended { seq: 0, msg: msg.clone() }) {
+    let seq = match state.store.append(
+        &sid,
+        Event::MessageAppended {
+            seq: 0,
+            msg: msg.clone(),
+        },
+    ) {
         Ok(s) => {
             crate::log!("[prompt] appended message, seq={s}");
             s
@@ -304,7 +335,13 @@ pub fn steer(state: &Arc<ServerState>, id: &str, req: api::SteerReq) -> JsonResp
         content: vec![Content::Text { text }],
         silent: false,
     };
-    match state.store.append(&sid, Event::MessageAppended { seq: 0, msg: msg.clone() }) {
+    match state.store.append(
+        &sid,
+        Event::MessageAppended {
+            seq: 0,
+            msg: msg.clone(),
+        },
+    ) {
         Ok(seq) => {
             // 96E-18: SSE echo via the store after-append observer.
             JsonResp::ok(serde_json::json!({ "steered": true, "seq": seq }))
@@ -322,13 +359,23 @@ pub fn abort(state: &Arc<ServerState>, id: &str) -> JsonResp {
 /// `POST /session/{id}/model` — `{provider, id}` [lease required]. Appends a
 /// `ModelChanged` durable event.
 pub fn set_model(state: &Arc<ServerState>, id: &str, req: api::SetModelReq) -> JsonResp {
-    let model = ModelRef { provider: req.provider, id: req.id };
-    crate::log!("[set_model] session={id} provider={} id={}", model.provider, model.id);
+    let model = ModelRef {
+        provider: req.provider,
+        id: req.id,
+    };
+    crate::log!(
+        "[set_model] session={id} provider={} id={}",
+        model.provider,
+        model.id
+    );
     let sid = SessionId(id.to_owned());
-    match state
-        .store
-        .append(&sid, Event::ModelChanged { seq: 0, model: model.clone() })
-    {
+    match state.store.append(
+        &sid,
+        Event::ModelChanged {
+            seq: 0,
+            model: model.clone(),
+        },
+    ) {
         Ok(seq) => {
             crate::log!("[set_model] success seq={seq}");
             // 96E-18: SSE echo via the store after-append observer.
@@ -358,12 +405,8 @@ pub fn set_tools(state: &Arc<ServerState>, id: &str, req: api::SetToolsReq) -> J
         .snapshot(&sid)
         .map(|s| s.disabled_tools.into_iter().collect())
         .unwrap_or_default();
-    let new_disabled: std::collections::HashSet<String> =
-        req.disabled.iter().cloned().collect();
-    let reenabled: Vec<String> = old_disabled
-        .difference(&new_disabled)
-        .cloned()
-        .collect();
+    let new_disabled: std::collections::HashSet<String> = req.disabled.iter().cloned().collect();
+    let reenabled: Vec<String> = old_disabled.difference(&new_disabled).cloned().collect();
 
     crate::log!(
         "[set_tools] session={id} disabled={:?} reenabled={:?}",
@@ -388,8 +431,10 @@ pub fn set_tools(state: &Arc<ServerState>, id: &str, req: api::SetToolsReq) -> J
                     .expect("pending_reactivation poisoned");
                 map.insert(id.to_owned(), reenabled.iter().cloned().collect());
             }
-            let reenabled_json: Vec<serde_json::Value> =
-                reenabled.into_iter().map(serde_json::Value::String).collect();
+            let reenabled_json: Vec<serde_json::Value> = reenabled
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect();
             JsonResp::ok(serde_json::json!({
                 "tools_set": true,
                 "seq": seq,
@@ -450,7 +495,12 @@ pub fn rename(state: &Arc<ServerState>, id: &str, req: api::RenameReq) -> JsonRe
         return JsonResp::error(500, "store_error", &e.0);
     }
     // Notify SSE subscribers.
-    state.buses.publish(id, Event::TitleChanged { title: name.clone() });
+    state.buses.publish(
+        id,
+        Event::TitleChanged {
+            title: name.clone(),
+        },
+    );
     JsonResp::ok(serde_json::json!({ "id": id, "name": name }))
 }
 
@@ -500,13 +550,20 @@ pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
                     !has_result
                 }))
             });
-            if has_orphan { cut += 1; } else { break; }
+            if has_orphan {
+                cut += 1;
+            } else {
+                break;
+            }
         }
         // Need seqs to build SeqRange — fetch from DB ordering.
         // Use json_object so query_strings (which reads column 0 as String) works for INTEGER.
         let seqs: Vec<u64> = {
-            let sql = "SELECT json_object('seq', seq) FROM messages WHERE session_id=?1 ORDER BY seq";
-            state.store.query_strings(sql, &[&id])
+            let sql =
+                "SELECT json_object('seq', seq) FROM messages WHERE session_id=?1 ORDER BY seq";
+            state
+                .store
+                .query_strings(sql, &[&id])
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|s| serde_json::from_str::<serde_json::Value>(s).ok())
@@ -515,7 +572,11 @@ pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
         };
         // Fallback: if seqs unavailable, use 1..cut
         let start = seqs.first().copied().unwrap_or(1);
-        let end = if cut > 0 { seqs.get(cut - 1).copied().unwrap_or(cut as u64) } else { start };
+        let end = if cut > 0 {
+            seqs.get(cut - 1).copied().unwrap_or(cut as u64)
+        } else {
+            start
+        };
         kn9t_core::CompactSpan {
             replaced: kn9t_core::SeqRange { start, end },
             messages: plan.messages[..cut].to_vec(),
@@ -526,8 +587,16 @@ pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
     // available; otherwise use a deterministic local summary so the endpoint
     // is testable offline.
     let summary = if let (Some(provider), Some(model)) = (
-        state.provider.clone().or_else(|| state.default_model.as_ref().and_then(|m| state.get_provider(&m.r#ref.provider))),
-        state.default_model.clone().or_else(|| state.store.get_model_spec_for_session(id)),
+        state.provider.clone().or_else(|| {
+            state
+                .default_model
+                .as_ref()
+                .and_then(|m| state.get_provider(&m.r#ref.provider))
+        }),
+        state
+            .default_model
+            .clone()
+            .or_else(|| state.store.get_model_spec_for_session(id)),
     ) {
         // Try provider summarize (best-effort, 16 max_tokens, short timeout via Cancel).
         let mut msgs = compact_span.messages.clone();
@@ -561,7 +630,12 @@ pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
                 if t.is_empty() {
                     deterministic_summary(&compact_span.messages)
                 } else {
-                    Message { id: MsgId::new(), role: Role::Assistant, content: vec![Content::Text { text: t }], silent: false }
+                    Message {
+                        id: MsgId::new(),
+                        role: Role::Assistant,
+                        content: vec![Content::Text { text: t }],
+                        silent: false,
+                    }
                 }
             }
             Err(_) => deterministic_summary(&compact_span.messages),
@@ -570,7 +644,11 @@ pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
         deterministic_summary(&compact_span.messages)
     };
 
-    let event = Event::Compacted { seq: 0, replaced: compact_span.replaced.clone(), summary };
+    let event = Event::Compacted {
+        seq: 0,
+        replaced: compact_span.replaced.clone(),
+        summary,
+    };
     let seq = match state.store.append(&sid, event.clone()) {
         Ok(s) => s,
         Err(e) => return JsonResp::error(500, "store_error", &e.0),
@@ -580,17 +658,27 @@ pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
 }
 
 fn deterministic_summary(msgs: &[Message]) -> Message {
-    let excerpt: String = msgs.iter().flat_map(|m| m.content.iter()).filter_map(|c| match c {
-        Content::Text { text } => Some(text.as_str()),
-        _ => None,
-    }).collect::<Vec<_>>().join(" ");
+    let excerpt: String = msgs
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|c| match c {
+            Content::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     let snippet: String = excerpt.chars().take(200).collect();
     let text = if snippet.is_empty() {
         format!("Summary of {} earlier messages.", msgs.len())
     } else {
         format!("Summary of {} earlier messages: {}", msgs.len(), snippet)
     };
-    Message { id: MsgId::new(), role: Role::Assistant, content: vec![Content::Text { text }], silent: false }
+    Message {
+        id: MsgId::new(),
+        role: Role::Assistant,
+        content: vec![Content::Text { text }],
+        silent: false,
+    }
 }
 
 /// `GET /session/{id}/export` — full transcript + events dump (replaces TUI
@@ -607,20 +695,39 @@ pub fn export_session(state: &Arc<ServerState>, id: &str) -> JsonResp {
     }
     // Meta.
     let meta_sql = "SELECT json_object('id', id, 'name', name, 'cwd', cwd, 'created_at', created_at) FROM sessions WHERE id=?1";
-    let mut meta: serde_json::Value = state.store.query_strings(meta_sql, &[&id])
-        .ok().and_then(|v| v.into_iter().next()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(serde_json::Value::Null);
+    let mut meta: serde_json::Value = state
+        .store
+        .query_strings(meta_sql, &[&id])
+        .ok()
+        .and_then(|v| v.into_iter().next())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null);
     if let Some(ms) = meta.get("created_at").and_then(|c| c.as_i64()) {
         meta["created_at"] = serde_json::Value::String(crate::http_util::millis_to_iso(ms));
     }
     // Transcript (message projection).
     let msg_sql = "SELECT json_object('seq', seq, 'role', role, 'content', json(content), 'silent', CASE WHEN silent THEN json('true') ELSE json('false') END) FROM messages WHERE session_id=?1 ORDER BY seq";
-    let transcript: Vec<serde_json::Value> = state.store.query_strings(msg_sql, &[&id]).unwrap_or_default().iter().filter_map(|s| serde_json::from_str(s).ok()).collect();
+    let transcript: Vec<serde_json::Value> = state
+        .store
+        .query_strings(msg_sql, &[&id])
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|s| serde_json::from_str(s).ok())
+        .collect();
     // Events (raw durable log).
     let ev_sql = "SELECT payload FROM events WHERE session_id=?1 ORDER BY seq";
-    let events: Vec<serde_json::Value> = state.store.query_strings(ev_sql, &[&id]).unwrap_or_default().iter().filter_map(|s| serde_json::from_str(s).ok()).collect();
+    let events: Vec<serde_json::Value> = state
+        .store
+        .query_strings(ev_sql, &[&id])
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|s| serde_json::from_str(s).ok())
+        .collect();
     // Also include snapshot for convenience.
     let _ = sid;
-    JsonResp::ok(serde_json::json!({ "id": id, "meta": meta, "transcript": transcript, "events": events }))
+    JsonResp::ok(
+        serde_json::json!({ "id": id, "meta": meta, "transcript": transcript, "events": events }),
+    )
 }
 
 /// Test/helper: force the auto-title flow for a session's first assistant turn.
@@ -644,7 +751,9 @@ fn parse_data_uri(uri: &str) -> Option<(String, Vec<u8>)> {
 
     if is_base64 {
         use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(data).ok()?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .ok()?;
         Some((mime.to_string(), bytes))
     } else {
         // URL-encoded data (rare for images).

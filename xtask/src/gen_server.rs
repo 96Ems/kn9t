@@ -84,15 +84,9 @@ fn emit_struct(name: &str, obj: &Value) -> String {
             s.push_str(&format!("    /// {d}\n"));
         }
         if let Some(en) = prop.get("enum").and_then(|e| e.as_array()) {
-            let vals: Vec<&str> = en
-                .iter()
-                .filter_map(|v| v.as_str())
-                .collect();
+            let vals: Vec<&str> = en.iter().filter_map(|v| v.as_str()).collect();
             if !vals.is_empty() {
-                s.push_str(&format!(
-                    "    /// Allowed values: {}.\n",
-                    vals.join(" | ")
-                ));
+                s.push_str(&format!("    /// Allowed values: {}.\n", vals.join(" | ")));
             }
         }
         s.push_str(&format!("    pub {key}: {ty},\n"));

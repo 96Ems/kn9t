@@ -24,7 +24,7 @@ pub struct Theme {
     pub diff_add: Color,
     pub diff_remove: Color,
     pub selection: Color,
-    
+
     // Tool card colors
     pub tab_active_fg: Color,
     pub tab_active_bg: Color,
@@ -45,7 +45,7 @@ impl Default for Theme {
 impl Theme {
     pub fn dark() -> Self {
         Self {
-            bg: Color::Reset,  // Use terminal default
+            bg: Color::Reset, // Use terminal default
             fg: Color::White,
             muted: Color::DarkGray,
             primary: Color::Cyan,
@@ -58,12 +58,12 @@ impl Theme {
             diff_add: Color::Green,
             diff_remove: Color::Red,
             selection: Color::Rgb(60, 60, 80), // Subtle blue-gray highlight
-            
+
             // Tool card colors
             tab_active_fg: Color::Black,
             tab_active_bg: Color::Cyan,
             tab_inactive_fg: Color::DarkGray,
-            tool_focus_bg: Color::Rgb(40, 44, 52),      // Subtle dark highlight
+            tool_focus_bg: Color::Rgb(40, 44, 52), // Subtle dark highlight
             tool_focus_border: Color::Cyan,
             input_key: Color::Yellow,
             input_value: Color::White,
@@ -85,12 +85,12 @@ impl Theme {
             diff_add: Color::Green,
             diff_remove: Color::Red,
             selection: Color::Rgb(220, 220, 240), // Subtle blue-gray highlight
-            
+
             // Tool card colors
             tab_active_fg: Color::White,
             tab_active_bg: Color::Blue,
             tab_inactive_fg: Color::DarkGray,
-            tool_focus_bg: Color::Rgb(230, 235, 245),   // Subtle light highlight
+            tool_focus_bg: Color::Rgb(230, 235, 245), // Subtle light highlight
             tool_focus_border: Color::Blue,
             input_key: Color::Rgb(180, 100, 0),
             input_value: Color::Black,
@@ -177,7 +177,7 @@ impl Theme {
 
 fn parse_color(s: &str) -> Option<Color> {
     let s = s.trim();
-    
+
     // Hex color: #RRGGBB
     if s.starts_with('#') && s.len() == 7 {
         let r = u8::from_str_radix(&s[1..3], 16).ok()?;
@@ -293,7 +293,7 @@ mod tests {
     fn test_theme_from_config_with_overrides() {
         let mut colors = HashMap::new();
         colors.insert("error".into(), "#ff00ff".into());
-        
+
         let section = ThemeSection {
             mode: Some("dark".into()),
             colors: Some(colors),

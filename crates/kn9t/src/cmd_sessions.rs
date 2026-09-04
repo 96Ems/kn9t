@@ -29,9 +29,9 @@ pub fn run(port: u16, server_token: &str) {
     }
 
     // Column widths
-    let id_w    = 26;
-    let name_w  = 36;
-    let seq_w   = 6;
+    let id_w = 26;
+    let name_w = 36;
+    let seq_w = 6;
     println!(
         "{:<id_w$}  {:<name_w$}  {:>seq_w$}  {}",
         "ID", "NAME", "SEQ", "CWD"
@@ -47,10 +47,10 @@ pub fn run(port: u16, server_token: &str) {
     });
 
     for s in sorted {
-        let id   = s["id"].as_str().unwrap_or("?");
+        let id = s["id"].as_str().unwrap_or("?");
         let name = s["name"].as_str().unwrap_or("(unnamed)");
-        let seq  = s["head_seq"].as_i64().unwrap_or(0);
-        let cwd  = s["cwd"].as_str().unwrap_or("");
+        let seq = s["head_seq"].as_i64().unwrap_or(0);
+        let cwd = s["cwd"].as_str().unwrap_or("");
         println!(
             "{:<id_w$}  {:<name_w$}  {:>seq_w$}  {}",
             truncate(id, id_w),
@@ -64,9 +64,7 @@ pub fn run(port: u16, server_token: &str) {
 // ── HTTP GET /session ─────────────────────────────────────────────────────────
 
 fn get_sessions(host: &str, auth: &str) -> Value {
-    let request = format!(
-        "GET /session HTTP/1.0\r\nHost: {host}\r\nAuthorization: {auth}\r\n\r\n"
-    );
+    let request = format!("GET /session HTTP/1.0\r\nHost: {host}\r\nAuthorization: {auth}\r\n\r\n");
     let mut stream = TcpStream::connect(host).unwrap_or_else(|e| {
         eprintln!("[kn9t sessions] cannot reach server: {e}");
         std::process::exit(1);
@@ -74,7 +72,9 @@ fn get_sessions(host: &str, auth: &str) -> Value {
     stream.write_all(request.as_bytes()).unwrap();
     stream.flush().unwrap();
     let mut resp = String::new();
-    BufReader::new(stream).read_to_string(&mut resp).unwrap_or(0);
+    BufReader::new(stream)
+        .read_to_string(&mut resp)
+        .unwrap_or(0);
     let body_start = resp.find("\r\n\r\n").map(|i| i + 4).unwrap_or(resp.len());
     serde_json::from_str(&resp[body_start..]).unwrap_or(Value::Array(vec![]))
 }
@@ -82,8 +82,8 @@ fn get_sessions(host: &str, auth: &str) -> Value {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { return s.to_string(); }
+    if s.len() <= max {
+        return s.to_string();
+    }
     format!("{}…", &s[..max.saturating_sub(1)])
 }
-
-

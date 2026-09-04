@@ -21,8 +21,8 @@ impl<R: Read> Iterator for SseIter<R> {
         loop {
             let mut line = String::new();
             match self.reader.read_line(&mut line) {
-                Err(e)                         => return Some(Err(e)),
-                Ok(0)                          => return None, // EOF
+                Err(e) => return Some(Err(e)),
+                Ok(0) => return None, // EOF
                 Ok(_) => {
                     let trimmed = line.trim_end_matches(['\r', '\n']);
                     if let Some(payload) = trimmed.strip_prefix("data: ") {

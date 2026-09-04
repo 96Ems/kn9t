@@ -1,6 +1,8 @@
 //! R-OAI-010 — build the OpenAI chat-completions request body from a `Request`.
 
-use kn9t_provider_core::{Cache, CacheMode, Content, Effort, Message, Quirks, Request, Role, Thinking};
+use kn9t_provider_core::{
+    Cache, CacheMode, Content, Effort, Message, Quirks, Request, Role, Thinking,
+};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -28,12 +30,16 @@ pub fn build_request(
     }
 
     // Build set of message indices that need cache_control.
-    let cache_indices: HashSet<usize> = req.cache.iter().filter_map(|c| {
-        match c {
-            Cache::AfterMessage { idx } => Some(*idx),
-            Cache::System => None, // handled separately
-        }
-    }).collect();
+    let cache_indices: HashSet<usize> = req
+        .cache
+        .iter()
+        .filter_map(|c| {
+            match c {
+                Cache::AfterMessage { idx } => Some(*idx),
+                Cache::System => None, // handled separately
+            }
+        })
+        .collect();
     let cache_system = req.cache.iter().any(|c| matches!(c, Cache::System));
 
     // System message. Cache control is applied to the LAST TOOL (not here) to cache
@@ -55,22 +61,27 @@ pub fn build_request(
     // Tools: build array and apply cache_control to the last tool if Cache::System is set.
     // This caches the entire system + tools prefix (opencode "caterpillar" strategy).
     let tools_count = req.tools.len();
-    let mut tools_json: Vec<Value> = req.tools.iter().enumerate().map(|(i, t)| {
-        let mut tool = json!({
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.schema,
+    let mut tools_json: Vec<Value> = req
+        .tools
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let mut tool = json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.schema,
+                }
+            });
+            // Apply cache_control to the LAST tool when Cache::System is requested.
+            // This ensures the entire system prompt + all tools are cached together.
+            if cache_system && !matches!(cache_mode, CacheMode::None) && i == tools_count - 1 {
+                tool["cache_control"] = json!({ "type": "ephemeral" });
             }
-        });
-        // Apply cache_control to the LAST tool when Cache::System is requested.
-        // This ensures the entire system prompt + all tools are cached together.
-        if cache_system && !matches!(cache_mode, CacheMode::None) && i == tools_count - 1 {
-            tool["cache_control"] = json!({ "type": "ephemeral" });
-        }
-        tool
-    }).collect();
+            tool
+        })
+        .collect();
 
     // R-NBED-050 §2: inject placeholder tool if require_tools and no tools.
     if quirks.require_tools && tools_json.is_empty() {
@@ -98,13 +109,13 @@ pub fn build_request(
     match quirks.reasoning.as_str() {
         "reasoning_effort" => {
             let effort_str = match req.thinking {
-                Thinking::Off           => "low",
-                Thinking::Effort(e)     => match e {
-                    Effort::Low    => "low",
+                Thinking::Off => "low",
+                Thinking::Effort(e) => match e {
+                    Effort::Low => "low",
                     Effort::Medium => "medium",
-                    Effort::High   => "high",
+                    Effort::High => "high",
                 },
-                Thinking::Budget(_)     => "medium",
+                Thinking::Budget(_) => "medium",
             };
             body["reasoning_effort"] = json!(effort_str);
         }
@@ -116,13 +127,13 @@ pub fn build_request(
         "adaptive" => {
             // R-NBED-050 §1: adaptive thinking.
             let effort_str = match req.thinking {
-                Thinking::Off           => "low",
-                Thinking::Effort(e)     => match e {
-                    Effort::Low    => "low",
+                Thinking::Off => "low",
+                Thinking::Effort(e) => match e {
+                    Effort::Low => "low",
                     Effort::Medium => "medium",
-                    Effort::High   => "high",
+                    Effort::High => "high",
                 },
-                Thinking::Budget(_)     => "medium",
+                Thinking::Budget(_) => "medium",
             };
             body["thinking"] = json!({ "type": "adaptive" });
             body["output_config"] = json!({ "effort": effort_str });
@@ -140,7 +151,10 @@ pub fn build_request(
     }
 
     if dump_request {
-        eprintln!("[kn9t dump-request] {}", serde_json::to_string_pretty(&body).unwrap_or_default());
+        eprintln!(
+            "[kn9t dump-request] {}",
+            serde_json::to_string_pretty(&body).unwrap_or_default()
+        );
     }
 
     body
@@ -149,34 +163,41 @@ pub fn build_request(
 /// Expand one `Message` into ≥1 wire objects, pushing into `out`.
 /// Tool-role messages with N ToolResult blocks become N separate wire messages
 /// (one `{ role: "tool", tool_call_id, content }` per result).
-fn encode_messages(
-    msg: &Message,
-    quirks: &Quirks,
-    needs_cache: bool,
-    out: &mut Vec<Value>,
-) {
+fn encode_messages(msg: &Message, quirks: &Quirks, needs_cache: bool, out: &mut Vec<Value>) {
     if msg.role == Role::Tool {
-        let results: Vec<_> = msg.content.iter().filter_map(|block| {
-            if let Content::ToolResult { id, content, .. } = block {
-                let inner_text: String = content.iter().filter_map(|c| {
-                    if let Content::Text { text } = c { Some(text.as_str()) } else { None }
-                }).collect::<Vec<_>>().join("\n");
-                // 96E-19: an empty tool result must still carry non-empty content —
-                // strict gateways (opencode zen, OpenAI) reject `content: ""` with
-                // HTTP 400 "empty content". The output is genuinely empty; this is
-                // the wire form, not a masking placeholder (the TUI still shows
-                // nothing under the tool card output).
-                let inner_text = if inner_text.trim().is_empty() {
-                    "(no output)".to_string()
+        let results: Vec<_> = msg
+            .content
+            .iter()
+            .filter_map(|block| {
+                if let Content::ToolResult { id, content, .. } = block {
+                    let inner_text: String = content
+                        .iter()
+                        .filter_map(|c| {
+                            if let Content::Text { text } = c {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    // 96E-19: an empty tool result must still carry non-empty content —
+                    // strict gateways (opencode zen, OpenAI) reject `content: ""` with
+                    // HTTP 400 "empty content". The output is genuinely empty; this is
+                    // the wire form, not a masking placeholder (the TUI still shows
+                    // nothing under the tool card output).
+                    let inner_text = if inner_text.trim().is_empty() {
+                        "(no output)".to_string()
+                    } else {
+                        inner_text
+                    };
+                    Some((id, inner_text))
                 } else {
-                    inner_text
-                };
-                Some((id, inner_text))
-            } else {
-                None
-            }
-        }).collect();
-        
+                    None
+                }
+            })
+            .collect();
+
         // Apply cache_control to last tool result if needed.
         let last_idx = results.len().saturating_sub(1);
         for (i, (id, inner_text)) in results.into_iter().enumerate() {
@@ -203,16 +224,12 @@ fn encode_messages(
     out.push(encode_message(msg, quirks, needs_cache));
 }
 
-fn encode_message(
-    msg: &Message,
-    quirks: &Quirks,
-    needs_cache: bool,
-) -> Value {
+fn encode_message(msg: &Message, quirks: &Quirks, needs_cache: bool) -> Value {
     let role = match msg.role {
-        Role::User      => "user",
+        Role::User => "user",
         Role::Assistant => "assistant",
-        Role::Tool      => "tool",
-        Role::System    => "system",
+        Role::Tool => "tool",
+        Role::System => "system",
     };
 
     // Simple text-only messages → string content (no cache needed).
@@ -243,9 +260,17 @@ fn encode_message(
     // Fallback: encode first result only (safe, but encode_messages avoids this path).
     if msg.role == Role::Tool {
         if let Some(Content::ToolResult { id, content, .. }) = msg.content.first() {
-            let inner_text: String = content.iter().filter_map(|c| {
-                if let Content::Text { text } = c { Some(text.as_str()) } else { None }
-            }).collect::<Vec<_>>().join("\n");
+            let inner_text: String = content
+                .iter()
+                .filter_map(|c| {
+                    if let Content::Text { text } = c {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             // 96E-19: see encode_messages — empty tool content 400s strict gateways.
             let inner_text = if inner_text.trim().is_empty() {
                 "(no output)".to_string()
@@ -263,21 +288,40 @@ fn encode_message(
     // Assistant message with tool calls — OpenAI wire format puts them in a top-level
     // `tool_calls` array, NOT in content parts. Content is null when only tool calls present.
     if msg.role == Role::Assistant {
-        let tool_calls: Vec<Value> = msg.content.iter().filter_map(|c| {
-            if let Content::ToolCall { id, name, args_json } = c {
-                Some(json!({
-                    "id": id.0,
-                    "type": "function",
-                    "function": { "name": name, "arguments": args_json },
-                }))
-            } else { None }
-        }).collect();
+        let tool_calls: Vec<Value> = msg
+            .content
+            .iter()
+            .filter_map(|c| {
+                if let Content::ToolCall {
+                    id,
+                    name,
+                    args_json,
+                } = c
+                {
+                    Some(json!({
+                        "id": id.0,
+                        "type": "function",
+                        "function": { "name": name, "arguments": args_json },
+                    }))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         if !tool_calls.is_empty() {
             // Collect any text parts alongside tool calls.
-            let text_parts: Vec<&str> = msg.content.iter().filter_map(|c| {
-                if let Content::Text { text } = c { Some(text.as_str()) } else { None }
-            }).collect();
+            let text_parts: Vec<&str> = msg
+                .content
+                .iter()
+                .filter_map(|c| {
+                    if let Content::Text { text } = c {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             let content_val = if text_parts.is_empty() {
                 Value::Null
             } else {
@@ -303,8 +347,12 @@ fn encode_message(
     }
 
     // Multi-part content.
-    let mut parts: Vec<Value> = msg.content.iter().map(|c| encode_content(c, quirks)).collect();
-    
+    let mut parts: Vec<Value> = msg
+        .content
+        .iter()
+        .map(|c| encode_content(c, quirks))
+        .collect();
+
     // Apply cache_control to the last content part if needed.
     if needs_cache && !parts.is_empty() {
         if let Some(last) = parts.last_mut() {
@@ -313,7 +361,7 @@ fn encode_message(
             }
         }
     }
-    
+
     json!({ "role": role, "content": parts })
 }
 
@@ -332,16 +380,32 @@ fn encode_content(c: &Content, _quirks: &Quirks) -> Value {
                 "image_url": { "url": url }
             })
         }
-        Content::ToolCall { id, name, args_json } => json!({
+        Content::ToolCall {
+            id,
+            name,
+            args_json,
+        } => json!({
             "type": "tool_call",
             "id": id.0,
             "name": name,
             "arguments": args_json,
         }),
-        Content::ToolResult { id, content, is_error } => {
-            let text = content.iter().filter_map(|c| {
-                if let Content::Text { text } = c { Some(text.as_str()) } else { None }
-            }).collect::<Vec<_>>().join("\n");
+        Content::ToolResult {
+            id,
+            content,
+            is_error,
+        } => {
+            let text = content
+                .iter()
+                .filter_map(|c| {
+                    if let Content::Text { text } = c {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             json!({ "type": "tool_result", "tool_use_id": id.0, "content": text, "is_error": is_error })
         }
         Content::Thinking { text, .. } => json!({ "type": "thinking", "thinking": text }),
@@ -388,7 +452,9 @@ mod tests {
             role: Role::Tool,
             content: vec![Content::ToolResult {
                 id: CallId("call_2".into()),
-                content: vec![Content::Text { text: "file1\nfile2".into() }],
+                content: vec![Content::Text {
+                    text: "file1\nfile2".into(),
+                }],
                 is_error: false,
             }],
             silent: false,
@@ -399,5 +465,3 @@ mod tests {
         assert_eq!(out[0]["content"], serde_json::json!("file1\nfile2"));
     }
 }
-
-

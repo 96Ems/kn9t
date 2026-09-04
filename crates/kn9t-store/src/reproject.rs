@@ -49,7 +49,8 @@ pub fn reproject(conn: &Connection) -> Result<(), StoreErr> {
            PRIMARY KEY (session_id, seq)
          );
          CREATE INDEX IF NOT EXISTS usage_by_model ON usage(model, kind);",
-    ).map_err(|e| StoreErr(format!("recreate tables: {e}")))?;
+    )
+    .map_err(|e| StoreErr(format!("recreate tables: {e}")))?;
 
     replay_events(conn, |sid, ts, event, conn| {
         let rows = project::project(sid, ts, event);
@@ -59,7 +60,8 @@ pub fn reproject(conn: &Connection) -> Result<(), StoreErr> {
     conn.execute(
         "INSERT OR REPLACE INTO meta(key,value) VALUES('PROJECTION_VERSION',?1)",
         params![PROJECTION_VERSION],
-    ).map_err(|e| StoreErr(format!("update proj ver: {e}")))?;
+    )
+    .map_err(|e| StoreErr(format!("update proj ver: {e}")))?;
 
     conn.execute_batch("COMMIT")
         .map_err(|e| StoreErr(format!("commit reproject: {e}")))?;
@@ -87,7 +89,8 @@ pub fn reproject_check(conn: &Connection) -> Result<Vec<String>, StoreErr> {
          );
          DELETE FROM temp.chk_messages;
          DELETE FROM temp.chk_usage;",
-    ).map_err(|e| StoreErr(format!("create temp tables: {e}")))?;
+    )
+    .map_err(|e| StoreErr(format!("create temp tables: {e}")))?;
 
     replay_events(conn, |sid, ts, event, conn| {
         let rows = project::project(sid, ts, event);
@@ -105,13 +108,18 @@ pub fn reproject_check(conn: &Connection) -> Result<Vec<String>, StoreErr> {
         LEFT JOIN messages m ON m.session_id=c.session_id AND m.seq=c.seq
         WHERE m.session_id IS NULL";
     {
-        let mut stmt = conn.prepare(msg_diff_sql)
+        let mut stmt = conn
+            .prepare(msg_diff_sql)
             .map_err(|e| StoreErr(format!("diff msg prepare: {e}")))?;
-        let mut rows = stmt.query([])
+        let mut rows = stmt
+            .query([])
             .map_err(|e| StoreErr(format!("diff msg query: {e}")))?;
-        while let Some(r) = rows.next().map_err(|e| StoreErr(format!("diff msg row: {e}")))? {
+        while let Some(r) = rows
+            .next()
+            .map_err(|e| StoreErr(format!("diff msg row: {e}")))?
+        {
             let sid: String = r.get(0).unwrap_or_default();
-            let seq: i64    = r.get(1).unwrap_or_default();
+            let seq: i64 = r.get(1).unwrap_or_default();
             diffs.push(format!("messages diff: session={sid} seq={seq}"));
         }
     }
@@ -125,13 +133,18 @@ pub fn reproject_check(conn: &Connection) -> Result<Vec<String>, StoreErr> {
         LEFT JOIN usage u ON u.session_id=c.session_id AND u.seq=c.seq
         WHERE u.session_id IS NULL";
     {
-        let mut stmt = conn.prepare(usg_diff_sql)
+        let mut stmt = conn
+            .prepare(usg_diff_sql)
             .map_err(|e| StoreErr(format!("diff usage prepare: {e}")))?;
-        let mut rows = stmt.query([])
+        let mut rows = stmt
+            .query([])
             .map_err(|e| StoreErr(format!("diff usage query: {e}")))?;
-        while let Some(r) = rows.next().map_err(|e| StoreErr(format!("diff usage row: {e}")))? {
+        while let Some(r) = rows
+            .next()
+            .map_err(|e| StoreErr(format!("diff usage row: {e}")))?
+        {
             let sid: String = r.get(0).unwrap_or_default();
-            let seq: i64    = r.get(1).unwrap_or_default();
+            let seq: i64 = r.get(1).unwrap_or_default();
             diffs.push(format!("usage diff: session={sid} seq={seq}"));
         }
     }
@@ -147,13 +160,17 @@ where
 {
     // Collect first to avoid borrow conflict on conn inside the closure
     let events: Vec<(String, i64, String)> = {
-        let mut stmt = conn.prepare(
-            "SELECT session_id, ts, payload FROM events ORDER BY session_id, seq",
-        ).map_err(|e| StoreErr(format!("replay prepare: {e}")))?;
-        let mut rows = stmt.query([])
+        let mut stmt = conn
+            .prepare("SELECT session_id, ts, payload FROM events ORDER BY session_id, seq")
+            .map_err(|e| StoreErr(format!("replay prepare: {e}")))?;
+        let mut rows = stmt
+            .query([])
             .map_err(|e| StoreErr(format!("replay query: {e}")))?;
         let mut out = Vec::new();
-        while let Some(r) = rows.next().map_err(|e| StoreErr(format!("replay row: {e}")))? {
+        while let Some(r) = rows
+            .next()
+            .map_err(|e| StoreErr(format!("replay row: {e}")))?
+        {
             out.push((
                 r.get(0).unwrap_or_default(),
                 r.get(1).unwrap_or_default(),
@@ -179,18 +196,44 @@ where
 fn write_rows_temp(conn: &Connection, rows: Vec<project::Row>) -> Result<(), StoreErr> {
     for row in rows {
         match row {
-            project::Row::Message { session_id, seq, role, content_json, est_tokens, silent } => {
+            project::Row::Message {
+                session_id,
+                seq,
+                role,
+                content_json,
+                est_tokens,
+                silent,
+            } => {
                 conn.execute(
                     "INSERT OR REPLACE INTO temp.chk_messages(session_id,seq,role,content,est_tokens,silent)\
                      VALUES(?1,?2,?3,?4,?5,?6)",
                     params![session_id, seq as i64, role, content_json, est_tokens, silent as i64],
                 ).map_err(|e| StoreErr(format!("insert temp msg: {e}")))?;
             }
-            project::Row::Usage { session_id, seq, ts, provider, model, kind,
-                tokens_in, tokens_out, cache_read, cache_write, reasoning,
-                price_in, price_out, price_cache_read, price_cache_write,
-                price_in_micros, price_out_micros, price_cache_read_micros, price_cache_write_micros,
-                cost_usd, cost_micros, estimated } => {
+            project::Row::Usage {
+                session_id,
+                seq,
+                ts,
+                provider,
+                model,
+                kind,
+                tokens_in,
+                tokens_out,
+                cache_read,
+                cache_write,
+                reasoning,
+                price_in,
+                price_out,
+                price_cache_read,
+                price_cache_write,
+                price_in_micros,
+                price_out_micros,
+                price_cache_read_micros,
+                price_cache_write_micros,
+                cost_usd,
+                cost_micros,
+                estimated,
+            } => {
                 conn.execute(
                     "INSERT OR REPLACE INTO temp.chk_usage(\
                        session_id,seq,ts,provider,model,kind,\
@@ -207,12 +250,20 @@ fn write_rows_temp(conn: &Connection, rows: Vec<project::Row>) -> Result<(), Sto
                         cost_usd, cost_micros, estimated],
                 ).map_err(|e| StoreErr(format!("insert temp usage: {e}")))?;
             }
-            project::Row::Compacted { session_id, seq, replaced_start, replaced_end,
-                                      role, content_json, est_tokens } => {
+            project::Row::Compacted {
+                session_id,
+                seq,
+                replaced_start,
+                replaced_end,
+                role,
+                content_json,
+                est_tokens,
+            } => {
                 conn.execute(
                     "DELETE FROM temp.chk_messages WHERE session_id=?1 AND seq>=?2 AND seq<=?3",
                     params![session_id, replaced_start as i64, replaced_end as i64],
-                ).map_err(|e| StoreErr(format!("delete temp compacted: {e}")))?;
+                )
+                .map_err(|e| StoreErr(format!("delete temp compacted: {e}")))?;
                 // Compacted messages are never silent (they're assistant summaries)
                 conn.execute(
                     "INSERT OR REPLACE INTO temp.chk_messages(session_id,seq,role,content,est_tokens,silent)\

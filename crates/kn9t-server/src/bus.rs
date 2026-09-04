@@ -46,7 +46,10 @@ impl SessionBuses {
     /// Drop a session's bus (on delete). Existing subscriptions detach as the bus
     /// is dropped (their rings close and `recv` returns `None`).
     pub fn drop_session(&self, session: &str) {
-        self.map.lock().expect("session buses poisoned").remove(session);
+        self.map
+            .lock()
+            .expect("session buses poisoned")
+            .remove(session);
     }
 
     /// Broadcast an event to ALL active sessions (for global events like `PluginDeclared`).
@@ -83,12 +86,20 @@ pub struct SessionSink {
 
 impl SessionSink {
     pub fn new(bus: Arc<Bus>) -> Self {
-        SessionSink { bus, store: None, session: SessionId(String::new()) }
+        SessionSink {
+            bus,
+            store: None,
+            session: SessionId(String::new()),
+        }
     }
 
     /// R-STOR-116 — a sink that also salvages tool progress for `session`.
     pub fn with_store(bus: Arc<Bus>, store: Arc<SqliteStore>, session: SessionId) -> Self {
-        SessionSink { bus, store: Some(store), session }
+        SessionSink {
+            bus,
+            store: Some(store),
+            session,
+        }
     }
 
     /// Persist what a crash would otherwise lose. Every failure here is swallowed: this is

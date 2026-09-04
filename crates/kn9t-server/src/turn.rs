@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kn9t_core::{
-    Cancel, Content, Decision, Event, EventSink, HookHost, ModelSpec, Message, MsgId, Price, Request,
-    Role, SessionId, Store, Thinking, Tokens, Usage, UsageKind,
+    Cancel, Content, Decision, Event, EventSink, HookHost, Message, ModelSpec, MsgId, Price,
+    Request, Role, SessionId, Store, Thinking, Tokens, Usage, UsageKind,
 };
 use kn9t_plugin::ComposedHookHost;
 use kn9t_react::{ReactConfig, ReactLoop, RunParams};
@@ -34,21 +34,35 @@ fn compactor_from_hosts(
     hosts
         .iter()
         .find(|h| h.has_capability("compactor"))
-        .map(|h| Arc::new(kn9t_plugin::RemoteCompactor::new(h.clone())) as Arc<dyn kn9t_core::Compactor>)
+        .map(|h| {
+            Arc::new(kn9t_plugin::RemoteCompactor::new(h.clone())) as Arc<dyn kn9t_core::Compactor>
+        })
 }
 
 /// Per-session cancellation handles for `abort` (R-SRV-060 command). A running turn
 /// registers its `Cancel`; `abort` fires it.
 fn register_cancel(state: &Arc<ServerState>, session: &str, cancel: Cancel) {
-    state.aborts.lock().expect("aborts poisoned").insert(session.to_owned(), cancel);
+    state
+        .aborts
+        .lock()
+        .expect("aborts poisoned")
+        .insert(session.to_owned(), cancel);
 }
 fn clear_cancel(state: &Arc<ServerState>, session: &str) {
-    state.aborts.lock().expect("aborts poisoned").remove(session);
+    state
+        .aborts
+        .lock()
+        .expect("aborts poisoned")
+        .remove(session);
 }
 
 /// Check if a turn is currently running for `session`.
 pub fn is_turn_running(state: &Arc<ServerState>, session: &str) -> bool {
-    state.aborts.lock().expect("aborts poisoned").contains_key(session)
+    state
+        .aborts
+        .lock()
+        .expect("aborts poisoned")
+        .contains_key(session)
 }
 
 /// Fire the cancel for `session`'s running turn, if any.
@@ -81,34 +95,60 @@ pub fn record_approval(state: &Arc<ServerState>, id: u64, allow: bool) {
 
 /// New scope-aware approval: validates `decision` and `scope`, resolves the
 /// registry, and updates session/persistent caches. Returns error string for 400.
-pub fn resolve_approval(state: &Arc<ServerState>, id: u64, decision_str: &str, scope_str: Option<&str>) -> Result<Decision, String> {
+pub fn resolve_approval(
+    state: &Arc<ServerState>,
+    id: u64,
+    decision_str: &str,
+    scope_str: Option<&str>,
+) -> Result<Decision, String> {
     // Validate decision — return 400 on unknown instead of default-deny (F4 fix).
     let is_allow = match decision_str {
         "allow" | "always" => true,
         "deny" => false,
-        other => return Err(format!("unknown decision {other:?}; expected allow|deny|always")),
+        other => {
+            return Err(format!(
+                "unknown decision {other:?}; expected allow|deny|always"
+            ))
+        }
     };
     let scope = match scope_str {
         Some(s) => match s {
             "once" | "session" | "always" => s,
-            other => return Err(format!("unknown scope {other:?}; expected once|session|always")),
+            other => {
+                return Err(format!(
+                    "unknown scope {other:?}; expected once|session|always"
+                ))
+            }
         },
         None => {
             // Legacy: decision "always" implies scope always, else once
-            if decision_str == "always" { "always" } else { "once" }
+            if decision_str == "always" {
+                "always"
+            } else {
+                "once"
+            }
         }
     };
     // Handle legacy "always" decision as scope always (DESIGN §10)
-    let effective_scope = if decision_str == "always" { "always" } else { scope };
+    let effective_scope = if decision_str == "always" {
+        "always"
+    } else {
+        scope
+    };
 
     let decision = if is_allow {
         Decision::Allow
     } else {
-        Decision::Deny { reason: "denied by user".into() }
+        Decision::Deny {
+            reason: "denied by user".into(),
+        }
     };
 
     // Resolve with meta for caching
-    if let Some(meta) = state.approval_registry.resolve_with_meta(id, decision.clone()) {
+    if let Some(meta) = state
+        .approval_registry
+        .resolve_with_meta(id, decision.clone())
+    {
         // Only cache Allow decisions, never Deny, and never HardDeny (which has no meta)
         if is_allow {
             match effective_scope {
@@ -158,7 +198,10 @@ fn tool_gating_for_session(
         .unwrap_or_default();
 
     let reactivated: Vec<String> = {
-        let mut map = state.pending_reactivation.lock().expect("pending_reactivation poisoned");
+        let mut map = state
+            .pending_reactivation
+            .lock()
+            .expect("pending_reactivation poisoned");
         map.remove(&session.0)
             .map(|set| {
                 let mut v: Vec<String> = set.into_iter().collect();
@@ -278,7 +321,9 @@ pub(crate) fn run_session_turn(
                 msg: Message {
                     id: MsgId::new(),
                     role: Role::User,
-                    content: vec![Content::Text { text: text.to_string() }],
+                    content: vec![Content::Text {
+                        text: text.to_string(),
+                    }],
                     silent: false,
                 },
             },
@@ -339,7 +384,9 @@ pub(crate) fn run_session_turn(
             )
             .unwrap_or(0.0);
         if spent > budget {
-            return Err(format!("session budget exceeded: spent ${spent:.4} > ${budget:.4}"));
+            return Err(format!(
+                "session budget exceeded: spent ${spent:.4} > ${budget:.4}"
+            ));
         }
     }
 
@@ -377,7 +424,13 @@ pub(crate) fn run_session_turn(
 pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
     // Use session's current model (from ModelChanged events), fallback to default.
     let session_model = state.store.get_model_spec_for_session(&session.0);
-    crate::log!("[spawn_turn] session={} session_model={:?}", session.0, session_model.as_ref().map(|m| format!("{}:{}", m.r#ref.provider, m.r#ref.id)));
+    crate::log!(
+        "[spawn_turn] session={} session_model={:?}",
+        session.0,
+        session_model
+            .as_ref()
+            .map(|m| format!("{}:{}", m.r#ref.provider, m.r#ref.id))
+    );
     let model = session_model.or_else(|| {
         crate::log!("[spawn_turn] using default model");
         state.default_model.clone()
@@ -386,7 +439,11 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
         crate::log!("[spawn_turn] no model available");
         return;
     };
-    crate::log!("[spawn_turn] using model {}:{}", model.r#ref.provider, model.r#ref.id);
+    crate::log!(
+        "[spawn_turn] using model {}:{}",
+        model.r#ref.provider,
+        model.r#ref.id
+    );
 
     std::thread::spawn(move || {
         state.idle.turn_started();
@@ -429,7 +486,7 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
         crate::log!("turn started: session={}", session.0);
         let run_result = loop_.run(params);
         match run_result {
-            Ok(_)  => crate::log!("turn finished: session={}", session.0),
+            Ok(_) => crate::log!("turn finished: session={}", session.0),
             Err(e) => crate::log!("turn error: session={} error={e:?}", session.0),
         }
 
@@ -554,9 +611,12 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
     );
 
     // Emit TitleChanged so TUI can update the sidebar.
-    state.buses.publish(&session.0, Event::TitleChanged {
-        title: title.clone(),
-    });
+    state.buses.publish(
+        &session.0,
+        Event::TitleChanged {
+            title: title.clone(),
+        },
+    );
 
     // Record UsageKind::Title (R-CORE-150 / R-SRV-100). The loop is normally the
     // only usage emitter, but titling is a server-owned side call, so the server

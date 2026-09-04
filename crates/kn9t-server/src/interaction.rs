@@ -55,7 +55,12 @@ impl InteractionRegistry {
 
     /// Register a new pending interaction. Returns the allocated `id` and the
     /// slot that the caller will `wait` on.
-    pub fn create(&self, session_id: String, plugin: String, payload: Value) -> (u64, Arc<InteractionSlotHandle>) {
+    pub fn create(
+        &self,
+        session_id: String,
+        plugin: String,
+        payload: Value,
+    ) -> (u64, Arc<InteractionSlotHandle>) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let slot = Arc::new(InteractionSlot {
             response: Mutex::new(None),
@@ -86,7 +91,9 @@ impl InteractionRegistry {
                 .wait(guard)
                 .expect("interaction.rs: InteractionRegistry::wait cvar poisoned");
         }
-        let v = guard.clone().expect("interaction.rs: wait loop must have Some");
+        let v = guard
+            .clone()
+            .expect("interaction.rs: wait loop must have Some");
         // Clean up after wait so `has_pending` reflects reality.
         self.inner
             .lock()
@@ -163,7 +170,11 @@ mod tests {
     #[test]
     fn registry_blocks_and_resolves_opaque_payload() {
         let reg = Arc::new(InteractionRegistry::new());
-        let (id, handle) = reg.create("sess-1".into(), "my-plugin".into(), json!({"question":"hello"}));
+        let (id, handle) = reg.create(
+            "sess-1".into(),
+            "my-plugin".into(),
+            json!({"question":"hello"}),
+        );
         let reg_c = reg.clone();
         let h = std::thread::spawn(move || reg_c.wait(&handle));
         // Not yet resolved

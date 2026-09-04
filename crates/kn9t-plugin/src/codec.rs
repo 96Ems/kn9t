@@ -18,7 +18,11 @@ pub enum HostMsg {
     /// Initial handshake — always the first message.
     Hello { proto: u32, kn9t: String },
     /// Hook or tool/provider invocation.
-    Hook { id: u64, hook: String, payload: serde_json::Value },
+    Hook {
+        id: u64,
+        hook: String,
+        payload: serde_json::Value,
+    },
     /// Fire-and-forget bus event (no reply expected).
     Event {
         #[serde(flatten)]
@@ -98,7 +102,12 @@ pub enum PluginMsg {
     /// Plugin KV request — read a value. Host replies with `HostMsg::KvResult`.
     KvGet { id: u64, scope: String, key: String },
     /// Plugin KV request — upsert a value. Host replies with `HostMsg::KvResult`.
-    KvSet { id: u64, scope: String, key: String, value: serde_json::Value },
+    KvSet {
+        id: u64,
+        scope: String,
+        key: String,
+        value: serde_json::Value,
+    },
     /// Plugin KV request — delete a value. Host replies with `HostMsg::KvResult`.
     KvDel { id: u64, scope: String, key: String },
     /// Plugin KV request — delete all keys in a scope. Host replies with `HostMsg::KvResult`.
@@ -107,7 +116,11 @@ pub enum PluginMsg {
     /// the named operation (e.g. `provider_complete`, `session_read`) and replies
     /// with `HostMsg::ApiResult`. Ops are executed on a worker thread — the host
     /// reader never blocks on a slow op (96E-9).
-    Request { id: u64, op: String, payload: serde_json::Value },
+    Request {
+        id: u64,
+        op: String,
+        payload: serde_json::Value,
+    },
     /// Hot re-declaration — plugin updates its tools/hooks/capabilities at runtime.
     /// Fields are optional; only present fields are updated (partial merge).
     /// The host rebuilds the registry and emits `Event::PluginDeclared`.
@@ -155,16 +168,20 @@ impl PluginDeclaration {
     pub fn has_capability(&self, cap: &str) -> bool {
         self.capabilities.iter().any(|c| c == cap)
     }
-    pub fn is_streaming(&self) -> bool { self.has_capability("streaming") }
-    pub fn is_cancelable(&self) -> bool { self.has_capability("cancelable") }
+    pub fn is_streaming(&self) -> bool {
+        self.has_capability("streaming")
+    }
+    pub fn is_cancelable(&self) -> bool {
+        self.has_capability("cancelable")
+    }
 }
 
 // ── I/O helpers ───────────────────────────────────────────────────────────────
 
 /// Write one `HostMsg` as a newline-terminated JSON line.
 pub fn write_host_msg(w: &mut dyn Write, msg: &HostMsg) -> io::Result<()> {
-    let line = serde_json::to_string(msg)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let line =
+        serde_json::to_string(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     w.write_all(line.as_bytes())?;
     w.write_all(b"\n")?;
     w.flush()
@@ -172,8 +189,8 @@ pub fn write_host_msg(w: &mut dyn Write, msg: &HostMsg) -> io::Result<()> {
 
 /// Write one `PluginMsg` as a newline-terminated JSON line.
 pub fn write_plugin_msg(w: &mut dyn Write, msg: &PluginMsg) -> io::Result<()> {
-    let line = serde_json::to_string(msg)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let line =
+        serde_json::to_string(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     w.write_all(line.as_bytes())?;
     w.write_all(b"\n")?;
     w.flush()
@@ -184,10 +201,12 @@ pub fn read_plugin_msg<R: Read>(reader: &mut BufReader<R>) -> io::Result<PluginM
     let mut line = String::new();
     let n = reader.read_line(&mut line)?;
     if n == 0 {
-        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "plugin closed"));
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "plugin closed",
+        ));
     }
-    serde_json::from_str(line.trim_end())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    serde_json::from_str(line.trim_end()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 /// Read one `HostMsg` from a buffered reader (blocks until `\n`).
@@ -197,8 +216,7 @@ pub fn read_host_msg<R: Read>(reader: &mut BufReader<R>) -> io::Result<HostMsg> 
     if n == 0 {
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "host closed"));
     }
-    serde_json::from_str(line.trim_end())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    serde_json::from_str(line.trim_end()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 /// Parse a hook name string into `HookName`.

@@ -8,8 +8,8 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use kn9t_provider_core::{
-    Event, HookName, HookVeto, LiveEvent, Message, ModelRef, NextTurnPatch, StopReason,
-    Usage, UsageKind,
+    Event, HookName, HookVeto, LiveEvent, Message, ModelRef, NextTurnPatch, StopReason, Usage,
+    UsageKind,
 };
 
 use crate::loop_::{ReactError, ReactLoop, RunParams};
@@ -110,9 +110,7 @@ impl ReactLoop {
         match catch_unwind(AssertUnwindSafe(|| {
             hooks.after_tool_call(tool, args, result)
         })) {
-            Ok(v) => {
-                v
-            }
+            Ok(v) => v,
             Err(_) => {
                 self.hook_failed(HookName::AfterToolCall, "hook panicked");
                 orig // keep original
@@ -159,9 +157,7 @@ impl ReactLoop {
     pub(crate) fn collect_steering(&self) -> Vec<Message> {
         let hooks = self.hooks.clone();
         match catch_unwind(AssertUnwindSafe(|| hooks.get_steering())) {
-            Ok(v) => {
-                v
-            }
+            Ok(v) => v,
             Err(_) => {
                 self.hook_failed(HookName::GetSteering, "hook panicked");
                 Vec::new() // empty
@@ -188,4 +184,3 @@ impl ReactLoop {
         });
     }
 }
-

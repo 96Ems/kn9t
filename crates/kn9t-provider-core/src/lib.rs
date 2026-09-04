@@ -8,10 +8,10 @@ pub mod sse;
 
 pub use abort::CancellableReader;
 pub use assemble::{assemble, AssembleResult};
-pub use http::{AuthScheme, HttpRequest, HttpResponse, send, send_get};
+pub use http::{send, send_get, AuthScheme, HttpRequest, HttpResponse};
 pub use pricing::lookup_price;
 pub use quirks::Quirks;
-pub use retry::{Backoff, is_retryable, with_retry, with_retry_with_sink};
+pub use retry::{is_retryable, with_retry, with_retry_with_sink, Backoff};
 pub use sse::sse_lines;
 
 // Re-export kn9t-core types used by crates that swap their dep from
@@ -20,12 +20,11 @@ pub use sse::sse_lines;
 // to avoid collision with kn9t_provider_core::Quirks (HTTP quirks). Callers
 // that need kn9t_core::Quirks must use kn9t_core directly or the full path.
 pub use kn9t_core::{
-    validate_handoff, ApprovalCtx, Approver, Bus, Cache, CallId, Cancel, CacheMode, Chunk,
-    CompactionPlan, Compactor, CompactSpan, Content, Decision, Effort, Event, EventSink,
+    cost_micros, validate_handoff, ApprovalCtx, Approver, Bus, Cache, CacheMode, CallId, Cancel,
+    Chunk, CompactSpan, CompactionPlan, Compactor, Content, Decision, Effort, Event, EventSink,
     ForkReason, ForkSnapshot, HandoffPlanData, HandoffSummary, HookHost, HookName, HookVeto,
-    LiveEvent, MoneyMicros, MsgId, Message, ModelRef, ModelSpec, NextTurnPatch, NoopHookHost,
+    LiveEvent, Message, ModelRef, ModelSpec, MoneyMicros, MsgId, NextTurnPatch, NoopHookHost,
     Price, ProvErr, Provider, Request, RequestPlan, Role, SeqRange, SessionId, SessionSnapshot,
     Sha256, StopReason, Store, StoreErr, Thinking, Tokens, Tool, ToolCall, ToolCtx, ToolErr,
-    ToolOutput, ToolRegistry, ToolSpec, Usage,
-    UsageKind, cost_micros,
+    ToolOutput, ToolRegistry, ToolSpec, Usage, UsageKind,
 };

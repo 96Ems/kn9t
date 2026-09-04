@@ -6,8 +6,10 @@
 //! the Mutex across payloads+head_seq to avoid the interleaving bug fixed
 //! in 96E-7. Separate reader/writer connections only if benchmarks justify it.
 
-use kn9t_core::{Event, ModelRef, ModelSpec, PluginKv, RequestPlan, SessionId, SessionSnapshot, Store, StoreErr};
-use rusqlite::{Connection, OptionalExtension, params};
+use kn9t_core::{
+    Event, ModelRef, ModelSpec, PluginKv, RequestPlan, SessionId, SessionSnapshot, Store, StoreErr,
+};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -36,10 +38,7 @@ pub struct SqliteStore {
 impl SqliteStore {
     /// Install the after-append observer. `None` (default) disables echo — used by
     /// tests that publish to the bus manually.
-    pub fn set_after_append(
-        &self,
-        f: Option<Arc<dyn Fn(&SessionId, &Event) + Send + Sync>>,
-    ) {
+    pub fn set_after_append(&self, f: Option<Arc<dyn Fn(&SessionId, &Event) + Send + Sync>>) {
         *self.after_append.lock().unwrap() = f;
     }
 
@@ -52,35 +51,39 @@ impl SqliteStore {
     /// Priority: last ModelChanged event > model_at_fork > SessionForked.
     pub fn get_model_spec_for_session(&self, session_id: &str) -> Option<ModelSpec> {
         let conn = self.conn.lock().ok()?;
-        
+
         // 1. Check for last ModelChanged event
         let last_changed: Option<String> = conn.query_row(
             "SELECT payload FROM events WHERE session_id=?1 AND kind='ModelChanged' ORDER BY seq DESC LIMIT 1",
             params![session_id],
             |r| r.get(0),
         ).optional().ok().flatten();
-        
+
         if let Some(p) = last_changed {
             if let Ok(kn9t_core::Event::ModelChanged { model, .. }) = serde_json::from_str(&p) {
                 let key = format!("{}:{}", model.provider, model.id);
                 return self.model_specs.read().ok()?.get(&key).cloned();
             }
         }
-        
+
         // 2. Fallback to model_at_fork
-        let model_json: Option<String> = conn.query_row(
-            "SELECT model_at_fork FROM sessions WHERE id=?1",
-            params![session_id],
-            |r| r.get(0),
-        ).optional().ok().flatten();
-        
+        let model_json: Option<String> = conn
+            .query_row(
+                "SELECT model_at_fork FROM sessions WHERE id=?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+
         if let Some(j) = model_json {
             if let Ok(model_ref) = serde_json::from_str::<ModelRef>(&j) {
                 let key = format!("{}:{}", model_ref.provider, model_ref.id);
                 return self.model_specs.read().ok()?.get(&key).cloned();
             }
         }
-        
+
         None
     }
 }
@@ -89,11 +92,9 @@ impl SqliteStore {
     /// Open (or create) the store at `path`. Applies pragmas and runs schema DDL.
     pub fn open(path: &Path) -> Result<Self, StoreErr> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| StoreErr(format!("create dir: {e}")))?;
+            std::fs::create_dir_all(parent).map_err(|e| StoreErr(format!("create dir: {e}")))?;
         }
-        let conn = Connection::open(path)
-            .map_err(|e| StoreErr(format!("open db: {e}")))?;
+        let conn = Connection::open(path).map_err(|e| StoreErr(format!("open db: {e}")))?;
         apply_pragmas(&conn)?;
         create_schema(&conn)?;
         migrate_96e14(&conn)?;
@@ -116,35 +117,66 @@ impl SqliteStore {
         Self::open(&path)
     }
 
-    pub fn path(&self) -> &Path { &self.path }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 
     /// R-STOR-090 — run reproject --check; returns list of diff descriptions.
     pub fn reproject_check(&self) -> Result<Vec<String>, StoreErr> {
-        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreErr("lock poisoned".into()))?;
         crate::reproject::reproject_check(&conn)
     }
 
     /// Execute a DML statement (UPDATE/DELETE). For tests.
-    pub fn execute_raw(&self, sql: &str, params: &[&dyn rusqlite::types::ToSql]) -> Result<usize, StoreErr> {
-        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+    pub fn execute_raw(
+        &self,
+        sql: &str,
+        params: &[&dyn rusqlite::types::ToSql],
+    ) -> Result<usize, StoreErr> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreErr("lock poisoned".into()))?;
         conn.execute(sql, rusqlite::params_from_iter(params.iter().copied()))
             .map_err(|e| StoreErr(format!("execute_raw: {e}")))
     }
 
     /// Execute a single-value query and return the result. For tests and analytics.
-    pub fn query_one<T, F>(&self, sql: &str, params: &[&dyn rusqlite::types::ToSql], f: F) -> Result<T, StoreErr>
+    pub fn query_one<T, F>(
+        &self,
+        sql: &str,
+        params: &[&dyn rusqlite::types::ToSql],
+        f: F,
+    ) -> Result<T, StoreErr>
     where
         F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
     {
-        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
-        conn.query_row(sql, params, f).map_err(|e| StoreErr(format!("query_one: {e}")))
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreErr("lock poisoned".into()))?;
+        conn.query_row(sql, params, f)
+            .map_err(|e| StoreErr(format!("query_one: {e}")))
     }
 
     /// Execute a query returning multiple rows of a single string column. For tests.
-    pub fn query_strings(&self, sql: &str, params: &[&dyn rusqlite::types::ToSql]) -> Result<Vec<String>, StoreErr> {
-        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
-        let mut stmt = conn.prepare(sql).map_err(|e| StoreErr(format!("prepare: {e}")))?;
-        let mut rows = stmt.query(rusqlite::params_from_iter(params.iter().copied()))
+    pub fn query_strings(
+        &self,
+        sql: &str,
+        params: &[&dyn rusqlite::types::ToSql],
+    ) -> Result<Vec<String>, StoreErr> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreErr("lock poisoned".into()))?;
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| StoreErr(format!("prepare: {e}")))?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params.iter().copied()))
             .map_err(|e| StoreErr(format!("query: {e}")))?;
         let mut out = Vec::new();
         while let Some(r) = rows.next().map_err(|e| StoreErr(format!("row: {e}")))? {
@@ -164,8 +196,13 @@ impl SqliteStore {
     where
         F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
     {
-        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
-        let mut stmt = conn.prepare(sql).map_err(|e| StoreErr(format!("prepare: {e}")))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreErr("lock poisoned".into()))?;
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| StoreErr(format!("prepare: {e}")))?;
         let mut rows = stmt
             .query(rusqlite::params_from_iter(params.iter().copied()))
             .map_err(|e| StoreErr(format!("query: {e}")))?;
@@ -180,8 +217,15 @@ impl SqliteStore {
     /// 96E-7 fix: atomic snapshot of durable payloads + head_seq.
     /// Holds the connection lock across both queries so a concurrent `append`
     /// cannot commit between them and cause a lost event during SSE attach.
-    pub fn read_attach_snapshot(&self, session: &str, from: u64) -> Result<(Vec<String>, u64), StoreErr> {
-        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+    pub fn read_attach_snapshot(
+        &self,
+        session: &str,
+        from: u64,
+    ) -> Result<(Vec<String>, u64), StoreErr> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreErr("lock poisoned".into()))?;
         // 1. durable payloads
         let payloads: Vec<String> = {
             let mut stmt = conn
@@ -215,24 +259,29 @@ impl SqliteStore {
             .unwrap_or(0);
         Ok((payloads, head_seq as u64))
     }
-    
+
     /// Get a preference value from the meta table.
     pub fn get_pref(&self, key: &str) -> Option<String> {
         let conn = self.conn.lock().ok()?;
-        conn.query_row(
-            "SELECT value FROM meta WHERE key = ?1",
-            params![key],
-            |r| r.get(0),
-        ).optional().ok().flatten()
+        conn.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+            r.get(0)
+        })
+        .optional()
+        .ok()
+        .flatten()
     }
-    
+
     /// Set a preference value in the meta table.
     pub fn set_pref(&self, key: &str, value: &str) -> Result<(), StoreErr> {
-        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreErr("lock poisoned".into()))?;
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
             params![key, value],
-        ).map_err(|e| StoreErr(format!("set_pref: {e}")))?;
+        )
+        .map_err(|e| StoreErr(format!("set_pref: {e}")))?;
         Ok(())
     }
 }
@@ -247,13 +296,15 @@ fn apply_pragmas(conn: &Connection) -> Result<(), StoreErr> {
         "PRAGMA busy_timeout = 5000",
     ];
     for s in &stmts {
-        conn.execute_batch(s).map_err(|e| StoreErr(format!("pragma: {e}")))?;
+        conn.execute_batch(s)
+            .map_err(|e| StoreErr(format!("pragma: {e}")))?;
     }
     Ok(())
 }
 
 pub(crate) fn create_schema(conn: &Connection) -> Result<(), StoreErr> {
-    conn.execute_batch(SCHEMA_DDL).map_err(|e| StoreErr(format!("schema: {e}")))
+    conn.execute_batch(SCHEMA_DDL)
+        .map_err(|e| StoreErr(format!("schema: {e}")))
 }
 
 fn truncate_live_messages(conn: &Connection) -> Result<(), StoreErr> {
@@ -275,7 +326,8 @@ fn check_projection_version(conn: &Connection) -> Result<(), StoreErr> {
             conn.execute(
                 "INSERT OR REPLACE INTO meta(key,value) VALUES('PROJECTION_VERSION',?1)",
                 params![PROJECTION_VERSION],
-            ).map_err(|e| StoreErr(format!("set proj ver: {e}")))?;
+            )
+            .map_err(|e| StoreErr(format!("set proj ver: {e}")))?;
         }
         Some(v) if v != PROJECTION_VERSION => {
             crate::reproject::reproject(conn)?;
@@ -317,13 +369,24 @@ fn migrate_96e14(conn: &Connection) -> Result<(), StoreErr> {
 // ── trait impls ──────────────────────────────────────────────────────────────
 
 impl PluginKv for SqliteStore {
-    fn kv_get(&self, plugin: &str, scope: &str, key: &str) -> Result<Option<serde_json::Value>, StoreErr> {
-        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
-        let raw: Option<String> = conn.query_row(
-            "SELECT value FROM plugin_kv WHERE plugin=?1 AND scope=?2 AND key=?3",
-            params![plugin, scope, key],
-            |r| r.get(0),
-        ).optional().map_err(|e| StoreErr(format!("kv_get: {e}")))?;
+    fn kv_get(
+        &self,
+        plugin: &str,
+        scope: &str,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, StoreErr> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreErr("lock poisoned".into()))?;
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT value FROM plugin_kv WHERE plugin=?1 AND scope=?2 AND key=?3",
+                params![plugin, scope, key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| StoreErr(format!("kv_get: {e}")))?;
         match raw {
             None => Ok(None),
             Some(s) => serde_json::from_str(&s)
@@ -332,14 +395,23 @@ impl PluginKv for SqliteStore {
         }
     }
 
-    fn kv_set(&self, plugin: &str, scope: &str, key: &str, value: &serde_json::Value) -> Result<(), StoreErr> {
-        let raw = serde_json::to_string(value)
-            .map_err(|e| StoreErr(format!("kv_set serialize: {e}")))?;
+    fn kv_set(
+        &self,
+        plugin: &str,
+        scope: &str,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), StoreErr> {
+        let raw =
+            serde_json::to_string(value).map_err(|e| StoreErr(format!("kv_set serialize: {e}")))?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreErr("lock poisoned".into()))?;
         conn.execute(
             "INSERT OR REPLACE INTO plugin_kv (plugin, scope, key, value, updated_at) VALUES (?1,?2,?3,?4,?5)",
             params![plugin, scope, key, raw, now],
@@ -348,20 +420,28 @@ impl PluginKv for SqliteStore {
     }
 
     fn kv_del(&self, plugin: &str, scope: &str, key: &str) -> Result<(), StoreErr> {
-        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreErr("lock poisoned".into()))?;
         conn.execute(
             "DELETE FROM plugin_kv WHERE plugin=?1 AND scope=?2 AND key=?3",
             params![plugin, scope, key],
-        ).map_err(|e| StoreErr(format!("kv_del: {e}")))?;
+        )
+        .map_err(|e| StoreErr(format!("kv_del: {e}")))?;
         Ok(())
     }
 
     fn kv_del_scope(&self, plugin: &str, scope: &str) -> Result<(), StoreErr> {
-        let conn = self.conn.lock().map_err(|_| StoreErr("lock poisoned".into()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| StoreErr("lock poisoned".into()))?;
         conn.execute(
             "DELETE FROM plugin_kv WHERE plugin=?1 AND scope=?2",
             params![plugin, scope],
-        ).map_err(|e| StoreErr(format!("kv_del_scope: {e}")))?;
+        )
+        .map_err(|e| StoreErr(format!("kv_del_scope: {e}")))?;
         Ok(())
     }
 }

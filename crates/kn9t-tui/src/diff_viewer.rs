@@ -71,7 +71,7 @@ impl FileStatus {
             FileStatus::Deleted => "D",
         }
     }
-    
+
     pub fn color(&self) -> Color {
         match self {
             FileStatus::Modified => Color::Yellow,
@@ -121,8 +121,8 @@ impl DiffViewer {
             current_file: 0,
             current_hunk: 0,
             scroll: 0,
-            split_mode: true,  // Default to side-by-side
-            fullscreen: true,  // Default to fullscreen
+            split_mode: true, // Default to side-by-side
+            fullscreen: true, // Default to fullscreen
             comments: Vec::new(),
             selected_line: None,
             commenting: false,
@@ -130,17 +130,17 @@ impl DiffViewer {
             cursor_line: 0,
             line_hits: Vec::new(),
             last_area: None,
-            show_file_tree: true,  // Show by default
+            show_file_tree: true, // Show by default
             file_tree_selected: 0,
             file_tree_area: None,
         }
     }
-    
+
     /// Toggle file tree sidebar.
     pub fn toggle_file_tree(&mut self) {
         self.show_file_tree = !self.show_file_tree;
     }
-    
+
     /// Get file status based on hunks.
     pub fn file_status(&self, file_idx: usize) -> FileStatus {
         if file_idx >= self.files.len() {
@@ -167,7 +167,7 @@ impl DiffViewer {
             FileStatus::Modified
         }
     }
-    
+
     /// Get diff stats for a file (+N -M).
     pub fn file_stats(&self, file_idx: usize) -> (usize, usize) {
         if file_idx >= self.files.len() {
@@ -187,7 +187,7 @@ impl DiffViewer {
         }
         (additions, deletions)
     }
-    
+
     /// Navigate to next file.
     pub fn next_file(&mut self) {
         if self.current_file + 1 < self.files.len() {
@@ -198,7 +198,7 @@ impl DiffViewer {
             self.file_tree_selected = self.current_file;
         }
     }
-    
+
     /// Navigate to previous file.
     pub fn prev_file(&mut self) {
         if self.current_file > 0 {
@@ -209,7 +209,7 @@ impl DiffViewer {
             self.file_tree_selected = self.current_file;
         }
     }
-    
+
     /// Select file by index.
     pub fn select_file(&mut self, idx: usize) {
         if idx < self.files.len() {
@@ -220,7 +220,7 @@ impl DiffViewer {
             self.file_tree_selected = idx;
         }
     }
-    
+
     /// Handle mouse wheel scroll.
     pub fn handle_scroll(&mut self, delta: i16) {
         if delta > 0 {
@@ -229,7 +229,7 @@ impl DiffViewer {
             self.scroll_up((-delta) as usize);
         }
     }
-    
+
     /// Handle mouse click at terminal coordinates.
     /// Returns true if click was handled.
     pub fn handle_click(&mut self, _x: u16, y: u16) -> bool {
@@ -244,14 +244,17 @@ impl DiffViewer {
         }
         false
     }
-    
+
     /// Handle mouse click at position. Returns true if click was handled.
     /// Checks file tree first, then diff lines.
     pub fn handle_click_at(&mut self, x: u16, y: u16) -> bool {
         // Check file tree click first
         if let Some(tree_area) = self.file_tree_area {
-            if x >= tree_area.x && x < tree_area.x + tree_area.width 
-                && y >= tree_area.y && y < tree_area.y + tree_area.height {
+            if x >= tree_area.x
+                && x < tree_area.x + tree_area.width
+                && y >= tree_area.y
+                && y < tree_area.y + tree_area.height
+            {
                 // Click is in file tree - calculate which file
                 // First row (tree_area.y) is header "Files"
                 if y > tree_area.y {
@@ -264,7 +267,7 @@ impl DiffViewer {
                 return false;
             }
         }
-        
+
         // Check diff line click
         for hit in &self.line_hits {
             if y == hit.y {
@@ -280,7 +283,7 @@ impl DiffViewer {
         }
         false
     }
-    
+
     /// Select line by click (legacy, use handle_click_at instead).
     pub fn select_by_click(&mut self, y: u16) -> bool {
         for hit in &self.line_hits {
@@ -297,12 +300,12 @@ impl DiffViewer {
         }
         false
     }
-    
+
     /// Toggle fullscreen mode.
     pub fn toggle_fullscreen(&mut self) {
         self.fullscreen = !self.fullscreen;
     }
-    
+
     /// Move cursor up in the current hunk.
     pub fn cursor_up(&mut self) {
         if self.cursor_line > 0 {
@@ -313,7 +316,7 @@ impl DiffViewer {
             }
         }
     }
-    
+
     /// Move cursor down in the current hunk.
     pub fn cursor_down(&mut self) {
         if let Some(hunk) = self.current_hunk_data() {
@@ -383,7 +386,7 @@ impl DiffViewer {
         let file_idx = self.current_file;
         let hunk_idx = self.current_hunk;
         let line_idx = self.cursor_line;
-        
+
         if file_idx >= self.files.len() {
             return;
         }
@@ -395,30 +398,33 @@ impl DiffViewer {
         if line_idx >= hunk.lines.len() {
             return;
         }
-        
+
         // Calculate actual line number in the new file
         let line_num = hunk.new_start + line_idx as u32;
         self.selected_line = Some((file_idx, hunk_idx, line_idx, line_num));
         self.commenting = true;
         self.comment_input.clear();
     }
-    
+
     /// Check if a line has a comment.
     pub fn has_comment_at(&self, file_idx: usize, line_num: u32) -> bool {
         if file_idx >= self.files.len() {
             return false;
         }
         let path = &self.files[file_idx].path;
-        self.comments.iter().any(|c| c.file == *path && c.line == line_num)
+        self.comments
+            .iter()
+            .any(|c| c.file == *path && c.line == line_num)
     }
-    
+
     /// Get comment for a line if exists.
     pub fn get_comment_at(&self, file_idx: usize, line_num: u32) -> Option<&str> {
         if file_idx >= self.files.len() {
             return None;
         }
         let path = &self.files[file_idx].path;
-        self.comments.iter()
+        self.comments
+            .iter()
             .find(|c| c.file == *path && c.line == line_num)
             .map(|c| c.comment.as_str())
     }
@@ -480,16 +486,20 @@ impl DiffViewer {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        
+
         self.last_area = Some(area);
         self.line_hits.clear();
-        
+
         // Reserve space for footer
         let footer_height = 2;
-        
+
         // File tree width
-        let tree_width = if self.show_file_tree { 30u16.min(area.width / 4) } else { 0 };
-        
+        let tree_width = if self.show_file_tree {
+            30u16.min(area.width / 4)
+        } else {
+            0
+        };
+
         // File tree area (left)
         if self.show_file_tree && tree_width > 0 {
             let tree_area = Rect::new(
@@ -503,7 +513,7 @@ impl DiffViewer {
         } else {
             self.file_tree_area = None;
         }
-        
+
         // Diff content area (right of file tree)
         let diff_area = Rect::new(
             area.x + tree_width,
@@ -511,80 +521,97 @@ impl DiffViewer {
             area.width.saturating_sub(tree_width),
             area.height.saturating_sub(footer_height),
         );
-        
+
         if self.split_mode {
             self.render_split_mut(diff_area, buf);
         } else {
             self.render_unified_mut(diff_area, buf);
         }
-        
+
         // Render footer (full width)
         self.render_footer(area, buf);
-        
+
         // Render comment overlay on top if commenting
         if self.commenting {
             self.render_comment_overlay(area, buf);
         }
     }
-    
+
     fn render_file_tree(&self, area: Rect, buf: &mut Buffer) {
         if area.width < 5 || area.height < 3 {
             return;
         }
-        
+
         // Background
         for y in area.y..area.y + area.height {
             for x in area.x..area.x + area.width {
                 buf[(x, y)].set_char(' ').set_bg(Color::Rgb(25, 25, 35));
             }
         }
-        
+
         // Title
         let title = " Files ";
-        buf[(area.x, area.y)].set_char('┌').set_fg(Color::DarkGray).set_bg(Color::Rgb(25, 25, 35));
+        buf[(area.x, area.y)]
+            .set_char('┌')
+            .set_fg(Color::DarkGray)
+            .set_bg(Color::Rgb(25, 25, 35));
         for (i, ch) in title.chars().enumerate() {
             let x = area.x + 1 + i as u16;
             if x < area.x + area.width - 1 {
-                buf[(x, area.y)].set_char(ch).set_fg(Color::Cyan).set_bg(Color::Rgb(25, 25, 35));
+                buf[(x, area.y)]
+                    .set_char(ch)
+                    .set_fg(Color::Cyan)
+                    .set_bg(Color::Rgb(25, 25, 35));
             }
         }
         for x in (area.x + 1 + title.len() as u16)..(area.x + area.width - 1) {
-            buf[(x, area.y)].set_char('─').set_fg(Color::DarkGray).set_bg(Color::Rgb(25, 25, 35));
+            buf[(x, area.y)]
+                .set_char('─')
+                .set_fg(Color::DarkGray)
+                .set_bg(Color::Rgb(25, 25, 35));
         }
-        buf[(area.x + area.width - 1, area.y)].set_char('┬').set_fg(Color::DarkGray).set_bg(Color::Rgb(25, 25, 35));
-        
+        buf[(area.x + area.width - 1, area.y)]
+            .set_char('┬')
+            .set_fg(Color::DarkGray)
+            .set_bg(Color::Rgb(25, 25, 35));
+
         // Right border
         for y in (area.y + 1)..area.y + area.height {
-            buf[(area.x + area.width - 1, y)].set_char('│').set_fg(Color::DarkGray).set_bg(Color::Rgb(25, 25, 35));
+            buf[(area.x + area.width - 1, y)]
+                .set_char('│')
+                .set_fg(Color::DarkGray)
+                .set_bg(Color::Rgb(25, 25, 35));
         }
-        
+
         // File list
         let mut y = area.y + 1;
         for (idx, file) in self.files.iter().enumerate() {
             if y >= area.y + area.height {
                 break;
             }
-            
+
             let is_selected = idx == self.current_file;
             let status = self.file_status(idx);
             let (adds, dels) = self.file_stats(idx);
-            
+
             // Selection highlight
             let bg = if is_selected {
                 Color::Rgb(50, 50, 80)
             } else {
                 Color::Rgb(25, 25, 35)
             };
-            
+
             for x in area.x..(area.x + area.width - 1) {
                 buf[(x, y)].set_bg(bg);
             }
-            
+
             // Status indicator
             let x = area.x + 1;
-            buf[(x, y)].set_char(status.indicator().chars().next().unwrap_or(' '))
-                .set_fg(status.color()).set_bg(bg);
-            
+            buf[(x, y)]
+                .set_char(status.indicator().chars().next().unwrap_or(' '))
+                .set_fg(status.color())
+                .set_bg(bg);
+
             // File name (truncated)
             let name = file.path.rsplit('/').next().unwrap_or(&file.path);
             let max_name_len = (area.width as usize).saturating_sub(12);
@@ -593,22 +620,26 @@ impl DiffViewer {
             } else {
                 name.to_string()
             };
-            
+
             for (i, ch) in display_name.chars().enumerate() {
                 let x = area.x + 3 + i as u16;
                 if x < area.x + area.width - 8 {
-                    let fg = if is_selected { Color::White } else { Color::Gray };
+                    let fg = if is_selected {
+                        Color::White
+                    } else {
+                        Color::Gray
+                    };
                     buf[(x, y)].set_char(ch).set_fg(fg).set_bg(bg);
                 }
             }
-            
+
             // Stats (+N -M)
             let stats = format!("+{} -{}", adds, dels);
             let stats_x = area.x + area.width - 2 - stats.len() as u16;
             for (i, ch) in stats.chars().enumerate() {
                 let x = stats_x + i as u16;
                 if x < area.x + area.width - 1 {
-                    let fg = if ch == '+' || (i > 0 && stats.chars().nth(i-1) == Some('+')) {
+                    let fg = if ch == '+' || (i > 0 && stats.chars().nth(i - 1) == Some('+')) {
                         Color::Green
                     } else if ch == '-' {
                         Color::Red
@@ -618,7 +649,7 @@ impl DiffViewer {
                     buf[(x, y)].set_char(ch).set_fg(fg).set_bg(bg);
                 }
             }
-            
+
             y += 1;
         }
     }
@@ -629,48 +660,65 @@ impl DiffViewer {
         } else {
             area.y + area.height.saturating_sub(2)
         };
-        
+
         // Comment input line (if commenting)
         if self.commenting {
             let input_y = footer_y;
-            let file_info = self.selected_line.map(|(f, _, _, line)| {
-                let path = &self.files[f].path;
-                format!("[{}:{}] ", path, line)
-            }).unwrap_or_default();
-            
+            let file_info = self
+                .selected_line
+                .map(|(f, _, _, line)| {
+                    let path = &self.files[f].path;
+                    format!("[{}:{}] ", path, line)
+                })
+                .unwrap_or_default();
+
             // Input background
             for x in area.x..area.x + area.width {
                 buf[(x, input_y)].set_char(' ').set_bg(Color::DarkGray);
             }
-            
+
             let prompt = format!("Comment {}", file_info);
             for (i, ch) in prompt.chars().enumerate() {
                 let x = area.x + 1 + i as u16;
                 if x < area.x + area.width - 1 {
-                    buf[(x, input_y)].set_char(ch).set_fg(Color::Yellow).set_bg(Color::DarkGray);
+                    buf[(x, input_y)]
+                        .set_char(ch)
+                        .set_fg(Color::Yellow)
+                        .set_bg(Color::DarkGray);
                 }
             }
-            
+
             // Input text
             let input_start = area.x + 1 + prompt.len() as u16;
             for (i, ch) in self.comment_input.chars().enumerate() {
                 let x = input_start + i as u16;
                 if x < area.x + area.width - 1 {
-                    buf[(x, input_y)].set_char(ch).set_fg(Color::White).set_bg(Color::DarkGray);
+                    buf[(x, input_y)]
+                        .set_char(ch)
+                        .set_fg(Color::White)
+                        .set_bg(Color::DarkGray);
                 }
             }
-            
+
             // Cursor
             let cursor_x = input_start + self.comment_input.len() as u16;
             if cursor_x < area.x + area.width - 1 {
-                buf[(cursor_x, input_y)].set_char('▏').set_fg(Color::Cyan).set_bg(Color::DarkGray);
+                buf[(cursor_x, input_y)]
+                    .set_char('▏')
+                    .set_fg(Color::Cyan)
+                    .set_bg(Color::DarkGray);
             }
         }
-        
+
         // Comments count (if any)
-        let comments_y = if self.commenting { footer_y + 1 } else { footer_y };
+        let comments_y = if self.commenting {
+            footer_y + 1
+        } else {
+            footer_y
+        };
         if !self.comments.is_empty() {
-            let count_text = format!(" {} comment{} ", 
+            let count_text = format!(
+                " {} comment{} ",
                 self.comments.len(),
                 if self.comments.len() == 1 { "" } else { "s" }
             );
@@ -681,7 +729,7 @@ impl DiffViewer {
                 }
             }
         }
-        
+
         // Help hints
         let hints_y = area.y + area.height.saturating_sub(1);
         let hints = if self.commenting {
@@ -696,17 +744,17 @@ impl DiffViewer {
             }
         }
     }
-    
+
     /// Render the comment input overlay (centered box).
     pub fn render_comment_overlay(&self, area: Rect, buf: &mut Buffer) {
         if !self.commenting {
             return;
         }
-        
+
         // Box width and content width
         let box_w = 70.min(area.width.saturating_sub(4));
         let content_w = (box_w - 4) as usize; // 2 for border, 2 for padding
-        
+
         // Wrap input text into lines
         let input_chars: Vec<char> = self.comment_input.chars().collect();
         let mut wrapped_lines: Vec<String> = Vec::new();
@@ -719,13 +767,13 @@ impl DiffViewer {
         if wrapped_lines.is_empty() {
             wrapped_lines.push(String::new());
         }
-        
+
         // Calculate box height: title + file info + wrapped lines + hint + borders
         let input_lines = wrapped_lines.len().min(8) as u16; // Max 8 lines of input
         let box_h = 4 + input_lines; // title(1) + file(1) + input(N) + hint(1) + border(1)
         let box_x = area.x + (area.width.saturating_sub(box_w)) / 2;
         let box_y = area.y + (area.height.saturating_sub(box_h)) / 2;
-        
+
         // Draw box background
         for y in box_y..box_y + box_h {
             for x in box_x..box_x + box_w {
@@ -734,28 +782,41 @@ impl DiffViewer {
                 }
             }
         }
-        
+
         // Draw border
         buf[(box_x, box_y)].set_char('╭').set_fg(Color::Yellow);
-        buf[(box_x + box_w - 1, box_y)].set_char('╮').set_fg(Color::Yellow);
-        buf[(box_x, box_y + box_h - 1)].set_char('╰').set_fg(Color::Yellow);
-        buf[(box_x + box_w - 1, box_y + box_h - 1)].set_char('╯').set_fg(Color::Yellow);
+        buf[(box_x + box_w - 1, box_y)]
+            .set_char('╮')
+            .set_fg(Color::Yellow);
+        buf[(box_x, box_y + box_h - 1)]
+            .set_char('╰')
+            .set_fg(Color::Yellow);
+        buf[(box_x + box_w - 1, box_y + box_h - 1)]
+            .set_char('╯')
+            .set_fg(Color::Yellow);
         for x in (box_x + 1)..(box_x + box_w - 1) {
             buf[(x, box_y)].set_char('─').set_fg(Color::Yellow);
-            buf[(x, box_y + box_h - 1)].set_char('─').set_fg(Color::Yellow);
+            buf[(x, box_y + box_h - 1)]
+                .set_char('─')
+                .set_fg(Color::Yellow);
         }
         for y in (box_y + 1)..(box_y + box_h - 1) {
             buf[(box_x, y)].set_char('│').set_fg(Color::Yellow);
-            buf[(box_x + box_w - 1, y)].set_char('│').set_fg(Color::Yellow);
+            buf[(box_x + box_w - 1, y)]
+                .set_char('│')
+                .set_fg(Color::Yellow);
         }
-        
+
         // Title
         let title = " Add Comment ";
         let title_x = box_x + (box_w.saturating_sub(title.len() as u16)) / 2;
         for (i, ch) in title.chars().enumerate() {
-            buf[(title_x + i as u16, box_y)].set_char(ch).set_fg(Color::Yellow).set_bg(Color::Black);
+            buf[(title_x + i as u16, box_y)]
+                .set_char(ch)
+                .set_fg(Color::Yellow)
+                .set_bg(Color::Black);
         }
-        
+
         // File:line info
         if let Some((file_idx, _, _, line_num)) = self.selected_line {
             if file_idx < self.files.len() {
@@ -763,45 +824,61 @@ impl DiffViewer {
                 let info = format!("{}:{}", path, line_num);
                 let info_x = box_x + 2;
                 for (i, ch) in info.chars().take(content_w).enumerate() {
-                    buf[(info_x + i as u16, box_y + 1)].set_char(ch).set_fg(Color::Cyan).set_bg(Color::Black);
+                    buf[(info_x + i as u16, box_y + 1)]
+                        .set_char(ch)
+                        .set_fg(Color::Cyan)
+                        .set_bg(Color::Black);
                 }
             }
         }
-        
+
         // Input lines (wrapped)
         for (line_idx, line) in wrapped_lines.iter().enumerate() {
             let input_y = box_y + 2 + line_idx as u16;
             if input_y >= box_y + box_h - 1 {
                 break;
             }
-            
+
             // Prompt on first line only
             if line_idx == 0 {
-                buf[(box_x + 2, input_y)].set_char('>').set_fg(Color::DarkGray).set_bg(Color::Black);
+                buf[(box_x + 2, input_y)]
+                    .set_char('>')
+                    .set_fg(Color::DarkGray)
+                    .set_bg(Color::Black);
             }
-            
+
             let text_x = box_x + 4;
             for (i, ch) in line.chars().enumerate() {
                 if text_x + (i as u16) < box_x + box_w - 1 {
-                    buf[(text_x + i as u16, input_y)].set_char(ch).set_fg(Color::White).set_bg(Color::Black);
+                    buf[(text_x + i as u16, input_y)]
+                        .set_char(ch)
+                        .set_fg(Color::White)
+                        .set_bg(Color::Black);
                 }
             }
         }
-        
+
         // Cursor position
-        let cursor_line = (input_chars.len() / content_w).min(wrapped_lines.len().saturating_sub(1));
+        let cursor_line =
+            (input_chars.len() / content_w).min(wrapped_lines.len().saturating_sub(1));
         let cursor_col = input_chars.len() % content_w;
         let cursor_y = box_y + 2 + cursor_line as u16;
         let cursor_x = box_x + 4 + cursor_col as u16;
         if cursor_y < box_y + box_h - 1 && cursor_x < box_x + box_w - 1 {
-            buf[(cursor_x, cursor_y)].set_char('▏').set_fg(Color::Cyan).set_bg(Color::Black);
+            buf[(cursor_x, cursor_y)]
+                .set_char('▏')
+                .set_fg(Color::Cyan)
+                .set_bg(Color::Black);
         }
-        
+
         // Hint
         let hint = "Enter: save · Esc: cancel";
         let hint_x = box_x + (box_w.saturating_sub(hint.len() as u16)) / 2;
         for (i, ch) in hint.chars().enumerate() {
-            buf[(hint_x + i as u16, box_y + 3)].set_char(ch).set_fg(Color::DarkGray).set_bg(Color::Black);
+            buf[(hint_x + i as u16, box_y + 3)]
+                .set_char(ch)
+                .set_fg(Color::DarkGray)
+                .set_bg(Color::Black);
         }
     }
 
@@ -821,7 +898,12 @@ impl DiffViewer {
         let title = format!("─ Diff: {} ", file.path);
         let title_line = Line::from(vec![
             Span::styled("┌", Style::default().fg(Color::DarkGray)),
-            Span::styled(title, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 "─".repeat(area.width.saturating_sub(3 + file.path.len() as u16 + 9) as usize),
                 Style::default().fg(Color::DarkGray),
@@ -837,7 +919,9 @@ impl DiffViewer {
         );
         let header_line = Line::from(Span::styled(
             hunk_header,
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ));
 
         let content_height = area.height.saturating_sub(2) as usize; // title + bottom border
@@ -860,25 +944,29 @@ impl DiffViewer {
             if row >= area.y + area.height.saturating_sub(1) {
                 break;
             }
-            
+
             let actual_line_idx = *line_idx;
             let is_cursor_line = actual_line_idx == self.cursor_line;
             let current_new_line = new_line_no;
-            
-            let rendered = render_unified_line(diff_line, &mut old_line_no, &mut new_line_no, area.width);
+
+            let rendered =
+                render_unified_line(diff_line, &mut old_line_no, &mut new_line_no, area.width);
             render_line(buf, area.x, row, area.width, &rendered);
-            
+
             // Highlight cursor line with visible marker
             if is_cursor_line {
                 // Cursor marker at start
-                buf[(area.x, row)].set_char('▶').set_fg(Color::Yellow).set_bg(Color::Rgb(50, 50, 80));
+                buf[(area.x, row)]
+                    .set_char('▶')
+                    .set_fg(Color::Yellow)
+                    .set_bg(Color::Rgb(50, 50, 80));
                 // Highlight rest of line
                 for x in (area.x + 1)..area.x + area.width {
                     let cell = &mut buf[(x, row)];
                     cell.set_bg(Color::Rgb(50, 50, 80));
                 }
             }
-            
+
             // Show comment indicator if line has comment
             if self.has_comment_at(self.current_file, current_new_line) {
                 let indicator_x = area.x + area.width - 3;
@@ -886,14 +974,14 @@ impl DiffViewer {
                     buf[(indicator_x, row)].set_char('💬').set_fg(Color::Yellow);
                 }
             }
-            
+
             // Record line hit for mouse support
             self.line_hits.push(DiffLineHit {
                 y: row,
                 line_idx: actual_line_idx,
                 file_idx: self.current_file,
             });
-            
+
             row += 1;
         }
 
@@ -934,14 +1022,27 @@ impl DiffViewer {
         let left_title = "─ Old ";
         let right_title = "─ New ";
         let left_fill = "─".repeat(half.saturating_sub(2 + left_title.len() as u16) as usize);
-        let right_fill = "─".repeat(area.width.saturating_sub(half + 2 + right_title.len() as u16) as usize);
+        let right_fill = "─".repeat(
+            area.width
+                .saturating_sub(half + 2 + right_title.len() as u16) as usize,
+        );
 
         let title_line = Line::from(vec![
             Span::styled("┌", Style::default().fg(Color::DarkGray)),
-            Span::styled(left_title, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                left_title,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(left_fill, Style::default().fg(Color::DarkGray)),
             Span::styled("┬", Style::default().fg(Color::DarkGray)),
-            Span::styled(right_title, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                right_title,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(right_fill, Style::default().fg(Color::DarkGray)),
             Span::styled("┐", Style::default().fg(Color::DarkGray)),
         ]);
@@ -956,9 +1057,9 @@ impl DiffViewer {
             if row >= area.y + area.height.saturating_sub(1) {
                 break;
             }
-            
+
             let is_cursor_line = line_idx == self.cursor_line;
-            
+
             let left_line = render_split_cell(left_cell, half.saturating_sub(1));
             let right_line = render_split_cell(right_cell, area.width.saturating_sub(half + 1));
 
@@ -970,26 +1071,35 @@ impl DiffViewer {
                 cell.set_style(Style::default().fg(Color::DarkGray));
             }
             // Write right side.
-            render_line(buf, area.x + half, row, area.width.saturating_sub(half), &right_line);
-            
+            render_line(
+                buf,
+                area.x + half,
+                row,
+                area.width.saturating_sub(half),
+                &right_line,
+            );
+
             // Highlight cursor line
             if is_cursor_line {
                 // Cursor marker at start - very visible
-                buf[(area.x, row)].set_char('▶').set_fg(Color::Black).set_bg(Color::Yellow);
+                buf[(area.x, row)]
+                    .set_char('▶')
+                    .set_fg(Color::Black)
+                    .set_bg(Color::Yellow);
                 // Highlight entire row with distinct background
                 for x in (area.x + 1)..area.x + area.width {
                     let cell = &mut buf[(x, row)];
                     cell.set_bg(Color::Rgb(60, 60, 100));
                 }
             }
-            
+
             // Record line hit for mouse support
             self.line_hits.push(DiffLineHit {
                 y: row,
                 line_idx,
                 file_idx: self.current_file,
             });
-            
+
             row += 1;
         }
 
@@ -1004,9 +1114,15 @@ impl DiffViewer {
         let bottom_y = area.y + area.height.saturating_sub(1);
         let bottom = Line::from(vec![
             Span::styled("└", Style::default().fg(Color::DarkGray)),
-            Span::styled("─".repeat(half.saturating_sub(2) as usize), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "─".repeat(half.saturating_sub(2) as usize),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled("┴", Style::default().fg(Color::DarkGray)),
-            Span::styled("─".repeat(area.width.saturating_sub(half + 1) as usize), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "─".repeat(area.width.saturating_sub(half + 1) as usize),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled("┘", Style::default().fg(Color::DarkGray)),
         ]);
         render_line(buf, area.x, bottom_y, area.width, &bottom);
@@ -1059,9 +1175,7 @@ fn render_unified_line(
             *old_no += 1;
             Line::from(Span::styled(
                 ln,
-                Style::default()
-                    .fg(Color::Red)
-                    .bg(Color::Rgb(60, 0, 0)),
+                Style::default().fg(Color::Red).bg(Color::Rgb(60, 0, 0)),
             ))
         }
         DiffLine::Added(text) => {
@@ -1069,9 +1183,7 @@ fn render_unified_line(
             *new_no += 1;
             Line::from(Span::styled(
                 ln,
-                Style::default()
-                    .fg(Color::Green)
-                    .bg(Color::Rgb(0, 40, 0)),
+                Style::default().fg(Color::Green).bg(Color::Rgb(0, 40, 0)),
             ))
         }
     }
@@ -1096,8 +1208,16 @@ fn build_split_rows(lines: &[DiffLine]) -> Vec<(SplitCell, SplitCell)> {
         match &lines[i] {
             DiffLine::Context(text) => {
                 rows.push((
-                    SplitCell { line_no: Some(old_no), text: text.clone(), style: Style::default().fg(Color::DarkGray) },
-                    SplitCell { line_no: Some(new_no), text: text.clone(), style: Style::default().fg(Color::DarkGray) },
+                    SplitCell {
+                        line_no: Some(old_no),
+                        text: text.clone(),
+                        style: Style::default().fg(Color::DarkGray),
+                    },
+                    SplitCell {
+                        line_no: Some(new_no),
+                        text: text.clone(),
+                        style: Style::default().fg(Color::DarkGray),
+                    },
                 ));
                 old_no += 1;
                 new_no += 1;
@@ -1117,11 +1237,19 @@ fn build_split_rows(lines: &[DiffLine]) -> Vec<(SplitCell, SplitCell)> {
                         cell
                     } else {
                         i += 1;
-                        SplitCell { line_no: None, text: String::new(), style: Style::default() }
+                        SplitCell {
+                            line_no: None,
+                            text: String::new(),
+                            style: Style::default(),
+                        }
                     }
                 } else {
                     i += 1;
-                    SplitCell { line_no: None, text: String::new(), style: Style::default() }
+                    SplitCell {
+                        line_no: None,
+                        text: String::new(),
+                        style: Style::default(),
+                    }
                 };
                 rows.push((
                     SplitCell {
@@ -1135,7 +1263,11 @@ fn build_split_rows(lines: &[DiffLine]) -> Vec<(SplitCell, SplitCell)> {
             }
             DiffLine::Added(text) => {
                 rows.push((
-                    SplitCell { line_no: None, text: String::new(), style: Style::default() },
+                    SplitCell {
+                        line_no: None,
+                        text: String::new(),
+                        style: Style::default(),
+                    },
                     SplitCell {
                         line_no: Some(new_no),
                         text: text.clone(),
@@ -1193,7 +1325,10 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
                 .and_then(|p| p.strip_prefix("b/"))
                 .unwrap_or("")
                 .to_string();
-            current_file = Some(DiffFile { path, hunks: Vec::new() });
+            current_file = Some(DiffFile {
+                path,
+                hunks: Vec::new(),
+            });
         } else if line.starts_with("+++ ") {
             // Override path from +++ line (more reliable than diff --git).
             let raw = &line[4..];
@@ -1204,7 +1339,10 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
                 }
             } else {
                 // No diff --git header seen yet — create file entry.
-                current_file = Some(DiffFile { path, hunks: Vec::new() });
+                current_file = Some(DiffFile {
+                    path,
+                    hunks: Vec::new(),
+                });
             }
         } else if line.starts_with("--- ") {
             // Ignore --- lines (we use +++ for the canonical path).

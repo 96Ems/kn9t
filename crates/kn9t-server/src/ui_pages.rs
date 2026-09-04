@@ -4,9 +4,9 @@
 //! Layout is declared once; placeholders are updated cheaply without re-sending
 //! the whole page. Host validates placeholder existence and value kind.
 
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaceholderKind {
@@ -39,7 +39,11 @@ impl PlaceholderKind {
             PlaceholderKind::Text => v.is_string(),
             PlaceholderKind::Number => v.is_number(),
             PlaceholderKind::Bar => {
-                if let Some(n) = v.as_f64() { (0.0..=100.0).contains(&n) } else { false }
+                if let Some(n) = v.as_f64() {
+                    (0.0..=100.0).contains(&n)
+                } else {
+                    false
+                }
             }
             PlaceholderKind::List => v.is_array(),
         }
@@ -69,7 +73,9 @@ pub struct UiPageRegistry {
 
 impl UiPageRegistry {
     pub fn new() -> Self {
-        Self { pages: Mutex::new(HashMap::new()) }
+        Self {
+            pages: Mutex::new(HashMap::new()),
+        }
     }
 
     fn key(session: &str, plugin: &str, page_id: &str) -> (String, String, String) {
@@ -77,34 +83,68 @@ impl UiPageRegistry {
     }
 
     /// Declare a page. `layout` is an array of {placeholder_id|id, kind, default?}.
-    pub fn declare(&self, plugin: &str, session: &str, page_id: &str, layout_val: &Value) -> Result<(), String> {
-        if page_id.is_empty() { return Err("page_id must be non-empty".into()); }
-        let arr = layout_val.as_array().ok_or_else(|| "layout must be an array".to_string())?;
-        if arr.is_empty() { return Err("layout must be non-empty".into()); }
+    pub fn declare(
+        &self,
+        plugin: &str,
+        session: &str,
+        page_id: &str,
+        layout_val: &Value,
+    ) -> Result<(), String> {
+        if page_id.is_empty() {
+            return Err("page_id must be non-empty".into());
+        }
+        let arr = layout_val
+            .as_array()
+            .ok_or_else(|| "layout must be an array".to_string())?;
+        if arr.is_empty() {
+            return Err("layout must be non-empty".into());
+        }
         let mut placeholders = HashMap::new();
         let mut order = Vec::new();
         let mut seen = HashSet::new();
         for item in arr {
-            let obj = item.as_object().ok_or_else(|| "layout entry must be an object".to_string())?;
-            let pid = obj.get("placeholder_id").or_else(|| obj.get("id")).and_then(|v| v.as_str()).ok_or_else(|| "layout entry requires \"placeholder_id\" or \"id\"".to_string())?;
-            if pid.is_empty() { return Err("placeholder_id must be non-empty".into()); }
-            if !seen.insert(pid.to_string()) { return Err(format!("duplicate placeholder_id {pid:?}")); }
-            let kind_str = obj.get("kind").and_then(|v| v.as_str()).ok_or_else(|| format!("placeholder {pid:?} requires \"kind\" (text|number|bar|list)"))?;
-            let kind = PlaceholderKind::parse(kind_str).ok_or_else(|| format!("unknown kind {kind_str:?} for {pid:?}"))?;
+            let obj = item
+                .as_object()
+                .ok_or_else(|| "layout entry must be an object".to_string())?;
+            let pid = obj
+                .get("placeholder_id")
+                .or_else(|| obj.get("id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "layout entry requires \"placeholder_id\" or \"id\"".to_string())?;
+            if pid.is_empty() {
+                return Err("placeholder_id must be non-empty".into());
+            }
+            if !seen.insert(pid.to_string()) {
+                return Err(format!("duplicate placeholder_id {pid:?}"));
+            }
+            let kind_str = obj.get("kind").and_then(|v| v.as_str()).ok_or_else(|| {
+                format!("placeholder {pid:?} requires \"kind\" (text|number|bar|list)")
+            })?;
+            let kind = PlaceholderKind::parse(kind_str)
+                .ok_or_else(|| format!("unknown kind {kind_str:?} for {pid:?}"))?;
             let default = obj.get("default").cloned();
             if let Some(ref d) = default {
                 if !kind.is_valid_value(d) {
-                    return Err(format!("default for {pid:?} does not match kind {}: got {d}", kind.as_str()));
+                    return Err(format!(
+                        "default for {pid:?} does not match kind {}: got {d}",
+                        kind.as_str()
+                    ));
                 }
             }
-            let def = PlaceholderDef { id: pid.to_string(), kind, default: default.clone() };
+            let def = PlaceholderDef {
+                id: pid.to_string(),
+                kind,
+                default: default.clone(),
+            };
             placeholders.insert(pid.to_string(), def);
             order.push(pid.to_string());
         }
         let k = Self::key(session, plugin, page_id);
         let mut pages = self.pages.lock().expect("ui_pages poisoned");
         if pages.contains_key(&k) {
-            return Err(format!("page {page_id:?} already declared for plugin {plugin:?} session {session:?}"));
+            return Err(format!(
+                "page {page_id:?} already declared for plugin {plugin:?} session {session:?}"
+            ));
         }
         let mut values = HashMap::new();
         for (pid, def) in &placeholders {
@@ -112,12 +152,29 @@ impl UiPageRegistry {
                 values.insert(pid.clone(), d.clone());
             }
         }
-        pages.insert(k, UiPage { plugin: plugin.to_string(), session: session.to_string(), page_id: page_id.to_string(), placeholders, order, values });
+        pages.insert(
+            k,
+            UiPage {
+                plugin: plugin.to_string(),
+                session: session.to_string(),
+                page_id: page_id.to_string(),
+                placeholders,
+                order,
+                values,
+            },
+        );
         Ok(())
     }
 
     /// Write a placeholder value.
-    pub fn write(&self, plugin: &str, session: &str, page_id: &str, placeholder_id: &str, value: Value) -> Result<(), String> {
+    pub fn write(
+        &self,
+        plugin: &str,
+        session: &str,
+        page_id: &str,
+        placeholder_id: &str,
+        value: Value,
+    ) -> Result<(), String> {
         let k = Self::key(session, plugin, page_id);
         let mut pages = self.pages.lock().expect("ui_pages poisoned");
         // Need to check ownership: page must exist under (session,plugin,page_id).
@@ -130,16 +187,29 @@ impl UiPageRegistry {
                         return Err(format!("page {page_id:?} not found in session {session:?} (exists in session {sess:?})"));
                     }
                     if plug != plugin {
-                        return Err(format!("page {page_id:?} belongs to plugin {plug:?}, not {plugin:?}"));
+                        return Err(format!(
+                            "page {page_id:?} belongs to plugin {plug:?}, not {plugin:?}"
+                        ));
                     }
                 }
             }
             return Err(format!("page {page_id:?} not declared"));
         }
         let page = pages.get_mut(&k).unwrap();
-        let def = page.placeholders.get(placeholder_id).ok_or_else(|| format!("placeholder {placeholder_id:?} not declared in page {page_id:?}"))?;
+        let def = page.placeholders.get(placeholder_id).ok_or_else(|| {
+            format!("placeholder {placeholder_id:?} not declared in page {page_id:?}")
+        })?;
         if !def.kind.is_valid_value(&value) {
-            return Err(format!("value for {placeholder_id:?} must be {} (kind {})", match def.kind { PlaceholderKind::Text => "string", PlaceholderKind::Number => "number", PlaceholderKind::Bar => "number 0..100", PlaceholderKind::List => "array" }, def.kind.as_str()));
+            return Err(format!(
+                "value for {placeholder_id:?} must be {} (kind {})",
+                match def.kind {
+                    PlaceholderKind::Text => "string",
+                    PlaceholderKind::Number => "number",
+                    PlaceholderKind::Bar => "number 0..100",
+                    PlaceholderKind::List => "array",
+                },
+                def.kind.as_str()
+            ));
         }
         page.values.insert(placeholder_id.to_string(), value);
         Ok(())
@@ -160,7 +230,9 @@ impl UiPageRegistry {
                         return Err(format!("page {page_id:?} not found in session {session:?}"));
                     }
                     if plug != plugin {
-                        return Err(format!("page {page_id:?} belongs to plugin {plug:?}, not {plugin:?}"));
+                        return Err(format!(
+                            "page {page_id:?} belongs to plugin {plug:?}, not {plugin:?}"
+                        ));
                     }
                 }
             }
@@ -192,7 +264,9 @@ impl UiPageRegistry {
 }
 
 impl Default for UiPageRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -207,6 +281,6 @@ mod tests {
         assert!(PlaceholderKind::Number.is_valid_value(&json!(3.14)));
         assert!(PlaceholderKind::Bar.is_valid_value(&json!(50)));
         assert!(!PlaceholderKind::Bar.is_valid_value(&json!(150)));
-        assert!(PlaceholderKind::List.is_valid_value(&json!([1,2])));
+        assert!(PlaceholderKind::List.is_valid_value(&json!([1, 2])));
     }
 }

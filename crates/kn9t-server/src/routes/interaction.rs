@@ -17,6 +17,10 @@ pub fn respond(state: &Arc<ServerState>, req: api::UiRespondReq) -> JsonResp {
     if state.interaction_registry.resolve(req.id, payload.clone()) {
         JsonResp::ok(serde_json::json!({ "responded": req.id, "payload": payload }))
     } else {
-        JsonResp::error(400, "unknown_interaction", &format!("no pending interaction with id {}", req.id))
+        JsonResp::error(
+            400,
+            "unknown_interaction",
+            &format!("no pending interaction with id {}", req.id),
+        )
     }
 }

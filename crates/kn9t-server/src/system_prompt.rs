@@ -7,7 +7,8 @@ pub fn build_system_prompt(platform: &str) -> String {
         _ => "Bash. Use standard Unix commands: `ls`, `grep`, `find`, `cat`, etc.",
     };
 
-    format!(r#"You are kn9t, a coding assistant with access to tools for reading, writing, and editing files, plus running shell commands.
+    format!(
+        r#"You are kn9t, a coding assistant with access to tools for reading, writing, and editing files, plus running shell commands.
 
 # Tools available
 - **read**: Read file contents (supports line offset/limit for large files)
@@ -26,13 +27,18 @@ pub fn build_system_prompt(platform: &str) -> String {
 
 # Code references
 When referencing code, use the format `file_path:line_number` for easy navigation.
-"#)
+"#
+    )
 }
 
 /// Get the default system prompt for the current platform.
 pub fn default_system_prompt() -> String {
     #[cfg(windows)]
-    { build_system_prompt("windows") }
+    {
+        build_system_prompt("windows")
+    }
     #[cfg(not(windows))]
-    { build_system_prompt("unix") }
+    {
+        build_system_prompt("unix")
+    }
 }

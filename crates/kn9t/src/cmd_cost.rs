@@ -1,6 +1,5 @@
 //! `kn9t cost` — GET /cost (+ GET /budget summary).
 
-
 pub fn run(args: &[String], port: u16, server_token: &str) {
     let host = format!("127.0.0.1:{port}");
     let auth = format!("Bearer {server_token}");
@@ -46,7 +45,10 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
         std::process::exit(1);
     }
 
-    let total = resp.get("total_cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let total = resp
+        .get("total_cost_usd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let groups = resp.get("groups").and_then(|v| v.as_array());
 
     println!("cost — since={since} group_by={group_by}");
@@ -56,7 +58,10 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
             println!("(no usage rows)");
         } else {
             println!();
-            println!("{:<32}  {:>10}  {:>8}  {:>8}", "GROUP", "COST_USD", "TOK_IN", "TOK_OUT");
+            println!(
+                "{:<32}  {:>10}  {:>8}  {:>8}",
+                "GROUP", "COST_USD", "TOK_IN", "TOK_OUT"
+            );
             println!("{}", "-".repeat(64));
             for g in groups {
                 let group = g.get("group").and_then(|v| v.as_str()).unwrap_or("?");
@@ -71,14 +76,19 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
     // Budget summary (best-effort).
     let budget = crate::http::get_json(&host, &auth, "/budget", "cost");
     if budget.get("error").is_none() {
-        let local = budget.get("local_estimate").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let local = budget
+            .get("local_estimate")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
         println!();
         println!("budget: local_estimate=${local:.4}");
         if let Some(pr) = budget.get("provider_reported").and_then(|v| v.as_f64()) {
-            println!("        provider_reported=${pr:.4}  (drift ${:.4})", pr - local);
+            println!(
+                "        provider_reported=${pr:.4}  (drift ${:.4})",
+                pr - local
+            );
         } else {
             println!("        provider_reported: (unavailable)");
         }
     }
 }
-

@@ -89,16 +89,28 @@ pub struct HandoffSummary {
 /// compactor plugin from citing hallucinated IDs. Called by the store/host before
 /// persisting a `Handoff` produced by a compactor.
 pub fn validate_handoff(event: &Event, known: &[CallId]) -> Result<(), String> {
-    if let Event::Handoff { keep, summarize, drop_ids, .. } = event {
+    if let Event::Handoff {
+        keep,
+        summarize,
+        drop_ids,
+        ..
+    } = event
+    {
         let known_set: std::collections::HashSet<&CallId> = known.iter().collect();
         for id in keep.iter().chain(drop_ids.iter()) {
             if !known_set.contains(id) {
-                return Err(format!("Handoff cites unknown CallId in keep/drop: {}", id.0));
+                return Err(format!(
+                    "Handoff cites unknown CallId in keep/drop: {}",
+                    id.0
+                ));
             }
         }
         for s in summarize {
             if !known_set.contains(&s.id) {
-                return Err(format!("Handoff cites unknown CallId in summarize: {}", s.id.0));
+                return Err(format!(
+                    "Handoff cites unknown CallId in summarize: {}",
+                    s.id.0
+                ));
             }
         }
     }
@@ -429,21 +441,77 @@ impl From<LiveEvent> for Event {
         match live {
             LiveEvent::TurnStarted { turn } => Event::TurnStarted { turn },
             LiveEvent::TextDelta { msg_id, idx, delta } => Event::TextDelta { msg_id, idx, delta },
-            LiveEvent::ThinkingDelta { msg_id, idx, delta } => Event::ThinkingDelta { msg_id, idx, delta },
-            LiveEvent::ToolArgsDelta { msg_id, idx, delta } => Event::ToolArgsDelta { msg_id, idx, delta },
+            LiveEvent::ThinkingDelta { msg_id, idx, delta } => {
+                Event::ThinkingDelta { msg_id, idx, delta }
+            }
+            LiveEvent::ToolArgsDelta { msg_id, idx, delta } => {
+                Event::ToolArgsDelta { msg_id, idx, delta }
+            }
             LiveEvent::ToolStarted { call_id, name } => Event::ToolStarted { call_id, name },
             LiveEvent::ToolProgress { call_id, note } => Event::ToolProgress { call_id, note },
-            LiveEvent::ToolFinished { call_id, is_error } => Event::ToolFinished { call_id, is_error },
-            LiveEvent::ApprovalRequest { id, tool, args, cwd, reason } => Event::ApprovalRequest { id, tool, args, cwd, reason },
+            LiveEvent::ToolFinished { call_id, is_error } => {
+                Event::ToolFinished { call_id, is_error }
+            }
+            LiveEvent::ApprovalRequest {
+                id,
+                tool,
+                args,
+                cwd,
+                reason,
+            } => Event::ApprovalRequest {
+                id,
+                tool,
+                args,
+                cwd,
+                reason,
+            },
             LiveEvent::TurnEnded { turn, stop } => Event::TurnEnded { turn, stop },
-            LiveEvent::HookFailed { plugin, hook, reason } => Event::HookFailed { plugin, hook, reason },
+            LiveEvent::HookFailed {
+                plugin,
+                hook,
+                reason,
+            } => Event::HookFailed {
+                plugin,
+                hook,
+                reason,
+            },
             LiveEvent::TitleChanged { title } => Event::TitleChanged { title },
             LiveEvent::Error { message } => Event::Error { message },
-            LiveEvent::RetryAttempt { attempt, max, error, delay_ms, retry_kind } => Event::RetryAttempt { attempt, max, error, delay_ms, retry_kind },
+            LiveEvent::RetryAttempt {
+                attempt,
+                max,
+                error,
+                delay_ms,
+                retry_kind,
+            } => Event::RetryAttempt {
+                attempt,
+                max,
+                error,
+                delay_ms,
+                retry_kind,
+            },
             LiveEvent::TurnStatus { phase, message } => Event::TurnStatus { phase, message },
             LiveEvent::PluginNotification { payload } => Event::PluginNotification { payload },
-            LiveEvent::InteractionRequest { id, plugin, payload } => Event::InteractionRequest { id, plugin, payload },
-            LiveEvent::UiDirective { plugin, target, op, payload } => Event::UiDirective { plugin, target, op, payload },
+            LiveEvent::InteractionRequest {
+                id,
+                plugin,
+                payload,
+            } => Event::InteractionRequest {
+                id,
+                plugin,
+                payload,
+            },
+            LiveEvent::UiDirective {
+                plugin,
+                target,
+                op,
+                payload,
+            } => Event::UiDirective {
+                plugin,
+                target,
+                op,
+                payload,
+            },
         }
     }
 }

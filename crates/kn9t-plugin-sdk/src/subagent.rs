@@ -11,10 +11,10 @@
 //! + `session_prompt` pair well-shaped and consistent across plugins, alongside
 //! `ask_user` (96E-28) as the SDK's two reference examples.
 
-use serde_json::{json, Value};
 use crate::ctx::ToolCallCtx;
 use crate::traits::{PluginTool, ToolOutput};
 use crate::wire::ToolSpec;
+use serde_json::{json, Value};
 
 /// How much of the subagent's work the parent's TUI should surface.
 /// **Plugin-consumed metadata, not host-enforced** (96E-26). The plugin's own
@@ -70,14 +70,40 @@ pub struct SubagentArgs {
 impl SubagentArgs {
     /// Parse from the tool's `args` JSON. Returns `Err` if `task` is missing/empty.
     pub fn parse(args: &Value) -> Result<Self, String> {
-        let task = args.get("task").and_then(|v| v.as_str()).ok_or_else(|| "task is required (string)".to_string())?;
-        if task.trim().is_empty() { return Err("task must be non-empty".into()); }
-        let expected_output = args.get("expected_output").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let tool_subset = args.get("tool_subset").and_then(|v| v.as_array()).map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect());
+        let task = args
+            .get("task")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "task is required (string)".to_string())?;
+        if task.trim().is_empty() {
+            return Err("task must be non-empty".into());
+        }
+        let expected_output = args
+            .get("expected_output")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let tool_subset = args
+            .get("tool_subset")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            });
         let budget_usd = args.get("budget_usd").and_then(|v| v.as_f64());
         let timeout_s = args.get("timeout_s").and_then(|v| v.as_u64());
-        let visibility = args.get("visibility").and_then(|v| v.as_str()).and_then(Visibility::parse).unwrap_or(Visibility::Progress);
-        Ok(Self { task: task.to_string(), expected_output, tool_subset, budget_usd, timeout_s, visibility })
+        let visibility = args
+            .get("visibility")
+            .and_then(|v| v.as_str())
+            .and_then(Visibility::parse)
+            .unwrap_or(Visibility::Progress);
+        Ok(Self {
+            task: task.to_string(),
+            expected_output,
+            tool_subset,
+            budget_usd,
+            timeout_s,
+            visibility,
+        })
     }
 }
 
@@ -127,16 +153,26 @@ pub fn subagent_tool_spec(name: &str, description: &str) -> ToolSpec {
 /// Returns the subagent's assembled result text on success.
 pub fn spawn_subagent(args: &SubagentArgs, ctx: &ToolCallCtx) -> Result<String, String> {
     if args.visibility != Visibility::Silent {
-        ctx.progress.send(format!("spawning subagent: {}", truncate(&args.task, 80)));
+        ctx.progress
+            .send(format!("spawning subagent: {}", truncate(&args.task, 80)));
     }
     // 1. session_fork
     let mut fork_payload = json!({});
-    if let Some(b) = args.budget_usd { fork_payload["budget_usd"] = json!(b); }
+    if let Some(b) = args.budget_usd {
+        fork_payload["budget_usd"] = json!(b);
+    }
     // copy_events defaults to true on host, so we only need to pass budget
     let fork_res = ctx.host.call("session_fork", fork_payload)?;
-    let new_session = fork_res.get("session").and_then(|v| v.as_str()).ok_or_else(|| "session_fork: missing session in reply".to_string())?.to_string();
+    let new_session = fork_res
+        .get("session")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "session_fork: missing session in reply".to_string())?
+        .to_string();
     if args.visibility != Visibility::Silent {
-        ctx.progress.send(format!("subagent session {}", &new_session[..8.min(new_session.len())]));
+        ctx.progress.send(format!(
+            "subagent session {}",
+            &new_session[..8.min(new_session.len())]
+        ));
     }
 
     // 2. session_prompt — task + expected_output hint
@@ -146,8 +182,12 @@ pub fn spawn_subagent(args: &SubagentArgs, ctx: &ToolCallCtx) -> Result<String, 
         prompt_text.push_str(expected);
     }
     let mut prompt_payload = json!({ "text": prompt_text });
-    if let Some(tools) = &args.tool_subset { prompt_payload["tools"] = json!(tools); }
-    if let Some(t) = args.timeout_s { prompt_payload["timeout_s"] = json!(t); }
+    if let Some(tools) = &args.tool_subset {
+        prompt_payload["tools"] = json!(tools);
+    }
+    if let Some(t) = args.timeout_s {
+        prompt_payload["timeout_s"] = json!(t);
+    }
     // The host's session_prompt expects the new session id in the payload's "session" too,
     // but HostApiClient auto-injects the caller's session — we must override to the *new* session.
     // So we explicitly set "session" to the forked id, which will be preserved (call checks contains_key).
@@ -158,7 +198,11 @@ pub fn spawn_subagent(args: &SubagentArgs, ctx: &ToolCallCtx) -> Result<String, 
     // would use the caller's session, not the new one. Since prompt_payload already has "session",
     // the call's auto-inject is a no-op (it checks contains_key), so we intentionally set it.
     let prompt_res = ctx.host.call("session_prompt", prompt_payload)?;
-    let result = prompt_res.get("result").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let result = prompt_res
+        .get("result")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if args.visibility != Visibility::Silent {
         ctx.progress.send("subagent complete".to_string());
     }
@@ -182,7 +226,10 @@ pub struct SubagentTool {
 impl SubagentTool {
     /// Build a subagent-spawning tool exposed under `name`.
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
-        Self { name: name.into(), description: description.into() }
+        Self {
+            name: name.into(),
+            description: description.into(),
+        }
     }
 }
 
@@ -205,7 +252,10 @@ impl PluginTool for SubagentTool {
 fn truncate(s: &str, max: usize) -> String {
     let mut out = String::new();
     for (i, ch) in s.chars().enumerate() {
-        if i >= max { out.push('…'); break; }
+        if i >= max {
+            out.push('…');
+            break;
+        }
         out.push(ch);
     }
     out
@@ -220,7 +270,11 @@ mod tests {
     fn spec_has_required_task_and_maps_fields() {
         let spec = subagent_tool_spec("spawn_subagent", "Spawn");
         assert_eq!(spec.name, "spawn_subagent");
-        let req = spec.schema.get("required").and_then(|v| v.as_array()).unwrap();
+        let req = spec
+            .schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .unwrap();
         assert!(req.iter().any(|v| v.as_str() == Some("task")));
         let props = spec.schema.get("properties").unwrap().as_object().unwrap();
         assert!(props.contains_key("task"));
@@ -257,16 +311,21 @@ mod tests {
             "visibility":"silent"
         });
         let parsed = SubagentArgs::parse(&args).unwrap();
-        assert_eq!(parsed.tool_subset, Some(vec!["read".to_string(),"bash".to_string()]));
+        assert_eq!(
+            parsed.tool_subset,
+            Some(vec!["read".to_string(), "bash".to_string()])
+        );
         assert_eq!(parsed.budget_usd, Some(0.5));
         assert_eq!(parsed.timeout_s, Some(120));
         assert_eq!(parsed.visibility, Visibility::Silent);
         // The thread-through is verified by constructing the payloads spawn_subagent would build
         let mut fork_payload = json!({});
-        if let Some(b) = parsed.budget_usd { fork_payload["budget_usd"] = json!(b); }
+        if let Some(b) = parsed.budget_usd {
+            fork_payload["budget_usd"] = json!(b);
+        }
         assert_eq!(fork_payload, json!({"budget_usd":0.5}));
         let prompt_payload = json!({"text": format!("{}\n\nExpected output: {}", parsed.task, parsed.expected_output.unwrap()), "tools": parsed.tool_subset, "timeout_s": parsed.timeout_s});
-        assert_eq!(prompt_payload["tools"], json!(["read","bash"]));
+        assert_eq!(prompt_payload["tools"], json!(["read", "bash"]));
         assert_eq!(prompt_payload["timeout_s"], json!(120));
     }
 
@@ -278,11 +337,18 @@ mod tests {
         let parsed = SubagentArgs::parse(&args).unwrap();
         // spawn_subagent's fork payload never contains visibility
         let mut fork = json!({});
-        if let Some(b) = parsed.budget_usd { fork["budget_usd"] = json!(b); }
+        if let Some(b) = parsed.budget_usd {
+            fork["budget_usd"] = json!(b);
+        }
         assert!(fork.get("visibility").is_none());
         let mut prompt = json!({"text": parsed.task.clone()});
-        if let Some(tools) = &parsed.tool_subset { prompt["tools"] = json!(tools); }
-        assert!(prompt.get("visibility").is_none(), "visibility must not leak to host_api payloads");
+        if let Some(tools) = &parsed.tool_subset {
+            prompt["tools"] = json!(tools);
+        }
+        assert!(
+            prompt.get("visibility").is_none(),
+            "visibility must not leak to host_api payloads"
+        );
     }
 
     #[test]

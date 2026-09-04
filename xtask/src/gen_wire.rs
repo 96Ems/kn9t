@@ -75,7 +75,9 @@ fn is_durable(fields: &[(String, String)]) -> bool {
 fn emit_sse_frames(http: &Value) -> String {
     let events = sse_events(http);
     let mut s = String::new();
-    s.push_str("/// SSE frame from the server — `#[serde(tag = \"kind\", rename_all = \"snake_case\")]`\n");
+    s.push_str(
+        "/// SSE frame from the server — `#[serde(tag = \"kind\", rename_all = \"snake_case\")]`\n",
+    );
     s.push_str("/// per AGENTS.md §12. Durable events carry `seq`; transient events do not.\n");
     s.push_str("#[derive(Debug, Clone, Deserialize)]\n");
     s.push_str("#[serde(tag = \"kind\", rename_all = \"snake_case\")]\n");
@@ -108,7 +110,9 @@ fn emit_sse_frames(http: &Value) -> String {
     for ev in &events {
         if is_durable(&ev.fields) {
             let variant = to_camel(ev.kind);
-            s.push_str(&format!("            SseFrame::{variant} {{ seq, .. }} => Some(*seq),\n"));
+            s.push_str(&format!(
+                "            SseFrame::{variant} {{ seq, .. }} => Some(*seq),\n"
+            ));
         }
     }
     s.push_str("            _ => None,\n");

@@ -17,7 +17,10 @@ pub enum Cache {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub enum CacheMode {
-    Explicit { max_breakpoints: u8, min_tokens: u32 },
+    Explicit {
+        max_breakpoints: u8,
+        min_tokens: u32,
+    },
     Automatic,
     None,
 }
@@ -34,7 +37,9 @@ pub enum CacheMode {
 ///    sorted by position**.
 pub fn breakpoints(messages: &[Message], mode: &CacheMode) -> Vec<Cache> {
     let max_breakpoints: u8 = match mode {
-        CacheMode::Explicit { max_breakpoints, .. } => *max_breakpoints,
+        CacheMode::Explicit {
+            max_breakpoints, ..
+        } => *max_breakpoints,
         CacheMode::Automatic => 4, // Default: system + last_user + last 2 messages
         CacheMode::None => return vec![],
     };
@@ -62,14 +67,16 @@ pub fn breakpoints(messages: &[Message], mode: &CacheMode) -> Vec<Cache> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Content;
     use crate::ids::MsgId;
+    use crate::message::Content;
 
     fn msg(role: Role) -> Message {
         Message {
             id: MsgId::new(),
             role,
-            content: vec![Content::Text { text: "test".into() }],
+            content: vec![Content::Text {
+                text: "test".into(),
+            }],
             silent: false,
         }
     }
@@ -93,7 +100,7 @@ mod tests {
         let messages = vec![
             msg(Role::User),
             msg(Role::Assistant),
-            msg(Role::User),  // idx 2 - last user
+            msg(Role::User), // idx 2 - last user
             msg(Role::Assistant),
         ];
         let result = breakpoints(&messages, &CacheMode::Automatic);
@@ -109,7 +116,10 @@ mod tests {
             msg(Role::Assistant),
             msg(Role::User),
         ];
-        let mode = CacheMode::Explicit { max_breakpoints: 2, min_tokens: 0 };
+        let mode = CacheMode::Explicit {
+            max_breakpoints: 2,
+            min_tokens: 0,
+        };
         let result = breakpoints(&messages, &mode);
         assert_eq!(result.len(), 2);
     }
@@ -122,11 +132,14 @@ mod tests {
         // Should not have duplicates - check manually
         // With 1 message at idx 0: candidates are System, AfterMessage{0}, AfterMessage{-1 invalid}, AfterMessage{0}
         // After dedup should be System, AfterMessage{0}
-        assert!(result.len() <= 2, "should have at most 2 unique breakpoints");
-        
+        assert!(
+            result.len() <= 2,
+            "should have at most 2 unique breakpoints"
+        );
+
         // Verify no adjacent duplicates by manual check
         for i in 1..result.len() {
-            assert!(result[i] != result[i-1], "adjacent duplicates found");
+            assert!(result[i] != result[i - 1], "adjacent duplicates found");
         }
     }
 
@@ -142,9 +155,9 @@ mod tests {
     #[test]
     fn test_breakpoints_priority_order() {
         let messages = vec![
-            msg(Role::User),     // idx 0
+            msg(Role::User),      // idx 0
             msg(Role::Assistant), // idx 1
-            msg(Role::User),     // idx 2 - last user
+            msg(Role::User),      // idx 2 - last user
             msg(Role::Assistant), // idx 3
         ];
         let result = breakpoints(&messages, &CacheMode::Automatic);
@@ -155,7 +168,10 @@ mod tests {
 
     #[test]
     fn test_cache_mode_explicit() {
-        let mode = CacheMode::Explicit { max_breakpoints: 1, min_tokens: 100 };
+        let mode = CacheMode::Explicit {
+            max_breakpoints: 1,
+            min_tokens: 100,
+        };
         let messages = vec![msg(Role::User), msg(Role::Assistant)];
         let result = breakpoints(&messages, &mode);
         assert_eq!(result.len(), 1);

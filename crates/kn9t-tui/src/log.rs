@@ -8,11 +8,7 @@ static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
 
 /// Initialize the log file.
 pub fn init(path: &str) {
-    if let Ok(file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
+    if let Ok(file) = OpenOptions::new().create(true).append(true).open(path) {
         if let Ok(mut guard) = LOG_FILE.lock() {
             *guard = Some(file);
         }

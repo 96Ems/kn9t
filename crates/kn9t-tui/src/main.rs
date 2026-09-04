@@ -17,24 +17,29 @@ fn main() -> io::Result<()> {
     // Initialize debug log.
     kn9t_tui::log::init("kn9t-tui.log");
     kn9t_tui::log!("=== kn9t-tui starting ===");
-    
+
     // Load config.
     let config = Config::load();
 
     // Terminal setup.
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
     // Event loop.
     let event_loop = EventLoop::new();
-    
+
     // Spawn input thread (keyboard + mouse).
     spawn_input_thread(event_loop.sender());
-    
+
     // Spawn tick thread (spinner animation, only active during streaming).
     let tick_ctl = spawn_tick_thread(event_loop.sender(), std::time::Duration::from_millis(80));
 

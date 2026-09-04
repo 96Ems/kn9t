@@ -48,17 +48,17 @@ pub struct ToolPolicy {
     /// If None, the tool doesn't support pattern matching.
     #[serde(default)]
     pub pattern_field: Option<String>,
-    
+
     /// Default policy when no user config exists.
     #[serde(default)]
     pub default_policy: DefaultPolicy,
-    
+
     /// Built-in allow patterns declared by the tool author.
     /// These are checked AFTER user deny patterns but BEFORE user allow patterns,
     /// so users can override them. Example: `["git log *", "git status *"]` for a git tool.
     #[serde(default)]
     pub builtin_allow: Vec<String>,
-    
+
     /// Built-in deny patterns (always deny, even if user allows).
     /// Example: `["rm -rf /", "sudo *"]` for bash.
     /// These are "hard deny" — no approval prompt, just rejected.
@@ -109,15 +109,15 @@ pub fn wildcard_match(pattern: &str, value: &str) -> bool {
     if !pattern.contains('*') {
         return pattern == value;
     }
-    
+
     let parts: Vec<&str> = pattern.split('*').collect();
     let mut pos = 0;
-    
+
     for (i, part) in parts.iter().enumerate() {
         if part.is_empty() {
             continue;
         }
-        
+
         if i == 0 {
             // First part must match at start
             if !value.starts_with(part) {
@@ -138,7 +138,7 @@ pub fn wildcard_match(pattern: &str, value: &str) -> bool {
             }
         }
     }
-    
+
     true
 }
 
@@ -177,15 +177,15 @@ mod tests {
         assert!(wildcard_match("git *", "git status"));
         assert!(wildcard_match("git *", "git diff --cached"));
         assert!(!wildcard_match("git *", "cargo build"));
-        
+
         assert!(wildcard_match("*.rs", "foo.rs"));
         assert!(wildcard_match("*.rs", "src/bar.rs"));
         assert!(!wildcard_match("*.rs", "foo.ts"));
-        
+
         assert!(wildcard_match("src/*", "src/foo.rs"));
         assert!(wildcard_match("src/*.rs", "src/foo.rs"));
         assert!(!wildcard_match("src/*.rs", "src/foo.ts"));
-        
+
         assert!(wildcard_match("exact", "exact"));
         assert!(!wildcard_match("exact", "not_exact"));
     }
@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(value_to_pattern("src/foo.rs", true), "*.rs");
         assert_eq!(value_to_pattern("Cargo.toml", true), "*.toml");
     }
-    
+
     #[test]
     fn test_default_policy() {
         let policy = ToolPolicy::default();

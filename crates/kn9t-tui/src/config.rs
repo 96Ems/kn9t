@@ -152,7 +152,7 @@ struct ConfigFile {
 #[derive(Debug, Deserialize)]
 struct TuiSection {
     #[allow(dead_code)]
-    left_sidebar: Option<bool>,  // Deprecated: sessions accessed via /session
+    left_sidebar: Option<bool>, // Deprecated: sessions accessed via /session
     right_sidebar: Option<bool>,
     streaming: Option<StreamingSection>,
 }

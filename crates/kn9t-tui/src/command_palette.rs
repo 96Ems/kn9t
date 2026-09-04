@@ -98,7 +98,6 @@ pub const COMMANDS: &[PaletteCommand] = &[
         keybinding: Some("Alt+J"),
         category: Category::Navigation,
     },
-    
     // Session
     PaletteCommand {
         id: "new_session",
@@ -121,7 +120,6 @@ pub const COMMANDS: &[PaletteCommand] = &[
         keybinding: Some("Ctrl+C"),
         category: Category::Session,
     },
-    
     // Edit
     PaletteCommand {
         id: "undo",
@@ -158,7 +156,6 @@ pub const COMMANDS: &[PaletteCommand] = &[
         keybinding: Some("Ctrl+Y"),
         category: Category::Edit,
     },
-    
     // View
     PaletteCommand {
         id: "search",
@@ -195,7 +192,6 @@ pub const COMMANDS: &[PaletteCommand] = &[
         keybinding: None,
         category: Category::View,
     },
-    
     // Tools
     PaletteCommand {
         id: "models",
@@ -225,7 +221,6 @@ pub const COMMANDS: &[PaletteCommand] = &[
         keybinding: Some("Ctrl+T"),
         category: Category::Tools,
     },
-    
     // Settings
     PaletteCommand {
         id: "theme_toggle",
@@ -260,7 +255,7 @@ impl CommandPalette {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Open the palette.
     pub fn open(&mut self) {
         self.active = true;
@@ -268,7 +263,7 @@ impl CommandPalette {
         self.update_matches();
         self.selected = 0;
     }
-    
+
     /// Close the palette.
     pub fn close(&mut self) {
         self.active = false;
@@ -276,7 +271,7 @@ impl CommandPalette {
         self.matches.clear();
         self.selected = 0;
     }
-    
+
     /// Update search query.
     pub fn set_query(&mut self, query: &str) {
         self.query = query.to_string();
@@ -285,7 +280,7 @@ impl CommandPalette {
             self.selected = 0;
         }
     }
-    
+
     /// Add a character to the query.
     pub fn push_char(&mut self, ch: char) {
         self.query.push(ch);
@@ -294,7 +289,7 @@ impl CommandPalette {
             self.selected = 0;
         }
     }
-    
+
     /// Remove last character from query.
     pub fn pop_char(&mut self) {
         self.query.pop();
@@ -303,12 +298,12 @@ impl CommandPalette {
             self.selected = 0;
         }
     }
-    
+
     /// Get selected command.
     pub fn selected_command(&self) -> Option<&'static PaletteCommand> {
         self.matches.get(self.selected).map(|&i| &COMMANDS[i])
     }
-    
+
     /// Move selection up.
     pub fn select_prev(&mut self) {
         if !self.matches.is_empty() {
@@ -319,23 +314,23 @@ impl CommandPalette {
             }
         }
     }
-    
+
     /// Move selection down.
     pub fn select_next(&mut self) {
         if !self.matches.is_empty() {
             self.selected = (self.selected + 1) % self.matches.len();
         }
     }
-    
+
     fn update_matches(&mut self) {
         self.matches = COMMANDS
             .iter()
             .enumerate()
             .filter(|(_, cmd)| {
                 // Match against label and description
-                fuzzy_match(cmd.label, &self.query) || 
-                fuzzy_match(cmd.description, &self.query) ||
-                fuzzy_match(cmd.id, &self.query)
+                fuzzy_match(cmd.label, &self.query)
+                    || fuzzy_match(cmd.description, &self.query)
+                    || fuzzy_match(cmd.id, &self.query)
             })
             .map(|(i, _)| i)
             .collect();
@@ -345,7 +340,7 @@ impl CommandPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_palette_open_shows_all() {
         let mut palette = CommandPalette::new();
@@ -353,7 +348,7 @@ mod tests {
         assert!(palette.active);
         assert_eq!(palette.matches.len(), COMMANDS.len());
     }
-    
+
     #[test]
     fn test_palette_filter() {
         let mut palette = CommandPalette::new();
@@ -362,7 +357,7 @@ mod tests {
         assert!(palette.matches.len() < COMMANDS.len());
         assert!(palette.selected_command().is_some());
     }
-    
+
     #[test]
     fn test_palette_navigation() {
         let mut palette = CommandPalette::new();

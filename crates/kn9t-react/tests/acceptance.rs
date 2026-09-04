@@ -6,8 +6,9 @@ mod support;
 
 use std::sync::{Arc, Mutex};
 
-use kn9t_core::{Content, Event, ProvErr, SessionId, StopReason, Store,
-                StoreErr, Tool, ToolRegistry};
+use kn9t_core::{
+    Content, Event, ProvErr, SessionId, StopReason, Store, StoreErr, Tool, ToolRegistry,
+};
 use kn9t_react::{ReactConfig, ReactLoop, RunParams};
 
 use support::*;
@@ -76,7 +77,9 @@ fn turn_sequence() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(), compactor: None };
+        bus: bus.clone(),
+        compactor: None,
+    };
     let mut params = run_params(&store);
     params.cwd = dir;
 
@@ -90,8 +93,14 @@ fn turn_sequence() {
     assert!(pos("TextDelta").unwrap() > pos("TurnStarted").unwrap());
     assert!(pos("ToolArgsDelta").is_some());
     // 96E-12: durable events must not be on the live bus; they are on the store.
-    assert!(pos("MessageAppended").is_none(), "durable MessageAppended must not be on live bus (96E-12)");
-    assert!(pos("UsageRecorded").is_none(), "durable UsageRecorded must not be on live bus (96E-12)");
+    assert!(
+        pos("MessageAppended").is_none(),
+        "durable MessageAppended must not be on live bus (96E-12)"
+    );
+    assert!(
+        pos("UsageRecorded").is_none(),
+        "durable UsageRecorded must not be on live bus (96E-12)"
+    );
     assert!(pos("ToolStarted").unwrap() < pos("ToolFinished").unwrap());
 
     // The persisted transcript (store.append order) has: assistant msg, usage, tool result
@@ -100,7 +109,7 @@ fn turn_sequence() {
     assert_eq!(tags[0], "MessageAppended"); // assistant with tool call
     assert_eq!(tags[1], "UsageRecorded");
     assert_eq!(tags[2], "MessageAppended"); // tool results
-    // The tool-result message closes the tool call (R-RCT-060 invariant even on success).
+                                            // The tool-result message closes the tool call (R-RCT-060 invariant even on success).
     let appended = store.appended.lock().unwrap();
     if let Event::MessageAppended { msg, .. } = &appended[2] {
         let has_result = msg
@@ -135,7 +144,9 @@ fn cancel_boundary() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus, compactor: None };
+        bus,
+        compactor: None,
+    };
     let stop = looop.run(run_params(&store)).expect("loop ran");
     assert_stop(stop, StopReason::Aborted);
 
@@ -164,9 +175,7 @@ fn abort_in_stream() {
 
     // A HookHost cannot cancel; instead we use a provider wrapper that cancels. Simplest:
     // cancel via a policy-free path -- use the AbortingProvider below.
-    let provider = Arc::new(AbortDuringStream {
-        inner: provider,
-    });
+    let provider = Arc::new(AbortDuringStream { inner: provider });
 
     let looop = ReactLoop {
         provider,
@@ -174,7 +183,9 @@ fn abort_in_stream() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus, compactor: None };
+        bus,
+        compactor: None,
+    };
     let params = run_params(&store);
     let stop = looop.run(params).expect("loop ran");
     assert_stop(stop, StopReason::Aborted);
@@ -188,10 +199,15 @@ fn abort_in_stream() {
     );
     // The recorded usage is flagged estimated.
     let appended = store.appended.lock().unwrap();
-    let est = appended.iter().any(|e| matches!(
-        e,
-        Event::UsageRecorded { estimated: true, .. }
-    ));
+    let est = appended.iter().any(|e| {
+        matches!(
+            e,
+            Event::UsageRecorded {
+                estimated: true,
+                ..
+            }
+        )
+    });
     assert!(est, "usage after stream abort must be estimated");
 }
 
@@ -208,10 +224,7 @@ impl kn9t_core::Provider for AbortDuringStream {
         &self,
         req: &kn9t_core::Request,
         cancel: &kn9t_core::Cancel,
-    ) -> Result<
-        Box<dyn Iterator<Item = Result<kn9t_core::Chunk, ProvErr>> + Send>,
-        ProvErr,
-    > {
+    ) -> Result<Box<dyn Iterator<Item = Result<kn9t_core::Chunk, ProvErr>> + Send>, ProvErr> {
         let s = self.inner.stream(req, cancel)?;
         cancel.cancel(); // mid-stream abort: chunks assembled, then loop sees cancelled()
         Ok(s)
@@ -246,7 +259,9 @@ fn abort_in_tools() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus, compactor: None };
+        bus,
+        compactor: None,
+    };
     let params = run_params(&store);
     let stop = looop.run(params).expect("loop ran");
     assert_stop(stop, StopReason::Aborted);
@@ -286,7 +301,10 @@ impl AbortingTool {
             spec: kn9t_core::ToolSpec {
                 name: "abort".to_string(),
                 description: "test tool that cancels the turn".to_string(),
-                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false, effects: vec![], policy: Default::default()
+                schema: serde_json::json!({"type":"object","properties":{}}),
+                hidden: false,
+                effects: vec![],
+                policy: Default::default(),
             },
         }
     }
@@ -340,7 +358,9 @@ fn external_cancel_during_tool_execution() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(), compactor: None };
+        bus: bus.clone(),
+        compactor: None,
+    };
     let params = run_params(&store);
     let stop = looop.run(params).expect("loop ran");
     assert_stop(stop, StopReason::Aborted);
@@ -381,7 +401,10 @@ impl SlowToolWithExternalCancel {
             spec: kn9t_core::ToolSpec {
                 name: name.to_string(),
                 description: "slow test tool".to_string(),
-                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false, effects: vec![], policy: Default::default()
+                schema: serde_json::json!({"type":"object","properties":{}}),
+                hidden: false,
+                effects: vec![],
+                policy: Default::default(),
             },
             delay_ms,
         }
@@ -406,7 +429,9 @@ impl Tool for SlowToolWithExternalCancel {
         std::thread::sleep(std::time::Duration::from_millis(self.delay_ms / 2));
         // Tool completes despite cancel (can't interrupt mid-execution)
         Ok(kn9t_core::ToolOutput {
-            content: vec![Content::Text { text: "slow completed".to_string() }],
+            content: vec![Content::Text {
+                text: "slow completed".to_string(),
+            }],
             details: None,
             is_error: false,
         })
@@ -423,7 +448,10 @@ impl FastTool {
             spec: kn9t_core::ToolSpec {
                 name: name.to_string(),
                 description: "fast test tool".to_string(),
-                schema: serde_json::json!({"type":"object","properties":{}}), hidden: false, effects: vec![], policy: Default::default()
+                schema: serde_json::json!({"type":"object","properties":{}}),
+                hidden: false,
+                effects: vec![],
+                policy: Default::default(),
             },
         }
     }
@@ -442,7 +470,9 @@ impl Tool for FastTool {
         _cancel: &kn9t_core::Cancel,
     ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
         Ok(kn9t_core::ToolOutput {
-            content: vec![Content::Text { text: "fast completed".to_string() }],
+            content: vec![Content::Text {
+                text: "fast completed".to_string(),
+            }],
             details: None,
             is_error: false,
         })
@@ -476,7 +506,9 @@ fn truncation_ladder() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus, compactor: None };
+        bus,
+        compactor: None,
+    };
     let stop = looop.run(run_params(&store)).expect("loop ran");
     assert_stop(stop, StopReason::Stop);
     // Four provider calls: three truncated + one success.
@@ -499,7 +531,9 @@ fn truncation_gives_up() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(), compactor: None };
+        bus: bus.clone(),
+        compactor: None,
+    };
     let mut params = run_params(&store);
     params.config.truncation_attempts = 2;
     let res = looop.run(params);
@@ -515,27 +549,36 @@ fn compaction_replan_once() {
     // compactor exactly once, re-plans, and a second compact demand is a hard error —
     // the compactor must never run twice (R-RCT-090).
     use std::sync::atomic::{AtomicUsize, Ordering};
-    struct OnceCompactor { calls: Arc<AtomicUsize> }
+    struct OnceCompactor {
+        calls: Arc<AtomicUsize>,
+    }
     impl kn9t_core::Compactor for OnceCompactor {
-        fn compact(&self, span: kn9t_core::CompactSpan, _model: &kn9t_core::ModelRef) -> Result<kn9t_core::CompactionPlan, String> {
+        fn compact(
+            &self,
+            span: kn9t_core::CompactSpan,
+            _model: &kn9t_core::ModelRef,
+        ) -> Result<kn9t_core::CompactionPlan, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let summary = kn9t_core::Message {
                 id: kn9t_core::MsgId::new(),
                 role: kn9t_core::Role::Assistant,
-                content: vec![kn9t_core::Content::Text { text: format!("summary of {} msgs", span.messages.len()) }],
+                content: vec![kn9t_core::Content::Text {
+                    text: format!("summary of {} msgs", span.messages.len()),
+                }],
                 silent: false,
             };
-            Ok(kn9t_core::CompactionPlan { summary, handoff: None })
+            Ok(kn9t_core::CompactionPlan {
+                summary,
+                handoff: None,
+            })
         }
     }
     let compactor_calls = Arc::new(AtomicUsize::new(0));
     // The provider must never be hit: the compactor replaces the summarize call.
     let provider = Arc::new(ScriptedProvider::new(vec![]));
     let store = Arc::new(
-        StubStore::new(PlanScript::plain(vec![])).script(vec![
-            PlanScript::compacting(),
-            PlanScript::compacting(),
-        ]),
+        StubStore::new(PlanScript::plain(vec![]))
+            .script(vec![PlanScript::compacting(), PlanScript::compacting()]),
     );
     let bus = Arc::new(RecordingBus::new());
     let looop = ReactLoop {
@@ -544,12 +587,20 @@ fn compaction_replan_once() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(), compactor: Some(Arc::new(OnceCompactor { calls: compactor_calls.clone() })) };
+        bus: bus.clone(),
+        compactor: Some(Arc::new(OnceCompactor {
+            calls: compactor_calls.clone(),
+        })),
+    };
     let res = looop.run(run_params(&store));
     assert!(res.is_err(), "second compact demand must be a hard error");
     // Exactly one compactor call (the first); the second demand errors before delegation.
     assert_eq!(compactor_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(*provider.calls.lock().unwrap(), 0, "compactor path must not call the provider");
+    assert_eq!(
+        *provider.calls.lock().unwrap(),
+        0,
+        "compactor path must not call the provider"
+    );
     // First compaction did commit a Compacted event.
     let appended = store.appended.lock().unwrap();
     assert!(appended
@@ -582,7 +633,7 @@ fn hook_posture() {
     ]));
     let store = Arc::new(StubStore::new(PlanScript::plain(vec![])));
     let bus = Arc::new(RecordingBus::new());
-    
+
     // Spawn the real kn9t-tools plugin (R-PLUG2-110)
     let (_host, tools) = spawn_tools_registry();
 
@@ -592,7 +643,9 @@ fn hook_posture() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(PanicHooks),
-        bus: bus.clone(), compactor: None };
+        bus: bus.clone(),
+        compactor: None,
+    };
     let _ = looop.run(run_params(&store));
 
     // before_tool_call failed closed: the tool result must be an error "fail closed".
@@ -601,7 +654,10 @@ fn hook_posture() {
     for e in appended.iter() {
         if let Event::MessageAppended { msg, .. } = e {
             for c in &msg.content {
-                if let Content::ToolResult { is_error, content, .. } = c {
+                if let Content::ToolResult {
+                    is_error, content, ..
+                } = c
+                {
                     if *is_error {
                         let text: String = content
                             .iter()
@@ -709,7 +765,7 @@ fn parallel_order() {
     ]));
     let store = Arc::new(StubStore::new(PlanScript::plain(vec![])));
     let bus = Arc::new(RecordingBus::new());
-    
+
     // Spawn the real kn9t-tools plugin (R-PLUG2-110)
     let (_host, tools) = spawn_tools_registry();
 
@@ -719,7 +775,9 @@ fn parallel_order() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus, compactor: None };
+        bus,
+        compactor: None,
+    };
     let mut params = run_params(&store);
     params.cwd = dir;
     let _ = looop.run(params).expect("loop ran");
@@ -778,10 +836,14 @@ fn tool_result_not_double_wrapped() {
                 name: "echo".into(),
                 description: "echo".into(),
                 schema: serde_json::json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
-                hidden: false, effects: vec![], policy: Default::default(),
+                hidden: false,
+                effects: vec![],
+                policy: Default::default(),
             }))
         }
-        fn parallel_safe(&self) -> bool { false }
+        fn parallel_safe(&self) -> bool {
+            false
+        }
         fn execute(
             &self,
             args: &serde_json::Value,
@@ -802,7 +864,7 @@ fn tool_result_not_double_wrapped() {
         StreamScript::Fixture(fixture_from_body(body2)),
     ]));
     let store = Arc::new(StubStore::new(PlanScript::plain(vec![])));
-    let bus   = Arc::new(RecordingBus::new());
+    let bus = Arc::new(RecordingBus::new());
     let mut tools = ToolRegistry::new();
     tools.push(Arc::new(EchoTool) as Arc<dyn Tool>);
 
@@ -812,28 +874,46 @@ fn tool_result_not_double_wrapped() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus, compactor: None };
+        bus,
+        compactor: None,
+    };
     looop.run(run_params(&store)).expect("loop ran");
 
     // The third appended event is the tool-result message (assistant, usage, tool-result).
     let appended = store.appended.lock().unwrap();
-    let tool_result_msg = appended.iter().find_map(|e| {
-        if let Event::MessageAppended { msg, .. } = e {
-            if msg.content.iter().any(|c| matches!(c, Content::ToolResult { .. })) {
-                return Some(msg.clone());
+    let tool_result_msg = appended
+        .iter()
+        .find_map(|e| {
+            if let Event::MessageAppended { msg, .. } = e {
+                if msg
+                    .content
+                    .iter()
+                    .any(|c| matches!(c, Content::ToolResult { .. }))
+                {
+                    return Some(msg.clone());
+                }
             }
-        }
-        None
-    }).expect("must have a tool-result MessageAppended");
+            None
+        })
+        .expect("must have a tool-result MessageAppended");
 
     // There must be exactly one ToolResult block.
-    let results: Vec<_> = tool_result_msg.content.iter().filter_map(|c| {
-        if let Content::ToolResult { id, content, is_error } = c {
-            Some((id.clone(), content.clone(), *is_error))
-        } else {
-            None
-        }
-    }).collect();
+    let results: Vec<_> = tool_result_msg
+        .content
+        .iter()
+        .filter_map(|c| {
+            if let Content::ToolResult {
+                id,
+                content,
+                is_error,
+            } = c
+            {
+                Some((id.clone(), content.clone(), *is_error))
+            } else {
+                None
+            }
+        })
+        .collect();
     assert_eq!(results.len(), 1, "exactly one ToolResult block");
 
     let (_, inner_content, is_error) = &results[0];
@@ -884,10 +964,14 @@ fn tool_output_reaches_second_provider_call() {
                 name: "echo".into(),
                 description: "echo".into(),
                 schema: serde_json::json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
-                hidden: false, effects: vec![], policy: Default::default(),
+                hidden: false,
+                effects: vec![],
+                policy: Default::default(),
             }))
         }
-        fn parallel_safe(&self) -> bool { false }
+        fn parallel_safe(&self) -> bool {
+            false
+        }
         fn execute(
             &self,
             args: &serde_json::Value,
@@ -912,10 +996,18 @@ fn tool_output_reaches_second_provider_call() {
     impl kn9t_core::Store for CapturingStore {
         fn plan_request(&self, session: &SessionId) -> Result<kn9t_core::RequestPlan, StoreErr> {
             // Replay everything appended so far as the message list.
-            let msgs: Vec<kn9t_core::Message> = self.inner.appended.lock().unwrap()
+            let msgs: Vec<kn9t_core::Message> = self
+                .inner
+                .appended
+                .lock()
+                .unwrap()
                 .iter()
                 .filter_map(|e| {
-                    if let Event::MessageAppended { msg, .. } = e { Some(msg.clone()) } else { None }
+                    if let Event::MessageAppended { msg, .. } = e {
+                        Some(msg.clone())
+                    } else {
+                        None
+                    }
                 })
                 .collect();
             self.captured_plans.lock().unwrap().push(msgs.clone());
@@ -952,7 +1044,9 @@ fn tool_output_reaches_second_provider_call() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus, compactor: None };
+        bus,
+        compactor: None,
+    };
 
     let mut params = RunParams {
         session: SessionId::new(),
@@ -973,18 +1067,35 @@ fn tool_output_reaches_second_provider_call() {
     // The second plan_request call (turn 2) must have a Tool-role message whose
     // ToolResult content contains the sentinel text — not an empty string.
     let plans = captured_plans.lock().unwrap();
-    assert!(plans.len() >= 2, "expected at least 2 plan_request calls, got {}", plans.len());
+    assert!(
+        plans.len() >= 2,
+        "expected at least 2 plan_request calls, got {}",
+        plans.len()
+    );
     let second_plan_msgs = &plans[1];
 
-    let tool_result_content: Vec<String> = second_plan_msgs.iter()
+    let tool_result_content: Vec<String> = second_plan_msgs
+        .iter()
         .filter(|m| m.role == kn9t_core::Role::Tool)
         .flat_map(|m| m.content.iter())
         .filter_map(|c| {
             if let Content::ToolResult { content, .. } = c {
-                Some(content.iter().filter_map(|b| {
-                    if let Content::Text { text } = b { Some(text.clone()) } else { None }
-                }).collect::<Vec<_>>().join(""))
-            } else { None }
+                Some(
+                    content
+                        .iter()
+                        .filter_map(|b| {
+                            if let Content::Text { text } = b {
+                                Some(text.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(""),
+                )
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -1004,7 +1115,7 @@ fn tool_output_reaches_second_provider_call() {
 // This test must FAIL before fix (proving bug) and PASS after fix.
 #[test]
 fn p1_96e6_parallel_safe_after_tool_call_must_run() {
-    use kn9t_core::{HookHost, Tool, ToolCtx, Cancel, Content, Message, ModelRef, ToolSpec};
+    use kn9t_core::{Cancel, Content, HookHost, Message, ModelRef, Tool, ToolCtx, ToolSpec};
     use std::sync::{Arc, Mutex};
 
     struct ParallelEchoTool;
@@ -1014,14 +1125,26 @@ fn p1_96e6_parallel_safe_after_tool_call_must_run() {
                 name: "p_echo".into(),
                 description: "parallel echo".into(),
                 schema: serde_json::json!({"type":"object","properties":{}}),
-                hidden: false, effects: vec![], policy: Default::default(),
+                hidden: false,
+                effects: vec![],
+                policy: Default::default(),
             }))
         }
-        fn parallel_safe(&self) -> bool { true }
-        fn execute(&self, _args: &serde_json::Value, _ctx: &ToolCtx, _cancel: &Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+        fn parallel_safe(&self) -> bool {
+            true
+        }
+        fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolCtx,
+            _cancel: &Cancel,
+        ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
             Ok(kn9t_core::ToolOutput {
-                content: vec![Content::Text { text: "original".into() }],
-                details: None, is_error: false,
+                content: vec![Content::Text {
+                    text: "original".into(),
+                }],
+                details: None,
+                is_error: false,
             })
         }
     }
@@ -1030,20 +1153,58 @@ fn p1_96e6_parallel_safe_after_tool_call_must_run() {
         calls: Arc<Mutex<Vec<String>>>,
     }
     impl HookHost for MutatingHook {
-        fn before_tool_call(&self, _tool: &str, _args: &serde_json::Value, _cwd: &std::path::Path) -> kn9t_core::HookVeto {
+        fn before_tool_call(
+            &self,
+            _tool: &str,
+            _args: &serde_json::Value,
+            _cwd: &std::path::Path,
+        ) -> kn9t_core::HookVeto {
             kn9t_core::HookVeto::Allow
         }
-        fn after_tool_call(&self, tool: &str, _args: &serde_json::Value, _result: Vec<Content>) -> Vec<Content> {
+        fn after_tool_call(
+            &self,
+            tool: &str,
+            _args: &serde_json::Value,
+            _result: Vec<Content>,
+        ) -> Vec<Content> {
             self.calls.lock().unwrap().push(tool.to_string());
             // mutate to prove hook ran
-            vec![Content::Text { text: "hooked".into() }]
+            vec![Content::Text {
+                text: "hooked".into(),
+            }]
         }
-        fn before_request(&self, msgs: Vec<Message>, _model: &ModelRef, _system: Option<&str>) -> Vec<Message> { msgs }
-        fn should_stop_after_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage, _turn: u32) -> bool { false }
-        fn prepare_next_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage) -> kn9t_core::NextTurnPatch { Default::default() }
-        fn get_steering(&self) -> Vec<Message> { vec![] }
-        fn get_followup(&self) -> Vec<Message> { vec![] }
-        fn get_api_key(&self, _provider: &str) -> Option<String> { None }
+        fn before_request(
+            &self,
+            msgs: Vec<Message>,
+            _model: &ModelRef,
+            _system: Option<&str>,
+        ) -> Vec<Message> {
+            msgs
+        }
+        fn should_stop_after_turn(
+            &self,
+            _stop: kn9t_core::StopReason,
+            _usage: &kn9t_core::Usage,
+            _turn: u32,
+        ) -> bool {
+            false
+        }
+        fn prepare_next_turn(
+            &self,
+            _stop: kn9t_core::StopReason,
+            _usage: &kn9t_core::Usage,
+        ) -> kn9t_core::NextTurnPatch {
+            Default::default()
+        }
+        fn get_steering(&self) -> Vec<Message> {
+            vec![]
+        }
+        fn get_followup(&self) -> Vec<Message> {
+            vec![]
+        }
+        fn get_api_key(&self, _provider: &str) -> Option<String> {
+            None
+        }
     }
 
     // One turn: assistant calls p_echo, then idle
@@ -1071,7 +1232,9 @@ fn p1_96e6_parallel_safe_after_tool_call_must_run() {
     tools.push(Arc::new(ParallelEchoTool) as Arc<dyn Tool>);
 
     let hook_calls = Arc::new(Mutex::new(Vec::new()));
-    let hooks = Arc::new(MutatingHook { calls: hook_calls.clone() });
+    let hooks = Arc::new(MutatingHook {
+        calls: hook_calls.clone(),
+    });
 
     let looop = kn9t_react::ReactLoop {
         provider,
@@ -1079,28 +1242,38 @@ fn p1_96e6_parallel_safe_after_tool_call_must_run() {
         approver: Arc::new(AllowAll),
         tools,
         hooks,
-        bus, compactor: None };
+        bus,
+        compactor: None,
+    };
     looop.run(run_params(&store)).expect("loop ran");
 
     // Hook must have been called for parallel tool
     let calls = hook_calls.lock().unwrap();
-    assert_eq!(calls.len(), 1, "after_tool_call must be called once for parallel tool, got {:?}", *calls);
+    assert_eq!(
+        calls.len(),
+        1,
+        "after_tool_call must be called once for parallel tool, got {:?}",
+        *calls
+    );
     assert_eq!(calls[0], "p_echo");
 
     // Persisted ToolResult must be mutated
     let appended = store.appended.lock().unwrap();
-    let tool_result = appended.iter().find_map(|e| {
-        if let Event::MessageAppended { msg, .. } = e {
-            if msg.role == kn9t_core::Role::Tool {
-                for c in &msg.content {
-                    if let Content::ToolResult { content, .. } = c {
-                        return Some(content.clone());
+    let tool_result = appended
+        .iter()
+        .find_map(|e| {
+            if let Event::MessageAppended { msg, .. } = e {
+                if msg.role == kn9t_core::Role::Tool {
+                    for c in &msg.content {
+                        if let Content::ToolResult { content, .. } = c {
+                            return Some(content.clone());
+                        }
                     }
                 }
             }
-        }
-        None
-    }).expect("tool result must be appended");
+            None
+        })
+        .expect("tool result must be appended");
 
     assert!(!tool_result.is_empty(), "tool result content empty");
     match &tool_result[0] {
@@ -1112,45 +1285,105 @@ fn p1_96e6_parallel_safe_after_tool_call_must_run() {
 // ── P1 96E-8: malformed tool JSON must not reach Tool::execute ──────────────
 #[test]
 fn p1_96e8_malformed_json_never_reaches_tool() {
-    use kn9t_core::{Content, HookHost, Message, ModelRef, Tool, ToolCtx, Cancel, ToolSpec};
-    use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
+    use kn9t_core::{Cancel, Content, HookHost, Message, ModelRef, Tool, ToolCtx, ToolSpec};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
 
     let tool_calls = Arc::new(AtomicUsize::new(0));
     let hook_calls = Arc::new(AtomicUsize::new(0));
     let seen_args = Arc::new(Mutex::new(Vec::<String>::new()));
     let tool_seen = Arc::new(Mutex::new(Vec::<String>::new()));
 
-    struct CountingTool { calls: Arc<AtomicUsize>, seen: Arc<Mutex<Vec<String>>> }
+    struct CountingTool {
+        calls: Arc<AtomicUsize>,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
     impl Tool for CountingTool {
         fn spec(&self) -> &ToolSpec {
             Box::leak(Box::new(ToolSpec {
                 name: "counting".into(),
                 description: "counts execute".into(),
                 schema: serde_json::json!({"type":"object","properties":{"x":{"type":"string"}}}),
-                hidden: false, effects: vec![], policy: Default::default(),
+                hidden: false,
+                effects: vec![],
+                policy: Default::default(),
             }))
         }
-        fn parallel_safe(&self) -> bool { false }
-        fn execute(&self, args: &serde_json::Value, _ctx: &ToolCtx, _cancel: &Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+        fn parallel_safe(&self) -> bool {
+            false
+        }
+        fn execute(
+            &self,
+            args: &serde_json::Value,
+            _ctx: &ToolCtx,
+            _cancel: &Cancel,
+        ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.seen.lock().unwrap().push(args.to_string());
-            Ok(kn9t_core::ToolOutput { content: vec![Content::Text { text: "ok".into() }], details: None, is_error: false })
+            Ok(kn9t_core::ToolOutput {
+                content: vec![Content::Text { text: "ok".into() }],
+                details: None,
+                is_error: false,
+            })
         }
     }
-    struct CountingHook { calls: Arc<AtomicUsize>, seen: Arc<Mutex<Vec<String>>> }
+    struct CountingHook {
+        calls: Arc<AtomicUsize>,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
     impl HookHost for CountingHook {
-        fn before_tool_call(&self, _tool: &str, args: &serde_json::Value, _cwd: &std::path::Path) -> kn9t_core::HookVeto {
+        fn before_tool_call(
+            &self,
+            _tool: &str,
+            args: &serde_json::Value,
+            _cwd: &std::path::Path,
+        ) -> kn9t_core::HookVeto {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.seen.lock().unwrap().push(args.to_string());
             kn9t_core::HookVeto::Allow
         }
-        fn after_tool_call(&self, _tool: &str, _args: &serde_json::Value, result: Vec<Content>) -> Vec<Content> { result }
-        fn before_request(&self, msgs: Vec<Message>, _model: &ModelRef, _system: Option<&str>) -> Vec<Message> { msgs }
-        fn should_stop_after_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage, _turn: u32) -> bool { false }
-        fn prepare_next_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage) -> kn9t_core::NextTurnPatch { Default::default() }
-        fn get_steering(&self) -> Vec<Message> { vec![] }
-        fn get_followup(&self) -> Vec<Message> { vec![] }
-        fn get_api_key(&self, _provider: &str) -> Option<String> { None }
+        fn after_tool_call(
+            &self,
+            _tool: &str,
+            _args: &serde_json::Value,
+            result: Vec<Content>,
+        ) -> Vec<Content> {
+            result
+        }
+        fn before_request(
+            &self,
+            msgs: Vec<Message>,
+            _model: &ModelRef,
+            _system: Option<&str>,
+        ) -> Vec<Message> {
+            msgs
+        }
+        fn should_stop_after_turn(
+            &self,
+            _stop: kn9t_core::StopReason,
+            _usage: &kn9t_core::Usage,
+            _turn: u32,
+        ) -> bool {
+            false
+        }
+        fn prepare_next_turn(
+            &self,
+            _stop: kn9t_core::StopReason,
+            _usage: &kn9t_core::Usage,
+        ) -> kn9t_core::NextTurnPatch {
+            Default::default()
+        }
+        fn get_steering(&self) -> Vec<Message> {
+            vec![]
+        }
+        fn get_followup(&self) -> Vec<Message> {
+            vec![]
+        }
+        fn get_api_key(&self, _provider: &str) -> Option<String> {
+            None
+        }
     }
 
     // Provider emits syntactically valid but semantically invalid JSON for a tool:
@@ -1178,69 +1411,181 @@ fn p1_96e8_malformed_json_never_reaches_tool() {
     let store = Arc::new(StubStore::new(PlanScript::plain(vec![])));
     let bus = Arc::new(RecordingBus::new());
     let mut tools = ToolRegistry::new();
-    tools.push(Arc::new(CountingTool { calls: tool_calls.clone(), seen: tool_seen.clone() }) as Arc<dyn Tool>);
-    let hooks = Arc::new(CountingHook { calls: hook_calls.clone(), seen: seen_args.clone() });
-    let looop = ReactLoop { provider, store: store.clone(), approver: Arc::new(AllowAll), tools, hooks, bus: bus.clone(), compactor: None };
+    tools.push(Arc::new(CountingTool {
+        calls: tool_calls.clone(),
+        seen: tool_seen.clone(),
+    }) as Arc<dyn Tool>);
+    let hooks = Arc::new(CountingHook {
+        calls: hook_calls.clone(),
+        seen: seen_args.clone(),
+    });
+    let looop = ReactLoop {
+        provider,
+        store: store.clone(),
+        approver: Arc::new(AllowAll),
+        tools,
+        hooks,
+        bus: bus.clone(),
+        compactor: None,
+    };
     looop.run(run_params(&store)).expect("loop ran");
 
     // Assertions per 96E-8 acceptance:
-    assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "Invalid JSON never reaches Tool::execute");
-    assert_eq!(hook_calls.load(Ordering::SeqCst), 0, "Policy plugins must not be asked to authorize malformed arguments as valid");
+    assert_eq!(
+        tool_calls.load(Ordering::SeqCst),
+        0,
+        "Invalid JSON never reaches Tool::execute"
+    );
+    assert_eq!(
+        hook_calls.load(Ordering::SeqCst),
+        0,
+        "Policy plugins must not be asked to authorize malformed arguments as valid"
+    );
     // The model must receive an explicit tool error
     let appended = store.appended.lock().unwrap();
-    let tool_result = appended.iter().find_map(|e| {
-        if let Event::MessageAppended { msg, .. } = e {
-            if msg.role == kn9t_core::Role::Tool {
-                for c in &msg.content {
-                    if let Content::ToolResult { id, content, is_error } = c {
-                        if id.0 == "c1" { return Some((content.clone(), *is_error)); }
+    let tool_result = appended
+        .iter()
+        .find_map(|e| {
+            if let Event::MessageAppended { msg, .. } = e {
+                if msg.role == kn9t_core::Role::Tool {
+                    for c in &msg.content {
+                        if let Content::ToolResult {
+                            id,
+                            content,
+                            is_error,
+                        } = c
+                        {
+                            if id.0 == "c1" {
+                                return Some((content.clone(), *is_error));
+                            }
+                        }
                     }
                 }
             }
-        }
-        None
-    }).expect("tool result c1 must be appended");
-    assert!(tool_result.1, "malformed args must produce ToolResult(is_error=true)");
-    let text = tool_result.0.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("");
-    assert!(text.to_lowercase().contains("malformed") || text.to_lowercase().contains("invalid") || text.to_lowercase().contains("parse") || text.to_lowercase().contains("object"),
-        "tool error must be explicit about malformed JSON, got: {text:?}");
+            None
+        })
+        .expect("tool result c1 must be appended");
+    assert!(
+        tool_result.1,
+        "malformed args must produce ToolResult(is_error=true)"
+    );
+    let text = tool_result
+        .0
+        .iter()
+        .filter_map(|c| {
+            if let Content::Text { text } = c {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(
+        text.to_lowercase().contains("malformed")
+            || text.to_lowercase().contains("invalid")
+            || text.to_lowercase().contains("parse")
+            || text.to_lowercase().contains("object"),
+        "tool error must be explicit about malformed JSON, got: {text:?}"
+    );
     // Bus must have an Error event about malformed
-    assert!(bus.kinds().iter().any(|k| k == "Error"), "must emit Error event for malformed args_json");
+    assert!(
+        bus.kinds().iter().any(|k| k == "Error"),
+        "must emit Error event for malformed args_json"
+    );
 }
 
 #[test]
 fn p1_96e8_malformed_json_parallel_safe_also_blocked() {
     // Same guarantee for parallel_safe tools
-    use kn9t_core::{Content, HookHost, Message, ModelRef, Tool, ToolCtx, Cancel, ToolSpec};
-    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    use kn9t_core::{Cancel, Content, HookHost, Message, ModelRef, Tool, ToolCtx, ToolSpec};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     let tool_calls = Arc::new(AtomicUsize::new(0));
-    struct ParallelCountingTool { calls: Arc<AtomicUsize> }
+    struct ParallelCountingTool {
+        calls: Arc<AtomicUsize>,
+    }
     impl Tool for ParallelCountingTool {
         fn spec(&self) -> &ToolSpec {
             Box::leak(Box::new(ToolSpec {
                 name: "p_count".into(),
                 description: "parallel".into(),
                 schema: serde_json::json!({"type":"object","properties":{}}),
-                hidden: false, effects: vec![], policy: Default::default(),
+                hidden: false,
+                effects: vec![],
+                policy: Default::default(),
             }))
         }
-        fn parallel_safe(&self) -> bool { true }
-        fn execute(&self, _args: &serde_json::Value, _ctx: &ToolCtx, _cancel: &Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+        fn parallel_safe(&self) -> bool {
+            true
+        }
+        fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolCtx,
+            _cancel: &Cancel,
+        ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(kn9t_core::ToolOutput { content: vec![Content::Text { text: "ok".into() }], details: None, is_error: false })
+            Ok(kn9t_core::ToolOutput {
+                content: vec![Content::Text { text: "ok".into() }],
+                details: None,
+                is_error: false,
+            })
         }
     }
     struct NoopHook;
     impl HookHost for NoopHook {
-        fn before_tool_call(&self, _t: &str, _a: &serde_json::Value, _c: &std::path::Path) -> kn9t_core::HookVeto { kn9t_core::HookVeto::Allow }
-        fn after_tool_call(&self, _t: &str, _a: &serde_json::Value, r: Vec<Content>) -> Vec<Content> { r }
-        fn before_request(&self, m: Vec<Message>, _model: &ModelRef, _s: Option<&str>) -> Vec<Message> { m }
-        fn should_stop_after_turn(&self, _s: kn9t_core::StopReason, _u: &kn9t_core::Usage, _t: u32) -> bool { false }
-        fn prepare_next_turn(&self, _s: kn9t_core::StopReason, _u: &kn9t_core::Usage) -> kn9t_core::NextTurnPatch { Default::default() }
-        fn get_steering(&self) -> Vec<Message> { vec![] }
-        fn get_followup(&self) -> Vec<Message> { vec![] }
-        fn get_api_key(&self, _p: &str) -> Option<String> { None }
+        fn before_tool_call(
+            &self,
+            _t: &str,
+            _a: &serde_json::Value,
+            _c: &std::path::Path,
+        ) -> kn9t_core::HookVeto {
+            kn9t_core::HookVeto::Allow
+        }
+        fn after_tool_call(
+            &self,
+            _t: &str,
+            _a: &serde_json::Value,
+            r: Vec<Content>,
+        ) -> Vec<Content> {
+            r
+        }
+        fn before_request(
+            &self,
+            m: Vec<Message>,
+            _model: &ModelRef,
+            _s: Option<&str>,
+        ) -> Vec<Message> {
+            m
+        }
+        fn should_stop_after_turn(
+            &self,
+            _s: kn9t_core::StopReason,
+            _u: &kn9t_core::Usage,
+            _t: u32,
+        ) -> bool {
+            false
+        }
+        fn prepare_next_turn(
+            &self,
+            _s: kn9t_core::StopReason,
+            _u: &kn9t_core::Usage,
+        ) -> kn9t_core::NextTurnPatch {
+            Default::default()
+        }
+        fn get_steering(&self) -> Vec<Message> {
+            vec![]
+        }
+        fn get_followup(&self) -> Vec<Message> {
+            vec![]
+        }
+        fn get_api_key(&self, _p: &str) -> Option<String> {
+            None
+        }
     }
     let bad_args = "null";
     let body1 = format!(
@@ -1263,25 +1608,46 @@ fn p1_96e8_malformed_json_parallel_safe_also_blocked() {
     let store = Arc::new(StubStore::new(PlanScript::plain(vec![])));
     let bus = Arc::new(RecordingBus::new());
     let mut tools = ToolRegistry::new();
-    tools.push(Arc::new(ParallelCountingTool { calls: tool_calls.clone() }) as Arc<dyn Tool>);
-    let looop = ReactLoop { provider, store: store.clone(), approver: Arc::new(AllowAll), tools, hooks: Arc::new(NoopHook), bus, compactor: None };
+    tools.push(Arc::new(ParallelCountingTool {
+        calls: tool_calls.clone(),
+    }) as Arc<dyn Tool>);
+    let looop = ReactLoop {
+        provider,
+        store: store.clone(),
+        approver: Arc::new(AllowAll),
+        tools,
+        hooks: Arc::new(NoopHook),
+        bus,
+        compactor: None,
+    };
     looop.run(run_params(&store)).expect("loop ran");
-    assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "parallel_safe tool must also not execute on malformed JSON");
+    assert_eq!(
+        tool_calls.load(Ordering::SeqCst),
+        0,
+        "parallel_safe tool must also not execute on malformed JSON"
+    );
     let appended = store.appended.lock().unwrap();
-    let is_err = appended.iter().find_map(|e| {
-        if let Event::MessageAppended { msg, .. } = e {
-            for c in &msg.content {
-                if let Content::ToolResult { id, is_error, .. } = c { if id.0=="c1" { return Some(*is_error); } }
+    let is_err = appended
+        .iter()
+        .find_map(|e| {
+            if let Event::MessageAppended { msg, .. } = e {
+                for c in &msg.content {
+                    if let Content::ToolResult { id, is_error, .. } = c {
+                        if id.0 == "c1" {
+                            return Some(*is_error);
+                        }
+                    }
+                }
             }
-        }
-        None
-    }).unwrap();
+            None
+        })
+        .unwrap();
     assert!(is_err, "must be is_error");
 }
 
 #[test]
 fn p1_96e6_sequential_after_tool_call_still_runs() {
-    use kn9t_core::{HookHost, Tool, ToolCtx, Cancel, Content, Message, ModelRef, ToolSpec};
+    use kn9t_core::{Cancel, Content, HookHost, Message, ModelRef, Tool, ToolCtx, ToolSpec};
 
     struct SeqEchoTool;
     impl Tool for SeqEchoTool {
@@ -1290,29 +1656,81 @@ fn p1_96e6_sequential_after_tool_call_still_runs() {
                 name: "s_echo".into(),
                 description: "seq echo".into(),
                 schema: serde_json::json!({"type":"object","properties":{}}),
-                hidden: false, effects: vec![], policy: Default::default(),
+                hidden: false,
+                effects: vec![],
+                policy: Default::default(),
             }))
         }
-        fn parallel_safe(&self) -> bool { false }
-        fn execute(&self, _args: &serde_json::Value, _ctx: &ToolCtx, _cancel: &Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+        fn parallel_safe(&self) -> bool {
+            false
+        }
+        fn execute(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &ToolCtx,
+            _cancel: &Cancel,
+        ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
             Ok(kn9t_core::ToolOutput {
-                content: vec![Content::Text { text: "original".into() }],
-                details: None, is_error: false,
+                content: vec![Content::Text {
+                    text: "original".into(),
+                }],
+                details: None,
+                is_error: false,
             })
         }
     }
     struct MutatingHook;
     impl HookHost for MutatingHook {
-        fn before_tool_call(&self, _tool: &str, _args: &serde_json::Value, _cwd: &std::path::Path) -> kn9t_core::HookVeto { kn9t_core::HookVeto::Allow }
-        fn after_tool_call(&self, _tool: &str, _args: &serde_json::Value, _result: Vec<Content>) -> Vec<Content> {
-            vec![Content::Text { text: "hooked".into() }]
+        fn before_tool_call(
+            &self,
+            _tool: &str,
+            _args: &serde_json::Value,
+            _cwd: &std::path::Path,
+        ) -> kn9t_core::HookVeto {
+            kn9t_core::HookVeto::Allow
         }
-        fn before_request(&self, msgs: Vec<Message>, _model: &ModelRef, _system: Option<&str>) -> Vec<Message> { msgs }
-        fn should_stop_after_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage, _turn: u32) -> bool { false }
-        fn prepare_next_turn(&self, _stop: kn9t_core::StopReason, _usage: &kn9t_core::Usage) -> kn9t_core::NextTurnPatch { Default::default() }
-        fn get_steering(&self) -> Vec<Message> { vec![] }
-        fn get_followup(&self) -> Vec<Message> { vec![] }
-        fn get_api_key(&self, _provider: &str) -> Option<String> { None }
+        fn after_tool_call(
+            &self,
+            _tool: &str,
+            _args: &serde_json::Value,
+            _result: Vec<Content>,
+        ) -> Vec<Content> {
+            vec![Content::Text {
+                text: "hooked".into(),
+            }]
+        }
+        fn before_request(
+            &self,
+            msgs: Vec<Message>,
+            _model: &ModelRef,
+            _system: Option<&str>,
+        ) -> Vec<Message> {
+            msgs
+        }
+        fn should_stop_after_turn(
+            &self,
+            _stop: kn9t_core::StopReason,
+            _usage: &kn9t_core::Usage,
+            _turn: u32,
+        ) -> bool {
+            false
+        }
+        fn prepare_next_turn(
+            &self,
+            _stop: kn9t_core::StopReason,
+            _usage: &kn9t_core::Usage,
+        ) -> kn9t_core::NextTurnPatch {
+            Default::default()
+        }
+        fn get_steering(&self) -> Vec<Message> {
+            vec![]
+        }
+        fn get_followup(&self) -> Vec<Message> {
+            vec![]
+        }
+        fn get_api_key(&self, _provider: &str) -> Option<String> {
+            None
+        }
     }
 
     let body1 = concat!(
@@ -1341,21 +1759,26 @@ fn p1_96e6_sequential_after_tool_call_still_runs() {
         approver: Arc::new(AllowAll),
         tools,
         hooks: Arc::new(MutatingHook),
-        bus, compactor: None };
+        bus,
+        compactor: None,
+    };
     looop.run(run_params(&store)).expect("loop ran");
     let appended = store.appended.lock().unwrap();
-    let tool_result = appended.iter().find_map(|e| {
-        if let Event::MessageAppended { msg, .. } = e {
-            if msg.role == kn9t_core::Role::Tool {
-                for c in &msg.content {
-                    if let Content::ToolResult { content, .. } = c {
-                        return Some(content.clone());
+    let tool_result = appended
+        .iter()
+        .find_map(|e| {
+            if let Event::MessageAppended { msg, .. } = e {
+                if msg.role == kn9t_core::Role::Tool {
+                    for c in &msg.content {
+                        if let Content::ToolResult { content, .. } = c {
+                            return Some(content.clone());
+                        }
                     }
                 }
             }
-        }
-        None
-    }).expect("tool result must be appended");
+            None
+        })
+        .expect("tool result must be appended");
     match &tool_result[0] {
         Content::Text { text } => assert_eq!(text, "hooked", "sequential tool must be hooked"),
         _ => panic!("expected Text"),
@@ -1370,13 +1793,11 @@ fn p1_96e6_sequential_after_tool_call_still_runs() {
 fn p1_96e11_compaction_cancel_does_not_commit() {
     use kn9t_core::{Cancel, Event, StopReason};
     // Store wants compaction once, then plain.
-    let store = Arc::new(
-        StubStore::new(PlanScript::plain(vec![])).script(vec![
-            PlanScript::compacting(),
-            PlanScript::plain(vec![]),
-            PlanScript::plain(vec![]),
-        ]),
-    );
+    let store = Arc::new(StubStore::new(PlanScript::plain(vec![])).script(vec![
+        PlanScript::compacting(),
+        PlanScript::plain(vec![]),
+        PlanScript::plain(vec![]),
+    ]));
     // Compaction summary fixture (would succeed if not cancelled)
     let summary = concat!(
         "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"summary\"}\n\n",
@@ -1401,7 +1822,9 @@ fn p1_96e11_compaction_cancel_does_not_commit() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(), compactor: None };
+        bus: bus.clone(),
+        compactor: None,
+    };
     // Pre-cancelled Cancel — compaction must be considered cancelled
     let cancel = Cancel::new();
     cancel.cancel();
@@ -1411,7 +1834,9 @@ fn p1_96e11_compaction_cancel_does_not_commit() {
     // Cancellation during compaction must be deterministic: either Ok(Aborted) or a provider-cancel error,
     // but must NOT have committed Compacted as successful.
     let appended = store.appended.lock().unwrap();
-    let has_compacted = appended.iter().any(|e| matches!(e, Event::Compacted { .. }));
+    let has_compacted = appended
+        .iter()
+        .any(|e| matches!(e, Event::Compacted { .. }));
     assert!(
         !has_compacted,
         "cancelled compaction must NOT commit Compacted, but found {:?}",
@@ -1426,7 +1851,10 @@ fn p1_96e11_compaction_cancel_does_not_commit() {
     // Deterministic outcome: should be aborted, not a silent success with compacted
     // Accept either Ok(Aborted) or Err; but if Ok, stop must be Aborted
     if let Ok(stop) = res {
-        assert!(stop == StopReason::Aborted, "cancelled compaction should abort");
+        assert!(
+            stop == StopReason::Aborted,
+            "cancelled compaction should abort"
+        );
     }
 }
 
@@ -1437,10 +1865,8 @@ fn p1_96e17_compaction_cancel_pre_fail_closed_aborts_cleanly() {
     // before compactor availability), nothing persisted, no usage rows (nothing was
     // ever spent — the provider and compactor are never reached).
     let store = Arc::new(
-        StubStore::new(PlanScript::plain(vec![])).script(vec![
-            PlanScript::compacting(),
-            PlanScript::plain(vec![]),
-        ]),
+        StubStore::new(PlanScript::plain(vec![]))
+            .script(vec![PlanScript::compacting(), PlanScript::plain(vec![])]),
     );
     let provider = Arc::new(ScriptedProvider::new(vec![]));
     let bus = Arc::new(RecordingBus::new());
@@ -1450,24 +1876,41 @@ fn p1_96e17_compaction_cancel_pre_fail_closed_aborts_cleanly() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus, compactor: None };
+        bus,
+        compactor: None,
+    };
     let cancel = Cancel::new();
     cancel.cancel();
     let mut params = run_params(&store);
     params.cancel = Some(cancel);
     let res = looop.run(params);
     // A pre-cancelled turn must abort cleanly — NOT fail with CompactionUnavailable.
-    assert!(res.is_ok(), "pre-cancelled fail-closed turn must abort cleanly");
-    assert_eq!(*provider.calls.lock().unwrap(), 0, "cancelled turn must never reach the provider");
+    assert!(
+        res.is_ok(),
+        "pre-cancelled fail-closed turn must abort cleanly"
+    );
+    assert_eq!(
+        *provider.calls.lock().unwrap(),
+        0,
+        "cancelled turn must never reach the provider"
+    );
     let appended = store.appended.lock().unwrap();
     // Must NOT have Compacted
     assert!(
-        !appended.iter().any(|e| matches!(e, Event::Compacted { .. })),
+        !appended
+            .iter()
+            .any(|e| matches!(e, Event::Compacted { .. })),
         "cancelled compaction must not commit Compacted"
     );
     // No compaction usage: nothing was spent.
     assert!(
-        !appended.iter().any(|e| matches!(e, Event::UsageRecorded { kind: UsageKind::Compaction, .. })),
+        !appended.iter().any(|e| matches!(
+            e,
+            Event::UsageRecorded {
+                kind: UsageKind::Compaction,
+                ..
+            }
+        )),
         "nothing was spent, so no Compaction usage row may exist"
     );
 }
@@ -1476,10 +1919,8 @@ fn p1_96e17_compaction_cancel_pre_fail_closed_aborts_cleanly() {
 fn p1_96e11_compaction_malformed_truncated_not_committed() {
     use kn9t_core::{Event, ProvErr};
     let store = Arc::new(
-        StubStore::new(PlanScript::plain(vec![])).script(vec![
-            PlanScript::compacting(),
-            PlanScript::plain(vec![]),
-        ]),
+        StubStore::new(PlanScript::plain(vec![]))
+            .script(vec![PlanScript::compacting(), PlanScript::plain(vec![])]),
     );
     // Compaction provider returns Truncated (malformed-incomplete) pre-stream
     let provider = Arc::new(ScriptedProvider::new(vec![StreamScript::PreStreamErr(
@@ -1492,12 +1933,16 @@ fn p1_96e11_compaction_malformed_truncated_not_committed() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus, compactor: None };
+        bus,
+        compactor: None,
+    };
     let res = looop.run(run_params(&store));
     let appended = store.appended.lock().unwrap();
     // Malformed-incomplete must NOT be committed as successful Compacted
     assert!(
-        !appended.iter().any(|e| matches!(e, Event::Compacted { .. })),
+        !appended
+            .iter()
+            .any(|e| matches!(e, Event::Compacted { .. })),
         "truncated compaction must NOT commit Compacted, got {:?}",
         appended.iter().map(|e| event_tag(e)).collect::<Vec<_>>()
     );
@@ -1515,10 +1960,8 @@ fn p1_96e11_compaction_cancel_is_deterministic() {
     // Run twice with same pre-cancelled input; outcome must be identical (deterministic)
     for _ in 0..2 {
         let store = Arc::new(
-            StubStore::new(PlanScript::plain(vec![])).script(vec![
-                PlanScript::compacting(),
-                PlanScript::plain(vec![]),
-            ]),
+            StubStore::new(PlanScript::plain(vec![]))
+                .script(vec![PlanScript::compacting(), PlanScript::plain(vec![])]),
         );
         let summary = concat!(
             "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"summary\"}\n\n",
@@ -1540,7 +1983,9 @@ fn p1_96e11_compaction_cancel_is_deterministic() {
             approver: Arc::new(AllowAll),
             tools: ToolRegistry::new(),
             hooks: Arc::new(kn9t_react::NoopHookHost),
-            bus, compactor: None };
+            bus,
+            compactor: None,
+        };
         let cancel = Cancel::new();
         cancel.cancel();
         let mut params = run_params(&store);
@@ -1548,7 +1993,9 @@ fn p1_96e11_compaction_cancel_is_deterministic() {
         let _ = looop.run(params);
         let appended = store.appended.lock().unwrap();
         assert!(
-            !appended.iter().any(|e| matches!(e, Event::Compacted { .. })),
+            !appended
+                .iter()
+                .any(|e| matches!(e, Event::Compacted { .. })),
             "deterministic: cancelled compaction must never commit Compacted"
         );
     }
@@ -1562,21 +2009,19 @@ fn p1_96e17_no_compactor_is_fail_closed() {
     // fallback is gone). The turn that hits a compaction demand fails with
     // CompactionUnavailable, nothing is persisted, and the provider is never
     // called for summarization.
-    let store = Arc::new(
-        StubStore::new(PlanScript::plain(vec![])).script(vec![
-            PlanScript::compacting(),
-            PlanScript::plain(vec![]),
-            PlanScript::plain(vec![]),
-        ]),
-    );
+    let store = Arc::new(StubStore::new(PlanScript::plain(vec![])).script(vec![
+        PlanScript::compacting(),
+        PlanScript::plain(vec![]),
+        PlanScript::plain(vec![]),
+    ]));
     let main = concat!(
         "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"main\"}\n\n",
         "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
         "data: [DONE]\n\n",
     );
-    let provider = Arc::new(ScriptedProvider::new(vec![
-        StreamScript::Fixture(fixture_from_body(main)),
-    ]));
+    let provider = Arc::new(ScriptedProvider::new(vec![StreamScript::Fixture(
+        fixture_from_body(main),
+    )]));
     let bus = Arc::new(RecordingBus::new());
     let looop = ReactLoop {
         provider: provider.clone(),
@@ -1584,7 +2029,9 @@ fn p1_96e17_no_compactor_is_fail_closed() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(), compactor: None };
+        bus: bus.clone(),
+        compactor: None,
+    };
     let res = looop.run(run_params(&store));
     assert!(
         matches!(res, Err(kn9t_react::ReactError::CompactionUnavailable)),
@@ -1592,14 +2039,20 @@ fn p1_96e17_no_compactor_is_fail_closed() {
     );
     let appended = store.appended.lock().unwrap();
     assert!(
-        !appended.iter().any(|e| matches!(e, Event::Compacted { .. })),
+        !appended
+            .iter()
+            .any(|e| matches!(e, Event::Compacted { .. })),
         "fail-closed must not persist Compacted"
     );
     assert!(
         !appended.iter().any(|e| matches!(e, Event::Handoff { .. })),
         "fail-closed must not persist Handoff"
     );
-    assert_eq!(*provider.calls.lock().unwrap(), 0, "fail-closed must not call the provider");
+    assert_eq!(
+        *provider.calls.lock().unwrap(),
+        0,
+        "fail-closed must not call the provider"
+    );
     assert!(
         bus.kinds().iter().any(|k| k == "Error"),
         "must emit an Error on the live bus, got {:?}",
@@ -1609,51 +2062,80 @@ fn p1_96e17_no_compactor_is_fail_closed() {
 
 #[test]
 fn p1_96e16_custom_compactor_overrides_provider_and_validates_ids() {
-    use kn9t_core::{CallId, CompactionPlan, Compactor, CompactSpan, Content, HandoffPlanData, HandoffSummary, Message, MsgId, Role};
+    use kn9t_core::{
+        CallId, CompactSpan, CompactionPlan, Compactor, Content, HandoffPlanData, HandoffSummary,
+        Message, MsgId, Role,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Store's compaction span will contain one ToolCall with id "tool-1"
     let tool_call_msg = Message {
         id: MsgId::new(),
         role: Role::Assistant,
-        content: vec![Content::ToolCall { id: CallId("tool-1".into()), name: "bash".into(), args_json: "{}".into() }],
+        content: vec![Content::ToolCall {
+            id: CallId("tool-1".into()),
+            name: "bash".into(),
+            args_json: "{}".into(),
+        }],
         silent: false,
     };
-    let store = Arc::new(
-        StubStore::new(PlanScript::plain(vec![])).script(vec![
-            PlanScript { messages: vec![tool_call_msg.clone()], tools: vec![], compact: true },
-            PlanScript::plain(vec![]),
-            PlanScript::plain(vec![]),
-        ]),
-    );
+    let store = Arc::new(StubStore::new(PlanScript::plain(vec![])).script(vec![
+        PlanScript {
+            messages: vec![tool_call_msg.clone()],
+            tools: vec![],
+            compact: true,
+        },
+        PlanScript::plain(vec![]),
+        PlanScript::plain(vec![]),
+    ]));
 
     struct CountingCompactor {
         calls: Arc<AtomicUsize>,
     }
     impl Compactor for CountingCompactor {
-        fn compact(&self, span: CompactSpan, _model: &kn9t_core::ModelRef) -> Result<CompactionPlan, String> {
+        fn compact(
+            &self,
+            span: CompactSpan,
+            _model: &kn9t_core::ModelRef,
+        ) -> Result<CompactionPlan, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             // Must cite a known CallId
             let summary = Message {
                 id: MsgId::new(),
                 role: Role::Assistant,
-                content: vec![Content::Text { text: "custom summary".into() }],
+                content: vec![Content::Text {
+                    text: "custom summary".into(),
+                }],
                 silent: false,
             };
             let handoff = HandoffPlanData {
                 keep: vec![CallId("tool-1".into())],
-                summarize: vec![HandoffSummary { id: CallId("tool-1".into()), summary: "did X".into() }],
+                summarize: vec![HandoffSummary {
+                    id: CallId("tool-1".into()),
+                    summary: "did X".into(),
+                }],
                 drop_ids: vec![],
                 resume_actions: vec!["resume_action_1".into()],
             };
             // Also assert span contains the tool call (host passes correct span)
-            assert!(span.messages.iter().any(|m| m.content.iter().any(|c| matches!(c, Content::ToolCall { id, .. } if id.0=="tool-1"))), "span must contain tool-1");
-            Ok(CompactionPlan { summary, handoff: Some(handoff) })
+            assert!(
+                span.messages.iter().any(|m| m
+                    .content
+                    .iter()
+                    .any(|c| matches!(c, Content::ToolCall { id, .. } if id.0=="tool-1"))),
+                "span must contain tool-1"
+            );
+            Ok(CompactionPlan {
+                summary,
+                handoff: Some(handoff),
+            })
         }
     }
 
     let calls = Arc::new(AtomicUsize::new(0));
-    let compactor = Arc::new(CountingCompactor { calls: calls.clone() });
+    let compactor = Arc::new(CountingCompactor {
+        calls: calls.clone(),
+    });
     // Provider would need to be called if fallback, but custom path should NOT call it
     let provider = Arc::new(ScriptedProvider::new(vec![
         // Provide a main fixture for the post-compaction turn; compaction itself will be hijacked
@@ -1672,69 +2154,129 @@ fn p1_96e16_custom_compactor_overrides_provider_and_validates_ids() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(), compactor: Some(compactor) };
+        bus: bus.clone(),
+        compactor: Some(compactor),
+    };
 
     let res = looop.run(run_params(&store));
     assert!(res.is_ok(), "custom compactor should succeed");
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "compactor must have been called exactly once");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "compactor must have been called exactly once"
+    );
     let appended = store.appended.lock().unwrap();
     // Must have Compacted with custom summary and Handoff with validated IDs
-    let compacted = appended.iter().find(|e| matches!(e, Event::Compacted { .. })).expect("Compacted missing");
+    let compacted = appended
+        .iter()
+        .find(|e| matches!(e, Event::Compacted { .. }))
+        .expect("Compacted missing");
     if let Event::Compacted { summary, .. } = compacted {
-        let txt = summary.content.iter().filter_map(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None }).collect::<Vec<_>>().join("");
-        assert!(txt.contains("custom summary"), "compacted summary must be from compactor, got {txt:?}");
+        let txt = summary
+            .content
+            .iter()
+            .filter_map(|c| {
+                if let Content::Text { text } = c {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            txt.contains("custom summary"),
+            "compacted summary must be from compactor, got {txt:?}"
+        );
     }
-    let handoff = appended.iter().find(|e| matches!(e, Event::Handoff { .. })).expect("Handoff missing");
-    if let Event::Handoff { keep, summarize, resume_actions, .. } = handoff {
-        assert!(keep.iter().any(|id| id.0=="tool-1"));
-        assert!(summarize.iter().any(|s| s.id.0=="tool-1" && s.summary=="did X"));
+    let handoff = appended
+        .iter()
+        .find(|e| matches!(e, Event::Handoff { .. }))
+        .expect("Handoff missing");
+    if let Event::Handoff {
+        keep,
+        summarize,
+        resume_actions,
+        ..
+    } = handoff
+    {
+        assert!(keep.iter().any(|id| id.0 == "tool-1"));
+        assert!(summarize
+            .iter()
+            .any(|s| s.id.0 == "tool-1" && s.summary == "did X"));
         assert!(resume_actions.contains(&"resume_action_1".to_string()));
         // Validate host-side: known ids should contain tool-1
         let known = vec![CallId("tool-1".into())];
         assert!(kn9t_core::validate_handoff(handoff, &known).is_ok());
     }
     // Provider should have been called only for the post-compaction main turn, not for compaction itself
-    assert_eq!(*provider.calls.lock().unwrap(), 1, "custom compaction must not call provider for summarization, provider calls={}", *provider.calls.lock().unwrap());
+    assert_eq!(
+        *provider.calls.lock().unwrap(),
+        1,
+        "custom compaction must not call provider for summarization, provider calls={}",
+        *provider.calls.lock().unwrap()
+    );
 }
 
 #[test]
 fn p1_96e16_handoff_validation_rejects_hallucinated_id() {
-    use kn9t_core::{CallId, CompactionPlan, Compactor, CompactSpan, Content, HandoffPlanData, Message, MsgId, Role};
+    use kn9t_core::{
+        CallId, CompactSpan, CompactionPlan, Compactor, Content, HandoffPlanData, Message, MsgId,
+        Role,
+    };
 
     let tool_call_msg = Message {
         id: MsgId::new(),
         role: Role::Assistant,
-        content: vec![Content::ToolCall { id: CallId("real-id".into()), name: "bash".into(), args_json: "{}".into() }],
+        content: vec![Content::ToolCall {
+            id: CallId("real-id".into()),
+            name: "bash".into(),
+            args_json: "{}".into(),
+        }],
         silent: false,
     };
-    let store = Arc::new(
-        StubStore::new(PlanScript::plain(vec![])).script(vec![
-            PlanScript { messages: vec![tool_call_msg], tools: vec![], compact: true },
-            PlanScript::plain(vec![]),
-        ]),
-    );
+    let store = Arc::new(StubStore::new(PlanScript::plain(vec![])).script(vec![
+        PlanScript {
+            messages: vec![tool_call_msg],
+            tools: vec![],
+            compact: true,
+        },
+        PlanScript::plain(vec![]),
+    ]));
 
     struct HallucinatingCompactor;
     impl Compactor for HallucinatingCompactor {
-        fn compact(&self, _span: CompactSpan, _model: &kn9t_core::ModelRef) -> Result<CompactionPlan, String> {
-            let summary = Message { id: MsgId::new(), role: Role::Assistant, content: vec![Content::Text { text: "bad".into() }], silent: false };
+        fn compact(
+            &self,
+            _span: CompactSpan,
+            _model: &kn9t_core::ModelRef,
+        ) -> Result<CompactionPlan, String> {
+            let summary = Message {
+                id: MsgId::new(),
+                role: Role::Assistant,
+                content: vec![Content::Text { text: "bad".into() }],
+                silent: false,
+            };
             let handoff = HandoffPlanData {
                 keep: vec![CallId("hallucinated-id".into())],
                 summarize: vec![],
                 drop_ids: vec![],
                 resume_actions: vec![],
             };
-            Ok(CompactionPlan { summary, handoff: Some(handoff) })
+            Ok(CompactionPlan {
+                summary,
+                handoff: Some(handoff),
+            })
         }
     }
 
-    let provider = Arc::new(ScriptedProvider::new(vec![
-        StreamScript::Fixture(fixture_from_body(concat!(
+    let provider = Arc::new(ScriptedProvider::new(vec![StreamScript::Fixture(
+        fixture_from_body(concat!(
             "data: {\"chunk\":\"text\",\"idx\":0,\"delta\":\"main\"}\n\n",
             "data: {\"chunk\":\"stop\",\"stop\":null}\n\n",
             "data: [DONE]\n\n",
-        ))),
-    ]));
+        )),
+    )]));
     let bus = Arc::new(RecordingBus::new());
     let looop = ReactLoop {
         provider,
@@ -1742,13 +2284,27 @@ fn p1_96e16_handoff_validation_rejects_hallucinated_id() {
         approver: Arc::new(AllowAll),
         tools: ToolRegistry::new(),
         hooks: Arc::new(kn9t_react::NoopHookHost),
-        bus: bus.clone(), compactor: Some(Arc::new(HallucinatingCompactor)) };
+        bus: bus.clone(),
+        compactor: Some(Arc::new(HallucinatingCompactor)),
+    };
     let res = looop.run(run_params(&store));
     // Host validation must reject hallucinated CallId
     assert!(res.is_err(), "hallucinated handoff must be rejected");
     let appended = store.appended.lock().unwrap();
-    assert!(!appended.iter().any(|e| matches!(e, Event::Handoff { .. })), "rejected handoff must not be persisted");
-    assert!(!appended.iter().any(|e| matches!(e, Event::Compacted { .. })), "rejected compaction must not persist Compacted");
+    assert!(
+        !appended.iter().any(|e| matches!(e, Event::Handoff { .. })),
+        "rejected handoff must not be persisted"
+    );
+    assert!(
+        !appended
+            .iter()
+            .any(|e| matches!(e, Event::Compacted { .. })),
+        "rejected compaction must not persist Compacted"
+    );
     // Error should have been emitted on live bus
-    assert!(bus.kinds().iter().any(|k| k=="Error"), "must emit Error on validation failure, got {:?}", bus.kinds());
+    assert!(
+        bus.kinds().iter().any(|k| k == "Error"),
+        "must emit Error on validation failure, got {:?}",
+        bus.kinds()
+    );
 }

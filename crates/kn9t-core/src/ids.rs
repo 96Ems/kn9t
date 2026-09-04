@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn test_session_id_hash() {
         use std::collections::HashSet;
-        
+
         let mut set = HashSet::new();
         set.insert(SessionId("session-1".into()));
         set.insert(SessionId("session-2".into()));
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn test_session_id_borrow_str() {
         use std::collections::HashMap;
-        
+
         let mut map = HashMap::new();
         let key = SessionId("key".into());
         map.insert(key.clone(), "value");

@@ -1,8 +1,8 @@
 //! Preferences API — get/set user preferences stored in meta table.
 
-use std::sync::Arc;
 use crate::http_util::JsonResp;
 use crate::state::ServerState;
+use std::sync::Arc;
 
 /// GET /pref/{key} — get a preference value.
 pub fn get(state: &Arc<ServerState>, key: &str) -> JsonResp {

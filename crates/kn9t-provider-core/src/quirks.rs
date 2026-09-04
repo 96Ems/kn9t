@@ -48,27 +48,39 @@ pub struct Quirks {
     pub trim_trailing_whitespace: bool,
 }
 
-fn default_max_tokens_field() -> String { "max_tokens".into() }
-fn default_system_role()      -> String { "system".into() }
-fn default_reasoning()        -> String { "none".into() }
-fn default_thinking_style()   -> String { "none".into() }
-fn default_verbatim()         -> String { "verbatim".into() }
-fn default_true()             -> bool   { true }
+fn default_max_tokens_field() -> String {
+    "max_tokens".into()
+}
+fn default_system_role() -> String {
+    "system".into()
+}
+fn default_reasoning() -> String {
+    "none".into()
+}
+fn default_thinking_style() -> String {
+    "none".into()
+}
+fn default_verbatim() -> String {
+    "verbatim".into()
+}
+fn default_true() -> bool {
+    true
+}
 
 impl Default for Quirks {
     fn default() -> Self {
         Quirks {
             max_tokens_field: default_max_tokens_field(),
-            system_role:      default_system_role(),
-            usage_in_stream:  false,
-            finish_reason:    true,
-            reasoning:        default_reasoning(),
+            system_role: default_system_role(),
+            usage_in_stream: false,
+            finish_reason: true,
+            reasoning: default_reasoning(),
             tool_result_name: false,
-            thinking_style:   default_thinking_style(),
-            thinking_replay:  default_verbatim(),
-            require_tools:    false,
-            streaming:        true,
-            extra_body:       serde_json::Value::Null,
+            thinking_style: default_thinking_style(),
+            thinking_replay: default_verbatim(),
+            require_tools: false,
+            streaming: true,
+            extra_body: serde_json::Value::Null,
             trim_trailing_whitespace: false,
         }
     }
@@ -80,21 +92,22 @@ impl Quirks {
         // In TOML, absent fields are left at default. We do a field-by-field override.
         Quirks {
             max_tokens_field: model.max_tokens_field.clone(),
-            system_role:      model.system_role.clone(),
-            usage_in_stream:  model.usage_in_stream,
-            finish_reason:    model.finish_reason,
-            reasoning:        model.reasoning.clone(),
+            system_role: model.system_role.clone(),
+            usage_in_stream: model.usage_in_stream,
+            finish_reason: model.finish_reason,
+            reasoning: model.reasoning.clone(),
             tool_result_name: model.tool_result_name,
-            thinking_style:   model.thinking_style.clone(),
-            thinking_replay:  model.thinking_replay.clone(),
-            require_tools:    model.require_tools,
-            streaming:        model.streaming,
-            extra_body:       if model.extra_body.is_null() {
-                                  self.extra_body.clone()
-                              } else {
-                                  model.extra_body.clone()
-                              },
-            trim_trailing_whitespace: model.trim_trailing_whitespace || self.trim_trailing_whitespace,
+            thinking_style: model.thinking_style.clone(),
+            thinking_replay: model.thinking_replay.clone(),
+            require_tools: model.require_tools,
+            streaming: model.streaming,
+            extra_body: if model.extra_body.is_null() {
+                self.extra_body.clone()
+            } else {
+                model.extra_body.clone()
+            },
+            trim_trailing_whitespace: model.trim_trailing_whitespace
+                || self.trim_trailing_whitespace,
         }
     }
 }

@@ -49,7 +49,11 @@ pub fn handle(state: &Arc<ServerState>, mut req: Request) {
     if header(&req, "Origin").is_some() {
         return respond(
             req,
-            Reply::Json(JsonResp::error(403, "origin_rejected", "cross-origin requests are refused")),
+            Reply::Json(JsonResp::error(
+                403,
+                "origin_rejected",
+                "cross-origin requests are refused",
+            )),
         );
     }
 
@@ -61,7 +65,11 @@ pub fn handle(state: &Arc<ServerState>, mut req: Request) {
     if !authed {
         return respond(
             req,
-            Reply::Json(JsonResp::error(401, "unauthorized", "missing or invalid bearer token")),
+            Reply::Json(JsonResp::error(
+                401,
+                "unauthorized",
+                "missing or invalid bearer token",
+            )),
         );
     }
 
@@ -92,12 +100,10 @@ pub fn handle(state: &Arc<ServerState>, mut req: Request) {
             (Some(sid), Some(h)) => state.leases.holds(sid, h),
             // /approve has no session in the path; require a valid holder for ANY
             // session the client claims via X-Lease-Session.
-            (None, Some(h)) => {
-                match header(&req, "X-Lease-Session") {
-                    Some(sid) => state.leases.holds(sid, h),
-                    None => false,
-                }
-            }
+            (None, Some(h)) => match header(&req, "X-Lease-Session") {
+                Some(sid) => state.leases.holds(sid, h),
+                None => false,
+            },
             _ => false,
         };
         if !ok {
@@ -136,12 +142,10 @@ fn route(
         },
         (Method::Get, ["session"]) => routes::session::list(state).into(),
         (Method::Get, ["session", id]) => routes::session::snapshot(state, id).into(),
-        (Method::Post, ["session", id, "fork"]) => {
-            match parse_json::<api::ForkReq>(req) {
-                Ok(body) => routes::session::fork(state, id, body).into(),
-                Err(e) => e.into(),
-            }
-        }
+        (Method::Post, ["session", id, "fork"]) => match parse_json::<api::ForkReq>(req) {
+            Ok(body) => routes::session::fork(state, id, body).into(),
+            Err(e) => e.into(),
+        },
         (Method::Delete, ["session", id]) => routes::session::delete(state, id).into(),
         (Method::Post, ["session", id, "lease"]) => {
             let takeover = query_param(query, "takeover").as_deref() == Some("1");
@@ -151,18 +155,14 @@ fn route(
             let holder = header(req, "X-Lease").map(|s| s.to_owned());
             routes::session::lease_release(state, id, holder.as_deref()).into()
         }
-        (Method::Post, ["session", id, "prompt"]) => {
-            match parse_json::<api::PromptReq>(req) {
-                Ok(body) => routes::session::prompt(state, id, body).into(),
-                Err(e) => e.into(),
-            }
-        }
-        (Method::Post, ["session", id, "steer"]) => {
-            match parse_json::<api::SteerReq>(req) {
-                Ok(body) => routes::session::steer(state, id, body).into(),
-                Err(e) => e.into(),
-            }
-        }
+        (Method::Post, ["session", id, "prompt"]) => match parse_json::<api::PromptReq>(req) {
+            Ok(body) => routes::session::prompt(state, id, body).into(),
+            Err(e) => e.into(),
+        },
+        (Method::Post, ["session", id, "steer"]) => match parse_json::<api::SteerReq>(req) {
+            Ok(body) => routes::session::steer(state, id, body).into(),
+            Err(e) => e.into(),
+        },
         (Method::Post, ["session", id, "abort"]) => routes::session::abort(state, id).into(),
         (Method::Post, ["session", id, "model"]) => {
             crate::log!("POST /session/{}/model", id);
@@ -171,24 +171,22 @@ fn route(
                 Err(e) => e.into(),
             }
         }
-        (Method::Post, ["session", id, "tools"]) => {
-            match parse_json::<api::SetToolsReq>(req) {
-                Ok(body) => routes::session::set_tools(state, id, body).into(),
-                Err(e) => e.into(),
-            }
-        }
+        (Method::Post, ["session", id, "tools"]) => match parse_json::<api::SetToolsReq>(req) {
+            Ok(body) => routes::session::set_tools(state, id, body).into(),
+            Err(e) => e.into(),
+        },
         (Method::Post, ["approve"]) => match parse_json::<api::ApproveReq>(req) {
             Ok(body) => routes::session::approve(state, body).into(),
             Err(e) => e.into(),
         },
-        (Method::Post, ["session", id, "rename"]) => {
-            match parse_json::<api::RenameReq>(req) {
-                Ok(body) => routes::session::rename(state, id, body).into(),
-                Err(e) => e.into(),
-            }
-        }
+        (Method::Post, ["session", id, "rename"]) => match parse_json::<api::RenameReq>(req) {
+            Ok(body) => routes::session::rename(state, id, body).into(),
+            Err(e) => e.into(),
+        },
         (Method::Post, ["session", id, "compact"]) => routes::session::compact(state, id).into(),
-        (Method::Get, ["session", id, "export"]) => routes::session::export_session(state, id).into(),
+        (Method::Get, ["session", id, "export"]) => {
+            routes::session::export_session(state, id).into()
+        }
         (Method::Get, ["tools"]) => routes::tools::list(state, query).into(),
 
         // ── blobs ──
@@ -203,7 +201,7 @@ fn route(
         (Method::Get, ["models"]) => routes::models::list(state).into(),
         (Method::Get, ["cost"]) => routes::cost::query(state, query).into(),
         (Method::Get, ["budget"]) => routes::cost::budget(state).into(),
-        
+
         // ── preferences ──
         (Method::Get, ["pref", key]) => routes::pref::get(state, key).into(),
         (Method::Put, ["pref", key]) => {
@@ -211,24 +209,25 @@ fn route(
             let value = String::from_utf8_lossy(&body).to_string();
             routes::pref::set(state, key, &value).into()
         }
-        
+
         // ── policy info (ADR-0008: plugin decides, server routes) ──
         (Method::Get, ["policy"]) => routes::policy::get_state(state).into(),
 
         // ── server control ──
         (Method::Post, ["stop"]) => {
-            state.stop_requested.store(true, std::sync::atomic::Ordering::SeqCst);
+            state
+                .stop_requested
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             crate::log!("stop requested via POST /stop");
             JsonResp::ok(serde_json::json!({"ok": true})).into()
         }
-        (Method::Get, ["health"]) => {
-            JsonResp::ok(serde_json::json!({
-                "ok": true,
-                "idle_secs": state.idle.last_activity_elapsed().as_secs(),
-                "attached_clients": state.idle.attached_count(),
-                "running_turns": state.idle.running_turns(),
-            })).into()
-        }
+        (Method::Get, ["health"]) => JsonResp::ok(serde_json::json!({
+            "ok": true,
+            "idle_secs": state.idle.last_activity_elapsed().as_secs(),
+            "attached_clients": state.idle.attached_count(),
+            "running_turns": state.idle.running_turns(),
+        }))
+        .into(),
 
         // ── plugin hot-reload (R-PLUG2-100) ──
         (Method::Post, ["plugin", name, "reload"]) => routes::plugin::reload(state, name),
@@ -238,7 +237,7 @@ fn route(
             Ok(body) => routes::interaction::respond(state, body).into(),
             Err(e) => e.into(),
         },
-        
+
         // ── unknown ──
         _ => JsonResp::error(404, "not_found", "no such route").into(),
     }
@@ -258,7 +257,12 @@ fn handle_sse(state: &Arc<ServerState>, req: Request, session: &str, query: &str
         .unwrap_or(0);
     let lease_holder = query_param(query, "lease");
 
-    crate::log!("SSE attach: session={} from={} lease={:?}", session, from, lease_holder.is_some());
+    crate::log!(
+        "SSE attach: session={} from={} lease={:?}",
+        session,
+        from,
+        lease_holder.is_some()
+    );
 
     // Step 1: subscribe FIRST (buffer everything from now on).
     let sub = state.buses.subscribe(session, sse::SSE_RING_CAPACITY);
@@ -302,19 +306,19 @@ fn handle_sse(state: &Arc<ServerState>, req: Request, session: &str, query: &str
 /// Server sends periodic heartbeats; client disconnect triggers idle-exit check.
 fn handle_global_attach(state: &Arc<ServerState>, req: Request) {
     crate::log!("global attach");
-    
+
     // Mark client as attached (keeps server alive, R-SRV-080).
     state.idle.client_attached();
     crate::log!("global attached: clients={}", state.idle.attached_count());
-    
+
     let mut writer = req.into_writer();
     let write_res = (|| -> std::io::Result<()> {
         sse::write_sse_head(&mut writer)?;
-        
+
         // Send initial hello event.
         writer.write_all(b"event: hello\ndata: {}\n\n")?;
         writer.flush()?;
-        
+
         // Heartbeat loop — a write failure is how we detect a dead client, which is
         // what eventually drives idle-exit. Use the shared `heartbeat_interval()` so the
         // period is configurable via KN9T_SSE_HEARTBEAT_MS (default 15s) rather than a
@@ -325,11 +329,11 @@ fn handle_global_attach(state: &Arc<ServerState>, req: Request) {
             writer.flush()?;
         }
     })();
-    
+
     if let Err(ref e) = write_res {
         crate::log!("global attach error: {}", e);
     }
-    
+
     // Detached: client gone.
     state.idle.client_detached();
     crate::log!("global detached: clients={}", state.idle.attached_count());

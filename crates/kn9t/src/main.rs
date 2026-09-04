@@ -37,10 +37,16 @@ use std::time::{Duration, Instant};
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
-fn kn9t_home() -> PathBuf { bootstrap::kn9t_home_path() }
+fn kn9t_home() -> PathBuf {
+    bootstrap::kn9t_home_path()
+}
 
-fn token_path() -> PathBuf { kn9t_home().join("token") }
-fn port_path()  -> PathBuf { kn9t_home().join("port") }
+fn token_path() -> PathBuf {
+    kn9t_home().join("token")
+}
+fn port_path() -> PathBuf {
+    kn9t_home().join("port")
+}
 
 // ── Server liveness ───────────────────────────────────────────────────────────
 
@@ -48,7 +54,8 @@ fn port_alive(port: u16) -> bool {
     TcpStream::connect_timeout(
         &format!("127.0.0.1:{port}").parse().unwrap(),
         Duration::from_millis(300),
-    ).is_ok()
+    )
+    .is_ok()
 }
 
 fn read_port() -> Option<u16> {
@@ -56,7 +63,9 @@ fn read_port() -> Option<u16> {
 }
 
 fn read_token() -> Option<String> {
-    fs::read_to_string(token_path()).ok().map(|s| s.trim().to_owned())
+    fs::read_to_string(token_path())
+        .ok()
+        .map(|s| s.trim().to_owned())
 }
 
 // ── Server spawn ──────────────────────────────────────────────────────────────
@@ -65,15 +74,19 @@ fn sibling_bin(name: &str) -> PathBuf {
     let mut p = env::current_exe().unwrap_or_else(|_| PathBuf::from(name));
     p.pop();
     p.push(name);
-    if cfg!(windows) { p.set_extension("exe"); }
+    if cfg!(windows) {
+        p.set_extension("exe");
+    }
     p
 }
 
 fn spawn_server() -> std::io::Result<()> {
-    let bin  = sibling_bin("kn9t-server");
-    let log  = kn9t_home().join("server.log");
+    let bin = sibling_bin("kn9t-server");
+    let log = kn9t_home().join("server.log");
     let file = std::fs::OpenOptions::new()
-        .create(true).append(true).open(&log)
+        .create(true)
+        .append(true)
+        .open(&log)
         .unwrap_or_else(|_| {
             #[cfg(windows)]
             return std::fs::File::open("NUL").unwrap();
@@ -86,11 +99,15 @@ fn spawn_server() -> std::io::Result<()> {
         .stdout(file)
         .stderr(file2)
         .spawn()
-        .map_err(|e| std::io::Error::new(
-            e.kind(),
-            format!("cannot launch {}: {e}\nHint: run `cargo build -p kn9t-server` first",
-                bin.display()),
-        ))?;
+        .map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "cannot launch {}: {e}\nHint: run `cargo build -p kn9t-server` first",
+                    bin.display()
+                ),
+            )
+        })?;
     Ok(())
 }
 
@@ -98,7 +115,9 @@ fn wait_for_server(timeout: Duration) -> Option<u16> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if let Some(port) = read_port() {
-            if port_alive(port) { return Some(port); }
+            if port_alive(port) {
+                return Some(port);
+            }
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -122,7 +141,10 @@ fn ensure_server() -> (u16, String) {
                 std::process::exit(1);
             }
             match wait_for_server(Duration::from_secs(15)) {
-                Some(p) => { eprintln!("[kn9t] server ready on port {p}"); p }
+                Some(p) => {
+                    eprintln!("[kn9t] server ready on port {p}");
+                    p
+                }
                 None => {
                     eprintln!("[kn9t] error: server did not start within 15s");
                     std::process::exit(1);
@@ -157,7 +179,9 @@ fn print_help() {
     println!("  kn9t attach [SESSION_ID]          Attach REPL to session (SSE + lease)");
     println!("  kn9t status                       Server health (GET /health)");
     println!("  kn9t models                       List configured models (GET /models)");
-    println!("  kn9t cost [--since MS] [--group-by model|kind|session]  Cost analytics (GET /cost)");
+    println!(
+        "  kn9t cost [--since MS] [--group-by model|kind|session]  Cost analytics (GET /cost)"
+    );
     println!("  kn9t tools                        List registered tools (GET /tools)");
     println!("  kn9t stop                         Graceful shutdown (POST /stop)");
     println!("  kn9t install-plugins [OPTIONS]    Install project plugins to ~/.kn9t/");
@@ -212,7 +236,9 @@ fn print_chat_help() {
     println!("  kind=prompt     {{kind, text, session_id}}");
     println!("  then raw SSE events: text_delta, thinking_delta, tool_args_delta,");
     println!("  tool_started, tool_progress, tool_finished, message_appended, turn_ended,");
-    println!("  approval_request, retry_attempt, turn_status, error, etc. (snake_case, AGENTS.md §12)");
+    println!(
+        "  approval_request, retry_attempt, turn_status, error, etc. (snake_case, AGENTS.md §12)"
+    );
     println!("  Example: kn9t chat --json \"hi\" | jq -c 'select(.kind==\"text_delta\") | .delta'");
     println!("  Example: kn9t chat --json \"hi\" | jq -s 'map(select(.kind==\"tool_started\"))'");
     println!();
@@ -240,7 +266,21 @@ fn main() {
             return;
         }
         // `kn9t --help` style already handled; `kn9t chat --help` handled below.
-        if cmd.starts_with('-') && !matches!(cmd, "chat" | "sessions" | "history" | "attach" | "status" | "models" | "cost" | "tools" | "stop" | "help") {
+        if cmd.starts_with('-')
+            && !matches!(
+                cmd,
+                "chat"
+                    | "sessions"
+                    | "history"
+                    | "attach"
+                    | "status"
+                    | "models"
+                    | "cost"
+                    | "tools"
+                    | "stop"
+                    | "help"
+            )
+        {
             eprintln!("error: unknown option '{cmd}'");
             eprintln!();
             print_help();
@@ -322,7 +362,9 @@ fn main() {
                 if args.get(2).map(|s| is_help(s)).unwrap_or(false) {
                     println!("kn9t cost — cost analytics (GET /cost, GET /budget)");
                     println!();
-                    println!("Usage: kn9t cost [--since MS] [--group-by model|kind|session] [-h|--help]");
+                    println!(
+                        "Usage: kn9t cost [--since MS] [--group-by model|kind|session] [-h|--help]"
+                    );
                     return;
                 }
                 let (port, token) = ensure_server();
@@ -375,15 +417,17 @@ fn main() {
 
     let tui_bin = sibling_bin("kn9t-tui");
     let status = Command::new(&tui_bin)
-        .env("KN9T_URL",   format!("http://127.0.0.1:{port}"))
+        .env("KN9T_URL", format!("http://127.0.0.1:{port}"))
         .env("KN9T_TOKEN", &token)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
         .unwrap_or_else(|e| {
-            eprintln!("[kn9t] cannot launch {}: {e}\nHint: run `cargo build -p kn9t-tui` first",
-                tui_bin.display());
+            eprintln!(
+                "[kn9t] cannot launch {}: {e}\nHint: run `cargo build -p kn9t-tui` first",
+                tui_bin.display()
+            );
             std::process::exit(1);
         });
 

@@ -29,11 +29,24 @@ pub struct Request<'a> {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "chunk", rename_all = "snake_case")]
 pub enum Chunk {
-    Text { idx: u32, delta: String },
-    Thinking { idx: u32, delta: String },
-    ToolCall { idx: u32, id: CallId, name: String },
+    Text {
+        idx: u32,
+        delta: String,
+    },
+    Thinking {
+        idx: u32,
+        delta: String,
+    },
+    ToolCall {
+        idx: u32,
+        id: CallId,
+        name: String,
+    },
     /// Raw JSON fragments.
-    ToolArgs { idx: u32, delta: String },
+    ToolArgs {
+        idx: u32,
+        delta: String,
+    },
     Usage(Usage),
     Stop(StopReason),
 }

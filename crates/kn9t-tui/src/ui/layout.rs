@@ -25,7 +25,7 @@ impl Default for LayoutState {
     fn default() -> Self {
         Self {
             right_enabled: true,
-            right: Sidebar::Expanded,      // Right: always visible
+            right: Sidebar::Expanded, // Right: always visible
         }
     }
 }
@@ -74,13 +74,13 @@ pub fn calculate_input_height(input: &str, available_width: u16, max_lines: u16)
     if input.is_empty() {
         return 1;
     }
-    
+
     // Account for prompt "› " (2 chars).
     let content_width = available_width.saturating_sub(2) as usize;
     if content_width == 0 {
         return 1;
     }
-    
+
     let mut total_lines: u16 = 0;
     for line in input.lines() {
         // Each logical line may wrap into multiple display lines.
@@ -92,12 +92,12 @@ pub fn calculate_input_height(input: &str, available_width: u16, max_lines: u16)
         };
         total_lines = total_lines.saturating_add(wrapped_lines);
     }
-    
+
     // Handle trailing newline (adds an empty line).
     if input.ends_with('\n') {
         total_lines = total_lines.saturating_add(1);
     }
-    
+
     // Ensure at least 1 line, cap at max_lines.
     total_lines.max(1).min(max_lines)
 }
@@ -108,7 +108,12 @@ pub fn compute(area: Rect, state: &LayoutState) -> Areas {
 }
 
 /// Compute layout with dynamic input height based on content.
-pub fn compute_with_input(area: Rect, state: &LayoutState, input: &str, max_input_lines: u16) -> Areas {
+pub fn compute_with_input(
+    area: Rect,
+    state: &LayoutState,
+    input: &str,
+    max_input_lines: u16,
+) -> Areas {
     let right_state = effective_right_state(area.width, state);
 
     let right_w = width(right_state);
@@ -116,10 +121,7 @@ pub fn compute_with_input(area: Rect, state: &LayoutState, input: &str, max_inpu
 
     let h_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(center_w),
-            Constraint::Length(right_w),
-        ])
+        .constraints([Constraint::Length(center_w), Constraint::Length(right_w)])
         .split(area);
 
     // Calculate dynamic input height based on content.
@@ -129,9 +131,9 @@ pub fn compute_with_input(area: Rect, state: &LayoutState, input: &str, max_inpu
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),                    // transcript
-            Constraint::Length(input_height),     // input (dynamic)
-            Constraint::Length(1),                 // status
+            Constraint::Min(3),               // transcript
+            Constraint::Length(input_height), // input (dynamic)
+            Constraint::Length(1),            // status
         ])
         .split(h_chunks[0]);
 
@@ -149,7 +151,11 @@ fn effective_right_state(w: u16, state: &LayoutState) -> Sidebar {
         return Sidebar::Hidden;
     }
 
-    let right = if state.right_enabled { state.right } else { Sidebar::Hidden };
+    let right = if state.right_enabled {
+        state.right
+    } else {
+        Sidebar::Hidden
+    };
     let right_w = width(right);
 
     if right_w + MIN_CENTER > w {

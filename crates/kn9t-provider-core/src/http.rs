@@ -18,12 +18,12 @@ pub enum AuthScheme {
 
 /// R-PCORE-010 — builder for an outgoing HTTP request.
 pub struct HttpRequest {
-    pub method:       String,
-    pub url:          String,
+    pub method: String,
+    pub url: String,
     /// Extra `(name, value)` headers.
-    pub headers:      Vec<(String, String)>,
-    pub body:         Vec<u8>,
-    pub auth:         Option<(AuthScheme, String)>,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    pub auth: Option<(AuthScheme, String)>,
     /// R-PCORE-035: skip TLS cert verification.
     /// DEVIATION (SHOULD): rustls always verifies; tls_insecure=true is accepted
     /// in config and logs a warning but does not actually disable verification.
@@ -33,15 +33,19 @@ pub struct HttpRequest {
 
 /// R-PCORE-010 — response from `send()`.
 pub struct HttpResponse {
-    pub status:  u16,
+    pub status: u16,
     pub headers: Vec<(String, String)>,
-    pub body:    Box<dyn Read + Send>,
+    pub body: Box<dyn Read + Send>,
 }
 
 /// R-PCORE-010/020 — send the request with a connect-only timeout.
 /// If `cancel` is `Some`, the response body is wrapped in `CancellableReader` so the
 /// next `read()` returns `Interrupted` (<1ms) when `cancel.cancelled()` (`docs/internal/job/instant-cut.md`).
-pub fn send(req: HttpRequest, connect_timeout: Duration, cancel: Option<Cancel>) -> Result<HttpResponse, ProvErr> {
+pub fn send(
+    req: HttpRequest,
+    connect_timeout: Duration,
+    cancel: Option<Cancel>,
+) -> Result<HttpResponse, ProvErr> {
     let config = ureq::config::Config::builder()
         .timeout_connect(Some(connect_timeout))
         // No read timeout — body streams unbounded (R-PCORE-020).
@@ -56,18 +60,18 @@ pub fn send(req: HttpRequest, connect_timeout: Duration, cancel: Option<Cancel>)
 
     // We'll build headers list and use send_bytes for the body.
     let mut builder = match method_uc.as_str() {
-        "POST"  => agent.post(&req.url),
-        "PUT"   => agent.put(&req.url),
+        "POST" => agent.post(&req.url),
+        "PUT" => agent.put(&req.url),
         "PATCH" => agent.patch(&req.url),
-        _       => agent.post(&req.url),
+        _ => agent.post(&req.url),
     };
 
     // Apply auth (R-PCORE-030).
     if let Some((scheme, key)) = &req.auth {
         builder = match scheme {
             AuthScheme::Bearer => builder.header("Authorization", &format!("Bearer {key}")),
-            AuthScheme::Token  => builder.header("Authorization", &format!("token {key}")),
-            AuthScheme::Omit   => builder,
+            AuthScheme::Token => builder.header("Authorization", &format!("token {key}")),
+            AuthScheme::Omit => builder,
         };
     }
 
@@ -116,8 +120,8 @@ pub fn send_get(
     if let Some((scheme, key)) = auth {
         builder = match scheme {
             AuthScheme::Bearer => builder.header("Authorization", &format!("Bearer {key}")),
-            AuthScheme::Token  => builder.header("Authorization", &format!("token {key}")),
-            AuthScheme::Omit   => builder,
+            AuthScheme::Token => builder.header("Authorization", &format!("token {key}")),
+            AuthScheme::Omit => builder,
         };
     }
     for (k, v) in &headers {
@@ -127,7 +131,9 @@ pub fn send_get(
     let resp = builder.call().map_err(map_err)?;
 
     let status = resp.status().as_u16();
-    let resp_headers = resp.headers().iter()
+    let resp_headers = resp
+        .headers()
+        .iter()
         .map(|(k, v)| (k.as_str().to_owned(), v.to_str().unwrap_or("").to_owned()))
         .collect();
 
@@ -149,7 +155,7 @@ fn map_err(e: ureq::Error) -> ProvErr {
             body: String::new(),
         },
         ureq::Error::Tls(msg) => ProvErr::Connect(format!("tls: {msg}")),
-        ureq::Error::Io(e)    => ProvErr::Connect(e.to_string()),
-        other                 => ProvErr::Connect(other.to_string()),
+        ureq::Error::Io(e) => ProvErr::Connect(e.to_string()),
+        other => ProvErr::Connect(other.to_string()),
     }
 }

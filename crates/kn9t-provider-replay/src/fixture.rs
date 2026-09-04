@@ -32,8 +32,9 @@ impl Fixture {
     /// terminated by the first blank line (`\n\n` or `\r\n\r\n`); everything after is
     /// the body, byte-for-byte.
     pub fn parse(raw: &[u8]) -> Result<Fixture, ProvErr> {
-        let sep = find_blank_line(raw)
-            .ok_or_else(|| ProvErr::Decode("fixture: missing blank-line header separator".into()))?;
+        let sep = find_blank_line(raw).ok_or_else(|| {
+            ProvErr::Decode("fixture: missing blank-line header separator".into())
+        })?;
         let header_bytes = &raw[..sep.header_end];
         let body = raw[sep.body_start..].to_vec();
 
@@ -56,9 +57,10 @@ impl Fixture {
             match key {
                 "kind" => kind = Some(value.to_string()),
                 "status" => {
-                    status = Some(value.parse().map_err(|_| {
-                        ProvErr::Decode(format!("fixture: bad status {value:?}"))
-                    })?)
+                    status =
+                        Some(value.parse().map_err(|_| {
+                            ProvErr::Decode(format!("fixture: bad status {value:?}"))
+                        })?)
                 }
                 "content-type" => content_type = Some(value.to_string()),
                 "chunks" => chunks = parse_chunks(value)?,

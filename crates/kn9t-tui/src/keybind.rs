@@ -11,68 +11,68 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     // Core
-    Quit,           // Ctrl+C or Ctrl+Q
-    Abort,          // Escape
-    Help,           // Ctrl+P (command palette)
-    Send,           // Enter (steers if streaming, prompts if idle)
-    Queue,          // Shift+Enter: queue message for post-idle send (unlike steer)
-    Paste,          // Ctrl+V: paste from system clipboard
-    
+    Quit,  // Ctrl+C or Ctrl+Q
+    Abort, // Escape
+    Help,  // Ctrl+P (command palette)
+    Send,  // Enter (steers if streaming, prompts if idle)
+    Queue, // Shift+Enter: queue message for post-idle send (unlike steer)
+    Paste, // Ctrl+V: paste from system clipboard
+
     // Scrolling
-    ScrollUp,       // Ctrl+Up or PageUp
-    ScrollDown,     // Ctrl+Down or PageDown
-    ScrollTop,      // Ctrl+Home
-    ScrollBottom,   // Ctrl+End
-    
+    ScrollUp,     // Ctrl+Up or PageUp
+    ScrollDown,   // Ctrl+Down or PageDown
+    ScrollTop,    // Ctrl+Home
+    ScrollBottom, // Ctrl+End
+
     // Message navigation
-    PrevMessage,    // Ctrl+K
-    NextMessage,    // Ctrl+J
-    
+    PrevMessage, // Ctrl+K
+    NextMessage, // Ctrl+J
+
     // Sidebar
-    ToggleLeft,     // Ctrl+B
-    ToggleRight,    // Ctrl+R (or always visible)
-    
+    ToggleLeft,  // Ctrl+B
+    ToggleRight, // Ctrl+R (or always visible)
+
     // Sessions
-    NewSession,     // Ctrl+N
-    
+    NewSession, // Ctrl+N
+
     // Tool mode
-    ToolMode,       // Ctrl+T: enter/exit tool mode
-    
+    ToolMode, // Ctrl+T: enter/exit tool mode
+
     // Undo/Redo
-    Undo,           // Ctrl+Z: undo input change
-    Redo,           // Ctrl+Y or Ctrl+Shift+Z: redo input change
-    
+    Undo, // Ctrl+Z: undo input change
+    Redo, // Ctrl+Y or Ctrl+Shift+Z: redo input change
+
     // Kill ring (Emacs-style)
-    KillToEnd,      // Ctrl+K: kill to end of line
-    KillToStart,    // Ctrl+U: kill to start of line
-    KillWord,       // Ctrl+W: kill word backward
-    Yank,           // Ctrl+Y: yank (paste from kill ring)
-    YankPop,        // Alt+Y: cycle through kill ring after yank
-    
+    KillToEnd,   // Ctrl+K: kill to end of line
+    KillToStart, // Ctrl+U: kill to start of line
+    KillWord,    // Ctrl+W: kill word backward
+    Yank,        // Ctrl+Y: yank (paste from kill ring)
+    YankPop,     // Alt+Y: cycle through kill ring after yank
+
     // Thinking blocks
     ToggleThinking, // Ctrl+E: toggle thinking block collapse
-    
+
     // Search
-    OpenSearch,     // Ctrl+F: open search bar
-    CloseSearch,    // Escape: close search bar (in search mode)
-    NextMatch,      // Enter: next match (in search mode)
-    PrevMatch,      // Shift+Enter: previous match (in search mode)
-    ToggleRegex,    // Alt+R: toggle regex mode (in search mode)
-    ToggleCase,     // Alt+C: toggle case sensitivity (in search mode)
+    OpenSearch,  // Ctrl+F: open search bar
+    CloseSearch, // Escape: close search bar (in search mode)
+    NextMatch,   // Enter: next match (in search mode)
+    PrevMatch,   // Shift+Enter: previous match (in search mode)
+    ToggleRegex, // Alt+R: toggle regex mode (in search mode)
+    ToggleCase,  // Alt+C: toggle case sensitivity (in search mode)
 
     // Word navigation
-    WordLeft,       // Ctrl+Left: move cursor to previous word
-    WordRight,      // Ctrl+Right: move cursor to next word
-    DeleteWordLeft, // Ctrl+Backspace: delete word backward
-    DeleteWordRight,// Ctrl+Delete: delete word forward
-    
+    WordLeft,        // Ctrl+Left: move cursor to previous word
+    WordRight,       // Ctrl+Right: move cursor to next word
+    DeleteWordLeft,  // Ctrl+Backspace: delete word backward
+    DeleteWordRight, // Ctrl+Delete: delete word forward
+
     // Semantic navigation (jump between user/assistant messages)
-    PrevUserMessage,    // Ctrl+Up: jump to previous user message
-    NextUserMessage,    // Ctrl+Down: jump to next user message
-    
+    PrevUserMessage, // Ctrl+Up: jump to previous user message
+    NextUserMessage, // Ctrl+Down: jump to next user message
+
     // Model cycling (quick switch without picker)
-    CycleModelNext,     // F2: next model
-    CycleModelPrev,     // Shift+F2: previous model
+    CycleModelNext, // F2: next model
+    CycleModelPrev, // Shift+F2: previous model
 
     // Unused for now
     PrevUser,
@@ -90,7 +90,12 @@ pub struct Keybinds {
 
 /// Helper to create KeyPattern.
 fn kp(code: KeyCode, ctrl: bool, alt: bool, shift: bool) -> KeyPattern {
-    KeyPattern { code, ctrl, alt, shift }
+    KeyPattern {
+        code,
+        ctrl,
+        alt,
+        shift,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -116,76 +121,121 @@ impl Keybinds {
         // DEFAULT KEYBINDS — All use Ctrl modifier (or special keys).
         // NO bare letters — all letters available for typing.
         // ═══════════════════════════════════════════════════════════════════
-        
+
         // ─── Core ───
-        bindings.insert(kp(KeyCode::Enter, false, false, false), Action::Send);      // Enter: send (steers if streaming)
-        bindings.insert(kp(KeyCode::Enter, true, false, false), Action::Queue);      // Ctrl+Enter: queue for post-idle
-        // Note: Shift+Enter and Alt+Enter insert newline (handled before keybinds)
-        bindings.insert(kp(KeyCode::Esc, false, false, false), Action::Abort);       // Esc: abort turn
-        bindings.insert(kp(KeyCode::Char('c'), true, false, false), Action::Quit);   // Ctrl+C: quit
-        bindings.insert(kp(KeyCode::Char('q'), true, false, false), Action::Quit);   // Ctrl+Q: quit
-        bindings.insert(kp(KeyCode::Char('p'), true, false, false), Action::Help);   // Ctrl+P: command palette
-        
+        bindings.insert(kp(KeyCode::Enter, false, false, false), Action::Send); // Enter: send (steers if streaming)
+        bindings.insert(kp(KeyCode::Enter, true, false, false), Action::Queue); // Ctrl+Enter: queue for post-idle
+                                                                                // Note: Shift+Enter and Alt+Enter insert newline (handled before keybinds)
+        bindings.insert(kp(KeyCode::Esc, false, false, false), Action::Abort); // Esc: abort turn
+        bindings.insert(kp(KeyCode::Char('c'), true, false, false), Action::Quit); // Ctrl+C: quit
+        bindings.insert(kp(KeyCode::Char('q'), true, false, false), Action::Quit); // Ctrl+Q: quit
+        bindings.insert(kp(KeyCode::Char('p'), true, false, false), Action::Help); // Ctrl+P: command palette
+
         // ─── Scrolling ───
         // Note: Ctrl+Up/Down now used for semantic navigation (jump between messages)
         bindings.insert(kp(KeyCode::PageUp, false, false, false), Action::ScrollUp); // PageUp: scroll up
-        bindings.insert(kp(KeyCode::PageDown, false, false, false), Action::ScrollDown); // PageDown: scroll down
-        bindings.insert(kp(KeyCode::Home, true, false, false), Action::ScrollTop);   // Ctrl+Home: top
+        bindings.insert(
+            kp(KeyCode::PageDown, false, false, false),
+            Action::ScrollDown,
+        ); // PageDown: scroll down
+        bindings.insert(kp(KeyCode::Home, true, false, false), Action::ScrollTop); // Ctrl+Home: top
         bindings.insert(kp(KeyCode::End, true, false, false), Action::ScrollBottom); // Ctrl+End: bottom
-        
+
         // ─── Word navigation ───
-        bindings.insert(kp(KeyCode::Left, true, false, false), Action::WordLeft);    // Ctrl+Left: word left
-        bindings.insert(kp(KeyCode::Right, true, false, false), Action::WordRight);  // Ctrl+Right: word right
-        bindings.insert(kp(KeyCode::Backspace, true, false, false), Action::DeleteWordLeft);  // Ctrl+Backspace: delete word left
-        bindings.insert(kp(KeyCode::Delete, true, false, false), Action::DeleteWordRight);   // Ctrl+Delete: delete word right
-        // Ctrl+H is sent by some terminals for Ctrl+Backspace
-        bindings.insert(kp(KeyCode::Char('h'), true, false, false), Action::DeleteWordLeft);  // Ctrl+H: delete word left
-        
+        bindings.insert(kp(KeyCode::Left, true, false, false), Action::WordLeft); // Ctrl+Left: word left
+        bindings.insert(kp(KeyCode::Right, true, false, false), Action::WordRight); // Ctrl+Right: word right
+        bindings.insert(
+            kp(KeyCode::Backspace, true, false, false),
+            Action::DeleteWordLeft,
+        ); // Ctrl+Backspace: delete word left
+        bindings.insert(
+            kp(KeyCode::Delete, true, false, false),
+            Action::DeleteWordRight,
+        ); // Ctrl+Delete: delete word right
+           // Ctrl+H is sent by some terminals for Ctrl+Backspace
+        bindings.insert(
+            kp(KeyCode::Char('h'), true, false, false),
+            Action::DeleteWordLeft,
+        ); // Ctrl+H: delete word left
+
         // ─── Semantic navigation (jump between user/assistant messages) ───
-        bindings.insert(kp(KeyCode::Up, true, false, false), Action::PrevUserMessage);   // Ctrl+Up: prev user message
-        bindings.insert(kp(KeyCode::Down, true, false, false), Action::NextUserMessage); // Ctrl+Down: next user message
-        
+        bindings.insert(kp(KeyCode::Up, true, false, false), Action::PrevUserMessage); // Ctrl+Up: prev user message
+        bindings.insert(
+            kp(KeyCode::Down, true, false, false),
+            Action::NextUserMessage,
+        ); // Ctrl+Down: next user message
+
         // ─── Message navigation ───
         // Note: Ctrl+K/J are now used for kill-ring. Use Alt+K/J for messages.
-        bindings.insert(kp(KeyCode::Char('k'), false, true, false), Action::PrevMessage); // Alt+K: prev msg
-        bindings.insert(kp(KeyCode::Char('j'), false, true, false), Action::NextMessage); // Alt+J: next msg
-        
+        bindings.insert(
+            kp(KeyCode::Char('k'), false, true, false),
+            Action::PrevMessage,
+        ); // Alt+K: prev msg
+        bindings.insert(
+            kp(KeyCode::Char('j'), false, true, false),
+            Action::NextMessage,
+        ); // Alt+J: next msg
+
         // ─── Sidebar ───
-        bindings.insert(kp(KeyCode::Char('b'), true, false, false), Action::ToggleLeft);  // Ctrl+B: toggle left
-        
+        bindings.insert(
+            kp(KeyCode::Char('b'), true, false, false),
+            Action::ToggleLeft,
+        ); // Ctrl+B: toggle left
+
         // ─── Sessions ───
-        bindings.insert(kp(KeyCode::Char('n'), true, false, false), Action::NewSession);  // Ctrl+N: new session
-        
+        bindings.insert(
+            kp(KeyCode::Char('n'), true, false, false),
+            Action::NewSession,
+        ); // Ctrl+N: new session
+
         // ─── Tool mode ───
-        bindings.insert(kp(KeyCode::Char('t'), true, false, false), Action::ToolMode);    // Ctrl+T: tool mode
-        
+        bindings.insert(kp(KeyCode::Char('t'), true, false, false), Action::ToolMode); // Ctrl+T: tool mode
+
         // ─── Undo/Redo ───
-        bindings.insert(kp(KeyCode::Char('z'), true, false, false), Action::Undo);        // Ctrl+Z: undo
-        // Note: Ctrl+Y is used for Yank (Emacs), not Redo
-        bindings.insert(kp(KeyCode::Char('z'), true, false, true), Action::Redo);         // Ctrl+Shift+Z: redo
-        
+        bindings.insert(kp(KeyCode::Char('z'), true, false, false), Action::Undo); // Ctrl+Z: undo
+                                                                                   // Note: Ctrl+Y is used for Yank (Emacs), not Redo
+        bindings.insert(kp(KeyCode::Char('z'), true, false, true), Action::Redo); // Ctrl+Shift+Z: redo
+
         // ─── Kill Ring (Emacs-style) ───
-        bindings.insert(kp(KeyCode::Char('k'), true, false, false), Action::KillToEnd);   // Ctrl+K: kill to EOL
-        bindings.insert(kp(KeyCode::Char('u'), true, false, false), Action::KillToStart); // Ctrl+U: kill to BOL
-        bindings.insert(kp(KeyCode::Char('w'), true, false, false), Action::KillWord);    // Ctrl+W: kill word
-        bindings.insert(kp(KeyCode::Char('y'), true, false, false), Action::Yank);        // Ctrl+Y: yank
-        bindings.insert(kp(KeyCode::Char('y'), false, true, false), Action::YankPop);     // Alt+Y: yank pop
-        
+        bindings.insert(
+            kp(KeyCode::Char('k'), true, false, false),
+            Action::KillToEnd,
+        ); // Ctrl+K: kill to EOL
+        bindings.insert(
+            kp(KeyCode::Char('u'), true, false, false),
+            Action::KillToStart,
+        ); // Ctrl+U: kill to BOL
+        bindings.insert(kp(KeyCode::Char('w'), true, false, false), Action::KillWord); // Ctrl+W: kill word
+        bindings.insert(kp(KeyCode::Char('y'), true, false, false), Action::Yank); // Ctrl+Y: yank
+        bindings.insert(kp(KeyCode::Char('y'), false, true, false), Action::YankPop); // Alt+Y: yank pop
+
         // ─── Thinking blocks ───
-        bindings.insert(kp(KeyCode::Char('e'), true, false, false), Action::ToggleThinking); // Ctrl+E: toggle thinking
+        bindings.insert(
+            kp(KeyCode::Char('e'), true, false, false),
+            Action::ToggleThinking,
+        ); // Ctrl+E: toggle thinking
 
         // ─── Search ───
-        bindings.insert(kp(KeyCode::Char('f'), true, false, false), Action::OpenSearch);     // Ctrl+F: open search
-        
+        bindings.insert(
+            kp(KeyCode::Char('f'), true, false, false),
+            Action::OpenSearch,
+        ); // Ctrl+F: open search
+
         // ─── Clipboard ───
         // Note: Ctrl+V and Ctrl+Shift+V are intercepted by Windows Terminal.
         // F5 is used as a reliable cross-platform paste shortcut.
-        bindings.insert(kp(KeyCode::Char('v'), true, false, false), Action::Paste);       // Ctrl+V: paste (Linux/macOS)
-        bindings.insert(kp(KeyCode::F(5), false, false, false), Action::Paste);           // F5: paste (works everywhere)
-        
+        bindings.insert(kp(KeyCode::Char('v'), true, false, false), Action::Paste); // Ctrl+V: paste (Linux/macOS)
+        bindings.insert(kp(KeyCode::F(5), false, false, false), Action::Paste); // F5: paste (works everywhere)
+
         // ─── Model cycling ───
-        bindings.insert(kp(KeyCode::F(2), false, false, false), Action::CycleModelNext);  // F2: next model
-        bindings.insert(kp(KeyCode::F(2), false, false, true), Action::CycleModelPrev);   // Shift+F2: prev model
+        bindings.insert(
+            kp(KeyCode::F(2), false, false, false),
+            Action::CycleModelNext,
+        ); // F2: next model
+        bindings.insert(
+            kp(KeyCode::F(2), false, false, true),
+            Action::CycleModelPrev,
+        ); // Shift+F2: prev model
 
         Self { bindings }
     }
@@ -301,5 +351,10 @@ fn parse_key(s: &str) -> Option<KeyPattern> {
         _ => return None,
     };
 
-    Some(KeyPattern { code, ctrl, alt, shift })
+    Some(KeyPattern {
+        code,
+        ctrl,
+        alt,
+        shift,
+    })
 }

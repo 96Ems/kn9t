@@ -59,35 +59,46 @@ impl Client {
 
     /// List all sessions.
     pub fn list_sessions(&self) -> Result<Vec<SessionInfo>, ClientError> {
-        let resp = self.request("GET", "/session")
+        let resp = self
+            .request("GET", "/session")
             .call()
             .map_err(|e| ClientError::Http(e.to_string()))?;
-        let body: SessionList = resp.into_json()
+        let body: SessionList = resp
+            .into_json()
             .map_err(|e| ClientError::Json(e.to_string()))?;
         Ok(body.sessions)
     }
 
     /// Get session detail.
     pub fn get_session(&self, id: &str) -> Result<SessionDetail, ClientError> {
-        let resp = self.request("GET", &format!("/session/{}", id))
+        let resp = self
+            .request("GET", &format!("/session/{}", id))
             .call()
             .map_err(|e| ClientError::Http(e.to_string()))?;
-        resp.into_json().map_err(|e| ClientError::Json(e.to_string()))
+        resp.into_json()
+            .map_err(|e| ClientError::Json(e.to_string()))
     }
 
     /// Create a new session.
-    pub fn create_session(&self, cwd: &str, model: Option<&WireModelRef>) -> Result<String, ClientError> {
+    pub fn create_session(
+        &self,
+        cwd: &str,
+        model: Option<&WireModelRef>,
+    ) -> Result<String, ClientError> {
         let req = CreateSessionReq {
             cwd: Some(cwd.to_string()),
             model: model.cloned(),
             name: None,
         };
-        let resp = self.request("POST", "/session")
+        let resp = self
+            .request("POST", "/session")
             .send_json(&req)
             .map_err(|e| ClientError::Http(e.to_string()))?;
-        let body: serde_json::Value = resp.into_json()
+        let body: serde_json::Value = resp
+            .into_json()
             .map_err(|e| ClientError::Json(e.to_string()))?;
-        body["id"].as_str()
+        body["id"]
+            .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| ClientError::Json("missing id".into()))
     }
@@ -95,11 +106,15 @@ impl Client {
     /// Delete a session.
     pub fn delete_session(&self, session_id: &str) -> Result<(), ClientError> {
         let path = format!("/session/{}", session_id);
-        let resp = self.request("DELETE", &path)
+        let resp = self
+            .request("DELETE", &path)
             .call()
             .map_err(|e| ClientError::Http(e.to_string()))?;
         if resp.status() >= 400 {
-            return Err(ClientError::Http(format!("delete failed: {}", resp.status())));
+            return Err(ClientError::Http(format!(
+                "delete failed: {}",
+                resp.status()
+            )));
         }
         Ok(())
     }
@@ -111,15 +126,16 @@ impl Client {
         } else {
             format!("/session/{}/lease", session_id)
         };
-        let resp = self.request("POST", &path)
-            .call();
-        
+        let resp = self.request("POST", &path).call();
+
         match resp {
             Ok(r) => {
-                let body: serde_json::Value = r.into_json()
+                let body: serde_json::Value = r
+                    .into_json()
                     .map_err(|e| ClientError::Json(e.to_string()))?;
                 // Server returns { "lease": holder, "session": id }
-                body["lease"].as_str()
+                body["lease"]
+                    .as_str()
                     .map(|s| s.to_string())
                     .ok_or_else(|| ClientError::Json("missing lease".into()))
             }
@@ -138,11 +154,21 @@ impl Client {
     }
 
     /// Send prompt.
-    pub fn prompt(&self, session_id: &str, holder: &str, text: &str, images: Vec<String>) -> Result<(), ClientError> {
+    pub fn prompt(
+        &self,
+        session_id: &str,
+        holder: &str,
+        text: &str,
+        images: Vec<String>,
+    ) -> Result<(), ClientError> {
         let req = PromptReq {
             text: Some(text.to_string()),
             blobs: None,
-            images: if images.is_empty() { None } else { Some(images) },
+            images: if images.is_empty() {
+                None
+            } else {
+                Some(images)
+            },
         };
         self.request("POST", &format!("/session/{}/prompt", session_id))
             .set("X-Lease", holder)
@@ -163,24 +189,38 @@ impl Client {
     /// Steer: inject a user message while a turn is running.
     /// The message is appended to the session and folded into the next LLM call.
     pub fn steer(&self, session_id: &str, holder: &str, text: &str) -> Result<u64, ClientError> {
-        let req = SteerReq { text: text.to_string() };
-        let resp = self.request("POST", &format!("/session/{}/steer", session_id))
+        let req = SteerReq {
+            text: text.to_string(),
+        };
+        let resp = self
+            .request("POST", &format!("/session/{}/steer", session_id))
             .set("X-Lease", holder)
             .send_json(&req)
             .map_err(|e| ClientError::Http(e.to_string()))?;
-        let body: serde_json::Value = resp.into_json()
+        let body: serde_json::Value = resp
+            .into_json()
             .map_err(|e| ClientError::Json(e.to_string()))?;
         Ok(body["seq"].as_u64().unwrap_or(0))
     }
 
     /// Respond to approval request.
-    pub fn approve(&self, session_id: &str, holder: &str, id: u64, decision: &str) -> Result<(), ClientError> {
+    pub fn approve(
+        &self,
+        session_id: &str,
+        holder: &str,
+        id: u64,
+        decision: &str,
+    ) -> Result<(), ClientError> {
         // Map legacy "always" decision to scope=always for schema correctness (Phase 2).
         let (decision_str, scope) = match decision {
             "always" => ("allow".to_string(), Some("always".to_string())),
             other => (other.to_string(), None),
         };
-        let req = ApprovalResp { id, decision: decision_str, scope };
+        let req = ApprovalResp {
+            id,
+            decision: decision_str,
+            scope,
+        };
         self.request("POST", "/approve")
             .set("X-Lease", holder)
             .set("X-Lease-Session", session_id)
@@ -190,8 +230,19 @@ impl Client {
     }
 
     /// Scope-aware approve (Phase 1.5): decision allow|deny + scope once|session|always.
-    pub fn approve_scoped(&self, session_id: &str, holder: &str, id: u64, decision: &str, scope: &str) -> Result<(), ClientError> {
-        let req = ApprovalResp { id, decision: decision.to_string(), scope: Some(scope.to_string()) };
+    pub fn approve_scoped(
+        &self,
+        session_id: &str,
+        holder: &str,
+        id: u64,
+        decision: &str,
+        scope: &str,
+    ) -> Result<(), ClientError> {
+        let req = ApprovalResp {
+            id,
+            decision: decision.to_string(),
+            scope: Some(scope.to_string()),
+        };
         self.request("POST", "/approve")
             .set("X-Lease", holder)
             .set("X-Lease-Session", session_id)
@@ -202,36 +253,39 @@ impl Client {
 
     /// List available models.
     pub fn list_models(&self) -> Result<Vec<ModelInfo>, ClientError> {
-        let resp = self.request("GET", "/models")
+        let resp = self
+            .request("GET", "/models")
             .call()
             .map_err(|e| ClientError::Http(e.to_string()))?;
-        let body: ModelsList = resp.into_json()
+        let body: ModelsList = resp
+            .into_json()
             .map_err(|e| ClientError::Json(e.to_string()))?;
         Ok(body.models)
     }
 
     /// Upload blob.
     pub fn upload_blob(&self, data: &[u8], mime: &str) -> Result<String, ClientError> {
-        let resp = self.request("POST", "/blob")
+        let resp = self
+            .request("POST", "/blob")
             .set("Content-Type", mime)
             .send_bytes(data)
             .map_err(|e| ClientError::Http(e.to_string()))?;
-        let body: serde_json::Value = resp.into_json()
+        let body: serde_json::Value = resp
+            .into_json()
             .map_err(|e| ClientError::Json(e.to_string()))?;
-        body["hash"].as_str()
+        body["hash"]
+            .as_str()
             .map(|s| format!("sha256:{}", s))
             .ok_or_else(|| ClientError::Json("missing hash".into()))
     }
-    
+
     /// Get a preference value.
     pub fn get_pref(&self, key: &str) -> Option<String> {
-        let resp = self.request("GET", &format!("/pref/{}", key))
-            .call()
-            .ok()?;
+        let resp = self.request("GET", &format!("/pref/{}", key)).call().ok()?;
         let body: serde_json::Value = resp.into_json().ok()?;
         body["value"].as_str().map(|s| s.to_string())
     }
-    
+
     /// Set a preference value.
     pub fn set_pref(&self, key: &str, value: &str) -> Result<(), ClientError> {
         self.request("PUT", &format!("/pref/{}", key))
@@ -239,17 +293,29 @@ impl Client {
             .map_err(|e| ClientError::Http(e.to_string()))?;
         Ok(())
     }
-    
+
     /// Change model for a session. Requires lease.
-    pub fn set_model(&self, session_id: &str, lease: &str, provider: &str, model_id: &str) -> Result<(), ClientError> {
-        crate::log!("[client.set_model] session={} provider={} model_id={}", session_id, provider, model_id);
+    pub fn set_model(
+        &self,
+        session_id: &str,
+        lease: &str,
+        provider: &str,
+        model_id: &str,
+    ) -> Result<(), ClientError> {
+        crate::log!(
+            "[client.set_model] session={} provider={} model_id={}",
+            session_id,
+            provider,
+            model_id
+        );
         let body = serde_json::json!({
             "provider": provider,
             "id": model_id
         });
         let url = format!("/session/{}/model", session_id);
         crate::log!("[client.set_model] POST {} with lease={}", url, lease);
-        let resp = self.request("POST", &url)
+        let resp = self
+            .request("POST", &url)
             .set("X-Lease", lease)
             .send_json(&body)
             .map_err(|e| {
@@ -262,22 +328,43 @@ impl Client {
 
     /// List registered tools (GET /tools?session= — F9, Phase 4).
     /// Returns full tool info from discovered + pinned plugins, with per-session disabled state.
-    pub fn get_tools(&self, session_id: Option<&str>) -> Result<Vec<crate::app::ToolEntry>, ClientError> {
+    pub fn get_tools(
+        &self,
+        session_id: Option<&str>,
+    ) -> Result<Vec<crate::app::ToolEntry>, ClientError> {
         let path = match session_id {
             Some(sid) => format!("/tools?session={}", sid),
             None => "/tools".to_string(),
         };
-        let resp = self.request("GET", &path)
+        let resp = self
+            .request("GET", &path)
             .call()
             .map_err(|e| ClientError::Http(e.to_string()))?;
-        let body: serde_json::Value = resp.into_json().map_err(|e| ClientError::Json(e.to_string()))?;
-        let tools = body.get("tools").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| ClientError::Json(e.to_string()))?;
+        let tools = body
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         let entries: Vec<crate::app::ToolEntry> = tools
             .iter()
             .map(|v| crate::app::ToolEntry {
-                name: v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
-                description: v.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
-                plugin: v.get("plugin").and_then(|p| p.as_str()).map(|s| s.to_string()),
+                name: v
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                description: v
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                plugin: v
+                    .get("plugin")
+                    .and_then(|p| p.as_str())
+                    .map(|s| s.to_string()),
                 enabled: !v.get("disabled").and_then(|d| d.as_bool()).unwrap_or(false),
             })
             .collect();
@@ -286,17 +373,29 @@ impl Client {
 
     /// Set tools disabled for a session (POST /session/{id}/tools — action endpoint).
     /// Returns the list of tools that were re-enabled.
-    pub fn set_tools(&self, session_id: &str, lease: &str, disabled: &[String]) -> Result<Vec<String>, ClientError> {
+    pub fn set_tools(
+        &self,
+        session_id: &str,
+        lease: &str,
+        disabled: &[String],
+    ) -> Result<Vec<String>, ClientError> {
         let body = serde_json::json!({ "disabled": disabled });
-        let resp = self.request("POST", &format!("/session/{}/tools", session_id))
+        let resp = self
+            .request("POST", &format!("/session/{}/tools", session_id))
             .set("X-Lease", lease)
             .send_json(&body)
             .map_err(|e| ClientError::Http(e.to_string()))?;
-        let body: serde_json::Value = resp.into_json().map_err(|e| ClientError::Json(e.to_string()))?;
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| ClientError::Json(e.to_string()))?;
         let reenabled: Vec<String> = body
             .get("reenabled")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
         Ok(reenabled)
     }
@@ -312,20 +411,25 @@ impl Client {
 
     /// Trigger manual compaction (POST /session/{id}/compact — Phase 4, lease required, engine at exec.rs:139).
     pub fn compact_session(&self, session_id: &str, lease: &str) -> Result<u64, ClientError> {
-        let resp = self.request("POST", &format!("/session/{}/compact", session_id))
+        let resp = self
+            .request("POST", &format!("/session/{}/compact", session_id))
             .set("X-Lease", lease)
             .call()
             .map_err(|e| ClientError::Http(e.to_string()))?;
-        let body: serde_json::Value = resp.into_json().map_err(|e| ClientError::Json(e.to_string()))?;
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| ClientError::Json(e.to_string()))?;
         Ok(body.get("seq").and_then(|v| v.as_u64()).unwrap_or(0))
     }
 
     /// Export a session transcript (GET /session/{id}/export — Phase 4, replaces placeholder).
     pub fn export_session(&self, session_id: &str) -> Result<serde_json::Value, ClientError> {
-        let resp = self.request("GET", &format!("/session/{}/export", session_id))
+        let resp = self
+            .request("GET", &format!("/session/{}/export", session_id))
             .call()
             .map_err(|e| ClientError::Http(e.to_string()))?;
-        resp.into_json().map_err(|e| ClientError::Json(e.to_string()))
+        resp.into_json()
+            .map_err(|e| ClientError::Json(e.to_string()))
     }
 
     /// 96E-28: respond to a pending generic interaction — opaque payload forwarded verbatim.
@@ -338,8 +442,8 @@ impl Client {
     }
 }
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Handle to stop an SSE thread.
 #[derive(Clone)]
@@ -353,7 +457,7 @@ impl SseHandle {
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
-    
+
     /// Get the session ID this handle is for.
     pub fn session_id(&self) -> &str {
         &self.session_id
@@ -377,21 +481,24 @@ pub fn spawn_sse_thread(
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
     let session_id_clone = session_id.clone();
-    
+
     crate::log!("SSE: spawning thread for session {}", session_id);
-    
+
     thread::spawn(move || {
-        let mut url = format!("{}/session/{}/events?from={}", base_url, session_id_clone, from_seq);
+        let mut url = format!(
+            "{}/session/{}/events?from={}",
+            base_url, session_id_clone, from_seq
+        );
         if let Some(l) = &lease {
             url.push_str(&format!("&lease={}", l));
         }
         crate::log!("SSE: connecting to {}", url);
-        
+
         let mut req = ureq::get(&url);
         if let Some(t) = &token {
             req = req.set("Authorization", &format!("Bearer {}", t));
         }
-        
+
         // No timeout on SSE - it's a long-lived connection.
         // The server sends heartbeats every 15s to keep it alive.
         // We check the stop flag when reading lines.
@@ -418,7 +525,7 @@ pub fn spawn_sse_thread(
             if stop_clone.load(Ordering::Relaxed) {
                 break;
             }
-            
+
             let line = match line {
                 Ok(l) => l,
                 Err(e) => {
@@ -436,19 +543,26 @@ pub fn spawn_sse_thread(
                 match serde_json::from_str::<SseFrame>(&data_buf) {
                     Ok(frame) => {
                         // Tag the frame with session ID so we can filter.
-                        if tx.send(Event::Sse(session_id_clone.clone(), frame)).is_err() {
+                        if tx
+                            .send(Event::Sse(session_id_clone.clone(), frame))
+                            .is_err()
+                        {
                             break;
                         }
                     }
                     Err(e) => {
-                        crate::log!("SSE parse error: {} for data: {}", e, &data_buf[..data_buf.len().min(200)]);
+                        crate::log!(
+                            "SSE parse error: {} for data: {}",
+                            e,
+                            &data_buf[..data_buf.len().min(200)]
+                        );
                     }
                 }
                 data_buf.clear();
             }
         }
     });
-    
+
     SseHandle { stop, session_id }
 }
 
@@ -471,18 +585,18 @@ impl AttachHandle {
 pub fn spawn_attach_thread(base_url: String, token: Option<String>) -> AttachHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
-    
+
     crate::log!("ATTACH: spawning global attach thread");
-    
+
     thread::spawn(move || {
         let url = format!("{}/attach", base_url);
         crate::log!("ATTACH: connecting to {}", url);
-        
+
         let mut req = ureq::get(&url);
         if let Some(t) = &token {
             req = req.set("Authorization", &format!("Bearer {}", t));
         }
-        
+
         let resp = match req.call() {
             Ok(r) => {
                 crate::log!("ATTACH: connected successfully");
@@ -493,7 +607,7 @@ pub fn spawn_attach_thread(base_url: String, token: Option<String>) -> AttachHan
                 return;
             }
         };
-        
+
         // Just read and discard lines (ping events) until stopped or disconnected.
         let reader = BufReader::new(resp.into_reader());
         for line in reader.lines() {
@@ -507,6 +621,6 @@ pub fn spawn_attach_thread(base_url: String, token: Option<String>) -> AttachHan
         }
         crate::log!("ATTACH: thread exiting");
     });
-    
+
     AttachHandle { stop }
 }

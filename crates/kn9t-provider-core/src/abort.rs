@@ -11,14 +11,20 @@ pub struct CancellableReader<R> {
 
 impl<R> CancellableReader<R> {
     pub fn new(inner: R, cancel: Cancel) -> Self {
-        Self { inner: std::sync::Arc::new(std::sync::Mutex::new(inner)), cancel }
+        Self {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(inner)),
+            cancel,
+        }
     }
 }
 
 impl<R: Read + Send + 'static> Read for CancellableReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.cancel.cancelled() {
-            return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"));
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "cancelled",
+            ));
         }
         let len = buf.len();
         let inner = self.inner.clone();
@@ -31,21 +37,25 @@ impl<R: Read + Send + 'static> Read for CancellableReader<R> {
         });
         loop {
             if cancel.cancelled() {
-                return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "cancelled"));
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "cancelled",
+                ));
             }
             match rx.recv_timeout(std::time::Duration::from_millis(10)) {
-                Ok((res, tmp)) => {
-                    match res {
-                        Ok(n) => {
-                            buf[..n].copy_from_slice(&tmp[..n]);
-                            return Ok(n);
-                        }
-                        Err(e) => return Err(e),
+                Ok((res, tmp)) => match res {
+                    Ok(n) => {
+                        buf[..n].copy_from_slice(&tmp[..n]);
+                        return Ok(n);
                     }
-                }
+                    Err(e) => return Err(e),
+                },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "reader thread died"))
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "reader thread died",
+                    ))
                 }
             }
         }
@@ -108,7 +118,10 @@ mod tests {
         let err = r.read(&mut buf).unwrap_err();
         let elapsed = start.elapsed();
         assert_eq!(err.kind(), io::ErrorKind::ConnectionAborted);
-        assert!(elapsed < Duration::from_millis(500), "cancel took too long: {elapsed:?}");
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "cancel took too long: {elapsed:?}"
+        );
     }
 
     #[test]
@@ -156,7 +169,10 @@ mod tests {
         eprintln!("test: reading second line (should block then cancel)");
         let second = lines.next();
         let elapsed = start.elapsed();
-        assert!(elapsed < Duration::from_millis(800), "cancel took too long: {elapsed:?}");
+        assert!(
+            elapsed < Duration::from_millis(800),
+            "cancel took too long: {elapsed:?}"
+        );
         if let Some(Err(e)) = second {
             assert_eq!(e.kind(), std::io::ErrorKind::ConnectionAborted);
         } else {

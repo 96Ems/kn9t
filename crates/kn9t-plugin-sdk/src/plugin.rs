@@ -17,14 +17,13 @@
 //! }
 //! ```
 
-use crate::ctx::{CancelToken, ChunkSender, KvClient, KvReply, ProgressSender, ProviderCallCtx, ToolCallCtx};
+use crate::ctx::{
+    CancelToken, ChunkSender, KvClient, KvReply, ProgressSender, ProviderCallCtx, ToolCallCtx,
+};
 use crate::traits::{
-    PluginEventSink, PluginHook, PluginProvider, PluginTool, ProviderResult,
-    ToolOutput,
+    PluginEventSink, PluginHook, PluginProvider, PluginTool, ProviderResult, ToolOutput,
 };
-use crate::wire::{
-    read_host, write_plugin, HostMsg, PluginMsg, ProviderDecl, ToolSpec,
-};
+use crate::wire::{read_host, write_plugin, HostMsg, PluginMsg, ProviderDecl, ToolSpec};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{self, BufReader, Write};
@@ -47,27 +46,37 @@ pub struct Plugin {
 impl Plugin {
     /// Create a new plugin with the given name.
     pub fn new(name: impl Into<String>) -> Self {
-        Plugin { name: name.into(), tools: vec![], provider: None, hooks: vec![], sinks: vec![] }
+        Plugin {
+            name: name.into(),
+            tools: vec![],
+            provider: None,
+            hooks: vec![],
+            sinks: vec![],
+        }
     }
 
     /// Register a tool.
     pub fn tool(mut self, t: impl PluginTool + 'static) -> Self {
-        self.tools.push(Box::new(t)); self
+        self.tools.push(Box::new(t));
+        self
     }
 
     /// Register a provider. A plugin may have at most one.
     pub fn provider(mut self, p: impl PluginProvider + 'static) -> Self {
-        self.provider = Some(Box::new(p)); self
+        self.provider = Some(Box::new(p));
+        self
     }
 
     /// Register a hook handler.
     pub fn hook(mut self, h: impl PluginHook + 'static) -> Self {
-        self.hooks.push(Box::new(h)); self
+        self.hooks.push(Box::new(h));
+        self
     }
 
     /// Register an event sink.
     pub fn event_sink(mut self, s: impl PluginEventSink + 'static) -> Self {
-        self.sinks.push(Box::new(s)); self
+        self.sinks.push(Box::new(s));
+        self
     }
 
     /// Perform the handshake, then block dispatching messages forever.
@@ -92,13 +101,13 @@ type KvPending = Arc<Mutex<HashMap<u64, mpsc::SyncSender<KvReply>>>>;
 type ApiPending = Arc<Mutex<HashMap<u64, mpsc::SyncSender<crate::ctx::ApiReply>>>>;
 
 struct Runner {
-    name:       String,
-    tools:      Arc<Vec<Box<dyn PluginTool>>>,
-    provider:   Arc<Option<Box<dyn PluginProvider>>>,
-    hooks:      Arc<Vec<Box<dyn PluginHook>>>,
-    sinks:      Arc<Vec<Box<dyn PluginEventSink>>>,
-    writer:     SharedWriter,
-    cancels:    CancelMap,
+    name: String,
+    tools: Arc<Vec<Box<dyn PluginTool>>>,
+    provider: Arc<Option<Box<dyn PluginProvider>>>,
+    hooks: Arc<Vec<Box<dyn PluginHook>>>,
+    sinks: Arc<Vec<Box<dyn PluginEventSink>>>,
+    writer: SharedWriter,
+    cancels: CancelMap,
     kv_pending: KvPending,
     kv_next_id: Arc<AtomicU64>,
     api_pending: ApiPending,
@@ -109,13 +118,13 @@ impl Runner {
     fn new(p: Plugin) -> Self {
         let stdout: Box<dyn Write + Send> = Box::new(io::stdout());
         Runner {
-            name:       p.name,
-            tools:      Arc::new(p.tools),
-            provider:   Arc::new(p.provider),
-            hooks:      Arc::new(p.hooks),
-            sinks:      Arc::new(p.sinks),
-            writer:     Arc::new(Mutex::new(stdout)),
-            cancels:    Arc::new(Mutex::new(HashMap::new())),
+            name: p.name,
+            tools: Arc::new(p.tools),
+            provider: Arc::new(p.provider),
+            hooks: Arc::new(p.hooks),
+            sinks: Arc::new(p.sinks),
+            writer: Arc::new(Mutex::new(stdout)),
+            cancels: Arc::new(Mutex::new(HashMap::new())),
             kv_pending: Arc::new(Mutex::new(HashMap::new())),
             // Use a high base to avoid ID collision with hook call IDs (which start at 1).
             kv_next_id: Arc::new(AtomicU64::new(1_000_000)),
@@ -137,7 +146,9 @@ impl Runner {
     }
 
     fn event_filters(&self) -> Vec<String> {
-        let mut out: Vec<String> = self.sinks.iter()
+        let mut out: Vec<String> = self
+            .sinks
+            .iter()
             .flat_map(|s| s.event_filter().into_iter().map(|s| s.to_string()))
             .collect();
         out.dedup();
@@ -145,7 +156,9 @@ impl Runner {
     }
 
     fn hook_names(&self) -> Vec<String> {
-        let mut out: Vec<String> = self.hooks.iter()
+        let mut out: Vec<String> = self
+            .hooks
+            .iter()
             .flat_map(|h| h.hooks().into_iter().map(|s| s.to_string()))
             .collect();
         out.dedup();
@@ -154,8 +167,12 @@ impl Runner {
 
     fn capabilities(&self) -> Vec<String> {
         let mut caps = vec![];
-        if self.has_streaming()  { caps.push("streaming".to_string()); }
-        if self.has_cancelable() { caps.push("cancelable".to_string()); }
+        if self.has_streaming() {
+            caps.push("streaming".to_string());
+        }
+        if self.has_cancelable() {
+            caps.push("cancelable".to_string());
+        }
         caps
     }
 
@@ -201,18 +218,21 @@ impl Runner {
                 eprintln!("[kn9t-plugin-sdk] unsupported proto {proto}");
                 return;
             }
-            _ => { eprintln!("[kn9t-plugin-sdk] expected hello"); return; }
+            _ => {
+                eprintln!("[kn9t-plugin-sdk] expected hello");
+                return;
+            }
         };
         let _ = host_hello; // consumed above via pattern
 
         // 2. Send plugin hello
         self.write_msg(&PluginMsg::Hello {
-            name:         self.name.clone(),
+            name: self.name.clone(),
             capabilities: self.capabilities(),
-            hooks:        self.hook_names(),
-            tools:        self.tool_specs(),
-            provider:     self.provider_decl(),
-            events:       self.event_filters(),
+            hooks: self.hook_names(),
+            tools: self.tool_specs(),
+            provider: self.provider_decl(),
+            events: self.event_filters(),
         });
 
         // 3. Wrap self in Arc for sharing across dispatch threads
@@ -236,7 +256,8 @@ impl Runner {
                 }
 
                 HostMsg::Event { payload } => {
-                    let kind = payload.get("kind")
+                    let kind = payload
+                        .get("kind")
                         .and_then(|k| k.as_str())
                         .unwrap_or("unknown")
                         .to_string();
@@ -253,14 +274,24 @@ impl Runner {
                 }
 
                 // KvResult: route reply to the waiting KvClient channel.
-                HostMsg::KvResult { id, value, ok, error } => {
+                HostMsg::KvResult {
+                    id,
+                    value,
+                    ok,
+                    error,
+                } => {
                     let reply = KvReply { value, ok, error };
                     if let Some(tx) = runner.kv_pending.lock().unwrap().remove(&id) {
                         let _ = tx.send(reply);
                     }
                 }
 
-                HostMsg::ApiResult { id, result, ok, error } => {
+                HostMsg::ApiResult {
+                    id,
+                    result,
+                    ok,
+                    error,
+                } => {
                     let reply = crate::ctx::ApiReply { ok, result, error };
                     if let Some(tx) = runner.api_pending.lock().unwrap().remove(&id) {
                         let _ = tx.send(reply);
@@ -293,7 +324,11 @@ impl Runner {
         // Plugin protocol: {"tool": "<name>", "args": {...}, "session_id": "..."}
         let name = payload.get("tool").and_then(|n| n.as_str()).unwrap_or("");
         let args = payload.get("args").cloned().unwrap_or(Value::Null);
-        let session = payload.get("session_id").or_else(|| payload.get("session")).and_then(|v| v.as_str()).map(|s| s.to_string());
+        let session = payload
+            .get("session_id")
+            .or_else(|| payload.get("session"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         let tool = self.tools.iter().find(|t| t.spec().name == name);
         let tool = match tool {
@@ -325,7 +360,9 @@ impl Runner {
     }
 
     fn send_tool_done(&self, id: u64, output: ToolOutput) {
-        let content: Vec<Value> = output.content.iter()
+        let content: Vec<Value> = output
+            .content
+            .iter()
             .map(|b| serde_json::to_value(b).unwrap_or(Value::Null))
             .collect();
         let body = serde_json::json!({
@@ -387,7 +424,10 @@ impl Runner {
         for h in self.hooks.iter() {
             if h.hooks().iter().any(|n| *n == hook) {
                 let reply_body = h.call(hook, &payload);
-                self.write_msg(&PluginMsg::Result { id, body: reply_body });
+                self.write_msg(&PluginMsg::Result {
+                    id,
+                    body: reply_body,
+                });
                 return;
             }
         }
@@ -401,14 +441,14 @@ impl Runner {
 
 fn default_hook_reply(hook: &str) -> Value {
     match hook {
-        "before_tool_call"       => serde_json::json!({ "action": "allow" }),
-        "after_tool_call"        => serde_json::json!({ "action": "keep" }),
-        "before_request"         => serde_json::json!({ "action": "keep" }),
+        "before_tool_call" => serde_json::json!({ "action": "allow" }),
+        "after_tool_call" => serde_json::json!({ "action": "keep" }),
+        "before_request" => serde_json::json!({ "action": "keep" }),
         "should_stop_after_turn" => serde_json::json!({ "action": "continue" }),
-        "prepare_next_turn"      => serde_json::json!({ "action": "keep" }),
-        "get_steering"           => serde_json::json!({ "messages": [] }),
-        "get_followup"           => serde_json::json!({ "messages": [] }),
-        "get_api_key"            => serde_json::json!({ "key": null }),
-        _                        => serde_json::json!({}),
+        "prepare_next_turn" => serde_json::json!({ "action": "keep" }),
+        "get_steering" => serde_json::json!({ "messages": [] }),
+        "get_followup" => serde_json::json!({ "messages": [] }),
+        "get_api_key" => serde_json::json!({ "key": null }),
+        _ => serde_json::json!({}),
     }
 }

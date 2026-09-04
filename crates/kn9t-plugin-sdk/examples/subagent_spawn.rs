@@ -11,7 +11,7 @@
 //! In production this binary would be built as `kn9t-subagent-rs` and dropped
 //! into `~/.kn9t/plugins/`.
 
-use kn9t_plugin_sdk::{Plugin, subagent::SubagentTool};
+use kn9t_plugin_sdk::{subagent::SubagentTool, Plugin};
 
 fn main() {
     Plugin::new("kn9t-subagent-rs")
