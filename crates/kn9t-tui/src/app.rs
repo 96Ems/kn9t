@@ -28,7 +28,7 @@ use crate::message_handler::Transcript;
 use crate::model_selector::ModelSelector;
 use crate::session_manager::{session_matches, SessionManager};
 use crate::slash::{fuzzy_match, SlashState};
-use crate::token_tracker::{TokenCounts, TokenTracker};
+use crate::token_tracker::TokenTracker;
 use crate::ui::layout::LayoutState;
 use crate::ui::render::render;
 use crate::which_key::WhichKeyPanel;
@@ -40,10 +40,12 @@ pub use crate::message_handler::{Message, ToolCard};
 pub use crate::model_selector::ModelEntry;
 pub use crate::session_manager::SessionEntry;
 
-/// Tool info for sidebar.
+/// Tool info for sidebar and tools manager overlay.
 #[derive(Debug, Clone)]
 pub struct ToolEntry {
     pub name: String,
+    pub description: String,
+    pub plugin: Option<String>,
     pub enabled: bool,
 }
 
@@ -58,6 +60,8 @@ pub enum Overlay {
     CommandPalette,
     ModelSelect { selected: usize, filter: String },
     SessionSelect { selected: usize, filter: String },
+    /// Tools manager: enable/disable tools per session, grouped by plugin.
+    ToolsManager { selected: usize, filter: String },
 }
 
 /// Option for choice/multi questions.
@@ -160,31 +164,13 @@ impl InteractionState {
                 header,
                 selected: obj.get("default").and_then(|v| v.as_bool()).unwrap_or(true),
             },
+            // Unknown `type`. Note there is no `choices` handling here: the
+            // legacy `{question, choices}` shape is normalized into
+            // `{type:"choice", options}` by the plugin itself
+            // (kn9t-ask-user executeLegacy), so it never reaches the TUI.
+            // Keeping a second decoder here would be the old/new format
+            // duplication AGENTS.md 10 forbids.
             _ => {
-                // Legacy format: choices array without type field
-                if let Some(choices) = obj.get("choices").and_then(|v| v.as_array()) {
-                    let options: Vec<QuestionOption> = choices
-                        .iter()
-                        .filter_map(|c| c.as_str())
-                        .map(|s| QuestionOption {
-                            label: s.to_string(),
-                            value: s.to_string(),
-                            description: None,
-                        })
-                        .collect();
-                    if !options.is_empty() {
-                        return Self::Choice {
-                            question,
-                            header,
-                            options,
-                            selected: 0,
-                            allow_custom: true,
-                            custom_input: String::new(),
-                            in_custom_mode: false,
-                        };
-                    }
-                }
-                // Fallback to text if question exists
                 if !question.is_empty() {
                     Self::Text {
                         question,
@@ -457,11 +443,16 @@ impl App {
         Ok(())
     }
 
-    /// Refresh tools sidebar from server (GET /tools — Phase 4).
+    /// Refresh tools sidebar from server (GET /tools?session= — Phase 4).
     pub fn refresh_tools(&mut self, client: &Client) {
-        match client.get_tools() {
-            Ok(names) => {
-                self.tools = names.into_iter().map(|n| ToolEntry { name: n, enabled: true }).collect();
+        let session_id = if self.session.state.session_id.is_empty() {
+            None
+        } else {
+            Some(self.session.state.session_id.as_str())
+        };
+        match client.get_tools(session_id) {
+            Ok(entries) => {
+                self.tools = entries;
                 crate::log!("TOOLS: refreshed {} tools", self.tools.len());
             }
             Err(e) => {
@@ -1618,6 +1609,57 @@ impl App {
                     _ => {}
                 }
             }
+            Some(Overlay::ToolsManager { ref mut selected, ref mut filter }) => {
+                // Tools are grouped by plugin; flat list for selection.
+                // Filter matches on tool name or plugin name.
+                let filtered: Vec<usize> = self.tools
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| {
+                        filter.is_empty()
+                            || fuzzy_match(&t.name, filter)
+                            || t.plugin.as_ref().map(|p| fuzzy_match(p, filter)).unwrap_or(false)
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+
+                match key.code {
+                    KeyCode::Esc => {
+                        self.overlay = None;
+                    }
+                    KeyCode::Up => {
+                        if *selected > 0 {
+                            *selected -= 1;
+                        } else if !filtered.is_empty() {
+                            *selected = filtered.len() - 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if *selected < filtered.len().saturating_sub(1) {
+                            *selected += 1;
+                        } else {
+                            *selected = 0;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        filter.pop();
+                        *selected = 0;
+                    }
+                    KeyCode::Char(' ') | KeyCode::Enter => {
+                        // Toggle selected tool's enabled state.
+                        if let Some(&tool_idx) = filtered.get(*selected) {
+                            self.tools[tool_idx].enabled = !self.tools[tool_idx].enabled;
+                            // Sync to server.
+                            self.sync_tools_to_server();
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        filter.push(c);
+                        *selected = 0;
+                    }
+                    _ => {}
+                }
+            }
             None => {}
         }
     }
@@ -2150,8 +2192,13 @@ impl App {
         let right_start = self.term_width.saturating_sub(24); // RIGHT_EXPANDED width
         if x >= right_start {
             // Sidebar click — refresh tools from server instead of toggling dead state.
-            if let Some(names) = self.client.as_ref().and_then(|c| c.get_tools().ok()) {
-                self.tools = names.into_iter().map(|n| ToolEntry { name: n, enabled: true }).collect();
+            let session_id = if self.session.state.session_id.is_empty() {
+                None
+            } else {
+                Some(self.session.state.session_id.as_str())
+            };
+            if let Some(entries) = self.client.as_ref().and_then(|c| c.get_tools(session_id).ok()) {
+                self.tools = entries;
             }
             return;
         }
@@ -2310,63 +2357,6 @@ impl App {
         }
     }
 
-    /// Extract text, tool calls, tool results, and image count from wire content blocks.
-    /// Returns (text, tool_calls, tool_results, image_count)
-    fn extract_message_content(content: &[crate::wire::WireContent]) 
-        -> (String, Vec<(String, String, String)>, Vec<(String, String, bool)>, usize) 
-    {
-        use crate::wire::WireContent;
-        
-        let mut text_parts = Vec::new();
-        let mut tool_calls = Vec::new();
-        let mut tool_results = Vec::new();
-        let mut image_count = 0;
-        
-        for c in content {
-            match c {
-                WireContent::Text { text } => text_parts.push(text.as_str()),
-                WireContent::Thinking { text } => text_parts.push(text.as_str()),
-                WireContent::ToolCall { id, name, args_json } => {
-                    tool_calls.push((id.clone(), name.clone(), args_json.clone()));
-                }
-                WireContent::ToolResult { id, content: result_content, is_error } => {
-                    // Extract text from tool result content.
-                    let output: String = result_content.iter().filter_map(|rc| {
-                        match rc {
-                            WireContent::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        }
-                    }).collect::<Vec<_>>().join("\n");
-                    tool_results.push((id.clone(), output, *is_error));
-                }
-                WireContent::Image { .. } => {
-                    image_count += 1;
-                }
-            }
-        }
-        
-        (text_parts.join("\n"), tool_calls, tool_results, image_count)
-    }
-
-    /// Condense <system-reminder> messages to a summary line.
-    /// Keeps the source attribute but removes the full content.
-    fn condense_system_reminder(text: &str) -> String {
-        // Check for <system-reminder source="...">
-        if let Some(start) = text.find("<system-reminder") {
-            if let Some(source_start) = text[start..].find("source=\"") {
-                let source_begin = start + source_start + 8; // skip 'source="'
-                if let Some(source_end) = text[source_begin..].find('"') {
-                    let source = &text[source_begin..source_begin + source_end];
-                    return format!("ℹ {}", source);
-                }
-            }
-            // Fallback: found tag but couldn't parse source
-            return "ℹ system-reminder injected".to_string();
-        }
-        // Not a system-reminder, return as-is
-        text.to_string()
-    }
-
     fn send_prompt(&mut self) {
         // Allow sending with just images (no text required).
         if self.input.trim().is_empty() && self.staged_images.is_empty() {
@@ -2410,6 +2400,36 @@ impl App {
             let _ = client.ui_respond(id, payload);
             self.active_interaction_id = None;
             self.overlay = None;
+        }
+    }
+
+    /// Sync the current tools enabled/disabled state to the server.
+    fn sync_tools_to_server(&mut self) {
+        let session_id = self.session.state.session_id.clone();
+        if session_id.is_empty() {
+            return;
+        }
+        let lease = self.session.state.lease.clone();
+        let Some(holder) = lease else { return };
+        let Some(client) = &self.client else { return };
+
+        // Collect disabled tool names.
+        let disabled: Vec<String> = self.tools
+            .iter()
+            .filter(|t| !t.enabled)
+            .map(|t| t.name.clone())
+            .collect();
+
+        crate::log!("TOOLS: syncing disabled={:?} to server", disabled);
+        match client.set_tools(&session_id, &holder, &disabled) {
+            Ok(reenabled) => {
+                if !reenabled.is_empty() {
+                    crate::log!("TOOLS: reenabled={:?}", reenabled);
+                }
+            }
+            Err(e) => {
+                crate::log!("TOOLS: sync failed: {:?}", e);
+            }
         }
     }
 
@@ -3133,6 +3153,20 @@ impl App {
                         Err(e) => self.transcript.push(Message::new("system", format!("Export failed: {}", e))),
                     }
                 }
+            }
+            "tools_manager" => {
+                // Refresh tools to get current disabled state, then open overlay.
+                if let Some(client) = &self.client {
+                    let session_id = if self.session.state.session_id.is_empty() {
+                        None
+                    } else {
+                        Some(self.session.state.session_id.as_str())
+                    };
+                    if let Ok(entries) = client.get_tools(session_id) {
+                        self.tools = entries;
+                    }
+                }
+                self.overlay = Some(Overlay::ToolsManager { selected: 0, filter: String::new() });
             }
             
             // Settings

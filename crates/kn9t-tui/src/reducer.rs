@@ -596,14 +596,49 @@ mod tests {
     #[test]
     fn interaction_request_sets_overlay() {
         let mut s = State::default();
-        reduce(&mut s, SseFrame::InteractionRequest { id: 99, plugin: "kn9t-ask-user".into(), payload: serde_json::json!({"question":"choose?","choices":["a","b"]}) });
+        // The payload shape the plugin actually emits: kn9t-ask-user normalizes
+        // its legacy `{question, choices}` args into a typed question before the
+        // request ever reaches the TUI, so `type` is always present.
+        reduce(&mut s, SseFrame::InteractionRequest {
+            id: 99,
+            plugin: "kn9t-ask-user".into(),
+            payload: serde_json::json!({
+                "type": "choice",
+                "question": "choose?",
+                "options": [{"label": "a"}, {"label": "b"}],
+            }),
+        });
         assert_eq!(s.active_interaction_id, Some(99));
         match &s.overlay {
             Some(crate::app::Overlay::Interaction { id, plugin, state }) => {
                 assert_eq!(*id, 99);
                 assert_eq!(plugin, "kn9t-ask-user");
-                // Legacy format with choices should parse as Choice type
-                assert!(matches!(state, crate::app::InteractionState::Choice { .. }));
+                match state {
+                    crate::app::InteractionState::Choice { question, options, .. } => {
+                        assert_eq!(question, "choose?");
+                        assert_eq!(options.len(), 2);
+                        assert_eq!(options[0].label, "a");
+                    }
+                    other => panic!("expected Choice, got {other:?}"),
+                }
+            }
+            other => panic!("expected Interaction overlay, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn interaction_request_without_type_falls_back_to_text() {
+        // An untyped payload that still carries a question must not silently
+        // become Generic; it degrades to a text prompt.
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::InteractionRequest {
+            id: 7,
+            plugin: "other".into(),
+            payload: serde_json::json!({"question": "free form?"}),
+        });
+        match &s.overlay {
+            Some(crate::app::Overlay::Interaction { state, .. }) => {
+                assert!(matches!(state, crate::app::InteractionState::Text { .. }));
             }
             other => panic!("expected Interaction overlay, got {:?}", other),
         }
