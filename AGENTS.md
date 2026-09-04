@@ -160,9 +160,9 @@ most important thing to record in the changelog.
 
 ## 8. Environment
 
-- OS: Windows (win32), shell PowerShell 5.1. The `bash` tool classifier (stage 03) is
-  **cross-platform** (pwsh + POSIX grammars) precisely because development is here — see
-  `spec/03-react-tools.md` R-TOOL-080.
+- OS: Windows (win32), shell PowerShell 5.1. The `bash` tool runs the host shell; risk
+  judgement lives in a policy plugin, not in kn9t (ADR-0008 deleted the in-tree pwsh/POSIX
+  classifiers) — see `spec/03-react-tools.md` R-TOOL-080/090.
 - Deliverables live inside `C:\_ddm\projects\Agents\kn9t\`. Never write final artifacts to
   temp; scratch may use temp.
 - Rust toolchain: pin an edition (2021) in the workspace; build with `-D warnings`.

@@ -47,7 +47,7 @@ R-<AREA>-<NNN>
 | `CORE` | 01 | types, events, bus, traits, breakpoints |
 | `RPLY` | 02 | replay provider, fixtures |
 | `RCT` | 03 | ReAct loop, cancellation, hooks integration |
-| `TOOL` | 03 | tool trait, read/write/edit/bash, classifier |
+| `TOOL` | 03 | tool trait, read/write/edit/bash, risk seam (`HookVeto`) |
 | `STOR` | 04 | schema, projections, reproject, sessions, blobs |
 | `PCORE` | 05 | provider-core: http, sse, assemble, retry, cache encode |
 | `OAI` | 05 | openai/LiteLLM provider |
@@ -135,7 +135,7 @@ blocked. Each is expanded in its stage file.
 
 | topic | DESIGN | decision | where specified |
 |---|---|---|---|
-| shell target | §18.6 | cross-platform: runtime-selected PowerShell **and** POSIX classifiers | 03, §TOOL bash |
+| shell target | §18.6 | cross-platform: `bash` runs the host shell; risk judgement is the policy plugin's, not kn9t's (ADR-0008 superseded the in-tree POSIX/PowerShell classifiers) | 03, §TOOL bash |
 | subagent spawn | §18.2 | spawn/return mechanism + budget-cap fully specified; child tool subset is a **config list**, no hardcoded default | 08, §PLUG spawn |
 | blob GC | §18.4 | **refcount** column on `blobs`, decremented on session delete, row dropped at zero | 04, §STOR blobs |
 | session titling | §18.3 | **auto-title** after first assistant turn, best-effort, silent on failure, `UsageKind::Title` | 06, §SRV titling |

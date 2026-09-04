@@ -229,56 +229,70 @@ without tools to call.
 > `write` to a **new** path is not. `write` is `parallel_safe() == false`.
 > **Accept:** `cargo test tool::write_guard`.
 
-## B.4 `bash` and the command classifier
+## B.4 `bash` and the risk seam
 
-> **R-TOOL-070 → DESIGN §10.1, §18.6**
-> `bash` MUST NOT self-authorize; it emits its command through `policy.check` and executes
-> only on `Allow`. It is `parallel_safe() == false`. Cancellation (`Cancel`) MUST `kill` the
-> child process when signalled.
+> **Superseded by ADR-0008.** R-TOOL-080/090/095 previously specified an in-tree shell
+> command classifier (`classify.rs`, `Classification { AllowReadOnly, Ask, HardDeny }`) with
+> two grammars and a seven-step decision pipeline. ADR-0008 moved risk judgement **out** of
+> kn9t into a policy plugin and deleted that module in `5b65819`; the requirements below
+> describe the mechanism that replaced it. The old text named `tool::classify_posix`,
+> `tool::classify_pwsh` and `tool::classify_pipeline`, none of which exist — see 96E-31.
+> Historical detail lives in ADR-0008 and DESIGN §10.1.
 
-> **R-TOOL-080 → DESIGN §10.1, §18.6 (decision: cross-platform, README §6)**
-> The command classifier MUST support **two shell grammars**, selected at runtime by the
-> configured/detected shell:
-> - **POSIX** (`sh`/`bash`): segment separators `;`, `&&`, `||`, `|`, newline; command
->   substitution `$(...)` and backticks; subshell `(...)`; redirections `>`,`>>`,`<`,`>|`;
->   `sh -c`/`bash -c` string execution.
-> - **PowerShell** (`pwsh`/`powershell`): statement separators `;` and newline; pipeline
->   `|`; `&&`/`||` (PS7 pipeline chain operators); subexpression `$(...)` and `@(...)`;
->   redirections `>`,`>>`,`2>`,`*>`; `Invoke-Expression`/`iex`; `-Command`/`-c` string
->   execution; call operator `&`.
-> The two grammars share the same **decision pipeline** (R-TOOL-090); only tokenization
-> differs.
+> **R-TOOL-070 → DESIGN §10.1, §18.6, ADR-0008**
+> `bash` MUST NOT self-authorize. It carries no risk vocabulary of its own: the decision
+> arrives from the `before_tool_call` hook, and the tool executes only when the composed
+> reply is `Allow` (or `Replace`, on the substituted arguments). It is
+> `parallel_safe() == false`. Cancellation (`Cancel`) MUST `kill` the child process when
+> signalled.
+
+> **R-TOOL-080 → ADR-0008, DESIGN §13.3**
+> The risk vocabulary is `HookVeto`, defined in `kn9t-core` so both the loop and the plugin
+> host see it (GI-1):
 > ```rust
-> pub enum Shell { Posix, PowerShell }
-> pub fn classify(cmd: &str, shell: Shell, policy: &BashPolicy) -> Classification;
-> pub enum Classification { AllowReadOnly, Ask, HardDeny(String) }
+> #[serde(tag = "action", rename_all = "snake_case")]
+> pub enum HookVeto {
+>     Allow,
+>     Ask     { reason: String },
+>     Deny    { reason: String },
+>     Replace { args: serde_json::Value },
+> }
 > ```
-> **Accept:** `cargo test tool::classify_posix` and `tool::classify_pwsh` — parallel case
-> tables; each asserts the mutating-form of an otherwise-read command (`cat x > y`,
-> `Get-Content x > y`) resolves to `Ask`.
+> A policy plugin decides; kn9t routes. The variants are deliberately a superset of the
+> retired `Decision`, so no judgement has to be re-derived inside kn9t. **Which** commands
+> are risky is not specified here — that is plugin policy, deliberately outside the core.
 
-> **R-TOOL-090 → DESIGN §10.1**
-> The classifier decision pipeline MUST evaluate in this exact order (both grammars):
-> 1. split into segments; if **any** segment's `argv[0]` is absent from `allow_read` →
->    `Ask`;
-> 2. any redirection / `tee` / `dd` / command substitution / subshell present → `Ask`
->    (`cat x > y` is a write);
-> 3. in-place flags (`sed -i`, `perl -i`, `awk` redirect; PS equivalents) → `Ask`;
-> 4. `git`/`cargo`/`npm` with a subcommand outside `allow_read_sub` → `Ask`;
-> 5. `argv[0]` in `always_ask` → `Ask` (this is where every interpreter — `sh`, `bash`,
->    `pwsh`, `python`, `node`, `perl`, `iex`, `Invoke-Expression` — is listed, closing the
->    `sh -c 'rm -rf /'` / `iex '...'` bypass);
-> 6. `argv[0]` matches `never` → `HardDeny` (not presented as an approval prompt);
-> 7. otherwise → `AllowReadOnly`.
-> The `[policy.bash]` config shape (`allow_read`, `always_ask`, `never`,
-> `allow_read_sub`) is exactly DESIGN §10.1's TOML.
-> **Accept:** `cargo test tool::classify_pipeline` — one case per numbered rule, both
-> grammars; plus the `sh -c` and `iex` bypass cases resolve to `Ask`.
+> **R-TOOL-090 → ADR-0008, DESIGN §13.3–13.5**
+> Composition across N policy plugins MUST be **strictest-wins** by
+> `HookVeto::severity()`, ordered `Deny(2) > Ask(1) > Allow(0)`:
+> 1. `Replace` short-circuits and returns immediately — it rewrites the very arguments a
+>    later plugin would judge, so continuing would have plugins voting on different inputs.
+>    It ranks with `Allow` (severity 0): it permits the call, with edited arguments.
+> 2. Every other reply is compared by severity; the strictest survives.
+>
+> Strictest-wins rather than first-deny-wins is load-order independence: with `Ask` in the
+> vocabulary, short-circuiting on the first non-`Allow` would make the outcome depend on
+> plugin order, so the same command could prompt under one config and be denied under
+> another.
+> **Accept:** `cargo test -p kn9t-plugin plug::composition` — asserts `Deny` + `Allow`
+> composes to `Deny` regardless of order, alongside the pipeline and collect hooks.
 
-> **R-TOOL-095 → DESIGN §10.1**
-> The classifier is documented as a **heuristic, not a sandbox** (§10.1). This requirement
-> exists so no downstream code treats `AllowReadOnly` as a security guarantee; real
-> isolation is a container and out of scope.
+> **R-TOOL-095 → ADR-0008 decision 5**
+> Two failure postures, both deliberate and both load-bearing:
+> - **No policy plugin installed → fail-open.** The hook layer answers `Allow` and no
+>   approver is consulted. kn9t runs unguarded by design; ADR-0008 accepts this explicitly
+>   rather than shipping a default deny-list that would give the illusion of a sandbox.
+> - **`Ask` with no interactive client → fail-closed.** `DenyAllApprover` answers
+>   `Deny { "approval required (…), no approver configured" }`. A plugin asked for a human
+>   and there is no one to ask, so denying is the honest answer.
+>
+> Neither path is a sandbox. Nothing downstream may treat `Allow` as a security guarantee;
+> real isolation is a container and out of scope.
+> **Accept:** `cargo test -p kn9t-server --test acceptance approve` — 7 tests covering the
+> approval path end to end: `ApprovalRequest` → block → `POST /approve` with
+> `once|session|always` scope (`approve_resolves_blocked_policy`, `approve_session_caches`,
+> `approve_always_writes_config`), `Deny` never prompting (`approve_hard_deny_no_prompt`),
+> and the request-validation cases.
 
 ---
 
@@ -287,6 +301,8 @@ without tools to call.
 > **R-RCT-900 / R-TOOL-900 → DESIGN §16 gate G1**
 > Stage 3 is **done** when: `cargo test -p kn9t-react -p kn9t-tools` is green; **the full
 > ReAct loop runs end-to-end against `ReplayProvider` (02) with no network and no spend**,
-> executing at least one tool call and one compaction re-plan; both classifier grammars pass
-> their case tables; abort-in-stream and abort-in-tools leave a consistent transcript; and
-> GI-1/GI-3/GI-5 hold for both crates.
+> executing at least one tool call and one compaction re-plan; the risk seam composes
+> strictest-wins (`cargo test -p kn9t-plugin plug::composition`) and the approval path is
+> green end to end (`cargo test -p kn9t-server --test acceptance approve`);
+> abort-in-stream and abort-in-tools leave a consistent transcript; and GI-1/GI-3/GI-5 hold
+> for both crates.

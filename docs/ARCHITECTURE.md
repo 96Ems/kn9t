@@ -506,9 +506,9 @@ with `Ask` in the vocabulary, short-circuiting would make the outcome depend on 
    defeats is worse than an honest absence.
 2. `Approver` keeps `Ask`/`HardDeny` variants that nothing derives any more — they exist
    for the wire (`POST /approve`) and for old replayable events.
-3. **The spec is stale.** R-TOOL-070/080/090/095 still describe a classifier that no
-   longer exists. `TRACKING.md` flags this as SPEC-STALE; the tests those requirements
-   name are gone. See `§14 F1`.
+3. ~~**The spec is stale.**~~ R-TOOL-070/080/090/095 described a classifier that no longer
+   exists. **Fixed in 96E-31:** the four requirements now specify `HookVeto`, strictest-wins
+   composition, and both failure postures, and name tests that exist. See `§14 F1`.
 
 `policy.rs` carries `#![deny(clippy::unwrap_used)]` and `scripts/check-unwrap-trend.sh`
 hard-fails if a single bare `.unwrap()` reappears there. Enforcing an invariant on the
@@ -732,17 +732,22 @@ documented. Distribution is healthy: `kn9t-core` 48 inline + 24 integration, `kn
 
 Ordered by consequence. Nothing here blocks; several are cheap.
 
-### F1 — Spec is stale where ADR-0008 deleted code (highest)
+### F1 — Spec is stale where ADR-0008 deleted code (highest) — **FIXED (96E-31)**
 
-R-TOOL-070/080/090/095 describe a shell classifier that no longer exists, and name
-acceptance tests (`tool::classify_*`) that are deleted. `TRACKING.md` flags it as
-SPEC-STALE and `AGENTS.md §3` still lists the classifier in the build order. Because
-"a requirement is done only when its named test passes", four requirements are currently
-unverifiable by their own definition.
+R-TOOL-070/080/090/095 described a shell classifier that no longer exists, and named
+acceptance tests (`tool::classify_*`) that are deleted. Because "a requirement is done only
+when its named test passes", four requirements were unverifiable by their own definition —
+in the one area that governs whether `rm -rf /` executes.
 
-*Fix:* rewrite those four requirements to describe the `HookVeto` seam, or retire them and
-add `R-POLICY-*` for the plugin contract. Documentation debt, not code debt — but it is the
-kind that makes the next session distrust the tracker.
+*Fixed:* §B.4 is rewritten to describe the mechanism that ships — the `HookVeto` vocabulary,
+strictest-wins composition by `severity()` (and why not first-deny-wins: with `Ask` in the
+vocabulary, short-circuiting makes the outcome depend on plugin load order), `Replace`
+short-circuit semantics, and both failure postures (fail-open with no policy plugin
+installed, `DenyAllApprover` when a plugin asks for a human and none is attached). The IDs
+were kept with a `Superseded by ADR-0008` header rather than renumbered to `R-POLICY-*`, so
+existing cross-references keep resolving. Named tests are real and green:
+`plug::composition` and the 7 `srv::approve_*`. `AGENTS.md §3`'s build order turned out not
+to mention the classifier at all; the stale reference was in `AGENTS.md §7` (host platform).
 
 ### F2 — GI-1 has a dev-dependency hole
 

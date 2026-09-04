@@ -15,16 +15,17 @@ Phase 0–2 done (docs scaffolding, classifier+approvals, schema-first API contr
 **Last gate green:** stage 09 — R-CP-900 / R-ANTH-900 green. **ADR-0008 landed 2026-08-31** — policy
 judgement moved out of the server into a user-installed plugin. `crates/kn9t-server/src/classify.rs`
 (333 lines) and `tests/classify.rs` are **deleted**, superseding the "G1 restored" note that stood
-here: the classifier no longer exists, so R-TOOL-070/080/090/095 no longer describe the code and are
-**SPEC-STALE** pending rewrite (see CHANGELOG "Left undone" #1). The surviving mechanism
+here. **96E-31 rewrote R-TOOL-070/080/090/095** to describe the mechanism that actually ships —
+`HookVeto { Allow, Ask, Deny, Replace }`, strictest-wins composition, and the two failure postures
+(fail-open with no policy plugin, `DenyAllApprover` when nobody can be asked) — so the section is no
+longer SPEC-STALE and stage 03's gate is achievable as written. The surviving mechanism
 (`ApprovalRegistry`, `ApprovalCache`, `POST /approve`, `once|session|always`) is covered by
-`policy::*` 11 passed + `srv::approve_*` 5 passed.
-`cargo test --workspace`: **387 passed, 1 failed** (`srv::plugin_reload` — hardcoded Windows-harness
-`panic!`, pre-existing). The count dropped from 398 because ADR-0008 deleted the classifier tests
-(3) and the judgement tests that exercised `[policy.bash]` / modes / `ToolPolicy` patterns; the
-approval-*mechanism* tests were rewritten, not dropped. Plus the external
-`plugins/kn9t-custom-provider` crate: **26 passed, 0 failed** (run separately — it is no longer a
-workspace member; `cd plugins/kn9t-custom-provider && cargo test`).
+`policy::*` 11 passed + `srv::approve_*` 7 passed, both now named by the requirements.
+`cargo test --workspace`: **493 passed, 0 failed, 1 ignored** — green on Windows since 96E-35 turned
+`srv::plugin_reload`'s hardcoded `panic!` into a documented `#[ignore]` and 96E-38 fixed a real
+`Cancel::wait_timeout` bug (spurious-wakeup early return) that had been read as a flaky test. Plus
+the external `plugins/kn9t-custom-provider` crate: **26 passed, 0 failed** (run separately — it is no
+longer a workspace member; `cd plugins/kn9t-custom-provider && cargo test`).
 Verified 2026-08-31 via `cargo test --workspace --no-fail-fast` + `cargo run -p xtask -- generate`
 (schema regenerated, Go/Python stubs committed) + GI-1 dependency check.
 **2026-09-02 (post-batch):** 12 commits landed (P1 `76205ff`, 96E-8..16 `72f5ef6..735e7f2`, TUI
@@ -73,6 +74,12 @@ detects dead clients. `POST /stop` + `kn9t stop` for graceful shutdown. SPEC-OPE
    do not exist. `AllowPolicy::check()` returns `Allow` unconditionally. The `sh -c 'rm -rf /'`
    bypass (R-TOOL-090 rule 5) is currently open. Gate G1 is **no longer green** for
    R-TOOL-070/080/090/095.
+   > **Resolved by ADR-0008 + 96E-31.** The deletion was the intended direction, not a
+   > regression: risk judgement is a policy plugin's job. The spec now describes `HookVeto`
+   > and names tests that exist (`plug::composition`, `srv::approve_*`). The `sh -c` bypass
+   > is not "open" so much as **out of scope by decision** — with no policy plugin installed
+   > kn9t fails open and says so (ADR-0008 decision 5); a classifier that `sh -c` defeats
+   > would be worse than an honest absence.
 2. **Dead APPROVALS map.** `static APPROVALS` in turn.rs is declared and inserted into but
    never read. Nothing emits `Event::ApprovalRequest`. The TUI's approval overlay is dead code.
 3. **Three-way API drift.** API.md, the server, and wire.rs disagree on nearly every route.
@@ -255,9 +262,17 @@ DB-02 resolved: assemble delegated to kn9t-provider-core (kn9t-react dep swapped
 | R-TOOL-080 | pwsh + POSIX classifiers | `classify_posix`, `classify_pwsh` | ☑ (`crates/kn9t-server/tests/classify.rs:18,28` 3 passed) |
 | R-TOOL-090 | classifier decision pipeline | `classify_pipeline` | ☑ (7-rule pipeline, `sh -c`/`iex` bypass Ask) |
 | R-TOOL-095 | heuristic not sandbox | (doc in `classify.rs:1`) | ☑ (R-TOOL-095 documented, not a sandbox) |
-| **R-RCT-900 / R-TOOL-900** | **GATE G1** | full loop vs replay, no net/spend | ☑ (`cargo test -p kn9t-react -p kn9t-server` green; replay + classifier green) |
+| **R-RCT-900 / R-TOOL-900** | **GATE G1** | full loop vs replay, no net/spend | ☑ (`cargo test -p kn9t-react -p kn9t-server` green; replay + risk seam green) |
 
-> **2026-08-31 update:** The classifier was restored to `crates/kn9t-server/src/classify.rs` (333 lines, per ADR-0001 server owns approval) with `BashPolicy` + `Shell::Posix|PowerShell` + `classify()` and 3 acceptance tests in `crates/kn9t-server/tests/classify.rs`. The `5b65819` deletion reference above was from the pre-restore review; gate G1 is now green again. Spec names `tool::classify_*` but real path is `cargo test -p kn9t-server --test classify` (`classify_posix`/`classify_pwsh`/`classify_pipeline`). `AllowPolicy` replaced by `ConfigPolicy`/`InteractivePolicy` which emit `ApprovalRequest` per DESIGN §10.
+> **2026-08-31 update (superseded):** The classifier was restored to
+> `crates/kn9t-server/src/classify.rs` (333 lines, per ADR-0001 server owns approval) with
+> `BashPolicy` + `Shell::Posix|PowerShell` + `classify()` and 3 acceptance tests. **ADR-0008
+> then deleted it again, permanently**, moving judgement to a policy plugin — so this note
+> describes a state that no longer exists and is kept only for the history. `classify_posix`/
+> `classify_pwsh`/`classify_pipeline` are gone; G1's risk-seam leg is now
+> `cargo test -p kn9t-plugin plug::composition` plus
+> `cargo test -p kn9t-server --test acceptance approve` (96E-31). `AllowPolicy` was replaced
+> by `ConfigPolicy`/`InteractivePolicy`, which emit `ApprovalRequest` per DESIGN §10.
 
 ### Stage 04 — kn9t-store  (`spec/04-store.md`)  — DONE (gate G2 green)
 All 18 requirements implemented; 18 named `stor::*` acceptance tests pass (plus 1 debug helper); build clean; GI-1/GI-4 verified; no tokenizer dep.
