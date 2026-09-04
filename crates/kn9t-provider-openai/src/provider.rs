@@ -26,6 +26,19 @@ pub struct OpenAiConfig {
     /// R-OAI-050: deployment-specific headers injected verbatim on every request.
     /// Resolved by the config layer (stage 06); the provider is deployment-unaware.
     pub extra_headers:   Vec<(String, String)>,
+    /// Per-model quirk overrides, keyed by `ModelRef::id` (DESIGN 8.3).
+    ///
+    /// One gateway commonly fronts models that disagree on wire details -- one
+    /// wants `reasoning = "adaptive"`, another `"none"`; one cannot stream. The
+    /// provider is instantiated once per provider *name* and resolved that way
+    /// (`get_provider(&model.r#ref.provider)`), so a second provider instance is
+    /// not an option: it would have to be registered under a different name, and
+    /// that name is what lands in `ModelRef`, `ModelChanged` events, and the DB.
+    ///
+    /// So the override travels with the config and is applied per request via
+    /// `quirks_for`. Absent an entry the provider-level `quirks` are used
+    /// unchanged, which is the common case.
+    pub model_quirks:    std::collections::HashMap<String, Quirks>,
 }
 
 impl Default for OpenAiConfig {
@@ -40,6 +53,7 @@ impl Default for OpenAiConfig {
             tls_insecure:    false,
             dump_request:    false,
             extra_headers:   Vec::new(),
+            model_quirks:    std::collections::HashMap::new(),
         }
     }
 }
@@ -74,6 +88,18 @@ impl OpenAiProvider {
         h
     }
 
+    /// Quirks in effect for one request: the per-model override when the config
+    /// declared one, else the provider-level set (DESIGN 8.3).
+    ///
+    /// Keyed on `ModelRef::id` -- the stable config-facing id -- not `api_id`,
+    /// which is the wire name and may repeat across entries.
+    pub fn quirks_for(&self, model: &ModelRef) -> &Quirks {
+        self.config
+            .model_quirks
+            .get(&model.id)
+            .unwrap_or(&self.config.quirks)
+    }
+
     /// Make one streaming attempt; returns the SSE chunk iterator.
     fn attempt(
         &self,
@@ -81,7 +107,7 @@ impl OpenAiProvider {
         model_ref: ModelRef,
         cancel: Option<Cancel>,
     ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
-        let body = build_request(req, &self.config.quirks, &req.model.cache, self.config.dump_request);
+        let body = build_request(req, self.quirks_for(&req.model.r#ref), &req.model.cache, self.config.dump_request);
         let body_bytes = serde_json::to_vec(&body)
             .map_err(|e| ProvErr::Connect(format!("serialize: {e}")))?;
 
@@ -112,7 +138,7 @@ impl OpenAiProvider {
             });
         }
 
-        let quirks = self.config.quirks.clone();
+        let quirks = self.quirks_for(&req.model.r#ref).clone();
         let streaming = quirks.streaming;
 
         if streaming {

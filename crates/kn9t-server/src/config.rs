@@ -197,6 +197,40 @@ pub struct RawQuirks {
     pub trim_trailing_whitespace: Option<bool>,
 }
 
+impl RawQuirks {
+    /// True when at least one field was set in the TOML.
+    ///
+    /// Lets the config layer tell "no `[model.quirks]` table" apart from one that
+    /// happens to restate the provider defaults, so only real overrides are
+    /// recorded and logged.
+    fn is_set(&self) -> bool {
+        let RawQuirks {
+            max_tokens_field,
+            system_role,
+            usage_in_stream,
+            finish_reason,
+            reasoning,
+            tool_result_name,
+            thinking_style,
+            thinking_replay,
+            require_tools,
+            streaming,
+            trim_trailing_whitespace,
+        } = self;
+        max_tokens_field.is_some()
+            || system_role.is_some()
+            || usage_in_stream.is_some()
+            || finish_reason.is_some()
+            || reasoning.is_some()
+            || tool_result_name.is_some()
+            || thinking_style.is_some()
+            || thinking_replay.is_some()
+            || require_tools.is_some()
+            || streaming.is_some()
+            || trim_trailing_whitespace.is_some()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RawModel {
     pub provider:          String,
@@ -317,11 +351,29 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                 let extra_headers = resolve_headers(&rp.headers, name);
                 let quirks = build_http_quirks(&rp.quirks);
                 provider_quirks.insert(name.clone(), quirks.clone());
+
+                // DESIGN 8.3: a `[[model]]` block may override any quirk. One
+                // gateway commonly fronts models that disagree on wire details, and
+                // the provider is resolved by NAME
+                // (`get_provider(&model.r#ref.provider)`), so the override cannot be
+                // a second provider instance -- that name reaches `ModelRef`,
+                // `ModelChanged` events and the DB. It travels in the config instead
+                // and is applied per request. Only models that actually declare an
+                // override get an entry, so the common path stays untouched.
+                let model_quirks: HashMap<String, HttpQuirks> = raw.models
+                    .iter()
+                    .filter(|rm| &rm.provider == name && rm.quirks.is_set())
+                    .map(|rm| (rm.id.clone(), merge_quirks(quirks.clone(), &rm.quirks)))
+                    .collect();
+                for id in model_quirks.keys() {
+                    crate::log!("[kn9t-config] model {id:?}: per-model quirk override active");
+                }
                 let provider = OpenAiProvider::new(OpenAiConfig {
                     name:         name.clone(),
                     base_url:     rp.base_url.clone(),
                     api_key:      if api_key.is_empty() { None } else { Some(api_key.clone()) },
                     quirks,
+                    model_quirks,
                     tls_insecure: rp.tls_insecure,
                     extra_headers: extra_headers.clone(),
                     ..OpenAiConfig::default()
@@ -454,12 +506,8 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
     // Build model specs
     let mut models: Vec<ModelSpec> = Vec::new();
     for rm in &raw.models {
-        let provider_q = provider_quirks.get(&rm.provider).cloned()
-            .unwrap_or_default();
-
-        // Per-model quirk override merged on top of provider quirks (DESIGN §8.3)
-        let merged_quirks = merge_quirks(provider_q, &rm.quirks);
-
+        // Per-model quirk overrides (DESIGN §8.3) are merged and handed to the
+        // provider above, where the provider instance is built; nothing to do here.
         let cache = parse_cache_mode(&rm.cache, rm.cache_breakpoints, rm.cache_min_tokens)
             .map_err(|e| format!("config: model {:?}: {e}", rm.id))?;
 
@@ -496,11 +544,6 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         if !provider_quirks.contains_key(&rm.provider) {
             crate::log!("[kn9t-config] model {:?} references unknown provider {:?}; model registered but turns will fail", rm.id, rm.provider);
         }
-        // Store the merged HTTP quirks somewhere the provider can access per-model.
-        // In v1 the provider holds a single global Quirks; per-model override is
-        // recorded here for future use. (Full per-model quirk dispatch lands in §8.3
-        // extension work outside v1 scope.)
-        let _ = merged_quirks;
     }
 
     // Merge plugin-discovered models with config-defined models.
@@ -904,6 +947,67 @@ mod tests {
 
     fn parse_raw(toml: &str) -> RawConfig {
         toml::from_str(toml).expect("parse RawConfig")
+    }
+
+    /// DESIGN §8.3: `[model.quirks]` used to be parsed, merged, then dropped
+    /// (`let _ = merged_quirks`), so the documented override was a silent no-op.
+    /// Pin the full path: TOML -> merge over provider quirks -> provider config.
+    #[test]
+    fn per_model_quirks_reach_the_provider() {
+        let raw = parse_raw(
+            r#"
+[provider.gw]
+kind = "openai"
+base_url = "http://localhost:9/v1"
+api_key = "x"
+
+[provider.gw.quirks]
+reasoning = "none"
+max_tokens_field = "max_tokens"
+
+[[model]]
+provider = "gw"
+id = "plain"
+ctx = 1000
+max_out = 100
+price_in = 0.0
+price_out = 0.0
+price_cache_read = 0.0
+price_cache_write = 0.0
+cache = "none"
+cache_breakpoints = 0
+cache_min_tokens = 0
+
+[[model]]
+provider = "gw"
+id = "special"
+ctx = 1000
+max_out = 100
+price_in = 0.0
+price_out = 0.0
+price_cache_read = 0.0
+price_cache_write = 0.0
+cache = "none"
+cache_breakpoints = 0
+cache_min_tokens = 0
+
+[model.quirks]
+reasoning = "adaptive"
+"#,
+        );
+        // Only the second model declares an override.
+        assert!(!raw.models[0].quirks.is_set());
+        assert!(raw.models[1].quirks.is_set());
+
+        let merged = merge_quirks(build_http_quirks(&raw.provider["gw"].quirks), &raw.models[1].quirks);
+        // Overridden field takes the model value...
+        assert_eq!(merged.reasoning, "adaptive");
+        // ...while unspecified fields still inherit from the provider.
+        assert_eq!(merged.max_tokens_field, "max_tokens");
+
+        // And resolve() must not fail on this shape.
+        let resolved = resolve(raw).unwrap();
+        assert_eq!(resolved.models.len(), 2);
     }
 
     #[test]

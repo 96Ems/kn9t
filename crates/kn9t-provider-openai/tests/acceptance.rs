@@ -493,3 +493,82 @@ fn nbed_config_headers() {
     assert!(has_source,   "source_identifier must be in extra_headers");
     assert!(config.api_key.is_none(), "anonymous gateway needs no api_key");
 }
+
+// ── DESIGN §8.3 — per-model quirk overrides ──────────────────────────────────
+// One gateway fronts models that disagree on wire details. The provider is
+// instantiated once per provider NAME and resolved that way, so the override
+// rides in the config and is applied per request.
+
+#[test]
+fn oai_per_model_quirks_override_provider_quirks() {
+    let provider_quirks = Quirks {
+        reasoning: "none".into(),
+        max_tokens_field: "max_tokens".into(),
+        ..Quirks::default()
+    };
+    let mut model_quirks = std::collections::HashMap::new();
+    model_quirks.insert(
+        "special".to_string(),
+        Quirks {
+            reasoning: "adaptive".into(),
+            max_tokens_field: "max_completion_tokens".into(),
+            ..Quirks::default()
+        },
+    );
+
+    let provider = OpenAiProvider::new(OpenAiConfig {
+        quirks: provider_quirks,
+        model_quirks,
+        ..OpenAiConfig::default()
+    });
+
+    // A model with no entry keeps the provider-level quirks.
+    let plain = ModelRef { provider: "gw".into(), id: "plain".into() };
+    assert_eq!(provider.quirks_for(&plain).reasoning, "none");
+    assert_eq!(provider.quirks_for(&plain).max_tokens_field, "max_tokens");
+
+    // The overridden model sees its own.
+    let special = ModelRef { provider: "gw".into(), id: "special".into() };
+    assert_eq!(provider.quirks_for(&special).reasoning, "adaptive");
+    assert_eq!(provider.quirks_for(&special).max_tokens_field, "max_completion_tokens");
+}
+
+#[test]
+fn oai_per_model_quirks_reach_the_request_body() {
+    // The override has to change the bytes on the wire, not just a lookup: pin the
+    // emitted field name, which is what a gateway actually rejects when wrong.
+    let base = Quirks { max_tokens_field: "max_tokens".into(), ..Quirks::default() };
+    let over = Quirks { max_tokens_field: "max_completion_tokens".into(), ..Quirks::default() };
+
+    let model = make_model("special");
+    let req = make_request(&model);
+
+    let body_base = build_request(&req, &base, &CacheMode::None, false);
+    assert!(body_base.get("max_tokens").is_some(), "provider default field expected");
+    assert!(body_base.get("max_completion_tokens").is_none());
+
+    let body_over = build_request(&req, &over, &CacheMode::None, false);
+    assert!(body_over.get("max_completion_tokens").is_some(), "override must reach the body");
+    assert!(body_over.get("max_tokens").is_none());
+}
+
+#[test]
+fn oai_per_model_streaming_override_is_honored() {
+    // `streaming` decides the whole decode path (SSE vs synthesized chunks), so a
+    // gateway with one non-streaming model needs this per model, not per provider.
+    let mut model_quirks = std::collections::HashMap::new();
+    model_quirks.insert(
+        "no-stream".to_string(),
+        Quirks { streaming: false, ..Quirks::default() },
+    );
+    let provider = OpenAiProvider::new(OpenAiConfig {
+        quirks: Quirks { streaming: true, ..Quirks::default() },
+        model_quirks,
+        ..OpenAiConfig::default()
+    });
+
+    let streams = ModelRef { provider: "gw".into(), id: "normal".into() };
+    let does_not = ModelRef { provider: "gw".into(), id: "no-stream".into() };
+    assert!(provider.quirks_for(&streams).streaming);
+    assert!(!provider.quirks_for(&does_not).streaming);
+}

@@ -230,6 +230,50 @@ fn stor_plan_no_tokenizer() {
 // ── stor::compact_boundary (R-STOR-110) ──────────────────────────────────────
 
 #[test]
+fn stor_low_ctx_window_triggers_compaction_earlier() {
+    // A `[[model]]` block with a deliberately small `ctx` is the documented way to
+    // make compaction fire early (plan.rs: threshold = 0.80 x ctx_window). This is
+    // per-MODEL configuration and it does work -- unlike `[model.quirks]`, which is
+    // parsed and then dropped. Pin it so the two do not get conflated again.
+    use kn9t_core::{CacheMode, ModelSpec, Price};
+
+    let (_dir, store) = tmp_store();
+
+    // Same text, same session shape; only ctx_window differs between the two specs.
+    let spec_for = |ctx: u32| ModelSpec {
+        r#ref: model_ref(),
+        api_id: "model".into(),
+        ctx_window: ctx,
+        max_out: 128,
+        price: Price { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+        cache: CacheMode::None,
+        streaming: true,
+        quirks: Default::default(),
+    };
+
+    let s = new_session(&store);
+    // est_tokens is len/4 (no tokenizer), so ~100 chars => ~25 tokens per message.
+    let filler = "x".repeat(100);
+    store.append(&s, msg(1, &filler)).unwrap();
+    store.append(&s, msg(2, &filler)).unwrap();
+
+    // Generous window: 0.80 * 100_000 is far above the ~50 estimated tokens.
+    store.register_model_spec(spec_for(100_000));
+    assert!(
+        store.plan_request(&s).unwrap().compact.is_none(),
+        "a large ctx_window must not trigger compaction"
+    );
+
+    // Tight window: 0.80 * 32 = 25 tokens, which the transcript already exceeds.
+    store.register_model_spec(spec_for(32));
+    assert!(
+        store.plan_request(&s).unwrap().compact.is_some(),
+        "a low ctx_window must trigger compaction earlier -- this is the \
+         supported way to tune the compaction point per model"
+    );
+}
+
+#[test]
 fn stor_compact_boundary() {
     use kn9t_store::compact_span;
     // Build messages: user, assistant+ToolCall, user(ToolResult)
