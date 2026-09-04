@@ -1,6 +1,6 @@
 use kn9t_core::{
     CacheMode, Chunk, Effort, ModelRef, ModelSpec,
-    Price, Provider, StopReason, Thinking,
+    Price, StopReason, Thinking,
 };
 use kn9t_provider_core::Quirks;
 use kn9t_provider_openai::{

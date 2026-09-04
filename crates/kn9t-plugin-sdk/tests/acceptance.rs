@@ -4,7 +4,7 @@ use kn9t_plugin_sdk::wire::{
     read_host, read_plugin, write_host, write_plugin, HostMsg, PluginMsg, ToolSpec,
 };
 use serde_json::json;
-use std::io::{BufReader, Cursor, Write};
+use std::io::{BufReader, Cursor};
 use std::sync::{Arc, Mutex};
 
 // ── codec helpers ──────────────────────────────────────────────────────────────

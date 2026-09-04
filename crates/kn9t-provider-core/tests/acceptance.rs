@@ -1,6 +1,6 @@
-use kn9t_provider_core::{sse_lines, Backoff, Quirks, AuthScheme, with_retry};
-use kn9t_core::{ProvErr, Chunk, Bus, EventSink, StopReason, Tokens, Usage, ModelRef,
-    MsgId, Role, Message, Content, CallId, Thinking, Effort};
+use kn9t_provider_core::{sse_lines, Backoff, Quirks, with_retry};
+use kn9t_core::{ProvErr, Chunk, Bus, StopReason, Tokens, Usage, ModelRef,
+    Content, CallId};
 
 // ── pcore::sse_boundary (R-PCORE-040) ────────────────────────────────────────
 

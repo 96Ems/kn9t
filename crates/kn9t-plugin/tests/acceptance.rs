@@ -112,7 +112,7 @@ mod plug {
         config::{filter_configs, PluginConfig},
         ComposedHookHost, NoOpPluginKv, PluginHost,
     };
-    use kn9t_core::{HookHost, Tool};
+    use kn9t_core::HookHost;
     use std::path::Path;
 
     // ── R-PLUG-040: handshake ─────────────────────────────────────────────────
@@ -676,7 +676,7 @@ mod plug {
     /// subsequent hook Result beyond the hook timeout.
     #[test]
     fn p1_96e9_event_backlog_does_not_block_rpc() {
-        use kn9t_core::{Event, LiveEvent, EventSink};
+        use kn9t_core::{LiveEvent, EventSink};
 
         struct SlowSink {
             events: Mutex<Vec<LiveEvent>>,

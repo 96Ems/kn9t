@@ -265,7 +265,7 @@ mod tests {
         let mut fork_payload = json!({});
         if let Some(b) = parsed.budget_usd { fork_payload["budget_usd"] = json!(b); }
         assert_eq!(fork_payload, json!({"budget_usd":0.5}));
-        let mut prompt_payload = json!({"text": format!("{}\n\nExpected output: {}", parsed.task, parsed.expected_output.unwrap()), "tools": parsed.tool_subset, "timeout_s": parsed.timeout_s});
+        let prompt_payload = json!({"text": format!("{}\n\nExpected output: {}", parsed.task, parsed.expected_output.unwrap()), "tools": parsed.tool_subset, "timeout_s": parsed.timeout_s});
         assert_eq!(prompt_payload["tools"], json!(["read","bash"]));
         assert_eq!(prompt_payload["timeout_s"], json!(120));
     }
