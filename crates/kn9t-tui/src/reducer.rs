@@ -249,9 +249,10 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
         }
         SseFrame::InteractionRequest { id, plugin, payload } => {
             state.active_interaction_id = Some(id);
-            // Generic renderer: payload is opaque JSON, stringify for display.
+            // Parse payload into structured interaction state.
             let payload_str = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| format!("{payload:?}"));
-            state.overlay = Some(Overlay::Interaction { id, plugin, payload: payload_str, input: String::new() });
+            let state_parsed = crate::app::InteractionState::from_payload(&payload_str);
+            state.overlay = Some(Overlay::Interaction { id, plugin, state: state_parsed });
         }
         SseFrame::ModelChanged { model, .. } => {
             let name = format!("{}:{}", model.provider, model.id);
@@ -598,11 +599,11 @@ mod tests {
         reduce(&mut s, SseFrame::InteractionRequest { id: 99, plugin: "kn9t-ask-user".into(), payload: serde_json::json!({"question":"choose?","choices":["a","b"]}) });
         assert_eq!(s.active_interaction_id, Some(99));
         match &s.overlay {
-            Some(crate::app::Overlay::Interaction { id, plugin, payload, input }) => {
+            Some(crate::app::Overlay::Interaction { id, plugin, state }) => {
                 assert_eq!(*id, 99);
                 assert_eq!(plugin, "kn9t-ask-user");
-                assert!(payload.contains("choose?"));
-                assert!(input.is_empty());
+                // Legacy format with choices should parse as Choice type
+                assert!(matches!(state, crate::app::InteractionState::Choice { .. }));
             }
             other => panic!("expected Interaction overlay, got {:?}", other),
         }

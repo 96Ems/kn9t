@@ -145,7 +145,17 @@ pub fn write_sse_head<W: Write>(w: &mut W) -> std::io::Result<()> {
 /// event, until the client disconnects (a write error) or the bus closes.
 /// Sends a keepalive ping every `HEARTBEAT_INTERVAL` so disconnected clients
 /// are detected promptly (write failure → `client_detached` → idle-exit).
-pub fn run_live_loop<W: Write>(w: &mut W, sub: &Subscription) -> std::io::Result<()> {
+///
+/// `on_alive` is invoked once per loop iteration (on every forwarded event AND
+/// every heartbeat) **after** a successful write, i.e. only while the socket is
+/// demonstrably still connected. The SSE handler uses it to keep the owning write
+/// lease warm so an attached-but-reading client never idle-loses its lease
+/// (DESIGN §12.6 — the lease lives as long as its SSE stream).
+pub fn run_live_loop<W: Write>(
+    w: &mut W,
+    sub: &Subscription,
+    on_alive: &mut dyn FnMut(),
+) -> std::io::Result<()> {
     loop {
         match sub.recv_timeout(heartbeat_interval()) {
             Some(ev) => {
@@ -153,12 +163,14 @@ pub fn run_live_loop<W: Write>(w: &mut W, sub: &Subscription) -> std::io::Result
                 if w.write_all(frame.as_bytes()).is_err() || w.flush().is_err() {
                     return Ok(()); // client disconnected
                 }
+                on_alive();
             }
             None => {
                 // Timeout — send keepalive ping to detect dead clients.
                 if w.write_all(heartbeat().as_bytes()).is_err() || w.flush().is_err() {
                     return Ok(()); // client disconnected
                 }
+                on_alive();
             }
         }
     }

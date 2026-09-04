@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Overlay, Screen, ToolHitArea};
+use crate::app::{App, InteractionState, Overlay, Screen, ToolHitArea};
 use crate::which_key;
 use crate::message_handler::{ToolCard, ToolTab};
 use crate::slash::fuzzy_match;
@@ -1010,7 +1010,16 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
 
     // Center the overlay.
     let overlay_w = 60.min(area.width.saturating_sub(4));
-    let overlay_h = 15.min(area.height.saturating_sub(4));
+    let base_overlay_h = 15u16;
+    
+    // Calculate dynamic height for Interaction overlays
+    let overlay_h = if let Overlay::Interaction { state, .. } = overlay {
+        let inner_w = (overlay_w.saturating_sub(4)) as usize;
+        compute_interaction_height(state, inner_w, area.height.saturating_sub(4))
+    } else {
+        base_overlay_h.min(area.height.saturating_sub(4))
+    };
+    
     let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
     let overlay_y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
 
@@ -1093,60 +1102,8 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
             }
         }
 
-        Overlay::Interaction { plugin, payload, input, .. } => {
-            let border_fg = theme.primary;
-            let border_style = Style::default().fg(border_fg).bg(Color::Black).add_modifier(Modifier::BOLD);
-            if overlay_w >= 2 && overlay_h >= 2 {
-                buf[(overlay_x, overlay_y)].set_char('┏').set_style(border_style);
-                buf[(overlay_x + overlay_w - 1, overlay_y)].set_char('┓').set_style(border_style);
-                buf[(overlay_x, overlay_y + overlay_h - 1)].set_char('┗').set_style(border_style);
-                buf[(overlay_x + overlay_w - 1, overlay_y + overlay_h - 1)].set_char('┛').set_style(border_style);
-                for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
-                    buf[(x, overlay_y)].set_char('━').set_style(border_style);
-                    buf[(x, overlay_y + overlay_h - 1)].set_char('━').set_style(border_style);
-                }
-                for y in (overlay_y + 1)..(overlay_y + overlay_h - 1) {
-                    buf[(overlay_x, y)].set_char('┃').set_style(border_style);
-                    buf[(overlay_x + overlay_w - 1, y)].set_char('┃').set_style(border_style);
-                }
-            }
-            let mut y = overlay_y + 1;
-            let title = format!("{} asks:", plugin);
-            let title_x = overlay_x + (overlay_w.saturating_sub(title.len() as u16)) / 2;
-            for (i, ch) in title.chars().enumerate() {
-                buf[(title_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
-            }
-            y += 2;
-            let inner_w = (overlay_w.saturating_sub(4)) as usize;
-            let inner_x = overlay_x + 2;
-            for line in wrap_text(payload, inner_w.max(1)) {
-                if y >= overlay_y + overlay_h - 3 { break; }
-                for (i, ch) in line.chars().enumerate() {
-                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 { break; }
-                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
-                }
-                y += 1;
-            }
-            y += 1;
-            let prompt = "› ";
-            for (i, ch) in prompt.chars().enumerate() {
-                buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
-            }
-            let input_x = inner_x + prompt.len() as u16;
-            for (i, ch) in input.chars().enumerate() {
-                if input_x + i as u16 >= overlay_x + overlay_w - 2 { break; }
-                buf[(input_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
-            }
-            let cx = input_x + input.chars().count() as u16;
-            if cx < overlay_x + overlay_w - 1 {
-                buf[(cx, y)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
-            }
-            let footer = "Enter send · Esc cancel";
-            let fx = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
-            let fy = overlay_y + overlay_h - 1;
-            for (i, ch) in footer.chars().enumerate() {
-                buf[(fx + i as u16, fy)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
-            }
+        Overlay::Interaction { plugin, state, .. } => {
+            render_interaction_overlay(buf, theme, overlay_x, overlay_y, overlay_w, overlay_h, plugin, state);
         }
 
         Overlay::Help => {
@@ -2327,6 +2284,426 @@ fn approval_body_lines(tool: &str, args: &str, theme: &Theme, width: usize) -> V
     lines
 }
 
+/// Compute dynamic height for interaction overlay based on content.
+fn compute_interaction_height(state: &InteractionState, inner_w: usize, max_h: u16) -> u16 {
+    let prompt_len = 2; // "› "
+    let input_w = inner_w.saturating_sub(prompt_len);
+    
+    let content_lines: usize = match state {
+        InteractionState::Text { question, header, input, .. } => {
+            let header_lines = if header.is_some() { 1 } else { 0 };
+            let question_lines = wrap_text(question, inner_w.max(1)).len();
+            let input_lines = if input_w > 0 {
+                ((input.chars().count().max(1) + input_w - 1) / input_w).max(1)
+            } else { 1 };
+            // title + header + question + gap + input lines + footer
+            1 + header_lines + question_lines + 1 + input_lines + 2
+        }
+        InteractionState::Choice { question, header, options, allow_custom, in_custom_mode, .. } => {
+            let header_lines = if header.is_some() { 1 } else { 0 };
+            let question_lines = wrap_text(question, inner_w.max(1)).len();
+            let mut opt_lines = 0;
+            for opt in options {
+                opt_lines += 1; // label
+                if opt.description.is_some() { opt_lines += 1; } // desc
+            }
+            if *allow_custom { opt_lines += 1; } // "Other..."
+            if *in_custom_mode { opt_lines += 1; } // custom input line
+            1 + header_lines + question_lines + 1 + opt_lines + 2
+        }
+        InteractionState::Multi { question, header, options, .. } => {
+            let header_lines = if header.is_some() { 1 } else { 0 };
+            let question_lines = wrap_text(question, inner_w.max(1)).len();
+            let mut opt_lines = 0;
+            for opt in options {
+                opt_lines += 1;
+                if opt.description.is_some() { opt_lines += 1; }
+            }
+            1 + header_lines + question_lines + 1 + opt_lines + 2
+        }
+        InteractionState::Confirm { question, header, .. } => {
+            let header_lines = if header.is_some() { 1 } else { 0 };
+            let question_lines = wrap_text(question, inner_w.max(1)).len();
+            // title + header + question + gap + buttons + footer
+            1 + header_lines + question_lines + 3 + 2
+        }
+        InteractionState::Generic { payload, input, .. } => {
+            let payload_lines = wrap_text(payload, inner_w.max(1)).len();
+            let input_lines = if input_w > 0 {
+                ((input.chars().count().max(1) + input_w - 1) / input_w).max(1)
+            } else { 1 };
+            1 + payload_lines + 1 + input_lines + 2
+        }
+    };
+    
+    // Add border (2 lines) + some padding
+    let total = (content_lines + 4) as u16;
+    total.min(max_h).max(8)
+}
+
+/// Render an interaction overlay based on its state type.
+fn render_interaction_overlay(
+    buf: &mut ratatui::buffer::Buffer,
+    theme: &Theme,
+    overlay_x: u16,
+    overlay_y: u16,
+    overlay_w: u16,
+    overlay_h: u16,
+    plugin: &str,
+    state: &InteractionState,
+) {
+    let border_fg = theme.primary;
+    let border_style = Style::default().fg(border_fg).bg(Color::Black).add_modifier(Modifier::BOLD);
+    
+    // Draw border
+    if overlay_w >= 2 && overlay_h >= 2 {
+        buf[(overlay_x, overlay_y)].set_char('┏').set_style(border_style);
+        buf[(overlay_x + overlay_w - 1, overlay_y)].set_char('┓').set_style(border_style);
+        buf[(overlay_x, overlay_y + overlay_h - 1)].set_char('┗').set_style(border_style);
+        buf[(overlay_x + overlay_w - 1, overlay_y + overlay_h - 1)].set_char('┛').set_style(border_style);
+        for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
+            buf[(x, overlay_y)].set_char('━').set_style(border_style);
+            buf[(x, overlay_y + overlay_h - 1)].set_char('━').set_style(border_style);
+        }
+        for y in (overlay_y + 1)..(overlay_y + overlay_h - 1) {
+            buf[(overlay_x, y)].set_char('┃').set_style(border_style);
+            buf[(overlay_x + overlay_w - 1, y)].set_char('┃').set_style(border_style);
+        }
+    }
+
+    let inner_w = (overlay_w.saturating_sub(4)) as usize;
+    let inner_x = overlay_x + 2;
+    let mut y = overlay_y + 1;
+
+    // Title
+    let title = format!("{} asks:", plugin);
+    let title_x = overlay_x + (overlay_w.saturating_sub(title.len() as u16)) / 2;
+    for (i, ch) in title.chars().enumerate() {
+        buf[(title_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+    }
+    y += 2;
+
+    match state {
+        InteractionState::Text { question, header, placeholder, input } => {
+            // Optional header
+            if let Some(h) = header {
+                for (i, ch) in h.chars().take(inner_w).enumerate() {
+                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+                }
+                y += 1;
+            }
+            // Question
+            for line in wrap_text(question, inner_w.max(1)) {
+                if y >= overlay_y + overlay_h - 3 { break; }
+                for (i, ch) in line.chars().enumerate() {
+                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 { break; }
+                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                }
+                y += 1;
+            }
+            y += 1;
+            // Input lines (wrapped)
+            let prompt = "› ";
+            let input_w = inner_w.saturating_sub(prompt.len());
+            let display = if input.is_empty() { placeholder.as_deref().unwrap_or("") } else { input };
+            let input_fg = if input.is_empty() { theme.muted } else { theme.fg };
+            let input_lines = wrap_text(display, input_w.max(1));
+            let cursor_pos = input.chars().count();
+            let cursor_line = cursor_pos / input_w.max(1);
+            let cursor_col = cursor_pos % input_w.max(1);
+            
+            for (line_idx, line) in input_lines.iter().enumerate() {
+                if y >= overlay_y + overlay_h - 2 { break; }
+                // Draw prompt on first line only
+                if line_idx == 0 {
+                    for (i, ch) in prompt.chars().enumerate() {
+                        buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                    }
+                } else {
+                    // Indent continuation lines
+                    for i in 0..prompt.len() {
+                        buf[(inner_x + i as u16, y)].set_char(' ').set_bg(Color::Black);
+                    }
+                }
+                let input_x = inner_x + prompt.len() as u16;
+                for (i, ch) in line.chars().enumerate() {
+                    if input_x + i as u16 >= overlay_x + overlay_w - 2 { break; }
+                    buf[(input_x + i as u16, y)].set_char(ch).set_fg(input_fg).set_bg(Color::Black);
+                }
+                // Draw cursor on the right line
+                if line_idx == cursor_line && !input.is_empty() {
+                    let cx = input_x + cursor_col as u16;
+                    if cx < overlay_x + overlay_w - 1 {
+                        buf[(cx, y)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
+                    }
+                }
+                y += 1;
+            }
+            // Cursor on empty input
+            if input.is_empty() {
+                let cx = inner_x + prompt.len() as u16;
+                if cx < overlay_x + overlay_w - 1 && y > overlay_y + 1 {
+                    buf[(cx, y - 1)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
+                }
+            }
+            // Footer
+            let footer = "Enter send · Esc cancel";
+            let fx = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
+            let fy = overlay_y + overlay_h - 1;
+            for (i, ch) in footer.chars().enumerate() {
+                buf[(fx + i as u16, fy)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+            }
+        }
+
+        InteractionState::Choice { question, header, options, selected, allow_custom, custom_input, in_custom_mode } => {
+            if let Some(h) = header {
+                for (i, ch) in h.chars().take(inner_w).enumerate() {
+                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+                }
+                y += 1;
+            }
+            for line in wrap_text(question, inner_w.max(1)) {
+                if y >= overlay_y + overlay_h - 4 { break; }
+                for (i, ch) in line.chars().enumerate() {
+                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 { break; }
+                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                }
+                y += 1;
+            }
+            y += 1;
+            // Options list
+            for (i, opt) in options.iter().enumerate() {
+                if y >= overlay_y + overlay_h - 2 { break; }
+                let is_sel = i == *selected && !*in_custom_mode;
+                let marker = if is_sel { "● " } else { "○ " };
+                let style = if is_sel {
+                    Style::default().fg(Color::Black).bg(theme.primary)
+                } else {
+                    Style::default().fg(theme.fg).bg(Color::Black)
+                };
+                let line_text = format!("{}{}", marker, opt.label);
+                for (j, ch) in line_text.chars().take(inner_w).enumerate() {
+                    buf[(inner_x + j as u16, y)].set_char(ch).set_style(style);
+                }
+                y += 1;
+                // Description on next line, indented (single line, truncated if needed)
+                if let Some(desc) = &opt.description {
+                    if y < overlay_y + overlay_h - 2 {
+                        let indent = "    ";
+                        let desc_w = inner_w.saturating_sub(indent.len());
+                        for (j, ch) in indent.chars().enumerate() {
+                            buf[(inner_x + j as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                        }
+                        for (j, ch) in desc.chars().take(desc_w).enumerate() {
+                            buf[(inner_x + indent.len() as u16 + j as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                        }
+                        y += 1;
+                    }
+                }
+            }
+            // "Other..." option if allow_custom
+            if *allow_custom {
+                if y < overlay_y + overlay_h - 2 {
+                    let is_sel = *selected == options.len() || *in_custom_mode;
+                    let marker = if is_sel && !*in_custom_mode { "● " } else { "○ " };
+                    let style = if is_sel && !*in_custom_mode {
+                        Style::default().fg(Color::Black).bg(theme.primary)
+                    } else {
+                        Style::default().fg(theme.fg).bg(Color::Black)
+                    };
+                    let line_text = format!("{}Other...", marker);
+                    for (j, ch) in line_text.chars().take(inner_w).enumerate() {
+                        buf[(inner_x + j as u16, y)].set_char(ch).set_style(style);
+                    }
+                    y += 1;
+                    // Custom input if in custom mode
+                    if *in_custom_mode && y < overlay_y + overlay_h - 2 {
+                        let prompt = "  › ";
+                        for (j, ch) in prompt.chars().enumerate() {
+                            buf[(inner_x + j as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                        }
+                        let input_x = inner_x + prompt.len() as u16;
+                        for (j, ch) in custom_input.chars().enumerate() {
+                            if input_x + j as u16 >= overlay_x + overlay_w - 2 { break; }
+                            buf[(input_x + j as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                        }
+                        let cx = input_x + custom_input.chars().count() as u16;
+                        if cx < overlay_x + overlay_w - 1 {
+                            buf[(cx, y)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
+                        }
+                    }
+                }
+            }
+            // Footer
+            let footer = if *in_custom_mode { "Enter send · Esc back" } else { "↑↓ select · Enter confirm · Esc cancel" };
+            let fx = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
+            let fy = overlay_y + overlay_h - 1;
+            for (i, ch) in footer.chars().enumerate() {
+                buf[(fx + i as u16, fy)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+            }
+        }
+
+        InteractionState::Multi { question, header, options, cursor, selected } => {
+            if let Some(h) = header {
+                for (i, ch) in h.chars().take(inner_w).enumerate() {
+                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+                }
+                y += 1;
+            }
+            for line in wrap_text(question, inner_w.max(1)) {
+                if y >= overlay_y + overlay_h - 4 { break; }
+                for (i, ch) in line.chars().enumerate() {
+                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 { break; }
+                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                }
+                y += 1;
+            }
+            y += 1;
+            // Options with checkboxes
+            for (i, opt) in options.iter().enumerate() {
+                if y >= overlay_y + overlay_h - 2 { break; }
+                let is_cursor = i == *cursor;
+                let is_checked = selected.get(i).copied().unwrap_or(false);
+                let checkbox = if is_checked { "☑ " } else { "☐ " };
+                let style = if is_cursor {
+                    Style::default().fg(Color::Black).bg(theme.primary)
+                } else {
+                    Style::default().fg(theme.fg).bg(Color::Black)
+                };
+                let line_text = format!("{}{}", checkbox, opt.label);
+                for (j, ch) in line_text.chars().take(inner_w).enumerate() {
+                    buf[(inner_x + j as u16, y)].set_char(ch).set_style(style);
+                }
+                y += 1;
+                // Description on next line, indented (single line, truncated if needed)
+                if let Some(desc) = &opt.description {
+                    if y < overlay_y + overlay_h - 2 {
+                        let indent = "    ";
+                        let desc_w = inner_w.saturating_sub(indent.len());
+                        for (j, ch) in indent.chars().enumerate() {
+                            buf[(inner_x + j as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                        }
+                        for (j, ch) in desc.chars().take(desc_w).enumerate() {
+                            buf[(inner_x + indent.len() as u16 + j as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                        }
+                        y += 1;
+                    }
+                }
+            }
+            let footer = "↑↓ move · Space toggle · Enter confirm · Esc cancel";
+            let fx = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
+            let fy = overlay_y + overlay_h - 1;
+            for (i, ch) in footer.chars().enumerate() {
+                buf[(fx + i as u16, fy)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+            }
+        }
+
+        InteractionState::Confirm { question, header, selected } => {
+            if let Some(h) = header {
+                for (i, ch) in h.chars().take(inner_w).enumerate() {
+                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+                }
+                y += 1;
+            }
+            for line in wrap_text(question, inner_w.max(1)) {
+                if y >= overlay_y + overlay_h - 4 { break; }
+                for (i, ch) in line.chars().enumerate() {
+                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 { break; }
+                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                }
+                y += 1;
+            }
+            y += 2;
+            // Yes / No buttons
+            let btn_y = y;
+            let yes_style = if *selected {
+                Style::default().fg(Color::Black).bg(theme.success)
+            } else {
+                Style::default().fg(theme.fg).bg(Color::DarkGray)
+            };
+            let no_style = if !*selected {
+                Style::default().fg(Color::Black).bg(theme.error)
+            } else {
+                Style::default().fg(theme.fg).bg(Color::DarkGray)
+            };
+            let yes_label = "  Yes  ";
+            let no_label = "  No  ";
+            let total_w = yes_label.len() + 4 + no_label.len();
+            let btn_x = inner_x + ((inner_w.saturating_sub(total_w)) / 2) as u16;
+            for (j, ch) in yes_label.chars().enumerate() {
+                buf[(btn_x + j as u16, btn_y)].set_char(ch).set_style(yes_style);
+            }
+            let no_x = btn_x + yes_label.len() as u16 + 4;
+            for (j, ch) in no_label.chars().enumerate() {
+                buf[(no_x + j as u16, btn_y)].set_char(ch).set_style(no_style);
+            }
+            let footer = "←→ select · Enter confirm · Esc cancel";
+            let fx = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
+            let fy = overlay_y + overlay_h - 1;
+            for (i, ch) in footer.chars().enumerate() {
+                buf[(fx + i as u16, fy)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+            }
+        }
+
+        InteractionState::Generic { payload, input } => {
+            // Fallback: show raw payload and text input
+            for line in wrap_text(payload, inner_w.max(1)) {
+                if y >= overlay_y + overlay_h - 3 { break; }
+                for (i, ch) in line.chars().enumerate() {
+                    if inner_x + i as u16 >= overlay_x + overlay_w - 1 { break; }
+                    buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                }
+                y += 1;
+            }
+            y += 1;
+            // Input lines (wrapped)
+            let prompt = "› ";
+            let input_w = inner_w.saturating_sub(prompt.len());
+            let input_lines = wrap_text(input, input_w.max(1));
+            let cursor_pos = input.chars().count();
+            let cursor_line = cursor_pos / input_w.max(1);
+            let cursor_col = cursor_pos % input_w.max(1);
+            
+            for (line_idx, line) in input_lines.iter().enumerate() {
+                if y >= overlay_y + overlay_h - 2 { break; }
+                if line_idx == 0 {
+                    for (i, ch) in prompt.chars().enumerate() {
+                        buf[(inner_x + i as u16, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                    }
+                } else {
+                    for i in 0..prompt.len() {
+                        buf[(inner_x + i as u16, y)].set_char(' ').set_bg(Color::Black);
+                    }
+                }
+                let input_x = inner_x + prompt.len() as u16;
+                for (i, ch) in line.chars().enumerate() {
+                    if input_x + i as u16 >= overlay_x + overlay_w - 2 { break; }
+                    buf[(input_x + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
+                }
+                if line_idx == cursor_line && !input.is_empty() {
+                    let cx = input_x + cursor_col as u16;
+                    if cx < overlay_x + overlay_w - 1 {
+                        buf[(cx, y)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
+                    }
+                }
+                y += 1;
+            }
+            if input.is_empty() {
+                let cx = inner_x + prompt.len() as u16;
+                if cx < overlay_x + overlay_w - 1 && y > overlay_y + 1 {
+                    buf[(cx, y - 1)].set_char('▏').set_fg(theme.primary).set_bg(Color::Black);
+                }
+            }
+            let footer = "Enter send · Esc cancel";
+            let fx = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
+            let fy = overlay_y + overlay_h - 1;
+            for (i, ch) in footer.chars().enumerate() {
+                buf[(fx + i as u16, fy)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod golden {
     use super::*;
@@ -2367,17 +2744,37 @@ mod golden {
 
     #[test]
     fn golden_interaction_overlay_contains_plugin_and_payload() {
-        let overlay = Overlay::Interaction { id: 42, plugin: "kn9t-ask-user".into(), payload: "{\n  \"question\": \"choose?\"\n}".into(), input: "my ans".into() };
+        use crate::app::InteractionState;
+        let state = InteractionState::Choice {
+            question: "choose?".into(),
+            header: None,
+            options: vec![
+                crate::app::QuestionOption { label: "Option A".into(), value: "a".into(), description: None },
+                crate::app::QuestionOption { label: "Option B".into(), value: "b".into(), description: None },
+            ],
+            selected: 0,
+            allow_custom: false,
+            custom_input: String::new(),
+            in_custom_mode: false,
+        };
+        let overlay = Overlay::Interaction { id: 42, plugin: "kn9t-ask-user".into(), state };
         let snap = render_overlay_to_string(&overlay, 60, 15);
         assert!(snap.contains("kn9t-ask-user"), "must show plugin name, got:\n{snap}");
         assert!(snap.contains("choose?"), "must show payload question, got:\n{snap}");
-        assert!(snap.contains("my ans"), "must show current input, got:\n{snap}");
+        assert!(snap.contains("Option A"), "must show first option, got:\n{snap}");
         assert!(snap.contains("Enter") && snap.contains("Esc"), "must show footer hints, got:\n{snap}");
     }
 
     #[test]
     fn golden_interaction_overlay_esc_hint_present_even_empty_input() {
-        let overlay = Overlay::Interaction { id: 1, plugin: "p".into(), payload: "hello".into(), input: String::new() };
+        use crate::app::InteractionState;
+        let state = InteractionState::Text {
+            question: "hello".into(),
+            header: None,
+            placeholder: None,
+            input: String::new(),
+        };
+        let overlay = Overlay::Interaction { id: 1, plugin: "p".into(), state };
         let snap = render_overlay_to_string(&overlay, 60, 15);
         // Must be renderable without panic and contain the payload
         assert!(snap.contains("hello"), "payload must be visible, got:\n{snap}");

@@ -318,11 +318,17 @@ impl SseHandle {
 }
 
 /// Spawn SSE reader thread. Returns a handle to stop it.
+///
+/// `lease` is the holder token this client acquired for the session (if any). It is
+/// passed to the server as `?lease=` so the stream *owns* the lease and keeps it
+/// warm while connected — otherwise a client that reads for >5 min without writing
+/// idle-loses its lease and its next prompt 409s (server DESIGN §12.6).
 pub fn spawn_sse_thread(
     base_url: String,
     token: Option<String>,
     session_id: String,
     from_seq: u64,
+    lease: Option<String>,
     tx: Sender<Event>,
 ) -> SseHandle {
     let stop = Arc::new(AtomicBool::new(false));
@@ -332,7 +338,10 @@ pub fn spawn_sse_thread(
     crate::log!("SSE: spawning thread for session {}", session_id);
     
     thread::spawn(move || {
-        let url = format!("{}/session/{}/events?from={}", base_url, session_id_clone, from_seq);
+        let mut url = format!("{}/session/{}/events?from={}", base_url, session_id_clone, from_seq);
+        if let Some(l) = &lease {
+            url.push_str(&format!("&lease={}", l));
+        }
         crate::log!("SSE: connecting to {}", url);
         
         let mut req = ureq::get(&url);

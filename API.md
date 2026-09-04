@@ -322,7 +322,7 @@ Write operations require an **X-Lease** header: the holder token minted by
 | `provider_reported` | number | Provider-reported spend; omitted when unavailable |
 
 
-### `GET /session/{id}/events` — SSE: ?from={seq} replay durable >from then live, snake_case kind
+### `GET /session/{id}/events` — SSE: ?from={seq} replay durable >from then live, snake_case kind. Optional ?lease={holder}: the stream owns that lease and keeps it warm while connected (DESIGN §12.6)
 
 - **Lease required:** no
 
@@ -504,14 +504,41 @@ Write operations require an **X-Lease** header: the holder token minted by
 
 ## 3. SSE Event Stream
 
-### `GET /session/{id}/events?from=<seq>` — Subscribe to events
+### `GET /session/{id}/events?from=<seq>&lease=<holder>` — Subscribe to events
 
-Opens a persistent `text/event-stream`. No lease required. Query param `from` is the
-replay cursor: pass `0` for full history, or `last_seen_seq` on reconnect to resume
-without replaying already-processed events (exact gap-free dedup on the server).
+Opens a persistent `text/event-stream`. No lease required to *subscribe*. Query param
+`from` is the replay cursor: pass `0` for full history, or `last_seen_seq` on reconnect
+to resume without replaying already-processed events (exact gap-free dedup on the server).
 
 **Wire format:** each frame is `event: <kind>\ndata: <json>\n\n`. The `kind` is
 **snake_case** (AGENTS.md §12) and matches the `kind` discriminator inside `data`.
+
+**Query params**
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `from` | u64 | no | Replay cursor; durable events with `seq > from` are replayed, then the stream goes live. Default `0` (full history). |
+| `lease` | string | no | Lease holder token from `POST /session/{id}/lease`. If given, **this stream owns the lease**: see "Keeping a write lease alive" below. |
+
+**Keeping a write lease alive (client authors: read this).**
+
+The write lease has an idle timeout (default 5 min, DESIGN §12.6). Only *successful
+writes* (`prompt`/`steer`/`abort`/`model`/`compact`) refresh it. A client that holds the
+lease but only reads — i.e. sits on the event stream without sending anything — would
+otherwise idle-lose its lease after the timeout, and its **next `prompt` would 409
+`session_busy`** even though the same client is still connected.
+
+To avoid this, pass your lease holder as `?lease=<holder>` when you open the stream.
+The server then treats this SSE connection as the *owner* of that lease:
+
+- **Kept warm while connected** — every heartbeat (`: keepalive`) refreshes the lease's
+  `last_active`, so the idle timer never fires for an attached reader.
+- **Released on disconnect** — when the stream ends (client close, network drop, or
+  server heartbeat write failure), the server releases that lease. On reconnect you must
+  re-acquire it via `POST /session/{id}/lease` (and pass the new holder to the new stream).
+
+Recommended client sequence: `POST /lease` → open `GET …/events?from=<seq>&lease=<holder>`
+→ `POST …/prompt` with `X-Lease: <holder>`. Keep the stream open for the whole session.
 
 **Errors:** `404` session not found.
 

@@ -52,12 +52,210 @@ pub struct ToolEntry {
 pub enum Overlay {
     Approval { tool: String, args: String, selected: usize },
     /// 96E-28 generic interaction — payload is plugin's opaque shape, rendered generically.
-    Interaction { id: u64, plugin: String, payload: String, input: String },
+    Interaction { id: u64, plugin: String, state: InteractionState },
     Help,
     WhichKey,
     CommandPalette,
     ModelSelect { selected: usize, filter: String },
     SessionSelect { selected: usize, filter: String },
+}
+
+/// Option for choice/multi questions.
+#[derive(Debug, Clone)]
+pub struct QuestionOption {
+    pub label: String,
+    pub value: String,
+    pub description: Option<String>,
+}
+
+/// State for different question types in interactions.
+#[derive(Debug, Clone)]
+pub enum InteractionState {
+    /// Free-form text input.
+    Text {
+        question: String,
+        header: Option<String>,
+        placeholder: Option<String>,
+        input: String,
+    },
+    /// Single choice selection.
+    Choice {
+        question: String,
+        header: Option<String>,
+        options: Vec<QuestionOption>,
+        selected: usize,
+        allow_custom: bool,
+        custom_input: String,
+        in_custom_mode: bool,
+    },
+    /// Multiple choice selection.
+    Multi {
+        question: String,
+        header: Option<String>,
+        options: Vec<QuestionOption>,
+        cursor: usize,
+        selected: Vec<bool>,
+    },
+    /// Yes/No confirmation.
+    Confirm {
+        question: String,
+        header: Option<String>,
+        selected: bool, // true = Yes, false = No
+    },
+    /// Fallback for unknown payload shapes.
+    Generic {
+        payload: String,
+        input: String,
+    },
+}
+
+impl InteractionState {
+    /// Parse a JSON payload into an InteractionState.
+    pub fn from_payload(payload_str: &str) -> Self {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(payload_str) else {
+            return Self::Generic { payload: payload_str.to_string(), input: String::new() };
+        };
+
+        let obj = match v.as_object() {
+            Some(o) => o,
+            None => return Self::Generic { payload: payload_str.to_string(), input: String::new() },
+        };
+
+        let question = obj.get("question").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let header = obj.get("header").and_then(|v| v.as_str()).map(String::from);
+        let qtype = obj.get("type").and_then(|v| v.as_str()).unwrap_or("text");
+
+        match qtype {
+            "text" => Self::Text {
+                question,
+                header,
+                placeholder: obj.get("placeholder").and_then(|v| v.as_str()).map(String::from),
+                input: obj.get("default").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            },
+            "choice" => {
+                let options = Self::parse_options(obj.get("options"));
+                Self::Choice {
+                    question,
+                    header,
+                    options,
+                    selected: 0,
+                    allow_custom: obj.get("allow_custom").and_then(|v| v.as_bool()).unwrap_or(false),
+                    custom_input: String::new(),
+                    in_custom_mode: false,
+                }
+            }
+            "multi" => {
+                let options = Self::parse_options(obj.get("options"));
+                let count = options.len();
+                Self::Multi {
+                    question,
+                    header,
+                    options,
+                    cursor: 0,
+                    selected: vec![false; count],
+                }
+            }
+            "confirm" => Self::Confirm {
+                question,
+                header,
+                selected: obj.get("default").and_then(|v| v.as_bool()).unwrap_or(true),
+            },
+            _ => {
+                // Legacy format: choices array without type field
+                if let Some(choices) = obj.get("choices").and_then(|v| v.as_array()) {
+                    let options: Vec<QuestionOption> = choices
+                        .iter()
+                        .filter_map(|c| c.as_str())
+                        .map(|s| QuestionOption {
+                            label: s.to_string(),
+                            value: s.to_string(),
+                            description: None,
+                        })
+                        .collect();
+                    if !options.is_empty() {
+                        return Self::Choice {
+                            question,
+                            header,
+                            options,
+                            selected: 0,
+                            allow_custom: true,
+                            custom_input: String::new(),
+                            in_custom_mode: false,
+                        };
+                    }
+                }
+                // Fallback to text if question exists
+                if !question.is_empty() {
+                    Self::Text {
+                        question,
+                        header,
+                        placeholder: obj.get("placeholder").and_then(|v| v.as_str()).map(String::from),
+                        input: String::new(),
+                    }
+                } else {
+                    Self::Generic { payload: payload_str.to_string(), input: String::new() }
+                }
+            }
+        }
+    }
+
+    fn parse_options(val: Option<&serde_json::Value>) -> Vec<QuestionOption> {
+        let Some(arr) = val.and_then(|v| v.as_array()) else {
+            return Vec::new();
+        };
+        arr.iter()
+            .filter_map(|item| {
+                if let Some(s) = item.as_str() {
+                    Some(QuestionOption {
+                        label: s.to_string(),
+                        value: s.to_string(),
+                        description: None,
+                    })
+                } else if let Some(obj) = item.as_object() {
+                    let label = obj.get("label").and_then(|v| v.as_str())?.to_string();
+                    let value = obj.get("value").and_then(|v| v.as_str())
+                        .map(String::from)
+                        .unwrap_or_else(|| label.clone());
+                    let description = obj.get("description").and_then(|v| v.as_str()).map(String::from);
+                    Some(QuestionOption { label, value, description })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Get the response value for this interaction state.
+    pub fn response_value(&self) -> serde_json::Value {
+        match self {
+            Self::Text { input, .. } => serde_json::json!({"value": input}),
+            Self::Choice { options, selected, in_custom_mode, custom_input, allow_custom, .. } => {
+                if *in_custom_mode && *allow_custom {
+                    serde_json::json!({"value": custom_input})
+                } else if let Some(opt) = options.get(*selected) {
+                    serde_json::json!({"value": opt.value})
+                } else {
+                    serde_json::json!({"value": null})
+                }
+            }
+            Self::Multi { options, selected, .. } => {
+                let values: Vec<&str> = options.iter()
+                    .zip(selected.iter())
+                    .filter(|(_, &sel)| sel)
+                    .map(|(opt, _)| opt.value.as_str())
+                    .collect();
+                serde_json::json!({"value": values})
+            }
+            Self::Confirm { selected, .. } => {
+                serde_json::json!({"value": *selected})
+            }
+            Self::Generic { input, .. } => {
+                serde_json::from_str::<serde_json::Value>(input)
+                    .map(|v| serde_json::json!({"value": v}))
+                    .unwrap_or_else(|_| serde_json::json!({"value": input}))
+            }
+        }
+    }
 }
 
 /// Current screen.
@@ -1067,24 +1265,125 @@ impl App {
                     _ => {}
                 }
             }
-            Some(Overlay::Interaction { ref mut input, .. }) => {
+            Some(Overlay::Interaction { ref mut state, .. }) => {
                 match key.code {
                     KeyCode::Esc => {
+                        // Check if we're in custom mode for Choice - exit custom mode first
+                        if let InteractionState::Choice { ref mut in_custom_mode, .. } = state {
+                            if *in_custom_mode {
+                                *in_custom_mode = false;
+                                return;
+                            }
+                        }
                         // Cancel: respond with empty/cancel payload so plugin unblocks.
                         self.respond_interaction(serde_json::json!({"cancelled": true}));
                     }
                     KeyCode::Enter => {
-                        let text = std::mem::take(input);
-                        // Try to parse as JSON so structured choices are preserved; fall back to string.
-                        let payload = serde_json::from_str::<serde_json::Value>(&text)
-                            .unwrap_or_else(|_| serde_json::Value::String(text));
-                        self.respond_interaction(serde_json::json!({"value": payload}));
+                        // For Choice in custom mode, submit the custom input
+                        if let InteractionState::Choice { in_custom_mode, allow_custom, .. } = state {
+                            if *in_custom_mode && *allow_custom {
+                                let response = state.response_value();
+                                self.respond_interaction(response);
+                                return;
+                            }
+                        }
+                        // For Multi, submit current selections
+                        // For others, submit current value
+                        let response = state.response_value();
+                        self.respond_interaction(response);
+                    }
+                    KeyCode::Up => {
+                        match state {
+                            InteractionState::Choice { selected, options, in_custom_mode, allow_custom, .. } => {
+                                if !*in_custom_mode {
+                                    let max = options.len() + if *allow_custom { 1 } else { 0 };
+                                    *selected = selected.saturating_sub(1).min(max.saturating_sub(1));
+                                }
+                            }
+                            InteractionState::Multi { cursor, options, .. } => {
+                                *cursor = cursor.saturating_sub(1).min(options.len().saturating_sub(1));
+                            }
+                            InteractionState::Confirm { selected, .. } => {
+                                *selected = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Down => {
+                        match state {
+                            InteractionState::Choice { selected, options, in_custom_mode, allow_custom, .. } => {
+                                if !*in_custom_mode {
+                                    let max = options.len() + if *allow_custom { 1 } else { 0 };
+                                    *selected = (*selected + 1).min(max.saturating_sub(1));
+                                }
+                            }
+                            InteractionState::Multi { cursor, options, .. } => {
+                                *cursor = (*cursor + 1).min(options.len().saturating_sub(1));
+                            }
+                            InteractionState::Confirm { selected, .. } => {
+                                *selected = false;
+                            }
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        if let InteractionState::Confirm { selected, .. } = state {
+                            *selected = !*selected;
+                        }
+                    }
+                    KeyCode::Char(' ') => {
+                        match state {
+                            InteractionState::Multi { cursor, selected, .. } => {
+                                if let Some(sel) = selected.get_mut(*cursor) {
+                                    *sel = !*sel;
+                                }
+                            }
+                            InteractionState::Choice { selected, options, allow_custom, in_custom_mode, custom_input, .. } => {
+                                if *in_custom_mode {
+                                    custom_input.push(' ');
+                                } else if *allow_custom && *selected == options.len() {
+                                    *in_custom_mode = true;
+                                }
+                            }
+                            InteractionState::Text { input, .. } => { input.push(' '); }
+                            InteractionState::Generic { input, .. } => { input.push(' '); }
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Tab => {
+                        // Tab cycles through options for choice/multi
+                        match state {
+                            InteractionState::Choice { selected, options, allow_custom, in_custom_mode, .. } => {
+                                if !*in_custom_mode {
+                                    let max = options.len() + if *allow_custom { 1 } else { 0 };
+                                    *selected = (*selected + 1) % max;
+                                }
+                            }
+                            InteractionState::Multi { cursor, options, .. } => {
+                                *cursor = (*cursor + 1) % options.len().max(1);
+                            }
+                            _ => {}
+                        }
                     }
                     KeyCode::Backspace => {
-                        input.pop();
+                        match state {
+                            InteractionState::Text { input, .. } => { input.pop(); }
+                            InteractionState::Choice { custom_input, in_custom_mode, .. } if *in_custom_mode => {
+                                custom_input.pop();
+                            }
+                            InteractionState::Generic { input, .. } => { input.pop(); }
+                            _ => {}
+                        }
                     }
                     KeyCode::Char(c) => {
-                        input.push(c);
+                        match state {
+                            InteractionState::Text { input, .. } => { input.push(c); }
+                            InteractionState::Choice { custom_input, in_custom_mode, .. } if *in_custom_mode => {
+                                custom_input.push(c);
+                            }
+                            InteractionState::Generic { input, .. } => { input.push(c); }
+                            _ => {}
+                        }
                     }
                     _ => {}
                 }

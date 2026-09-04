@@ -52,10 +52,12 @@ type PluginHello struct {
 
 // PluginEvent sends a fire-and-forget notification to the host's EventBus.
 // Format: plugin name + message to display. TUI shows "ℹ {plugin}: {message}".
+// MUST include session_id for routing (96E-21: events without session_id are dropped).
 type PluginEvent struct {
-	T       string `json:"t"`       // Always "event"
-	Plugin  string `json:"plugin"`  // Plugin name for display
-	Message string `json:"message"` // Human-readable message to display
+	T         string `json:"t"`          // Always "event"
+	Plugin    string `json:"plugin"`     // Plugin name for display
+	Message   string `json:"message"`    // Human-readable message to display
+	SessionID string `json:"session_id"` // Required for routing (96E-21)
 }
 
 // KV request messages (plugin → host). Host replies with kv_result.
@@ -467,7 +469,7 @@ func (p *Plugin) buildSteeringMessages(sessionID string) []Message {
 	messages := make([]Message, 0, len(items))
 	for _, item := range items {
 		lines := strings.Count(item.Content, "\n") + 1
-		p.sendNotification(fmt.Sprintf("Loaded %s (%s, %d lines)", item.Path, item.Source, lines))
+		p.sendNotification(sessionID, fmt.Sprintf("Loaded %s (%s, %d lines)", item.Path, item.Source, lines))
 		text := fmt.Sprintf(
 			"<system-reminder source=\"AGENTS.md: %s (%s, %d lines)\">\n%s\n</system-reminder>",
 			item.Path, item.Source, lines, item.Content,
@@ -481,8 +483,8 @@ func (p *Plugin) buildSteeringMessages(sessionID string) []Message {
 	return messages
 }
 
-func (p *Plugin) sendNotification(message string) {
-	p.send(PluginEvent{T: "event", Plugin: "kn9t-agents-md", Message: message})
+func (p *Plugin) sendNotification(sessionID, message string) {
+	p.send(PluginEvent{T: "event", Plugin: "kn9t-agents-md", Message: message, SessionID: sessionID})
 }
 
 // ── KV helpers ───────────────────────────────────────────────────────────────

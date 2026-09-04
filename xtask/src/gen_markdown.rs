@@ -204,12 +204,32 @@ fn props_table(body: &Value, is_response: bool) -> String {
 
 fn emit_sse(http: &Value) -> String {
     let mut s = String::new();
-    s.push_str("### `GET /session/{id}/events?from=<seq>` — Subscribe to events\n\n");
-    s.push_str("Opens a persistent `text/event-stream`. No lease required. Query param `from` is the\n");
-    s.push_str("replay cursor: pass `0` for full history, or `last_seen_seq` on reconnect to resume\n");
-    s.push_str("without replaying already-processed events (exact gap-free dedup on the server).\n\n");
+    s.push_str("### `GET /session/{id}/events?from=<seq>&lease=<holder>` — Subscribe to events\n\n");
+    s.push_str("Opens a persistent `text/event-stream`. No lease required to *subscribe*. Query param\n");
+    s.push_str("`from` is the replay cursor: pass `0` for full history, or `last_seen_seq` on reconnect\n");
+    s.push_str("to resume without replaying already-processed events (exact gap-free dedup on the server).\n\n");
     s.push_str("**Wire format:** each frame is `event: <kind>\\ndata: <json>\\n\\n`. The `kind` is\n");
     s.push_str("**snake_case** (AGENTS.md §12) and matches the `kind` discriminator inside `data`.\n\n");
+    s.push_str("**Query params**\n\n");
+    s.push_str("| Param | Type | Required | Description |\n");
+    s.push_str("|-------|------|----------|-------------|\n");
+    s.push_str("| `from` | u64 | no | Replay cursor; durable events with `seq > from` are replayed, then the stream goes live. Default `0` (full history). |\n");
+    s.push_str("| `lease` | string | no | Lease holder token from `POST /session/{id}/lease`. If given, **this stream owns the lease**: see \"Keeping a write lease alive\" below. |\n\n");
+    s.push_str("**Keeping a write lease alive (client authors: read this).**\n\n");
+    s.push_str("The write lease has an idle timeout (default 5 min, DESIGN §12.6). Only *successful\n");
+    s.push_str("writes* (`prompt`/`steer`/`abort`/`model`/`compact`) refresh it. A client that holds the\n");
+    s.push_str("lease but only reads — i.e. sits on the event stream without sending anything — would\n");
+    s.push_str("otherwise idle-lose its lease after the timeout, and its **next `prompt` would 409\n");
+    s.push_str("`session_busy`** even though the same client is still connected.\n\n");
+    s.push_str("To avoid this, pass your lease holder as `?lease=<holder>` when you open the stream.\n");
+    s.push_str("The server then treats this SSE connection as the *owner* of that lease:\n\n");
+    s.push_str("- **Kept warm while connected** — every heartbeat (`: keepalive`) refreshes the lease's\n");
+    s.push_str("  `last_active`, so the idle timer never fires for an attached reader.\n");
+    s.push_str("- **Released on disconnect** — when the stream ends (client close, network drop, or\n");
+    s.push_str("  server heartbeat write failure), the server releases that lease. On reconnect you must\n");
+    s.push_str("  re-acquire it via `POST /session/{id}/lease` (and pass the new holder to the new stream).\n\n");
+    s.push_str("Recommended client sequence: `POST /lease` → open `GET …/events?from=<seq>&lease=<holder>`\n");
+    s.push_str("→ `POST …/prompt` with `X-Lease: <holder>`. Keep the stream open for the whole session.\n\n");
     s.push_str("**Errors:** `404` session not found.\n\n");
 
     let events = sse_events(http);

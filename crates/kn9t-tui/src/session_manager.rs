@@ -122,6 +122,10 @@ impl SessionManager {
     }
 
     /// Start SSE stream for a session.
+    ///
+    /// Passes the current lease holder (if any) so the stream owns the lease
+    /// server-side and keeps it warm while connected (prevents idle-lease-loss →
+    /// silent 409 on the next prompt).
     pub fn start_sse(
         &mut self,
         config: &Config,
@@ -129,11 +133,13 @@ impl SessionManager {
         from_seq: u64,
         tx: Sender<Event>,
     ) {
+        let lease = self.state.lease.clone();
         let handle = spawn_sse_thread(
             config.base_url.clone(),
             config.token.clone(),
             session_id.to_string(),
             from_seq,
+            lease,
             tx,
         );
         self.sse_handle = Some(handle);

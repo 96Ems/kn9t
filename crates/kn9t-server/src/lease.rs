@@ -95,6 +95,30 @@ impl LeaseMap {
         }
     }
 
+    /// Keep `session`'s lease warm from a *live connection* rather than a write.
+    ///
+    /// DESIGN §12.6 / this module's header: a lease releases "on client disconnect
+    /// (the SSE stream owning the lease ends)" — i.e. an attached client must never
+    /// lose its lease to the idle timer while its SSE stream is alive. `holds()`
+    /// only refreshes on a successful *write*, so a client that reads for >5 min
+    /// without writing would idle-expire even though it is plainly still connected;
+    /// the next prompt then 409s. The owning SSE stream calls this on every
+    /// heartbeat to prove liveness.
+    ///
+    /// Unlike `holds()`, this refreshes even if the lease has *just* crossed the
+    /// idle threshold: the live connection is authoritative proof the holder is
+    /// present. Returns true if the holder still owns the lease (and was refreshed).
+    pub fn touch(&self, session: &str, holder: &str) -> bool {
+        let mut m = self.leases.lock().expect("lease map poisoned");
+        match m.get_mut(session) {
+            Some(l) if l.holder == holder => {
+                l.last_active = Instant::now();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Release `session`'s lease only if `holder` currently holds it.
     /// Returns true if a release occurred.
     pub fn release(&self, session: &str, holder: &str) -> bool {

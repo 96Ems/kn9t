@@ -282,7 +282,7 @@
       "method": "GET",
       "path": "/session/{id}/events",
       "lease": false,
-      "description": "SSE: ?from={seq} replay durable >from then live, snake_case kind"
+      "description": "SSE: ?from={seq} replay durable >from then live, snake_case kind. Optional ?lease={holder}: the stream owns that lease and keeps it warm while connected (DESIGN §12.6)"
     },
     {
       "method": "GET",

@@ -240,12 +240,19 @@ fn route(
 
 /// R-SRV-040/050 — SSE attach. Subscribe first, replay durable + live_partial,
 /// dedup-flush buffer, then live loop. Holds the write lock for none of it.
+///
+/// If the client passes `?lease={holder}` (the token it acquired via POST /lease),
+/// this stream *owns* that lease: it keeps it warm on every heartbeat and releases
+/// it when the stream ends (DESIGN §12.6). This is what stops an attached client
+/// that reads for >5 min without writing from silently idle-losing its lease and
+/// then getting a 409 on its next prompt.
 fn handle_sse(state: &Arc<ServerState>, req: Request, session: &str, query: &str) {
     let from: u64 = query_param(query, "from")
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
+    let lease_holder = query_param(query, "lease");
 
-    crate::log!("SSE attach: session={} from={}", session, from);
+    crate::log!("SSE attach: session={} from={} lease={:?}", session, from, lease_holder.is_some());
 
     // Step 1: subscribe FIRST (buffer everything from now on).
     let sub = state.buses.subscribe(session, sse::SSE_RING_CAPACITY);
@@ -258,17 +265,28 @@ fn handle_sse(state: &Arc<ServerState>, req: Request, session: &str, query: &str
     crate::log!("SSE session connect: session={}", session);
 
     let mut writer = req.into_writer();
+    // Keep the owning lease warm on every heartbeat while this stream lives.
+    let mut on_alive = || {
+        if let Some(holder) = &lease_holder {
+            state.leases.touch(session, holder);
+        }
+    };
     let write_res = (|| -> std::io::Result<()> {
         sse::write_sse_head(&mut writer)?;
         for frame in &prelude.frames {
             writer.write_all(frame.as_bytes())?;
         }
         writer.flush()?;
-        sse::run_live_loop(&mut writer, &sub)
+        sse::run_live_loop(&mut writer, &sub, &mut on_alive)
     })();
-    
+
     if let Err(ref e) = write_res {
         crate::log!("SSE session error: {}", e);
+    }
+    // The stream owned the lease; its end releases it (DESIGN §12.6). A no-op if
+    // the holder no longer matches (e.g. another client took over).
+    if let Some(holder) = &lease_holder {
+        state.leases.release(session, holder);
     }
     crate::log!("SSE session disconnect: session={}", session);
 }

@@ -19,6 +19,7 @@ mod bootstrap;
 mod chat;
 mod cmd_cost;
 mod cmd_history;
+mod cmd_install_plugins;
 mod cmd_models;
 mod cmd_sessions;
 mod cmd_status;
@@ -159,6 +160,11 @@ fn print_help() {
     println!("  kn9t cost [--since MS] [--group-by model|kind|session]  Cost analytics (GET /cost)");
     println!("  kn9t tools                        List registered tools (GET /tools)");
     println!("  kn9t stop                         Graceful shutdown (POST /stop)");
+    println!("  kn9t install-plugins [OPTIONS]    Install project plugins to ~/.kn9t/");
+    println!("    --from <path>                    Project root (default: cwd)");
+    println!("    --no-build                       Skip auto-build; copy existing only");
+    println!("    --force                          Overwrite existing plugins");
+    println!("    --rebuild                        Force rebuild (implies --force)");
     println!("  kn9t help | --help | -h           Show this help");
     println!("  kn9t --version | -V | version     Show version");
     println!();
@@ -342,6 +348,11 @@ fn main() {
                     return;
                 }
                 cmd_stop::run();
+                return;
+            }
+            "install-plugins" => {
+                // Does NOT require server — local-only operation.
+                cmd_install_plugins::run(&args[2..]);
                 return;
             }
             "help" => {
