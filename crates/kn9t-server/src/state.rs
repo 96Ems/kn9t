@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use kn9t_core::{Approver, Decision, ModelSpec, Provider, ToolCall, ToolRegistry};
+use kn9t_core::{Approver, Cancel, Decision, ModelSpec, Provider, ToolCall, ToolRegistry};
 use kn9t_plugin::PluginHost;
 use kn9t_store::SqliteStore;
 
@@ -37,7 +37,13 @@ pub const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(5);
 /// (ADR-0008 decision 5).
 pub struct DenyAllApprover;
 impl Approver for DenyAllApprover {
-    fn request(&self, _call: &ToolCall, _cwd: &std::path::Path, reason: &str) -> Decision {
+    fn request(
+        &self,
+        _call: &ToolCall,
+        _cwd: &std::path::Path,
+        reason: &str,
+        _ctx: &kn9t_core::ApprovalCtx,
+    ) -> Decision {
         Decision::Deny { reason: format!("approval required ({reason}), no approver configured") }
     }
 }
@@ -162,6 +168,14 @@ pub struct ServerState {
     /// Spawn recipe per plugin declared name — used to respawn on reload (R-PLUG2-100).
     /// `cmd` is the exact argv (binary + args) and `env` the injected vars.
     pub plugin_spawn: Mutex<HashMap<String, (Vec<String>, Vec<(String, String)>)>>,
+    /// Per-session cancellation handles for `abort` (R-SRV-060). A running turn registers
+    /// its `Cancel` here; `abort` fires it.
+    ///
+    /// 96E-33: this was a `static ABORTS` in `turn.rs`. Process-global state made two server
+    /// instances in one test process share an abort map, and it was global for the same
+    /// reason the policy sink was thread-local — a signature that did not carry what it
+    /// needed. It lives here now because it is per-server state, like every other map above.
+    pub aborts: Mutex<HashMap<String, Cancel>>,
     /// ADR-0008 -- an in-process `HookHost` that replaces the composed plugin hooks.
     ///
     /// Since ADR-0008 an `Ask` can only originate from a policy plugin, so exercising the
@@ -219,6 +233,7 @@ impl ServerState {
             tools: Mutex::new(tools),
             plugin_hosts: Mutex::new(plugin_hosts),
             plugin_spawn: Mutex::new(HashMap::new()),
+            aborts: Mutex::new(HashMap::new()),
             hooks_override: Mutex::new(None),
         }
     }

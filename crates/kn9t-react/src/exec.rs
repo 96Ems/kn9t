@@ -442,7 +442,11 @@ impl ReactLoop {
             name: call.name.clone(),
             args_json: args.to_string(),
         };
-        match self.approver.request(&dispatch, &params.cwd, reason) {
+        let ctx = kn9t_provider_core::ApprovalCtx {
+            session: &params.session.0,
+            sink: self.bus.as_ref(),
+        };
+        match self.approver.request(&dispatch, &params.cwd, reason, &ctx) {
             Decision::Allow => CallPlan::Execute { args },
             Decision::Deny { reason } => CallPlan::Deny(reason),
             Decision::HardDeny { reason } => CallPlan::Deny(reason),
@@ -540,7 +544,7 @@ mod tests {
         struct DummyBus(Arc<Mutex<Vec<LiveEvent>>>);
         impl EventSink for DummyBus { fn emit(&self, e: LiveEvent) { self.0.lock().unwrap().push(e); } }
         struct AllowAllApprover;
-        impl Approver for AllowAllApprover { fn request(&self, _c: &ToolCall, _cwd: &std::path::Path, _r: &str) -> Decision { Decision::Allow } }
+        impl Approver for AllowAllApprover { fn request(&self, _c: &ToolCall, _cwd: &std::path::Path, _r: &str, _ctx: &kn9t_provider_core::ApprovalCtx) -> Decision { Decision::Allow } }
         struct CountingTool(Arc<AtomicUsize>);
         impl Tool for CountingTool {
             fn spec(&self) -> &ToolSpec { Box::leak(Box::new(ToolSpec { name: "x".into(), description: "".into(), schema: serde_json::json!({}), hidden: false, effects: vec![], policy: Default::default() })) }

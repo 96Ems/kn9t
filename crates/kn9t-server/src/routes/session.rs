@@ -226,7 +226,7 @@ pub fn prompt(state: &Arc<ServerState>, id: &str, req: api::PromptReq) -> JsonRe
     // This prevents the race condition where abort + immediate new prompt
     // causes the user message to be appended before tool_results, corrupting
     // the transcript and causing "tool_use ids without tool_result blocks" errors.
-    if turn::is_turn_running(id) {
+    if turn::is_turn_running(state, id) {
         crate::log!("[prompt] turn already running, rejecting");
         return JsonResp::error(409, "turn_running",
             "A turn is already running for this session. Wait for it to complete before sending another prompt.");

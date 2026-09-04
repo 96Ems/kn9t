@@ -1500,7 +1500,7 @@ fn approve_resolves_blocked_policy() {
     };
 
     // Turn should still be running (blocked on approval).
-    assert!(kn9t_server::turn::is_turn_running(&id), "turn must be blocked on Ask");
+    assert!(kn9t_server::turn::is_turn_running(&state, &id), "turn must be blocked on Ask");
 
     // Resolve via POST /approve (allow).
     let hdrs = [("X-Lease", lease.as_str()), ("X-Lease-Session", id.as_str())];
@@ -1509,10 +1509,10 @@ fn approve_resolves_blocked_policy() {
 
     // Wait for turn to finish.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while kn9t_server::turn::is_turn_running(&id) && std::time::Instant::now() < deadline {
+    while kn9t_server::turn::is_turn_running(&state, &id) && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!kn9t_server::turn::is_turn_running(&id), "turn must have unblocked after approve");
+    assert!(!kn9t_server::turn::is_turn_running(&state, &id), "turn must have unblocked after approve");
 
     // Transcript must contain the tool result (dummy bash returned ok) and final assistant text.
     let snap = req_auth(&h, "GET", &format!("/session/{id}"), &[], serde_json::Value::Null).json();
@@ -1561,10 +1561,10 @@ fn approve_hard_deny_no_prompt() {
 
     // Turn should have finished already (not blocked).
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while kn9t_server::turn::is_turn_running(&id) && std::time::Instant::now() < deadline {
+    while kn9t_server::turn::is_turn_running(&state, &id) && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!kn9t_server::turn::is_turn_running(&id), "plugin Deny must not block");
+    assert!(!kn9t_server::turn::is_turn_running(&state, &id), "plugin Deny must not block");
 
     // The denied tool should be a is_error tool_result.
     let snap = req_auth(&h, "GET", &format!("/session/{id}"), &[], serde_json::Value::Null).json();
@@ -1686,10 +1686,10 @@ fn approve_always_writes_config() {
     assert_eq!(r.status, 200, "approve always: {}", String::from_utf8_lossy(&r.body));
     // Wait for turn to finish
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while kn9t_server::turn::is_turn_running(&sid) && std::time::Instant::now() < deadline {
+    while kn9t_server::turn::is_turn_running(&state, &sid) && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!kn9t_server::turn::is_turn_running(&sid));
+    assert!(!kn9t_server::turn::is_turn_running(&state, &sid));
     // Config file must contain the fingerprint
     let cfg_text = std::fs::read_to_string(&config_path).unwrap();
     assert!(cfg_text.contains("always"), "config must contain always approvals, got: {}", cfg_text);
@@ -1706,10 +1706,10 @@ fn approve_always_writes_config() {
     while let Some(ev) = sub2.try_recv() { if matches!(ev, Event::ApprovalRequest{..}) { saw = true; } }
     assert!(!saw, "second identical command with always scope must not prompt");
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while kn9t_server::turn::is_turn_running(&sid) && std::time::Instant::now() < deadline {
+    while kn9t_server::turn::is_turn_running(&state, &sid) && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!kn9t_server::turn::is_turn_running(&sid));
+    assert!(!kn9t_server::turn::is_turn_running(&state, &sid));
     // Legacy decision "always" also maps to always (F4)
     // Test legacy path via direct record: send decision "always" without scope
     let config_tmp2 = tempfile::tempdir().unwrap();
@@ -1754,7 +1754,7 @@ fn approve_always_writes_config() {
     std::thread::sleep(Duration::from_millis(300));
     // Wait turn
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while kn9t_server::turn::is_turn_running(&sid2) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    while kn9t_server::turn::is_turn_running(&state, &sid2) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
     assert!(cache2.has_persistent("bash:rm -rf /tmp/legacy"), "legacy always must persist");
     h.handle.shutdown();
     h2.handle.shutdown();
@@ -1830,8 +1830,8 @@ fn approve_session_caches() {
     let r = req_auth(&h, "POST", "/approve", &[("X-Lease", lease.as_str()), ("X-Lease-Session", sid.as_str())], serde_json::json!({"id": aid.0, "decision": "allow", "scope": "session"}));
     assert_eq!(r.status, 200);
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while kn9t_server::turn::is_turn_running(&sid) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
-    assert!(!kn9t_server::turn::is_turn_running(&sid));
+    while kn9t_server::turn::is_turn_running(&state, &sid) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    assert!(!kn9t_server::turn::is_turn_running(&state, &sid));
     assert!(state.approval_cache.has_session(&sid, "bash:rm -rf /tmp/session_test"));
     // Second prompt same command should be auto-allowed (no ApprovalRequest)
     let sub2 = state.buses.subscribe(&sid, 64);
@@ -1842,8 +1842,8 @@ fn approve_session_caches() {
     while let Some(ev) = sub2.try_recv() { if matches!(ev, Event::ApprovalRequest{..}) { saw = true; } }
     assert!(!saw, "session scope must cache, second prompt must not emit ApprovalRequest");
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while kn9t_server::turn::is_turn_running(&sid) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
-    assert!(!kn9t_server::turn::is_turn_running(&sid));
+    while kn9t_server::turn::is_turn_running(&state, &sid) && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(50)); }
+    assert!(!kn9t_server::turn::is_turn_running(&state, &sid));
     // Different session should still prompt (session scope is per-session)
     let sid2 = make_session(&h);
     let lease2 = acquire_lease(&h, &sid2);
@@ -2091,7 +2091,7 @@ impl Provider for StubProvider {
 
 struct AllowAllApprover;
 impl Approver for AllowAllApprover {
-    fn request(&self, _call: &kn9t_core::ToolCall, _cwd: &std::path::Path, _reason: &str) -> kn9t_core::Decision {
+    fn request(&self, _call: &kn9t_core::ToolCall, _cwd: &std::path::Path, _reason: &str, _ctx: &kn9t_core::ApprovalCtx) -> kn9t_core::Decision {
         kn9t_core::Decision::Allow
     }
 }

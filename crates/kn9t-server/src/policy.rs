@@ -15,70 +15,13 @@
 //! - `InteractiveApprover` / `NonInteractiveApprover` — the two `Approver` adapters that
 //!   turn a plugin's `Ask` into a `Decision`.
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use kn9t_core::{ApprovalId, Approver, Decision, EventSink, LiveEvent, ToolCall};
+use kn9t_core::{ApprovalCtx, ApprovalId, Approver, Decision, LiveEvent, ToolCall};
 
-// ── Thread-local sink ────────────────────────────────────────────────────────
-// `Approver::request` has no session parameter (R-CORE-270), so the per-turn `SessionSink`
-// is threaded via TLS: the globally-shared approver emits to the correct session bus without
-// widening the trait. Set for the duration of `turn::spawn_turn`'s loop thread.
-// `Policy::check` is `(&self, call, cwd) -> Decision` with no session param
-// (DESIGN §10, R-CORE-270). The per-turn `SessionSink` is threaded via TLS so
-// the globally-shared `InteractivePolicy` can emit to the correct session bus
-// without changing the trait signature. The value is set for the duration of
-// `turn::spawn_turn`'s loop thread.
-
-thread_local! {
-    static POLICY_SINK: RefCell<Option<Arc<dyn EventSink>>> = const { RefCell::new(None) };
-    static POLICY_SESSION: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-/// Set the current thread's policy sink. Called by `turn::spawn_turn` around
-/// `loop.run`. Cleared after.
-pub fn set_policy_sink(sink: Option<Arc<dyn EventSink>>) {
-    POLICY_SINK.with(|c| *c.borrow_mut() = sink);
-}
-
-fn get_policy_sink() -> Option<Arc<dyn EventSink>> {
-    POLICY_SINK.with(|c| c.borrow().clone())
-}
-
-/// Session id for the current turn's policy check (TLS, alongside sink).
-pub fn set_policy_session(session: Option<String>) {
-    POLICY_SESSION.with(|c| *c.borrow_mut() = session);
-}
-fn get_policy_session() -> Option<String> {
-    POLICY_SESSION.with(|c| c.borrow().clone())
-}
-
-/// Run `f` with `sink` as the current policy sink (RAII helper for tests).
-pub fn with_policy_sink<F, R>(sink: Arc<dyn EventSink>, f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    set_policy_sink(Some(sink));
-    let r = f();
-    set_policy_sink(None);
-    r
-}
-
-/// Helper for tests: run with both sink and session id.
-pub fn with_policy_session_sink<F, R>(session: &str, sink: Arc<dyn EventSink>, f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    set_policy_session(Some(session.to_string()));
-    set_policy_sink(Some(sink));
-    let r = f();
-    set_policy_sink(None);
-    set_policy_session(None);
-    r
-}
 
 // ── Fingerprint ──────────────────────────────────────────────────────────────
 /// Canonical fingerprint for a tool call, used for session/always caching.
@@ -461,19 +404,18 @@ impl InteractiveApprover {
 }
 
 impl Approver for InteractiveApprover {
-    fn request(&self, call: &ToolCall, cwd: &Path, reason: &str) -> Decision {
+    fn request(&self, call: &ToolCall, cwd: &Path, reason: &str, ctx: &ApprovalCtx) -> Decision {
         // A previous `always`/`session` approval for the same fingerprint answers without
         // troubling the user again.
         let fp = fingerprint(call);
-        let session = get_policy_session();
-        if self.cache.is_approved(session.as_deref(), &fp) {
+        if self.cache.is_approved(Some(ctx.session), &fp) {
             return Decision::Allow;
         }
 
         let id = NEXT_APPROVAL_ID.fetch_add(1, Ordering::SeqCst);
         let meta = ApprovalMeta {
             fingerprint: fp,
-            session_id: session.unwrap_or_default(),
+            session_id: ctx.session.to_string(),
             tool: call.name.clone(),
         };
         let slot = self.registry.create(id, meta);
@@ -481,21 +423,13 @@ impl Approver for InteractiveApprover {
         let args_val: serde_json::Value =
             serde_json::from_str(&call.args_json).unwrap_or(serde_json::Value::Null);
 
-        // No sink means nothing is listening (non-interactive run, or a turn outside
-        // `spawn_turn`): there is no one to ask, so fail closed rather than hang.
-        match get_policy_sink() {
-            Some(sink) => sink.emit(LiveEvent::ApprovalRequest {
-                id: ApprovalId(id),
-                tool: call.name.clone(),
-                args: args_val,
-                cwd: cwd.to_path_buf(),
-                reason: reason.to_string(),
-            }),
-            None => {
-                self.registry.remove(id);
-                return Decision::Deny { reason: "approval required (no sink)".into() };
-            }
-        }
+        ctx.sink.emit(LiveEvent::ApprovalRequest {
+            id: ApprovalId(id),
+            tool: call.name.clone(),
+            args: args_val,
+            cwd: cwd.to_path_buf(),
+            reason: reason.to_string(),
+        });
 
         // Blocks until `POST /approve` arrives. The human wait happens here, server-side,
         // *after* the hook returned — so a user taking their time cannot trip the plugin's
@@ -521,8 +455,8 @@ impl NonInteractiveApprover {
 }
 
 impl Approver for NonInteractiveApprover {
-    fn request(&self, call: &ToolCall, _cwd: &Path, reason: &str) -> Decision {
-        if self.cache.is_approved(get_policy_session().as_deref(), &fingerprint(call)) {
+    fn request(&self, call: &ToolCall, _cwd: &Path, reason: &str, ctx: &ApprovalCtx) -> Decision {
+        if self.cache.is_approved(Some(ctx.session), &fingerprint(call)) {
             return Decision::Allow;
         }
         Decision::Deny {
@@ -587,9 +521,7 @@ mod tests {
         let sink_c = sink.clone();
         let a_c = a.clone();
         let handle = std::thread::spawn(move || {
-            with_policy_sink(sink_c, || {
-                a_c.request(&bash_call("rm -rf /"), Path::new("/"), "dangerous")
-            })
+            { let s = sink_c; let ctx = ApprovalCtx { session: "test-session", sink: s.as_ref() }; a_c.request(&bash_call("rm -rf /"), Path::new("/"), "dangerous", &ctx) }
         });
 
         let id = wait_for_event(&sink, "allow path");
@@ -608,9 +540,7 @@ mod tests {
         let sink_c = sink.clone();
         let a_c = a.clone();
         let handle = std::thread::spawn(move || {
-            with_policy_sink(sink_c, || {
-                a_c.request(&bash_call("rm -rf /"), Path::new("/"), "dangerous")
-            })
+            { let s = sink_c; let ctx = ApprovalCtx { session: "test-session", sink: s.as_ref() }; a_c.request(&bash_call("rm -rf /"), Path::new("/"), "dangerous", &ctx) }
         });
 
         let id = wait_for_event(&sink, "deny path");
@@ -629,9 +559,7 @@ mod tests {
         let sink_c = sink.clone();
         let a_c = a.clone();
         let handle = std::thread::spawn(move || {
-            with_policy_sink(sink_c, || {
-                a_c.request(&bash_call("git push"), Path::new("/"), "not in ALLOW list")
-            })
+            { let s = sink_c; let ctx = ApprovalCtx { session: "test-session", sink: s.as_ref() }; a_c.request(&bash_call("git push"), Path::new("/"), "not in ALLOW list", &ctx) }
         });
 
         let id = wait_for_event(&sink, "reason path");
@@ -646,14 +574,31 @@ mod tests {
 
     /// With nobody listening there is no one to ask, so the call is denied rather than
     /// hanging forever on a prompt no client will ever see.
+    /// 96E-33 — the sink is now a parameter, so "no sink" is unrepresentable: the compiler
+    /// rejects a call that omits it. What this test guards instead is the property that
+    /// replaced it — an approval driven from a thread that never started a turn still emits
+    /// to the session it was told about. Under the previous thread-local design this
+    /// returned `Deny { "approval required (no sink)" }`, which is exactly how
+    /// `host_api::tool_execute` was silently broken.
     #[test]
-    fn approver_without_sink_fails_closed() {
+    fn approver_emits_from_a_foreign_thread() {
         let reg = Arc::new(ApprovalRegistry::new());
         let cache = Arc::new(ApprovalCache::new_empty());
-        let a = InteractiveApprover::with_cache(reg, cache);
-        // No `with_policy_sink` wrapper — TLS sink is unset.
-        let d = a.request(&bash_call("ls"), Path::new("/"), "because");
-        assert!(matches!(d, Decision::Deny { .. }), "no sink must deny, got {d:?}");
+        let a = Arc::new(InteractiveApprover::with_cache(reg.clone(), cache));
+        let sink = Arc::new(RecordingSink::default());
+
+        // A thread with no turn on it and no ambient state whatsoever.
+        let sink_c = sink.clone();
+        let a_c = a.clone();
+        let handle = std::thread::spawn(move || {
+            let ctx = ApprovalCtx { session: "sess-foreign", sink: sink_c.as_ref() };
+            a_c.request(&bash_call("ls"), Path::new("/"), "because", &ctx)
+        });
+
+        // The prompt arrives on the session we named, and resolving it unblocks the caller.
+        let id = wait_for_event(&sink, "foreign thread");
+        assert!(reg.resolve(id, Decision::Allow));
+        assert_eq!(handle.join().unwrap(), Decision::Allow);
     }
 
     /// ADR-0008 — `-p`/CI cannot prompt, so an ask is denied outright. The reason is carried
@@ -662,7 +607,9 @@ mod tests {
     fn non_interactive_approver_denies_ask() {
         let cache = Arc::new(ApprovalCache::new_empty());
         let a = NonInteractiveApprover::new(cache);
-        match a.request(&bash_call("rm x"), Path::new("/"), "mutation") {
+        let sink = Arc::new(RecordingSink::default());
+        let ctx = ApprovalCtx { session: "test-session", sink: sink.as_ref() };
+        match a.request(&bash_call("rm x"), Path::new("/"), "mutation", &ctx) {
             Decision::Deny { reason } => assert!(reason.contains("mutation")),
             other => panic!("expected Deny, got {other:?}"),
         }
@@ -682,9 +629,7 @@ mod tests {
         let sink_c = sink.clone();
         let a_c = a.clone();
         let handle = std::thread::spawn(move || {
-            with_policy_session_sink("sess1", sink_c, || {
-                a_c.request(&bash_call("rm -rf /tmp/x"), Path::new("/"), "mutation")
-            })
+            { let s = sink_c; let ctx = ApprovalCtx { session: "sess1", sink: s.as_ref() }; a_c.request(&bash_call("rm -rf /tmp/x"), Path::new("/"), "mutation", &ctx) }
         });
         let id = wait_for_event(&sink, "first ask");
         let meta = reg.get_meta(id).expect("meta must exist");
@@ -694,9 +639,7 @@ mod tests {
 
         // Same session, same call → answered from cache, no new event.
         sink.events.lock().unwrap().clear();
-        let d2 = with_policy_session_sink("sess1", sink.clone(), || {
-            a.request(&bash_call("rm -rf /tmp/x"), Path::new("/"), "mutation")
-        });
+        let d2 = { let s = sink.clone(); let ctx = ApprovalCtx { session: "sess1", sink: s.as_ref() }; a.request(&bash_call("rm -rf /tmp/x"), Path::new("/"), "mutation", &ctx) };
         assert_eq!(d2, Decision::Allow);
         assert!(sink.events.lock().unwrap().is_empty(), "session cache must not prompt");
 
@@ -705,9 +648,7 @@ mod tests {
         let a2 = a.clone();
         let sink2 = sink.clone();
         let handle2 = std::thread::spawn(move || {
-            with_policy_session_sink("sess2", sink2, || {
-                a2.request(&bash_call("rm -rf /tmp/x"), Path::new("/"), "mutation")
-            })
+            { let s = sink2; let ctx = ApprovalCtx { session: "sess2", sink: s.as_ref() }; a2.request(&bash_call("rm -rf /tmp/x"), Path::new("/"), "mutation", &ctx) }
         });
         let id2 = wait_for_event(&sink, "second session must prompt");
         reg.resolve(id2, Decision::Deny { reason: "test".into() });
@@ -729,9 +670,7 @@ mod tests {
         let sink_c = sink.clone();
         let a_c = a.clone();
         let handle = std::thread::spawn(move || {
-            with_policy_session_sink("s1", sink_c, || {
-                a_c.request(&bash_call("rm -rf /tmp/persist"), Path::new("/"), "mutation")
-            })
+            { let s = sink_c; let ctx = ApprovalCtx { session: "s1", sink: s.as_ref() }; a_c.request(&bash_call("rm -rf /tmp/persist"), Path::new("/"), "mutation", &ctx) }
         });
         let id = wait_for_event(&sink, "persist ask");
         let meta = reg.get_meta(id).unwrap();
@@ -741,9 +680,7 @@ mod tests {
 
         // A brand-new session is covered, because `always` is not session-scoped.
         sink.events.lock().unwrap().clear();
-        let d2 = with_policy_session_sink("different", sink.clone(), || {
-            a.request(&bash_call("rm -rf /tmp/persist"), Path::new("/"), "mutation")
-        });
+        let d2 = { let s = sink.clone(); let ctx = ApprovalCtx { session: "different", sink: s.as_ref() }; a.request(&bash_call("rm -rf /tmp/persist"), Path::new("/"), "mutation", &ctx) };
         assert_eq!(d2, Decision::Allow);
         assert!(sink.events.lock().unwrap().is_empty());
 

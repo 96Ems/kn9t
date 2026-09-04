@@ -39,32 +39,22 @@ fn compactor_from_hosts(
 
 /// Per-session cancellation handles for `abort` (R-SRV-060 command). A running turn
 /// registers its `Cancel`; `abort` fires it.
-static ABORTS: Mutex<Option<HashMap<String, Cancel>>> = Mutex::new(None);
-
-fn aborts() -> std::sync::MutexGuard<'static, Option<HashMap<String, Cancel>>> {
-    let mut g = ABORTS.lock().expect("aborts poisoned");
-    if g.is_none() {
-        *g = Some(HashMap::new());
-    }
-    g
+fn register_cancel(state: &Arc<ServerState>, session: &str, cancel: Cancel) {
+    state.aborts.lock().expect("aborts poisoned").insert(session.to_owned(), cancel);
 }
-
-fn register_cancel(session: &str, cancel: Cancel) {
-    aborts().as_mut().unwrap().insert(session.to_owned(), cancel);
-}
-fn clear_cancel(session: &str) {
-    aborts().as_mut().unwrap().remove(session);
+fn clear_cancel(state: &Arc<ServerState>, session: &str) {
+    state.aborts.lock().expect("aborts poisoned").remove(session);
 }
 
 /// Check if a turn is currently running for `session`.
-pub fn is_turn_running(session: &str) -> bool {
-    aborts().as_ref().unwrap().contains_key(session)
+pub fn is_turn_running(state: &Arc<ServerState>, session: &str) -> bool {
+    state.aborts.lock().expect("aborts poisoned").contains_key(session)
 }
 
 /// Fire the cancel for `session`'s running turn, if any.
-pub fn abort(_state: &Arc<ServerState>, session: &str) {
+pub fn abort(state: &Arc<ServerState>, session: &str) {
     crate::log!("[DEBUG abort] session={}", session);
-    if let Some(c) = aborts().as_ref().unwrap().get(session) {
+    if let Some(c) = state.aborts.lock().expect("aborts poisoned").get(session) {
         crate::log!("[DEBUG abort] firing cancel for session={}", session);
         c.cancel();
     } else {
@@ -353,18 +343,21 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
     std::thread::spawn(move || {
         state.idle.turn_started();
         let cancel = Cancel::new();
-        register_cancel(&session.0, cancel.clone());
+        register_cancel(&state, &session.0, cancel.clone());
 
         // The model spec must be registered with the store so `plan_request` can
         // compute cache breakpoints and the compaction threshold.
         state.store.register_model_spec(model.clone());
 
         // Single composition point (bus/sink + hooks + tools + provider + compactor).
-        let (loop_, sink) = match compose_loop(&state, &session, &model, None) {
+        // 96E-33: the sink used to be installed in TLS for the approver. The loop already
+        // holds it as `ReactLoop::bus` and now passes it through `ApprovalCtx`, so there is
+        // nothing left to thread by hand here.
+        let (loop_, _sink) = match compose_loop(&state, &session, &model, None) {
             Ok(v) => v,
             Err(e) => {
                 crate::log!("[spawn_turn] compose failed: {e}");
-                clear_cancel(&session.0);
+                clear_cancel(&state, &session.0);
                 state.idle.turn_ended();
                 return;
             }
@@ -382,22 +375,14 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             cancel: Some(cancel.clone()),
         };
 
-        // Publish ApprovalRequest via policy check needs the session sink.
-        // Install the sink + session id in TLS for InteractivePolicy (keeps Policy::check
-        // signature unchanged — thread-local per turn, no global race as each
-        // turn runs on its own thread).
-        crate::policy::set_policy_sink(Some(sink.clone()));
-        crate::policy::set_policy_session(Some(session.0.clone()));
         crate::log!("turn started: session={}", session.0);
         let run_result = loop_.run(params);
-        crate::policy::set_policy_sink(None);
-        crate::policy::set_policy_session(None);
         match run_result {
             Ok(_)  => crate::log!("turn finished: session={}", session.0),
             Err(e) => crate::log!("turn error: session={} error={e:?}", session.0),
         }
 
-        clear_cancel(&session.0);
+        clear_cancel(&state, &session.0);
         state.idle.turn_ended();
 
         // R-SRV-100: after the first assistant turn of a nameless session, title it.

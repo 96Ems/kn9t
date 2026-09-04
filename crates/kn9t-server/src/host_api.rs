@@ -412,7 +412,13 @@ impl ServerHostApi {
             name: name.to_string(),
             args_json: serde_json::to_string(&args).unwrap_or_default(),
         };
-        match self.state.approver_snapshot().request(&call, &self.state.cwd, "plugin tool_execute") {
+        // 96E-33: the session and its sink are passed explicitly. This call runs on an API
+        // worker thread, not the turn thread, so the old thread-local sink was always unset
+        // here and every approval fell through to "no sink" -> Deny. Now the prompt actually
+        // reaches the session's SSE stream.
+        let approval_sink = self.sink(session);
+        let ctx = kn9t_core::ApprovalCtx { session, sink: &approval_sink };
+        match self.state.approver_snapshot().request(&call, &self.state.cwd, "plugin tool_execute", &ctx) {
             Decision::Allow => {}
             decision => {
                 let reason = match decision {

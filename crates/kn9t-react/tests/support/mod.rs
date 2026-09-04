@@ -211,7 +211,13 @@ impl kn9t_core::Store for StubStore {
 /// Approver that approves whatever it is asked (ADR-0008).
 pub struct AllowAll;
 impl Approver for AllowAll {
-    fn request(&self, _call: &ToolCall, _cwd: &std::path::Path, _reason: &str) -> Decision {
+    fn request(
+        &self,
+        _call: &ToolCall,
+        _cwd: &std::path::Path,
+        _reason: &str,
+        _ctx: &kn9t_provider_core::ApprovalCtx,
+    ) -> Decision {
         Decision::Allow
     }
 }
@@ -219,7 +225,13 @@ impl Approver for AllowAll {
 /// Approver that refuses whatever it is asked, with a fixed reason.
 pub struct DenyAll(pub String);
 impl Approver for DenyAll {
-    fn request(&self, _call: &ToolCall, _cwd: &std::path::Path, _reason: &str) -> Decision {
+    fn request(
+        &self,
+        _call: &ToolCall,
+        _cwd: &std::path::Path,
+        _reason: &str,
+        _ctx: &kn9t_provider_core::ApprovalCtx,
+    ) -> Decision {
         Decision::Deny {
             reason: self.0.clone(),
         }

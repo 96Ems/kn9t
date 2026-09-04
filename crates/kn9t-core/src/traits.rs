@@ -192,6 +192,20 @@ pub enum Decision {
 /// write lease, or `~/.kn9t/config.toml` itself, which is precisely why this seam exists.
 ///
 /// `reason` is the plugin's explanation, shown to the user so the prompt says *why*.
+///
+/// `ctx` carries the session and its event sink explicitly (96E-33). These used to travel
+/// through thread-local storage in the server, which meant `request` only reached the right
+/// client when it happened to run on the thread that started the turn. That assumption was
+/// already false on one path: `host_api`'s `tool_execute` runs on an API worker, saw no TLS,
+/// and so denied every approval with "no sink". Passing them in makes the requirement
+/// visible to the compiler instead of leaving it to be rediscovered.
 pub trait Approver: Send + Sync {
-    fn request(&self, call: &ToolCall, cwd: &Path, reason: &str) -> Decision;
+    fn request(&self, call: &ToolCall, cwd: &Path, reason: &str, ctx: &ApprovalCtx) -> Decision;
+}
+
+/// R-CORE-270 — what an [`Approver`] needs beyond the call itself: which session to prompt,
+/// and where to emit the prompt. Borrowed rather than owned so the caller keeps its `Arc`.
+pub struct ApprovalCtx<'a> {
+    pub session: &'a str,
+    pub sink: &'a dyn crate::bus::EventSink,
 }

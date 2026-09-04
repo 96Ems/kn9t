@@ -22,7 +22,7 @@ impl Tool for RecordingTool {
 
 struct AllowAll;
 impl Approver for AllowAll {
-    fn request(&self, _call: &ToolCall, _cwd: &std::path::Path, _reason: &str) -> Decision { Decision::Allow }
+    fn request(&self, _call: &ToolCall, _cwd: &std::path::Path, _reason: &str, _ctx: &kn9t_core::ApprovalCtx) -> Decision { Decision::Allow }
 }
 
 fn temp_state_with_recorder(recorded: Arc<Mutex<Vec<String>>>) -> Arc<ServerState> {

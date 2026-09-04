@@ -37,7 +37,7 @@ pub use provider::{Chunk, Provider, Request};
 pub use registry::ToolRegistry;
 pub use toolspec::{DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec, wildcard_match, value_to_pattern};
 pub use traits::{
-    Approver, CompactionPlan, Compactor, CompactSpan, Decision, HandoffPlanData, PluginKv,
-    RequestPlan, SessionSnapshot, Sha256, Store, Tool, ToolCall, ToolCtx, ToolOutput,
+    ApprovalCtx, Approver, CompactionPlan, Compactor, CompactSpan, Decision, HandoffPlanData,
+    PluginKv, RequestPlan, SessionSnapshot, Sha256, Store, Tool, ToolCtx, ToolCall, ToolOutput,
 };
 pub use usage::{StopReason, Tokens, Usage};
