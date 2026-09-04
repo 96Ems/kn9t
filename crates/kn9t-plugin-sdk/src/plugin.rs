@@ -28,7 +28,7 @@ use crate::wire::{
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{self, BufReader, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{mpsc, Arc, Mutex};
 
 // ── Plugin ────────────────────────────────────────────────────────────────────

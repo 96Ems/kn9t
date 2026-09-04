@@ -31,6 +31,7 @@ pub enum Visibility {
 }
 
 impl Visibility {
+    /// The wire representation (`"silent"` | `"progress"` | `"full"`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Silent => "silent",
@@ -38,6 +39,7 @@ impl Visibility {
             Self::Full => "full",
         }
     }
+    /// Parse the wire representation; `None` for an unknown value.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "silent" => Some(Self::Silent),
@@ -178,6 +180,7 @@ pub struct SubagentTool {
 }
 
 impl SubagentTool {
+    /// Build a subagent-spawning tool exposed under `name`.
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
         Self { name: name.into(), description: description.into() }
     }

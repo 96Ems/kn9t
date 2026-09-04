@@ -256,16 +256,22 @@ pub struct CompactionPlan {
 /// Structured handoff data (ID-based) that a compactor may attach.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CompactionHandoff {
+    /// Tool-result IDs to carry over verbatim.
     pub keep: Vec<String>,
+    /// Tool results replaced by a short summary.
     pub summarize: Vec<CompactionSummary>,
+    /// Tool-result IDs to discard entirely.
     #[serde(rename = "drop")]
     pub drop_ids: Vec<String>,
+    /// Human-readable next steps for the model after compaction.
     pub resume_actions: Vec<String>,
 }
 
 /// One summarized tool result in a handoff.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CompactionSummary {
+    /// The tool-result ID this summary replaces.
     pub id: String,
+    /// The replacement text.
     pub summary: String,
 }

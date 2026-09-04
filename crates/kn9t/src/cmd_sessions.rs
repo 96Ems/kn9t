@@ -86,16 +86,4 @@ fn truncate(s: &str, max: usize) -> String {
     format!("{}…", &s[..max.saturating_sub(1)])
 }
 
-/// Human-readable age from a Unix ms timestamp.
-fn age_str(ts_ms: Option<i64>) -> String {
-    let ts_ms = match ts_ms { Some(t) => t, None => return "?".into() };
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    let secs = ((now_ms - ts_ms) / 1000).max(0) as u64;
-    if secs < 60        { format!("{secs}s ago") }
-    else if secs < 3600 { format!("{}m ago", secs / 60) }
-    else if secs < 86400{ format!("{}h ago", secs / 3600) }
-    else                { format!("{}d ago", secs / 86400) }
-}
+

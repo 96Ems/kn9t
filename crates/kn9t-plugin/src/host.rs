@@ -64,9 +64,6 @@ struct EventState {
     unsubscribed: bool,
 }
 
-/// Shared bus reference for event forwarding thread.
-type SharedBus = Arc<Mutex<Option<Arc<dyn EventSink>>>>;
-
 /// Shared writer — used by hook callers, KV reader thread, and RemoteProvider.
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -89,6 +86,11 @@ pub struct PluginHost {
     /// thread-local TL_SESSION/TL_BUS for isolation under concurrency.
     session_buses: Arc<Mutex<HashMap<String, Arc<dyn EventSink>>>>,
     /// Persistent KV store — namespaced by this plugin's name in the host.
+    ///
+    /// Never read through `self`: KV requests are served by the reader thread,
+    /// which owns its own `Arc` clone (`kv_for_reader`). This field keeps the
+    /// store alive for as long as the host lives.
+    #[allow(dead_code)]
     kv: Arc<dyn PluginKv>,
     /// 96E-10: protocol health — once a malformed message is seen the connection
     /// is poisoned; new calls fail fast and the reader terminates.

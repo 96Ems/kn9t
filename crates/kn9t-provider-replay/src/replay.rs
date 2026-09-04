@@ -21,9 +21,11 @@ use std::path::{Path, PathBuf};
 use kn9t_provider_core::{Cancel, Chunk, ProvErr, Provider, Request, sse_lines};
 
 use crate::fixture::Fixture;
-// SegmentedReader + data_events stay local — they are replay-specific delivery helpers.
+// SegmentedReader stays local — a replay-specific delivery helper. `data_events`
+// is not needed here (see the note at the SegmentedReader call below: each yielded
+// Vec<u8> is already the JSON payload); it remains a public re-export from lib.rs.
 // sse_lines is now the REAL kn9t-provider-core implementation (R-RPLY-070).
-use crate::sse::{data_events, SegmentedReader};
+use crate::sse::SegmentedReader;
 
 /// A provider that replays a recorded fixture.
 pub struct ReplayProvider {
