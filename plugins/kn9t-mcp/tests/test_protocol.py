@@ -76,8 +76,8 @@ def test_unknown_tool_returns_error():
     
     assert response["t"] == "done"
     assert response["id"] == 1
-    assert response["body"]["is_error"] is True
-    assert "Unknown tool" in response["body"]["content"][0]["text"]
+    assert response["is_error"] is True
+    assert "Unknown tool" in response["content"][0]["text"]
     
     # Shutdown
     proc.stdin.write('{"t":"shutdown"}\n')
