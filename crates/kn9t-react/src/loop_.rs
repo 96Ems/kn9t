@@ -57,6 +57,16 @@ pub struct RunParams {
     /// External cancel handle for aborting the run. The server registers this cancel
     /// and fires it when the user presses ESC. If None, a fresh cancel is created per turn.
     pub cancel: Option<kn9t_provider_core::Cancel>,
+    /// Tools DISABLED for this session. A call to any name in this set is blocked at
+    /// `authorize` time and returned as an `is_error` tool result — the provider still
+    /// receives every tool spec, so the level-1 cache prefix is never disturbed (the
+    /// whole point of blocking at execution rather than filtering the `tools` array).
+    pub disabled_tools: std::collections::HashSet<String>,
+    /// A one-shot `<system-reminder>` injected on the FIRST turn of this run (then
+    /// dropped), telling the agent that tools were just re-enabled and are available
+    /// again. Rides the same ephemeral `reminders` channel as truncation reminders, so
+    /// it lands after the cached prefix and costs no cache invalidation.
+    pub reactivation_reminder: Option<kn9t_provider_core::Message>,
 }
 
 /// Fatal loop error (surfaced as `Event::Error` before returning).

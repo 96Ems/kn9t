@@ -16,6 +16,7 @@ pub fn req_name_for_path(path: &str) -> Option<&'static str> {
         "/session/{id}/prompt" => Some("PromptReq"),
         "/session/{id}/steer" => Some("SteerReq"),
         "/session/{id}/model" => Some("SetModelReq"),
+        "/session/{id}/tools" => Some("SetToolsReq"),
         "/session/{id}/rename" => Some("RenameReq"),
         "/session/{id}/compact" => Some("CompactReq"),
         "/approve" => Some("ApproveReq"),

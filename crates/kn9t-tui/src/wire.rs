@@ -32,6 +32,10 @@ pub enum SseFrame {
         model: WireModelRef,
         seq: u64,
     },
+    ToolsToggled {
+        disabled: Vec<String>,
+        seq: u64,
+    },
     Compacted {
         replaced: WireSeqRange,
         seq: u64,
@@ -130,6 +134,7 @@ impl SseFrame {
             SseFrame::MessageAppended { seq, .. } => Some(*seq),
             SseFrame::UsageRecorded { seq, .. } => Some(*seq),
             SseFrame::ModelChanged { seq, .. } => Some(*seq),
+            SseFrame::ToolsToggled { seq, .. } => Some(*seq),
             SseFrame::Compacted { seq, .. } => Some(*seq),
             _ => None,
         }

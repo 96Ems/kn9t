@@ -208,17 +208,18 @@ mod plug {
             .expect("spawn must succeed");
 
         // kn9t-tools declares bash, read, edit tools.
-        assert!(!host.declaration.name.is_empty(), "plugin must declare a name");
+        let decl = host.declaration();
+        assert!(!decl.name.is_empty(), "plugin must declare a name");
         assert!(
-            host.declaration.tools.iter().any(|t| t.name == "bash"),
+            decl.tools.iter().any(|t| t.name == "bash"),
             "kn9t-tools must declare the bash tool"
         );
         assert!(
-            host.declaration.tools.iter().any(|t| t.name == "read"),
+            decl.tools.iter().any(|t| t.name == "read"),
             "kn9t-tools must declare the read tool"
         );
         assert!(
-            host.declaration.is_streaming(),
+            decl.is_streaming(),
             "kn9t-tools must declare streaming capability"
         );
 

@@ -160,6 +160,7 @@ added without a protocol version bump.
 | `chunk` | partial streaming output | `{"id":N,...partial fields...}` |
 | `done` | final streaming reply + accounting | `{"id":N,...final fields...}` |
 | `request` | 96E-17: plugin → host API call (host_api) | `{"id":N,"op":"<op>","payload":{...}}` — ops: `provider_complete`, `session_read`, `tool_execute`; payload MUST carry the session id as `"session"` |
+| `declare` | hot re-declaration (any time after hello) | `{"tools":[...],"hooks":[...],"capabilities":[...],"events":[...]}` — all fields optional; see §2.7 |
 
 > **R-PLUG2-040**
 > A plugin that declared `streaming` MUST use `chunk`/`done` for any call that produces
@@ -557,6 +558,72 @@ Reply:
 before persisting `Event::Compacted` + optional `Event::Handoff`; any error reply
 (`{"error":"..."}`) fails the compaction without persisting anything. No plugin with
 the capability = fail-closed: the turn errors with `CompactionUnavailable`.
+
+---
+
+### 2.7 Hot re-declaration (`declare`)
+
+A plugin MAY send a `declare` message **at any time after the initial hello** to update
+its declared tools, hooks, capabilities, or subscribed events. This enables dynamic
+plugin behaviour without respawning the process — for example, an MCP bridge plugin can
+add tools when a new MCP server connects, or remove tools when a server disconnects.
+
+```json
+{
+  "t": "declare",
+  "tools": [ /* full replacement array */ ],
+  "hooks": [ /* full replacement array */ ],
+  "capabilities": [ /* full replacement array */ ],
+  "events": [ /* full replacement array */ ]
+}
+```
+
+**Semantics:**
+
+- **Partial update:** Only fields present in the message are updated. Omitted fields
+  retain their current values. To clear a field, send an empty array (`[]`).
+- **Full replacement per field:** Each present field fully replaces the previous value
+  for that category — no merging. If `"tools"` is present, the plugin's entire tool set
+  is replaced by the new array.
+- **No `id` field:** This is not a call/response — it is fire-and-forget. The host
+  processes it asynchronously and emits `Event::PluginDeclared` on success.
+- **Provider unchanged:** The `provider` declaration from the initial hello cannot be
+  updated via `declare`. Provider changes require a plugin reload.
+
+**Host behaviour on receiving `declare`:**
+
+1. Update the plugin's `PluginDeclaration` with the new values.
+2. Rebuild the global tool registry (dedup: first plugin wins on name conflict).
+3. Emit `Event::PluginDeclared { plugin: "<name>", tools_added: [...], tools_removed: [...] }`.
+4. Broadcast the event via SSE so TUI clients can refresh their tool lists.
+
+**Example — MCP bridge adds a new server's tools:**
+
+```json
+{"t":"declare","tools":[
+  {"name":"mcp_jira_get_issue","description":"...","schema":{}},
+  {"name":"mcp_jira_search","description":"...","schema":{}},
+  {"name":"mcp_github_pr_list","description":"...","schema":{}}
+]}
+```
+
+**Example — plugin disables a hook temporarily:**
+
+```json
+{"t":"declare","hooks":[]}
+```
+
+> **R-PLUG2-110**
+> A plugin MAY send `{"t":"declare",...}` at any time after the initial hello. The host
+> MUST update the plugin's declaration, rebuild the tool registry, and emit
+> `Event::PluginDeclared`. Fields not present in the message MUST NOT be modified.
+> **Accept:** `cargo test plug2::declare_updates_tools`
+
+> **R-PLUG2-111**
+> The `declare` message MUST NOT include a `provider` field. Provider declarations are
+> immutable after the initial hello; changing a provider requires a plugin reload.
+> If `provider` is present, the host MUST log a warning and ignore it.
+> **Accept:** `cargo test plug2::declare_ignores_provider`
 
 ---
 

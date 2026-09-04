@@ -385,6 +385,24 @@ impl ReactLoop {
     /// `Deny` — a policy that cannot answer is not permission. That is distinct from *no
     /// policy installed*, which yields `Allow` (ADR-0008 decision 5).
     fn authorize(&self, params: &RunParams, call: &ToolCall) -> CallPlan {
+        // Session-scoped tool blocking (tools enable/disable). Checked before args
+        // parsing and before policy hooks: a disabled tool must never reach parsing,
+        // `before_tool_call`, or `Tool::execute`. The provider still saw the tool in
+        // the `tools` array (cache prefix unchanged); we simply refuse to run it and
+        // hand the model an `is_error` result it can read and adapt to.
+        if params.disabled_tools.contains(&call.name) {
+            self.bus.emit(LiveEvent::Error {
+                message: format!(
+                    "tool '{}' (call {}): blocked — disabled for this session",
+                    call.name, call.id.0
+                ),
+            });
+            return CallPlan::Deny(format!(
+                "blocked: tool '{}' is disabled for this session. \
+                 Do not retry '{}'; use another tool or ask the user to re-enable it.",
+                call.name, call.name
+            ));
+        }
         // §4.1 treats `args_json` as cache-critical verbatim provider bytes, so a parse
         // failure here is a real defect (provider sent malformed JSON, or the bytes were
         // corrupted in transit). Surface it instead of silently substituting Null, which
@@ -587,6 +605,8 @@ mod tests {
             read_map: Arc::new(Mutex::new(HashMap::new())),
             system: None,
             cancel: None,
+            disabled_tools: std::collections::HashSet::new(),
+            reactivation_reminder: None,
         };
         // Case 1: syntactically invalid JSON
         let call_bad = ToolCall { id: CallId("c1".into()), name: "x".into(), args_json: "{not valid json".into() };

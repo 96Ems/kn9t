@@ -65,6 +65,11 @@ impl ReactLoop {
         cancel: &Cancel,
     ) -> Result<TurnOutcome, ReactError> {
         let mut reminders: Vec<Message> = Vec::new();
+        // One-shot re-enable notice: consumed on the first turn of the run so the
+        // agent learns a tool is available again without touching the cached prefix.
+        if let Some(m) = params.reactivation_reminder.take() {
+            reminders.push(m);
+        }
         let mut trunc_n: u32 = 0;
         let mut replans: u32 = 0;
 

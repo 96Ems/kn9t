@@ -45,6 +45,12 @@ pub struct SessionSnapshot {
     #[serde(default)]
     pub cost_micros: i64,
     pub model: ModelRef,
+    /// Tools DISABLED for this session (from the latest `ToolsToggled` event).
+    /// Blocking is enforced at execution time in the loop; the provider still sees
+    /// every tool spec so the level-1 cache prefix is unchanged. `#[serde(default)]`
+    /// keeps snapshots written before this field readable (empty = nothing disabled).
+    #[serde(default)]
+    pub disabled_tools: Vec<String>,
 }
 
 /// R-CORE-250 -- `plan_request` also computes cache breakpoints (it already walks
@@ -93,6 +99,12 @@ pub trait Tool: Send + Sync {
     ) -> Result<ToolOutput, ToolErr>;
     fn parallel_safe(&self) -> bool {
         false
+    }
+    /// Declared name of the plugin that owns this tool, if any. Built-in / in-process
+    /// tools return `None`; plugin-backed tools (`RemoteTool`) return their host's
+    /// declared name so the TUI can group tools by plugin and toggle a whole plugin.
+    fn plugin(&self) -> Option<&str> {
+        None
     }
 }
 

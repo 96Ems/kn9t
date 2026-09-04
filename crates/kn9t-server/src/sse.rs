@@ -37,6 +37,7 @@ fn event_name(e: &Event) -> &'static str {
         Event::ModelChanged { .. } => "model_changed",
         Event::Compacted { .. } => "compacted",
         Event::Handoff { .. } => "handoff",
+        Event::ToolsToggled { .. } => "tools_toggled",
         Event::UsageRecorded { .. } => "usage_recorded",
         Event::TurnStarted { .. } => "turn_started",
         Event::TextDelta { .. } => "text_delta",
@@ -55,6 +56,7 @@ fn event_name(e: &Event) -> &'static str {
         Event::PluginNotification { .. } => "plugin_notification",
         Event::InteractionRequest { .. } => "interaction_request",
         Event::UiDirective { .. } => "ui_directive",
+        Event::PluginDeclared { .. } => "plugin_declared",
     }
 }
 

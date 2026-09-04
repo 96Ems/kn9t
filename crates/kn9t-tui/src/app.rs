@@ -314,6 +314,13 @@ pub struct App {
     // Pending images (base64-encoded, to be sent with next prompt).
     pub staged_images: Vec<String>,
 
+    // Queued message: when user types during streaming, we queue the message
+    // to be sent automatically when the turn ends (agent goes idle).
+    // This enables "queuing" behavior: fire-and-forget follow-up prompts.
+    pub queued_message: Option<String>,
+    // Queued images to send with queued_message.
+    pub queued_images: Vec<String>,
+
     // State.
     pub streaming: bool,
     pub aborting: bool,  // True when abort requested, waiting for TurnEnded
@@ -390,6 +397,8 @@ impl App {
             prompt_history: PromptHistory::new(),
             prompt_stash: PromptStash::new(),
             staged_images: Vec::new(),
+            queued_message: None,
+            queued_images: Vec::new(),
             ui_directives: Vec::new(),
             ui_pages: std::collections::HashMap::new(),
             ui_page_selected: None,
@@ -490,6 +499,10 @@ impl App {
         self.overlay = None;
         self.active_approval_id = None;
         self.active_interaction_id = None;
+        
+        // Clear any queued message (don't carry over to new session).
+        self.queued_message = None;
+        self.queued_images.clear();
         self.ui_directives.clear();
         self.ui_pages.clear();
         self.ui_page_selected = None;
@@ -955,11 +968,12 @@ impl App {
         }
 
         // Check for modifier+Enter for newline.
+        // Shift+Enter and Alt+Enter insert newline.
+        // Ctrl+Enter is reserved for Queue action (handled by keybinds).
         if key.code == KeyCode::Enter {
-            let has_modifier = key.modifiers.contains(KeyModifiers::SHIFT)
-                || key.modifiers.contains(KeyModifiers::CONTROL)
+            let is_newline = key.modifiers.contains(KeyModifiers::SHIFT)
                 || key.modifiers.contains(KeyModifiers::ALT);
-            if has_modifier {
+            if is_newline {
                 self.insert_newline();
                 return;
             }
@@ -1898,6 +1912,15 @@ impl App {
                 self.overlay = Some(Overlay::CommandPalette);
             }
             Action::Send => self.send_prompt(),
+            Action::Queue => {
+                // Shift+Enter: always queue (don't steer), useful to schedule follow-up
+                if self.streaming {
+                    self.queue_prompt();
+                } else {
+                    // Not streaming: just send normally
+                    self.send_prompt();
+                }
+            }
             Action::ScrollUp => self.transcript.scroll_up(3),
             Action::ScrollDown => self.transcript.scroll_down(3),
             Action::ScrollTop => self.transcript.scroll_top(),
@@ -2327,6 +2350,7 @@ impl App {
             ui_page_selected: self.ui_page_selected.clone(),
             subagents: std::mem::take(&mut self.subagents),
             attached_subagent: self.attached_subagent.clone(),
+            tools_need_refresh: false,
         };
         crate::reducer::reduce(&mut st, frame);
         // Copy back
@@ -2355,6 +2379,27 @@ impl App {
         if needs_tick_sync || was_streaming != self.streaming {
             self.tick_ctl.set_streaming(self.streaming);
         }
+        
+        // Queuing: if turn just ended (was_streaming && !streaming) and we have a queued message,
+        // send it now to retrigger the agent.
+        if was_streaming && !self.streaming && self.queued_message.is_some() {
+            self.process_queued_message();
+        }
+        
+        // R-PLUG2-110: refresh tools if a plugin re-declared (done last to avoid borrow issues)
+        if st.tools_need_refresh {
+            if let Some(client) = self.client.as_ref() {
+                let session_id = if self.session.state.session_id.is_empty() {
+                    None
+                } else {
+                    Some(self.session.state.session_id.as_str())
+                };
+                if let Ok(entries) = client.get_tools(session_id) {
+                    self.tools = entries;
+                    crate::log!("TOOLS: hot-refreshed {} tools after plugin declare", self.tools.len());
+                }
+            }
+        }
     }
 
     fn send_prompt(&mut self) {
@@ -2377,11 +2422,90 @@ impl App {
             // Clear undo/redo history for new prompt
             self.input_history.clear();
 
+            // If agent is currently streaming: steer (inject into current turn).
+            // The message appears in the next loop iteration before the next LLM call.
+            if self.streaming {
+                crate::log!("STEER: injecting message while streaming");
+                // Add user message locally (SSE will echo it back with seq).
+                self.transcript.push(Message::with_images("user", &text, image_count));
+                // Steer: POST /session/{id}/steer (images not supported for steer, only text).
+                match client.steer(&session_id, &holder, &text) {
+                    Ok(seq) => {
+                        crate::log!("STEER: success seq={}", seq);
+                    }
+                    Err(e) => {
+                        crate::log!("STEER: failed {:?}, falling back to queue", e);
+                        // If steer fails (e.g., turn just ended), queue for next turn.
+                        self.queued_message = Some(text);
+                        self.queued_images = images;
+                    }
+                }
+                return;
+            }
+
+            // Normal case: agent is idle, send prompt.
             // Add user message locally with image count (don't wait for SSE).
             self.transcript.push(Message::with_images("user", &text, image_count));
 
             // Send to server.
             let _ = client.prompt(&session_id, &holder, &text, images);
+        }
+    }
+    
+    /// Queue a message to be sent when the agent goes idle.
+    /// Unlike steer (which injects into the current turn), queue waits for turn end.
+    fn queue_prompt(&mut self) {
+        if self.input.trim().is_empty() && self.staged_images.is_empty() {
+            return;
+        }
+        
+        let text = std::mem::take(&mut self.input);
+        let images = std::mem::take(&mut self.staged_images);
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+        
+        // Add to prompt history
+        self.prompt_history.add(text.clone());
+        
+        // Clear undo/redo history
+        self.input_history.clear();
+        
+        // Store for later (will be sent when TurnEnded is received)
+        self.queued_message = Some(text.clone());
+        self.queued_images = images;
+        
+        // Visual feedback: show the queued message in transcript with a marker
+        self.transcript.push(Message::new("system", &format!("⏳ Queued: {}", &text[..text.len().min(50)])));
+        crate::log!("QUEUE: message queued for post-idle send");
+    }
+    
+    /// Process any queued message after turn ends. Called from handle_sse on TurnEnded.
+    fn process_queued_message(&mut self) {
+        if let Some(text) = self.queued_message.take() {
+            let images = std::mem::take(&mut self.queued_images);
+            let session_id = self.session.state.session_id.clone();
+            let lease = self.session.state.lease.clone();
+            
+            if let (Some(client), Some(holder)) = (&self.client, lease) {
+                let image_count = images.len();
+                crate::log!("QUEUE: sending queued message now that turn ended");
+                
+                // Add user message locally
+                self.transcript.push(Message::with_images("user", &text, image_count));
+                
+                // Send to server
+                match client.prompt(&session_id, &holder, &text, images) {
+                    Ok(_) => {
+                        crate::log!("QUEUE: prompt sent successfully");
+                        self.streaming = true;
+                        self.tick_ctl.set_streaming(true);
+                    }
+                    Err(e) => {
+                        crate::log!("QUEUE: prompt failed: {:?}", e);
+                        self.transcript.push(Message::new("error", format!("Failed to send queued message: {}", e)));
+                    }
+                }
+            }
         }
     }
 

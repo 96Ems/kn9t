@@ -218,6 +218,13 @@ pub const COMMANDS: &[PaletteCommand] = &[
         keybinding: None,
         category: Category::Tools,
     },
+    PaletteCommand {
+        id: "tools_manager",
+        label: "Manage Tools",
+        description: "Enable/disable tools for this session",
+        keybinding: Some("Ctrl+T"),
+        category: Category::Tools,
+    },
     
     // Settings
     PaletteCommand {

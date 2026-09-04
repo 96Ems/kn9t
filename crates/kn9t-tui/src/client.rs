@@ -160,6 +160,19 @@ impl Client {
         Ok(())
     }
 
+    /// Steer: inject a user message while a turn is running.
+    /// The message is appended to the session and folded into the next LLM call.
+    pub fn steer(&self, session_id: &str, holder: &str, text: &str) -> Result<u64, ClientError> {
+        let req = SteerReq { text: text.to_string() };
+        let resp = self.request("POST", &format!("/session/{}/steer", session_id))
+            .set("X-Lease", holder)
+            .send_json(&req)
+            .map_err(|e| ClientError::Http(e.to_string()))?;
+        let body: serde_json::Value = resp.into_json()
+            .map_err(|e| ClientError::Json(e.to_string()))?;
+        Ok(body["seq"].as_u64().unwrap_or(0))
+    }
+
     /// Respond to approval request.
     pub fn approve(&self, session_id: &str, holder: &str, id: u64, decision: &str) -> Result<(), ClientError> {
         // Map legacy "always" decision to scope=always for schema correctness (Phase 2).
@@ -247,15 +260,45 @@ impl Client {
         Ok(())
     }
 
-    /// List registered tools (GET /tools — F9, Phase 4). Returns tool names from discovered+ pinned plugins.
-    pub fn get_tools(&self) -> Result<Vec<String>, ClientError> {
-        let resp = self.request("GET", "/tools")
+    /// List registered tools (GET /tools?session= — F9, Phase 4).
+    /// Returns full tool info from discovered + pinned plugins, with per-session disabled state.
+    pub fn get_tools(&self, session_id: Option<&str>) -> Result<Vec<crate::app::ToolEntry>, ClientError> {
+        let path = match session_id {
+            Some(sid) => format!("/tools?session={}", sid),
+            None => "/tools".to_string(),
+        };
+        let resp = self.request("GET", &path)
             .call()
             .map_err(|e| ClientError::Http(e.to_string()))?;
         let body: serde_json::Value = resp.into_json().map_err(|e| ClientError::Json(e.to_string()))?;
         let tools = body.get("tools").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let names: Vec<String> = tools.iter().filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())).collect();
-        Ok(names)
+        let entries: Vec<crate::app::ToolEntry> = tools
+            .iter()
+            .map(|v| crate::app::ToolEntry {
+                name: v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                description: v.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
+                plugin: v.get("plugin").and_then(|p| p.as_str()).map(|s| s.to_string()),
+                enabled: !v.get("disabled").and_then(|d| d.as_bool()).unwrap_or(false),
+            })
+            .collect();
+        Ok(entries)
+    }
+
+    /// Set tools disabled for a session (POST /session/{id}/tools — action endpoint).
+    /// Returns the list of tools that were re-enabled.
+    pub fn set_tools(&self, session_id: &str, lease: &str, disabled: &[String]) -> Result<Vec<String>, ClientError> {
+        let body = serde_json::json!({ "disabled": disabled });
+        let resp = self.request("POST", &format!("/session/{}/tools", session_id))
+            .set("X-Lease", lease)
+            .send_json(&body)
+            .map_err(|e| ClientError::Http(e.to_string()))?;
+        let body: serde_json::Value = resp.into_json().map_err(|e| ClientError::Json(e.to_string()))?;
+        let reenabled: Vec<String> = body
+            .get("reenabled")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        Ok(reenabled)
     }
 
     /// Rename a session (POST /session/{id}/rename — Phase 4 action endpoint, no PATCH).

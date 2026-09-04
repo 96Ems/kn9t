@@ -144,6 +144,16 @@ pub enum Event {
         drop_ids: Vec<CallId>,
         resume_actions: Vec<String>,
     },
+    /// The set of tools currently DISABLED for this session, carried as the full
+    /// list (not a diff) so a replay is idempotent: the last `ToolsToggled` wins,
+    /// exactly like `ModelChanged`. Durable but not projected into any row (§ like
+    /// `ModelChanged`); reconstructed by reading the latest event. The tools array
+    /// sent to the provider is left byte-identical — blocking happens at execution
+    /// time in the loop, so the level-1 cache prefix is never disturbed.
+    ToolsToggled {
+        seq: u64,
+        disabled: Vec<String>,
+    },
     UsageRecorded {
         seq: u64,
         provider: String,
@@ -268,6 +278,14 @@ pub enum Event {
         op: String,
         payload: serde_json::Value,
     },
+    /// R-PLUG2-110 — a plugin sent `declare` to hot-update its tools/hooks/capabilities.
+    /// Transient, broadcast via SSE so TUI clients can refresh their tool lists.
+    /// `tools_added`/`tools_removed` are the tool names that changed.
+    PluginDeclared {
+        plugin: String,
+        tools_added: Vec<String>,
+        tools_removed: Vec<String>,
+    },
 }
 
 impl Event {
@@ -279,6 +297,7 @@ impl Event {
             | Event::ModelChanged { seq, .. }
             | Event::Compacted { seq, .. }
             | Event::Handoff { seq, .. }
+            | Event::ToolsToggled { seq, .. }
             | Event::UsageRecorded { seq, .. } => Some(*seq),
             _ => None,
         }
@@ -302,6 +321,7 @@ impl Event {
             | Event::ModelChanged { seq, .. }
             | Event::Compacted { seq, .. }
             | Event::Handoff { seq, .. }
+            | Event::ToolsToggled { seq, .. }
             | Event::UsageRecorded { seq, .. } => *seq = new_seq,
             _ => {}
         }

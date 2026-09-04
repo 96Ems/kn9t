@@ -4,7 +4,7 @@
 //! Host can send Cancel for in-flight calls on cancelable plugins.
 //! Accepts `Box<dyn Read+Send>` + `Box<dyn Write+Send>` so tests wire in-process pipes.
 
-use crate::codec::{hook_name_str, write_host_msg, HostMsg, PluginDeclaration, PluginMsg};
+use crate::codec::{hook_name_str, parse_hook_name, write_host_msg, HostMsg, PluginDeclaration, PluginMsg};
 use crate::host_api::HostApi;
 
 /// Internal channel message — what the reader thread delivers per-call.
@@ -67,6 +67,10 @@ struct EventState {
 /// Shared writer — used by hook callers, KV reader thread, and RemoteProvider.
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
+/// Callback invoked when a plugin sends `declare` to hot-update its declaration.
+/// The callback receives the plugin name, new declaration, added tools, and removed tools.
+pub type OnDeclareCallback = Box<dyn Fn(&str, &PluginDeclaration, Vec<String>, Vec<String>) + Send + Sync>;
+
 /// One connected plugin. Thread-safe: the writer is behind an Arc<Mutex>.
 /// The reader runs in a background thread and dispatches responses to per-call channels.
 ///
@@ -74,7 +78,8 @@ type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 /// call ID and forwards to the appropriate channel. This allows multiple concurrent calls
 /// from different sessions without blocking each other.
 pub struct PluginHost {
-    pub declaration: PluginDeclaration,
+    /// The plugin's current declaration — mutable to support hot `declare` messages.
+    declaration: Arc<Mutex<PluginDeclaration>>,
     /// Shared writer — also used by `RemoteProvider` and the KV reader thread.
     pub(crate) writer: SharedWriter,
     /// Per-call response channels. Reader thread dispatches here; callers wait on their own channel.
@@ -99,6 +104,8 @@ pub struct PluginHost {
     /// 96E-17: plugin → host API handler (host_api capability). Requests are
     /// dispatched to a worker thread so a slow op never blocks the reader (96E-9).
     api_handler: Arc<Mutex<Option<Arc<dyn HostApi>>>>,
+    /// R-PLUG2-110: callback for hot re-declaration. Called when plugin sends `declare`.
+    on_declare: Arc<Mutex<Option<OnDeclareCallback>>>,
 }
 
 impl PluginHost {
@@ -125,8 +132,12 @@ impl PluginHost {
         let unhealthy: Arc<std::sync::atomic::AtomicBool> = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let poison_reason: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let api_handler: Arc<Mutex<Option<Arc<dyn HostApi>>>> = Arc::new(Mutex::new(None));
+        let on_declare: Arc<Mutex<Option<OnDeclareCallback>>> = Arc::new(Mutex::new(None));
+        let declaration = Arc::new(Mutex::new(declaration));
         let unhealthy_for_reader = Arc::clone(&unhealthy);
         let poison_for_reader = Arc::clone(&poison_reason);
+        let declaration_for_reader = Arc::clone(&declaration);
+        let on_declare_for_reader = Arc::clone(&on_declare);
 
         // Spawn reader thread — dispatches to per-call channels by ID.
         // KV requests (KvGet/KvSet/KvDel/KvDelScope) are handled inline here;
@@ -269,6 +280,36 @@ impl PluginHost {
                             }
                         }
                     }
+                    // ── R-PLUG2-110: hot re-declaration ─────────────────────
+                    PluginMsg::Declare { capabilities, hooks, tools, events } => {
+                        let mut decl = declaration_for_reader.lock().unwrap();
+                        let old_tools: std::collections::HashSet<String> =
+                            decl.tools.iter().map(|t| t.name.clone()).collect();
+
+                        // Update only present fields (partial merge)
+                        if let Some(caps) = capabilities {
+                            decl.capabilities = caps;
+                        }
+                        if let Some(h) = hooks {
+                            decl.hooks = h.iter().filter_map(|s| parse_hook_name(s)).collect();
+                        }
+                        if let Some(t) = tools {
+                            decl.tools = t;
+                        }
+                        if let Some(e) = events {
+                            decl.subscribed_events = e;
+                        }
+
+                        let new_tools: std::collections::HashSet<String> =
+                            decl.tools.iter().map(|t| t.name.clone()).collect();
+                        let added: Vec<String> = new_tools.difference(&old_tools).cloned().collect();
+                        let removed: Vec<String> = old_tools.difference(&new_tools).cloned().collect();
+
+                        // Call the callback if registered
+                        if let Some(cb) = on_declare_for_reader.lock().unwrap().as_ref() {
+                            cb(&decl.name, &decl, added, removed);
+                        }
+                    }
                 }
             }
         });
@@ -311,6 +352,7 @@ impl PluginHost {
             unhealthy,
             poison_reason,
             api_handler,
+            on_declare,
         }
     }
 
@@ -327,9 +369,24 @@ impl PluginHost {
     fn check_healthy(&self) -> Result<(), String> {
         if self.unhealthy.load(Ordering::SeqCst) {
             let r = self.poison_reason.lock().unwrap().clone().unwrap_or_else(|| "protocol violation".to_string());
-            return Err(format!("plugin '{}' unhealthy: {r}", self.declaration.name));
+            return Err(format!("plugin '{}' unhealthy: {r}", self.name()));
         }
         Ok(())
+    }
+
+    /// Get a snapshot of the current declaration.
+    pub fn declaration(&self) -> PluginDeclaration {
+        self.declaration.lock().unwrap().clone()
+    }
+
+    /// Get the plugin name (shorthand for declaration().name).
+    pub fn name(&self) -> String {
+        self.declaration.lock().unwrap().name.clone()
+    }
+
+    /// Set the callback invoked when the plugin sends a `declare` message.
+    pub fn set_on_declare(&self, callback: OnDeclareCallback) {
+        *self.on_declare.lock().unwrap() = Some(callback);
     }
 
     /// Set the event bus for forwarding plugin events.
@@ -446,12 +503,12 @@ impl PluginHost {
 
     /// Whether this plugin subscribes to a given hook.
     pub fn has_hook(&self, hook: HookName) -> bool {
-        self.declaration.hooks.contains(&hook)
+        self.declaration.lock().unwrap().hooks.contains(&hook)
     }
 
     /// 96E-17: whether the plugin declared a given capability in its hello.
     pub fn has_capability(&self, cap: &str) -> bool {
-        self.declaration.capabilities.iter().any(|c| c == cap)
+        self.declaration.lock().unwrap().capabilities.iter().any(|c| c == cap)
     }
 
     /// 96E-17: install the plugin → host API handler (server-side ops).
@@ -461,7 +518,7 @@ impl PluginHost {
 
     /// Whether this plugin subscribes to a given event kind string.
     pub fn has_event(&self, kind: &str) -> bool {
-        self.declaration.subscribed_events.iter().any(|e| e == kind)
+        self.declaration.lock().unwrap().subscribed_events.iter().any(|e| e == kind)
     }
 
     /// Whether on_event has been unsubscribed due to repeated failures.
@@ -611,20 +668,21 @@ impl PluginHost {
         mut on_chunk: impl FnMut(serde_json::Value),
     ) -> Result<Value, String> {
         let deadline = std::time::Instant::now() + timeout;
+        let plugin_name = self.name();
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                return Err(format!("plugin '{}' timed out (call {})", self.declaration.name, call_id));
+                return Err(format!("plugin '{}' timed out (call {})", plugin_name, call_id));
             }
             match rx.recv_timeout(remaining) {
                 Ok(ReaderMsg::Final { body }) => return Ok(body),
                 Ok(ReaderMsg::Chunk { body }) => on_chunk(body),
                 Ok(ReaderMsg::Err { reason }) => return Err(reason),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    return Err(format!("plugin '{}' timed out (call {})", self.declaration.name, call_id));
+                    return Err(format!("plugin '{}' timed out (call {})", plugin_name, call_id));
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(format!("plugin '{}' disconnected (call {})", self.declaration.name, call_id));
+                    return Err(format!("plugin '{}' disconnected (call {})", plugin_name, call_id));
                 }
             }
         }
@@ -641,6 +699,7 @@ impl PluginHost {
     ) -> Result<Value, String> {
         let rx = self.register_call(expected_id);
         let deadline = std::time::Instant::now() + timeout;
+        let plugin_name = self.name();
         let result = loop {
             if cancel.cancelled() {
                 self.cancel_call(expected_id);
@@ -648,7 +707,7 @@ impl PluginHost {
             }
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                break Err(format!("plugin '{}' timed out (call {})", self.declaration.name, expected_id));
+                break Err(format!("plugin '{}' timed out (call {})", plugin_name, expected_id));
             }
             let poll = remaining.min(Duration::from_millis(10));
             match rx.recv_timeout(poll) {
@@ -657,7 +716,7 @@ impl PluginHost {
                 Ok(ReaderMsg::Err { reason }) => break Err(reason),
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    break Err(format!("plugin '{}' disconnected (call {})", self.declaration.name, expected_id))
+                    break Err(format!("plugin '{}' disconnected (call {})", plugin_name, expected_id))
                 }
             }
         };
@@ -668,16 +727,17 @@ impl PluginHost {
     /// Send a cancel message for an in-flight call (R-PLUG2-050).
     /// Only sent to plugins that declared `cancelable` capability.
     pub fn cancel_call(&self, id: u64) {
-        if !self.declaration.is_cancelable() { return; }
+        if !self.declaration.lock().unwrap().is_cancelable() { return; }
         let mut w = self.writer.lock().unwrap();
         let _ = write_host_msg(&mut **w, &HostMsg::Cancel { id });
     }
 
     fn emit_hook_failed(&self, hook: HookName, reason: &str) {
+        let plugin_name = self.name();
         TL_BUS.with(|c| {
             if let Some(bus) = c.borrow().as_ref() {
                 bus.emit(LiveEvent::HookFailed {
-                    plugin: self.declaration.name.clone(),
+                    plugin: plugin_name,
                     hook,
                     reason: reason.to_string(),
                 });

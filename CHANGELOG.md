@@ -9,6 +9,68 @@ pointer current.
 
 ---
 
+## Session — 2026-09-04 — Compactor crash live: "triage reply was not JSON" (96E-17)
+
+Symptôme (logs live, sessions 01M1K1PHWD... et 01M1NVKQ...): compaction en échec répété
+`kn9t-compactor: compaction failed: triage reply was not JSON`, modèle
+`claude-haiku-4-5`. Chaque turn qui déclenchait une compaction remontait
+`Provider("compactor failed: triage reply was not JSON")`.
+
+**Cause** (`plugins/kn9t-compactor/src/main.ts`): le pass triage demande au modèle de
+répondre « ONLY a JSON object », mais aucun modèle ne l'obéit de façon fiable — Haiku
+enveloppe le JSON dans une clôture ```json ou ajoute une phrase d'intro. `parseJsonObject`
+faisait `JSON.parse(raw)` sur toute la chaîne → throw → `parsed === null` →
+`Effect.fail("triage reply was not JSON")`, abandon de tout le turn. La « shot de
+correction » n'était utilisée que pour les ids hallucinés, jamais pour le JSON illisible.
+
+**Fix** (pas un patch — le contrat « only JSON » n'est pas applicable au modèle, donc le
+parseur doit être tolérant, cf. AGENTS.md §10):
+- `parseJsonObject` tente désormais 3 candidats: la chaîne brute, la chaîne sans clôture
+  markdown (`stripCodeFence`), puis le premier objet `{...}` équilibré extrait du texte
+  (`firstBalancedObject`, qui respecte les littéraux de chaîne/échappements). Rejette les
+  tableaux JSON top-level.
+- Boucle triage: une réponse non-JSON au 1er essai dépense la shot de correction avec une
+  instruction renforcée (« ONLY a single JSON object, no prose, no markdown fences »); si
+  le 2e essai échoue encore, on retombe sur un plan vide (compaction quand même) plutôt que
+  d'abandonner tout le turn. La branche ids-hallucinés utilise le même mécanisme `correction`.
+- Test: `test/simulate.mjs` renvoie maintenant des réponses modèle « sales » (triage fencé
+  ```json + phrase d'intro, summary avec prose en fin) — régression directe du crash. Passe.
+
+### À faire par l'utilisateur
+- `cd plugins/kn9t-compactor && npm run build` puis restart du serveur pour charger le
+  `dist/main.js` corrigé (l'instance live tourne avec l'ancien plugin).
+
+### Suite (même session) — conversion en tool-call structuré (décision end user)
+
+Constat: `provider_complete` accepte déjà un tableau `tools` inline (specs `ToolSpec` objets,
+`crates/kn9t-server/src/host_api.rs:236`) et renvoie le `content` verbatim — donc un
+`tool_use` du modèle revient en bloc `Content::ToolCall {id,name,args_json}`
+(`crates/kn9t-core/src/message.rs:48`). **Aucune primitive manquante côté kn9t-core/serveur.**
+Le compactor est un agent à part entière: il déclare lui-même ses tools et ses system prompts.
+
+Choix end user: **tool-call uniquement, zéro parsing de texte** (suppression totale de
+`parseJsonObject`/`stripCodeFence`/`firstBalancedObject`).
+
+Implémentation (`plugins/kn9t-compactor/src/main.ts` seul — pas de touche Rust):
+- Le plugin déclare inline `submit_triage` (schéma JSON de `{decisions:[{id,action,note}],
+  resume_actions:[]}`) et `submit_summary` (`{summary}`), passés via `tools` dans
+  `provider_complete`. Le provider valide les arguments contre le schéma.
+- System prompts réécrits: « appelle submit_triage / submit_summary exactement une fois ;
+  ne réponds pas en prose ».
+- Lecture réponse: `toolCallArgs(content, name)` trouve le bloc `tool_call` du bon nom et
+  `JSON.parse(args_json)`. Pas de tolérance prose/fence — le contrat *est* le tool call.
+- Triage: une shot de correction couvre les deux modes d'échec (pas d'appel d'outil / ids
+  hallucinés) ; shot épuisée → plan vide (compaction quand même, pas d'abort du turn).
+- Summary: si le modèle n'appelle pas submit_summary → texte de repli explicite (jamais vide).
+- Test `test/simulate.mjs`: réponses modèle = blocs `tool_call` (plus de texte-JSON) ;
+  assertions `tools` présent + bon nom d'outil ; **scénario shot de correction** (1re réponse
+  triage en prose → retry avec instruction → tool_call). Passe.
+
+### À faire par l'utilisateur (mis à jour)
+- `cd plugins/kn9t-compactor && npm run build` puis restart serveur.
+
+---
+
 ## Session — 2026-09-02 (6) — Deadlock spawn_session révélé en live : fix protocole client (96E-17)
 
 Utilisateur : le tool spawn_session hang sans réponse. Diagnose via DB (session parent 01M1H856... + enfant 01M1H8Z6F... fork_reason=subagent) :

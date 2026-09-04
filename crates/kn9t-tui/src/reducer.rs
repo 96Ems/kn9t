@@ -74,6 +74,8 @@ pub struct State {
     pub subagents: Vec<SubagentEntry>,
     /// 96E-27: attached subagent transcript view (call_id -> transcript preview).
     pub attached_subagent: Option<(String, Vec<crate::wire::TranscriptMessage>)>,
+    /// R-PLUG2-110: set by reducer when `PluginDeclared` received; App clears after refresh.
+    pub tools_need_refresh: bool,
 }
 
 impl State {
@@ -115,6 +117,7 @@ impl Default for State {
             ui_page_selected: None,
             subagents: Vec::new(),
             attached_subagent: None,
+            tools_need_refresh: false,
         }
     }
 }
@@ -261,6 +264,22 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             }
             state.transcript.push(Message::new("system", format!("Model changed to {}", name)));
         }
+        SseFrame::ToolsToggled { .. } => {
+            // The event carries the full disabled set, not a diff, so the last one
+            // wins and a replay is idempotent.
+            //
+            // The payload's `disabled` list is deliberately ignored: `App.tools`
+            // already holds `enabled` per tool, and `GET /tools?session=` returns
+            // the authoritative `disabled` flag (client.rs), so keeping a copy on
+            // `State` would be a second source of truth that can drift. The reducer
+            // is pure and does no I/O, so it only flags the refresh and `App`
+            // re-reads. That is also what keeps a second attached client in sync --
+            // the reason this event is broadcast over SSE at all.
+            //
+            // No transcript message on purpose: a local toggle is already visible
+            // in the tools panel, and announcing every keystroke would be noise.
+            state.tools_need_refresh = true;
+        }
         SseFrame::Compacted { replaced, summary, .. } => {
             let (text, _, _, _) = extract_message_content(&summary.content);
             let summary_text = if text.is_empty() { "Conversation compacted.".to_string() } else { text };
@@ -336,6 +355,18 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             }
         }
         SseFrame::HookFailed { .. } => {}
+        SseFrame::PluginDeclared { plugin, tools_added, tools_removed } => {
+            // R-PLUG2-110: a plugin hot-declared new tools. Set flag for App to refresh.
+            state.tools_need_refresh = true;
+            // Optionally push a system message about the change.
+            if !tools_added.is_empty() || !tools_removed.is_empty() {
+                let msg = format!(
+                    "Plugin '{}' updated: +{} tool(s), -{} tool(s)",
+                    plugin, tools_added.len(), tools_removed.len()
+                );
+                state.transcript.push(Message::new("system", msg));
+            }
+        }
     }
 }
 
@@ -441,6 +472,31 @@ mod tests {
         assert_eq!(s.last_seq, 5);
         // Should push a system message
         assert!(s.transcript.messages().iter().any(|m| m.content.contains("Model changed")));
+    }
+
+    #[test]
+    fn tools_toggled_flags_refresh_and_advances_seq() {
+        let mut s = State::default();
+        assert!(!s.tools_need_refresh);
+        reduce(&mut s, SseFrame::ToolsToggled { seq: 7, disabled: vec!["bash".into(), "write".into()] });
+        // Durable event: must advance last_seq or reconnect would replay it forever.
+        assert_eq!(s.last_seq, 7);
+        // App re-reads GET /tools on this flag; that is what syncs a second client.
+        assert!(s.tools_need_refresh);
+        // Silent: a toggle is already visible in the tools panel.
+        assert!(s.transcript.messages().is_empty());
+    }
+
+    #[test]
+    fn tools_toggled_is_idempotent_last_wins() {
+        // The payload is the full disabled set, not a diff, so replaying an older
+        // frame after a newer one must not resurrect stale state. The reducer holds
+        // no copy of the set precisely so this cannot go wrong.
+        let mut s = State::default();
+        reduce(&mut s, SseFrame::ToolsToggled { seq: 3, disabled: vec!["bash".into()] });
+        reduce(&mut s, SseFrame::ToolsToggled { seq: 4, disabled: vec![] });
+        assert_eq!(s.last_seq, 4);
+        assert!(s.tools_need_refresh);
     }
 
     #[test]

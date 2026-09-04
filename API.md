@@ -569,6 +569,7 @@ Recommended client sequence: `POST /lease` → open `GET …/events?from=<seq>&l
 | `message_appended` | `msg: Message`, `seq: u64` | yes |
 | `usage_recorded` | `cost_usd: number`, `estimated: bool`, `model: string`, `provider: string`, `seq: u64`, `tokens: Tokens`, `usage_kind: string` | yes |
 | `model_changed` | `model: ModelRef`, `seq: u64` | yes |
+| `tools_toggled` | `disabled: string[]`, `seq: u64` | yes |
 | `compacted` | `replaced: SeqRange`, `seq: u64`, `summary: Message` | yes |
 | `turn_started` | `turn: u32` | no |
 | `text_delta` | `delta: string`, `idx: u32`, `msg_id: string` | no |

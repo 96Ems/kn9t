@@ -108,6 +108,19 @@ pub enum PluginMsg {
     /// with `HostMsg::ApiResult`. Ops are executed on a worker thread — the host
     /// reader never blocks on a slow op (96E-9).
     Request { id: u64, op: String, payload: serde_json::Value },
+    /// Hot re-declaration — plugin updates its tools/hooks/capabilities at runtime.
+    /// Fields are optional; only present fields are updated (partial merge).
+    /// The host rebuilds the registry and emits `Event::PluginDeclared`.
+    Declare {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capabilities: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hooks: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tools: Option<Vec<ToolSpec>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        events: Option<Vec<String>>,
+    },
 }
 
 /// Provider declaration inside the plugin hello.

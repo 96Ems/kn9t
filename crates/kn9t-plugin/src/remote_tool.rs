@@ -11,6 +11,18 @@ pub struct RemoteTool {
     spec: ToolSpec,
     host: Arc<PluginHost>,
     parallel_safe: bool,
+    /// The owning plugin's declared name.
+    ///
+    /// Held by value rather than read from `host.declaration` on each call, and
+    /// that is sound rather than merely convenient: `PluginMsg::Declare` carries
+    /// only `capabilities`/`hooks`/`tools`/`events`, so a hot re-declare cannot
+    /// rename a plugin. The name is immutable for the host's lifetime.
+    ///
+    /// This is also what lets `Tool::plugin` return `Option<&str>`: a `&str`
+    /// cannot be borrowed out of `Arc<Mutex<PluginDeclaration>>`, and taking the
+    /// lock on every call would mean contending a mutex during render for a value
+    /// that never changes. Do not "fix" this into a lock read.
+    plugin_name: String,
 }
 
 impl RemoteTool {
@@ -20,10 +32,12 @@ impl RemoteTool {
             .get("x-parallel-safe")
             .and_then(|v: &serde_json::Value| v.as_bool())
             .unwrap_or(false);
+        let plugin_name = host.name();
         RemoteTool {
             spec,
             host,
             parallel_safe,
+            plugin_name,
         }
     }
 }
@@ -107,5 +121,9 @@ impl Tool for RemoteTool {
 
     fn parallel_safe(&self) -> bool {
         self.parallel_safe
+    }
+
+    fn plugin(&self) -> Option<&str> {
+        Some(&self.plugin_name)
     }
 }

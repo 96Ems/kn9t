@@ -183,6 +183,13 @@ pub struct ServerState {
     /// lets a test supply the verdict directly. `None` in production, where hooks are always
     /// composed from `plugin_hosts`.
     pub hooks_override: Mutex<Option<Arc<dyn kn9t_core::HookHost>>>,
+    /// Tools-enable/disable: per-session set of tools that were just RE-ENABLED and
+    /// have not yet been announced to the agent. `POST /session/{id}/tools` fills this
+    /// (old_disabled ∖ new_disabled); the next `spawn_turn` drains it into a one-shot
+    /// `<system-reminder>`. Transient by design — a re-enable the agent never got to
+    /// hear about is harmless (it simply discovers the tool works when it tries), so
+    /// this need not be event-sourced.
+    pub pending_reactivation: Mutex<HashMap<String, std::collections::HashSet<String>>>,
 }
 
 impl ServerState {
@@ -235,6 +242,7 @@ impl ServerState {
             plugin_spawn: Mutex::new(HashMap::new()),
             aborts: Mutex::new(HashMap::new()),
             hooks_override: Mutex::new(None),
+            pending_reactivation: Mutex::new(HashMap::new()),
         }
     }
 
@@ -268,7 +276,7 @@ impl ServerState {
         // 0. Lookup host and spawn recipe (hold lock briefly).
         let (old_host, cmd, env) = {
             let hosts = self.plugin_hosts.lock().expect("hosts poisoned");
-            let idx = hosts.iter().position(|h| h.declaration.name == name)
+            let idx = hosts.iter().position(|h| h.name() == name)
                 .ok_or_else(|| format!("plugin {name:?} not found"))?;
             let host = hosts[idx].clone();
             let spawn = self.plugin_spawn.lock().expect("spawn poisoned");
@@ -307,7 +315,7 @@ impl ServerState {
         crate::log!("hot-reload: respawning plugin '{}' from {:?}", name, cmd);
         let new_host = crate::tools::spawn_with_cmd_public(&cmd, &env_refs, self.store.clone() as Arc<dyn kn9t_core::PluginKv>)
             .map_err(|e| format!("respawn failed: {e}"))?;
-        let new_decl_name = new_host.declaration.name.clone();
+        let new_decl_name = new_host.name();
         if new_decl_name != name {
             crate::log!("hot-reload: warning: plugin declared name '{}' differs from requested '{}' — using declared name for registry", new_decl_name, name);
         }
@@ -319,7 +327,7 @@ impl ServerState {
         // 5. swap host and rebuild registry (dedup, first wins, same as startup).
         {
             let mut hosts = self.plugin_hosts.lock().expect("hosts poisoned");
-            if let Some(pos) = hosts.iter().position(|h| h.declaration.name == name) {
+            if let Some(pos) = hosts.iter().position(|h| h.name() == name) {
                 hosts[pos] = new_host.clone();
             } else {
                 // Should not happen (we found it earlier), but push for safety.
@@ -332,7 +340,7 @@ impl ServerState {
             // Pinned order is already in hosts vec (pinned first, then discovered sorted).
             // Respect that order for dedup.
             for h in hosts.iter() {
-                let tools_for_host = if h.declaration.name == new_decl_name {
+                let tools_for_host = if h.name() == new_decl_name {
                     new_tools.clone()
                 } else {
                     crate::tools::extract_tools_public(h)
@@ -431,5 +439,59 @@ impl ServerState {
     /// ADR-0008 -- snapshot the current approver for a turn.
     pub fn approver_snapshot(&self) -> Arc<dyn Approver> {
         self.approver.read().expect("approver poisoned").clone()
+    }
+
+    /// R-PLUG2-110: handle a plugin's `declare` message — rebuild the tool registry
+    /// and emit `Event::PluginDeclared` to notify SSE clients.
+    pub fn on_plugin_declare(
+        self: &Arc<Self>,
+        plugin_name: &str,
+        tools_added: Vec<String>,
+        tools_removed: Vec<String>,
+    ) {
+        crate::log!("plugin '{}' re-declared: +{} tools, -{} tools",
+            plugin_name, tools_added.len(), tools_removed.len());
+
+        // Rebuild tool registry from all current hosts (dedup first wins, same as startup/reload).
+        {
+            let hosts = self.plugin_hosts.lock().expect("hosts poisoned");
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut all_tools: Vec<Arc<dyn kn9t_core::Tool>> = Vec::new();
+            for h in hosts.iter() {
+                let host_tools = crate::tools::extract_tools_public(h);
+                for t in host_tools {
+                    let n = t.spec().name.clone();
+                    if seen.contains(&n) {
+                        continue;
+                    }
+                    seen.insert(n);
+                    all_tools.push(t);
+                }
+            }
+            let registry = ToolRegistry::from_tools(all_tools);
+            let n = registry.len();
+            *self.tools.lock().expect("tools poisoned") = registry;
+            crate::log!("plugin '{}' declare: registry rebuilt, total tools now {}", plugin_name, n);
+        }
+
+        // Broadcast event to ALL SSE clients so TUI can refresh.
+        let event = kn9t_core::Event::PluginDeclared {
+            plugin: plugin_name.to_string(),
+            tools_added,
+            tools_removed,
+        };
+        self.buses.broadcast_all(event);
+    }
+
+    /// R-PLUG2-110: install the `on_declare` callback on every plugin host.
+    /// Must be called after `Arc::new(state)`.
+    pub fn install_declare_callbacks(self: &Arc<Self>) {
+        let state = self.clone();
+        for host in self.plugin_hosts.lock().expect("hosts poisoned").iter() {
+            let state_for_cb = state.clone();
+            host.set_on_declare(Box::new(move |plugin_name, _decl, added, removed| {
+                state_for_cb.on_plugin_declare(plugin_name, added, removed);
+            }));
+        }
     }
 }

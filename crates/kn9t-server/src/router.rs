@@ -171,6 +171,12 @@ fn route(
                 Err(e) => e.into(),
             }
         }
+        (Method::Post, ["session", id, "tools"]) => {
+            match parse_json::<api::SetToolsReq>(req) {
+                Ok(body) => routes::session::set_tools(state, id, body).into(),
+                Err(e) => e.into(),
+            }
+        }
         (Method::Post, ["approve"]) => match parse_json::<api::ApproveReq>(req) {
             Ok(body) => routes::session::approve(state, body).into(),
             Err(e) => e.into(),
@@ -183,7 +189,7 @@ fn route(
         }
         (Method::Post, ["session", id, "compact"]) => routes::session::compact(state, id).into(),
         (Method::Get, ["session", id, "export"]) => routes::session::export_session(state, id).into(),
-        (Method::Get, ["tools"]) => routes::tools::list(state).into(),
+        (Method::Get, ["tools"]) => routes::tools::list(state, query).into(),
 
         // ── blobs ──
         (Method::Post, ["blob"]) => {

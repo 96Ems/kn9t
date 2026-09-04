@@ -421,6 +421,7 @@
       { "kind": "message_appended", "seq": "u64", "msg": "Message" },
       { "kind": "usage_recorded", "seq": "u64", "provider": "string", "model": "string", "usage_kind": "string", "tokens": "Tokens", "cost_usd": "number", "estimated": "bool" },
       { "kind": "model_changed", "seq": "u64", "model": "ModelRef" },
+      { "kind": "tools_toggled", "seq": "u64", "disabled": "string[]" },
       { "kind": "compacted", "seq": "u64", "replaced": "SeqRange", "summary": "Message" },
       { "kind": "turn_started", "turn": "u32" },
       { "kind": "text_delta", "msg_id": "string", "idx": "u32", "delta": "string" },

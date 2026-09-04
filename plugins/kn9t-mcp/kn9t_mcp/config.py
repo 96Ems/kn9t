@@ -78,13 +78,26 @@ def resolve_env_value(value: Any) -> str:
     return str(value)
 
 
+def mcp_config_path() -> Path:
+    """Return the path to the MCP config file."""
+    return Path.home() / ".kn9t" / "mcp.toml"
+
+
+def mcp_config_mtime() -> float | None:
+    """Return the mtime of the config file, or None if it doesn't exist."""
+    path = mcp_config_path()
+    if path.exists():
+        return path.stat().st_mtime
+    return None
+
+
 def load_mcp_config() -> list[McpServerConfig]:
     """Load MCP server configurations from ~/.kn9t/mcp.toml.
     
     Returns:
         List of MCP server configurations. Empty list if config file doesn't exist.
     """
-    config_path = Path.home() / ".kn9t" / "mcp.toml"
+    config_path = mcp_config_path()
 
     if not config_path.exists():
         print(f"No MCP config found at {config_path}", file=sys.stderr)

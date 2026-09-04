@@ -106,13 +106,14 @@ fn spawn_user_plugin(cfg: &ResolvedPlugin, kv: Arc<dyn PluginKv>) -> Result<(Arc
         .map_err(|e| format!("failed to spawn plugin '{}': {e}", cfg.name))?;
 
     // Verify plugin name matches config (warning only)
-    if host.declaration.name != cfg.name {
+    let decl = host.declaration();
+    if decl.name != cfg.name {
         crate::log!("warning: plugin declared name '{}' differs from config name '{}'",
-            host.declaration.name, cfg.name);
+            decl.name, cfg.name);
     }
 
     crate::log!("user plugin '{}' handshake complete: {} tools, {} hooks declared",
-        cfg.name, host.declaration.tools.len(), host.declaration.hooks.len());
+        cfg.name, decl.tools.len(), decl.hooks.len());
 
     let host = Arc::new(host);
     let tools = extract_tools(&host);
@@ -138,8 +139,9 @@ fn spawn_discovered_plugin(bin: &Path, env_vars: &[(&str, &str)], kv: Arc<dyn Pl
     let host = spawn_with_cmd(&cmd, env_vars, kv)
         .map_err(|e| format!("failed to spawn plugin '{}': {e}", bin.display()))?;
 
+    let decl = host.declaration();
     crate::log!("discovered plugin '{}' handshake complete: {} tools, {} hooks declared",
-        host.declaration.name, host.declaration.tools.len(), host.declaration.hooks.len());
+        decl.name, decl.tools.len(), decl.hooks.len());
 
     let host = Arc::new(host);
     let tools = extract_tools(&host);
@@ -228,7 +230,8 @@ pub fn extract_tools_public(host: &Arc<PluginHost>) -> Vec<Arc<dyn Tool>> {
 /// Extract RemoteTool wrappers from a PluginHost.
 fn extract_tools(host: &Arc<PluginHost>) -> Vec<Arc<dyn Tool>> {
     // PluginDeclaration.tools is already Vec<kn9t_core::ToolSpec>, so no conversion needed
-    host.declaration.tools.iter()
+    let decl = host.declaration();
+    decl.tools.iter()
         .map(|spec| {
             Arc::new(RemoteTool::new(spec.clone(), host.clone())) as Arc<dyn Tool>
         })
@@ -328,7 +331,7 @@ fn spawn_all_plugins_in_dir_with_info(
     for cfg in pinned_plugins {
         match spawn_user_plugin(cfg, Arc::clone(&kv)) {
             Ok((host, tools)) => {
-                let declared = host.declaration.name.clone();
+                let declared = host.name();
                 pinned_declared_names.insert(declared.clone());
                 let cmd = cfg.cmd.clone().expect("pinned has cmd");
                 let env = cfg.env.clone();
@@ -398,7 +401,7 @@ fn spawn_all_plugins_in_dir_with_info(
             }
             match spawn_discovered_plugin(bin, &env_for_bin, Arc::clone(&kv)) {
                 Ok((host, tools)) => {
-                    let declared = host.declaration.name.clone();
+                    let declared = host.name();
                     // Post-handshake disabled check (declared name may differ from file stem).
                     if disabled_names.contains(&declared) {
                         crate::log!("discovered plugin '{}' ({}) disabled via config — discarding", declared, bin.display());
@@ -557,8 +560,8 @@ mod tests {
         let (hosts, tools) = spawn_all_plugins_in_dir(&[], dir.path(), noop_kv()).unwrap();
 
         assert_eq!(hosts.len(), 1, "one discovered plugin host");
-        assert_eq!(hosts[0].declaration.name, "dummy-tools");
-        assert!(hosts[0].declaration.tools.iter().any(|t| t.name == "dummy_tool"));
+        assert_eq!(hosts[0].name(), "dummy-tools");
+        assert!(hosts[0].declaration().tools.iter().any(|t| t.name == "dummy_tool"));
         assert!(tools.iter().any(|t| t.spec().name == "dummy_tool"),
             "discovered tool must be registered in the merged registry");
     }
@@ -622,7 +625,7 @@ mod tests {
         assert_eq!(names, vec!["a.sh".to_string(), "b.sh".to_string()]);
 
         let (hosts, _tools) = spawn_all_plugins_in_dir(&[], dir.path(), noop_kv()).unwrap();
-        let host_names: Vec<&str> = hosts.iter().map(|h| h.declaration.name.as_str()).collect();
+        let host_names: Vec<String> = hosts.iter().map(|h| h.name()).collect();
         assert_eq!(host_names, vec!["a-tools", "b-tools"]);
     }
 
@@ -669,7 +672,7 @@ mod tests {
         let (hosts, tools) = spawn_all_plugins_in_dir(&[pinned_cfg], dir.path(), noop_kv()).unwrap();
         // Only pinned host should survive; discovered suppressed.
         assert_eq!(hosts.len(), 1, "only pinned host should be registered");
-        assert_eq!(hosts[0].declaration.name, "dup-tools");
+        assert_eq!(hosts[0].name(), "dup-tools");
         assert!(tools.iter().any(|t| t.spec().name == "pinned_tool"), "pinned tool must be present");
         assert!(!tools.iter().any(|t| t.spec().name == "discovered_tool"), "discovered tool must be suppressed");
         assert_eq!(tools.len(), 1);

@@ -48,6 +48,15 @@ impl SessionBuses {
     pub fn drop_session(&self, session: &str) {
         self.map.lock().expect("session buses poisoned").remove(session);
     }
+
+    /// Broadcast an event to ALL active sessions (for global events like `PluginDeclared`).
+    /// Non-blocking; may drop for slow subscribers.
+    pub fn broadcast_all(&self, event: Event) {
+        let m = self.map.lock().expect("session buses poisoned");
+        for bus in m.values() {
+            bus.publish(event.clone());
+        }
+    }
 }
 
 impl Default for SessionBuses {

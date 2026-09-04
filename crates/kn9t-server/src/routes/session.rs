@@ -341,6 +341,68 @@ pub fn set_model(state: &Arc<ServerState>, id: &str, req: api::SetModelReq) -> J
     }
 }
 
+/// `POST /session/{id}/tools` — `{disabled: [String]}` [lease required].
+/// Sets the full list of tools DISABLED for this session. Appends a `ToolsToggled`
+/// durable event. Blocking is enforced at tool-execution time (the provider still
+/// sees every tool spec so the cache prefix is unchanged).
+///
+/// The response includes `reenabled`: tools that were disabled and are no longer.
+/// The server also stores them in `pending_reactivation` so the next `spawn_turn`
+/// can inject a one-shot `<system-reminder>` informing the agent.
+pub fn set_tools(state: &Arc<ServerState>, id: &str, req: api::SetToolsReq) -> JsonResp {
+    let sid = SessionId(id.to_owned());
+
+    // Compute reenabled = (old disabled) - (new disabled).
+    let old_disabled: std::collections::HashSet<String> = state
+        .store
+        .snapshot(&sid)
+        .map(|s| s.disabled_tools.into_iter().collect())
+        .unwrap_or_default();
+    let new_disabled: std::collections::HashSet<String> =
+        req.disabled.iter().cloned().collect();
+    let reenabled: Vec<String> = old_disabled
+        .difference(&new_disabled)
+        .cloned()
+        .collect();
+
+    crate::log!(
+        "[set_tools] session={id} disabled={:?} reenabled={:?}",
+        req.disabled,
+        reenabled
+    );
+
+    // Append the durable event (full replacement: last ToolsToggled wins on replay).
+    match state.store.append(
+        &sid,
+        Event::ToolsToggled {
+            seq: 0,
+            disabled: req.disabled,
+        },
+    ) {
+        Ok(seq) => {
+            // Store reenabled for the next turn's one-shot reminder.
+            if !reenabled.is_empty() {
+                let mut map = state
+                    .pending_reactivation
+                    .lock()
+                    .expect("pending_reactivation poisoned");
+                map.insert(id.to_owned(), reenabled.iter().cloned().collect());
+            }
+            let reenabled_json: Vec<serde_json::Value> =
+                reenabled.into_iter().map(serde_json::Value::String).collect();
+            JsonResp::ok(serde_json::json!({
+                "tools_set": true,
+                "seq": seq,
+                "reenabled": reenabled_json,
+            }))
+        }
+        Err(e) => {
+            crate::log!("[set_tools] error: {}", e.0);
+            JsonResp::error(404, "not_found", &e.0)
+        }
+    }
+}
+
 /// `POST /approve` — `{id, decision, scope}` [lease required]. Records an approval
 /// decision that the tool-dispatch policy consults. In v1 the decision is signaled
 /// to the running turn via the approval registry. `scope` is `once` (default),

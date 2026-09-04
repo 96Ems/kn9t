@@ -396,7 +396,8 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                         crate::log!("[kn9t-config] provider {name:?}: spawned plugin {}", binary_path.display());
                         
                         // Extract models from plugin declaration (auto-discovery).
-                         if let Some(ref prov_decl) = host.declaration.provider {
+                        let decl = host.declaration();
+                         if let Some(ref prov_decl) = decl.provider {
                              for model_decl in &prov_decl.models {
                                  // Try plugin-provided price, then fallback lookup, then zero.
                                  let price = model_decl.price.as_ref()

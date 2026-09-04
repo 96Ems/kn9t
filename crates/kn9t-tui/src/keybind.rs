@@ -14,7 +14,8 @@ pub enum Action {
     Quit,           // Ctrl+C or Ctrl+Q
     Abort,          // Escape
     Help,           // Ctrl+P (command palette)
-    Send,           // Enter
+    Send,           // Enter (steers if streaming, prompts if idle)
+    Queue,          // Shift+Enter: queue message for post-idle send (unlike steer)
     Paste,          // Ctrl+V: paste from system clipboard
     
     // Scrolling
@@ -117,7 +118,9 @@ impl Keybinds {
         // ═══════════════════════════════════════════════════════════════════
         
         // ─── Core ───
-        bindings.insert(kp(KeyCode::Enter, false, false, false), Action::Send);      // Enter: send
+        bindings.insert(kp(KeyCode::Enter, false, false, false), Action::Send);      // Enter: send (steers if streaming)
+        bindings.insert(kp(KeyCode::Enter, true, false, false), Action::Queue);      // Ctrl+Enter: queue for post-idle
+        // Note: Shift+Enter and Alt+Enter insert newline (handled before keybinds)
         bindings.insert(kp(KeyCode::Esc, false, false, false), Action::Abort);       // Esc: abort turn
         bindings.insert(kp(KeyCode::Char('c'), true, false, false), Action::Quit);   // Ctrl+C: quit
         bindings.insert(kp(KeyCode::Char('q'), true, false, false), Action::Quit);   // Ctrl+Q: quit
@@ -213,6 +216,7 @@ fn parse_action(name: &str) -> Option<Action> {
         "abort" => Some(Action::Abort),
         "help" => Some(Action::Help),
         "send" => Some(Action::Send),
+        "queue" => Some(Action::Queue),
         "paste" => Some(Action::Paste),
         "scroll_up" => Some(Action::ScrollUp),
         "scroll_down" => Some(Action::ScrollDown),

@@ -58,6 +58,7 @@ pub fn event_tag(e: &Event) -> String {
         Event::ModelChanged { .. } => "ModelChanged",
         Event::Compacted { .. } => "Compacted",
         Event::Handoff { .. } => "Handoff",
+        Event::ToolsToggled { .. } => "ToolsToggled",
         Event::UsageRecorded { .. } => "UsageRecorded",
         Event::TurnStarted { .. } => "TurnStarted",
         Event::TextDelta { .. } => "TextDelta",
@@ -203,8 +204,9 @@ impl kn9t_core::Store for StubStore {
             head_seq: *self.seq.lock().unwrap(),
             ctx_tokens: 0,
             cost_usd: 0.0,
-        cost_micros: 0,
+            cost_micros: 0,
             model: test_model_ref(),
+            disabled_tools: Vec::new(),
         })
     }
 }
@@ -422,8 +424,9 @@ pub fn spawn_tools_registry() -> (Arc<PluginHost>, ToolRegistry) {
 
     let host = Arc::new(host);
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+    let decl = host.declaration();
 
-    for spec in &host.declaration.tools {
+    for spec in &decl.tools {
         let tool_spec = kn9t_core::ToolSpec {
             name: spec.name.clone(),
             description: spec.description.clone(),

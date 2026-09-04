@@ -143,6 +143,51 @@ pub fn resolve_approval(state: &Arc<ServerState>, id: u64, decision_str: &str, s
     Ok(decision)
 }
 
+/// Tools-enable/disable inputs for a run: the set of tools blocked at execution
+/// time for this session, plus a one-shot re-enable notice if any tool was just
+/// re-enabled. Reads the session snapshot (last `ToolsToggled` wins) and drains
+/// `ServerState::pending_reactivation`.
+fn tool_gating_for_session(
+    state: &Arc<ServerState>,
+    session: &SessionId,
+) -> (std::collections::HashSet<String>, Option<Message>) {
+    let disabled: std::collections::HashSet<String> = state
+        .store
+        .snapshot(session)
+        .map(|s| s.disabled_tools.into_iter().collect())
+        .unwrap_or_default();
+
+    let reactivated: Vec<String> = {
+        let mut map = state.pending_reactivation.lock().expect("pending_reactivation poisoned");
+        map.remove(&session.0)
+            .map(|set| {
+                let mut v: Vec<String> = set.into_iter().collect();
+                v.sort();
+                v
+            })
+            .unwrap_or_default()
+    };
+
+    let reminder = if reactivated.is_empty() {
+        None
+    } else {
+        let list = reactivated.join(", ");
+        Some(Message {
+            id: MsgId::new(),
+            role: Role::User,
+            content: vec![Content::Text {
+                text: format!(
+                    "<system-reminder>The following tool(s) have been re-enabled for this \
+                     session and are available again: {list}. You may use them now.</system-reminder>"
+                ),
+            }],
+            silent: true,
+        })
+    };
+
+    (disabled, reminder)
+}
+
 /// Compose the full `ReactLoop` for a session: bus + sink, hooks (from plugin
 /// hosts, session-attached), provider, tool registry (optionally filtered to a
 /// subset), and the compactor delegation. Single composition point — shared by
@@ -257,6 +302,7 @@ pub(crate) fn run_session_turn(
         std::thread::sleep(Duration::from_secs(timeout_s));
         cancel_watch.cancel();
     });
+    let (disabled_tools, reactivation_reminder) = tool_gating_for_session(state, session);
     let params = RunParams {
         session: session.clone(),
         model: model.clone(),
@@ -267,6 +313,8 @@ pub(crate) fn run_session_turn(
         read_map: Arc::new(Mutex::new(std::collections::HashMap::new())),
         system: Some(system_prompt::default_system_prompt()),
         cancel: Some(cancel),
+        disabled_tools,
+        reactivation_reminder,
     };
     loop_
         .run(params)
@@ -363,6 +411,7 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             }
         };
 
+        let (disabled_tools, reactivation_reminder) = tool_gating_for_session(&state, &session);
         let params = RunParams {
             session: session.clone(),
             model: model.clone(),
@@ -373,6 +422,8 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             read_map: Arc::new(Mutex::new(HashMap::new())),
             system: Some(system_prompt::default_system_prompt()),
             cancel: Some(cancel.clone()),
+            disabled_tools,
+            reactivation_reminder,
         };
 
         crate::log!("turn started: session={}", session.0);

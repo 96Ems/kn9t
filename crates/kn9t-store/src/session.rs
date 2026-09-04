@@ -113,6 +113,7 @@ pub fn snapshot(store: &SqliteStore, session: &SessionId) -> Result<SessionSnaps
     let cost_usd = cost_micros as f64 / 1_000_000.0;
 
     let model = reconstruct_model(&conn, &sid, &model_at_fork)?;
+    let disabled_tools = reconstruct_disabled_tools(&conn, &sid)?;
 
     Ok(SessionSnapshot {
         head_seq: head_seq as u64,
@@ -120,7 +121,33 @@ pub fn snapshot(store: &SqliteStore, session: &SessionId) -> Result<SessionSnaps
         cost_usd,
         cost_micros,
         model,
+        disabled_tools,
     })
+}
+
+/// Reconstruct the set of disabled tools for a session: the latest `ToolsToggled`
+/// event wins (full-list semantics, like `reconstruct_model` for `ModelChanged`).
+/// No projection row exists for `ToolsToggled`, so read it straight from `events`.
+/// Empty when the session never toggled anything.
+fn reconstruct_disabled_tools(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<Vec<String>, StoreErr> {
+    let last: Option<String> = conn
+        .query_row(
+            "SELECT payload FROM events WHERE session_id=?1 AND kind='ToolsToggled' ORDER BY seq DESC LIMIT 1",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| StoreErr(format!("disabled_tools query: {e}")))?;
+
+    if let Some(p) = last {
+        if let Ok(Event::ToolsToggled { disabled, .. }) = serde_json::from_str(&p) {
+            return Ok(disabled);
+        }
+    }
+    Ok(Vec::new())
 }
 
 fn reconstruct_model(
@@ -191,6 +218,7 @@ fn event_kind_name(event: &Event) -> &'static str {
         Event::ModelChanged { .. }    => "ModelChanged",
         Event::Compacted { .. }       => "Compacted",
         Event::Handoff { .. }         => "Handoff",
+        Event::ToolsToggled { .. }    => "ToolsToggled",
         Event::UsageRecorded { .. }   => "UsageRecorded",
         Event::TurnStarted { .. }     => "TurnStarted",
         Event::TextDelta { .. }       => "TextDelta",
@@ -209,6 +237,7 @@ fn event_kind_name(event: &Event) -> &'static str {
         Event::PluginNotification { .. }  => "PluginNotification",
         Event::InteractionRequest { .. }  => "InteractionRequest",
         Event::UiDirective { .. }         => "UiDirective",
+        Event::PluginDeclared { .. }      => "PluginDeclared",
     }
 }
 

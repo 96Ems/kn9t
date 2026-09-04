@@ -41,7 +41,10 @@ from typing import Any
 # TTL for discovered tools cache (5 minutes)
 DISCOVERED_TTL_SECS = 300
 
-from kn9t_mcp.config import McpServerConfig, load_mcp_config
+# Config file watcher interval (seconds)
+CONFIG_WATCH_INTERVAL_SECS = 2.0
+
+from kn9t_mcp.config import McpServerConfig, load_mcp_config, mcp_config_mtime
 from kn9t_mcp.mcp_client import McpClient, McpError, McpTool
 from kn9t_mcp.mcp_http_client import McpHttpClient
 
@@ -149,6 +152,11 @@ class Plugin:
         # Tools in this cache won't be returned again by mcp_search_tools
         self.discovered_cache: dict[str, float] = {}
         
+        # File watcher state
+        self._config_mtime: float | None = mcp_config_mtime()
+        self._watcher_stop = threading.Event()
+        self._watcher_thread: threading.Thread | None = None
+        
         self._discover_all_tools()
 
     @classmethod
@@ -237,6 +245,9 @@ class Plugin:
 
         # Send our hello with discovered tools
         self._send_hello()
+        
+        # Start config file watcher thread (R-PLUG2-110: hot reload via declare)
+        self._start_config_watcher()
 
         # Main dispatch loop
         while True:
@@ -613,6 +624,11 @@ class Plugin:
 
     def _shutdown(self) -> None:
         """Clean shutdown: cancel inflight calls and stop MCP servers."""
+        # Stop config watcher
+        self._watcher_stop.set()
+        if self._watcher_thread:
+            self._watcher_thread.join(timeout=1.0)
+        
         # Cancel all inflight calls
         for event in self.inflight.values():
             event.set()
@@ -623,3 +639,142 @@ class Plugin:
                 client.shutdown()
             except Exception as e:
                 print(f"Error shutting down '{name}': {e}", file=sys.stderr)
+
+    # ── Hot reload via declare (R-PLUG2-110) ───────────────────────────────────
+
+    def _start_config_watcher(self) -> None:
+        """Start background thread to watch mcp.toml for changes."""
+        self._watcher_thread = threading.Thread(
+            target=self._config_watcher_loop,
+            daemon=True,
+            name="mcp-config-watcher",
+        )
+        self._watcher_thread.start()
+        print("Config watcher started", file=sys.stderr)
+
+    def _config_watcher_loop(self) -> None:
+        """Poll mcp.toml mtime and reload on change."""
+        while not self._watcher_stop.wait(CONFIG_WATCH_INTERVAL_SECS):
+            try:
+                new_mtime = mcp_config_mtime()
+                if new_mtime is not None and new_mtime != self._config_mtime:
+                    print(f"Config file changed (mtime: {self._config_mtime} -> {new_mtime})", file=sys.stderr)
+                    self._config_mtime = new_mtime
+                    self._reload_config()
+            except Exception as e:
+                print(f"Config watcher error: {e}", file=sys.stderr)
+
+    def _reload_config(self) -> None:
+        """Reload MCP servers from config and send declare message."""
+        print("Reloading MCP configuration...", file=sys.stderr)
+        
+        old_tool_names = set(self.tools.keys())
+        old_server_names = set(self.mcp_clients.keys())
+        
+        # Load new config
+        configs = load_mcp_config()
+        new_server_names = {c.name for c in configs}
+        
+        # Shutdown removed servers
+        for name in old_server_names - new_server_names:
+            print(f"Removing MCP server '{name}'", file=sys.stderr)
+            if name in self.mcp_clients:
+                try:
+                    self.mcp_clients[name].shutdown()
+                except Exception as e:
+                    print(f"Error shutting down '{name}': {e}", file=sys.stderr)
+                del self.mcp_clients[name]
+            # Remove tools from this server
+            self.tools = {k: v for k, v in self.tools.items() if v.mcp_server != name}
+        
+        # Connect to new servers
+        for cfg in configs:
+            if cfg.name in old_server_names:
+                continue  # Already connected
+            
+            print(f"Adding MCP server '{cfg.name}'", file=sys.stderr)
+            try:
+                if cfg.type == "local":
+                    client: McpClientType = McpClient.spawn(
+                        cfg.name, cfg.cmd, cfg.env, cfg.timeout_ms
+                    )
+                else:
+                    client = McpHttpClient(
+                        name=cfg.name,
+                        url=cfg.url,
+                        headers=cfg.headers,
+                        timeout=cfg.timeout_ms / 1000.0,
+                    )
+                
+                client.discover()
+                self.mcp_clients[cfg.name] = client
+                print(f"Connected to MCP server '{cfg.name}' ({cfg.type})", file=sys.stderr)
+                
+                # Discover tools from this server
+                try:
+                    mcp_tools = client.list_tools()
+                    for tool in mcp_tools:
+                        prefixed_name = f"mcp_{cfg.name}_{tool.name}"
+                        self.tools[prefixed_name] = ToolSpec(
+                            name=prefixed_name,
+                            description=f"[{cfg.name}] {tool.description}",
+                            schema=tool.input_schema,
+                            mcp_server=cfg.name,
+                            mcp_tool_name=tool.name,
+                        )
+                    print(f"Discovered {len(mcp_tools)} tool(s) from '{cfg.name}'", file=sys.stderr)
+                except McpError as e:
+                    print(f"Failed to list tools from '{cfg.name}': {e}", file=sys.stderr)
+                    
+            except Exception as e:
+                print(f"Failed to connect to '{cfg.name}': {e}", file=sys.stderr)
+        
+        new_tool_names = set(self.tools.keys())
+        tools_added = list(new_tool_names - old_tool_names)
+        tools_removed = list(old_tool_names - new_tool_names)
+        
+        if tools_added or tools_removed:
+            print(f"Tools changed: +{len(tools_added)} -{len(tools_removed)}", file=sys.stderr)
+            self._send_declare(tools_added, tools_removed)
+        else:
+            print("No tool changes detected", file=sys.stderr)
+
+    def _send_declare(self, tools_added: list[str], tools_removed: list[str]) -> None:
+        """Send declare message to hot-update tools with the host."""
+        # Build full tool list (same format as hello)
+        server_info = ", ".join(
+            f"{name} ({len([t for t in self.tools.values() if t.mcp_server == name])} tools)"
+            for name in self.mcp_clients.keys()
+        )
+        
+        # Meta-tools
+        list_servers = dict(LIST_SERVERS_SPEC)
+        list_servers["description"] = (
+            f"List available MCP servers: {server_info}. "
+            "Use mcp_search_tools to discover tools from a specific server."
+        )
+        list_servers["hidden"] = False
+        
+        search_tools = dict(SEARCH_TOOLS_SPEC)
+        search_tools["hidden"] = False
+        
+        # MCP tools (hidden)
+        mcp_tools = [
+            {
+                "name": t.name,
+                "description": t.description,
+                "schema": t.schema,
+                "parallel_safe": True,
+                "hidden": True,
+            }
+            for t in self.tools.values()
+        ]
+        
+        all_tools = [list_servers, search_tools] + mcp_tools
+        
+        self._write_message({
+            "t": "declare",
+            "tools": all_tools,
+        })
+        
+        print(f"Sent declare: {len(all_tools)} tools (+{len(tools_added)} -{len(tools_removed)})", file=sys.stderr)
