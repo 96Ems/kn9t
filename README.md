@@ -305,6 +305,7 @@ Working on this repo with an AI agent? [`AGENTS.md`](AGENTS.md) is the operating
 | [`docs/adr/`](docs/adr) | Architecture decision records |
 | [`spec/`](spec) | Per-stage requirements and acceptance tests |
 | [`CONTEXT.md`](CONTEXT.md) | Glossary |
+| [`docs/internal/`](docs/internal) | Working notes from a finished cleanup — not an interface |
 
 ---
 

@@ -11,7 +11,7 @@
 //! then `kn9t` must not be code execution. The repo's `plugins/` directory is *build source*;
 //! `~/.kn9t/plugins/` is the *install target*.
 //!
-//! Step 3.3 — config overrides discovery (job/phase3.md 3.3):
+//! Step 3.3 — config overrides discovery (docs/internal/job/phase3.md 3.3):
 //! - `enabled = false` / `disabled = true` → discovered plugin with same `name`
 //!   (and file-stem fallback) is suppressed; the entry itself is not spawned.
 //! - `cmd = [...]` → pinned plugin: spawned as a user plugin; discovered plugin

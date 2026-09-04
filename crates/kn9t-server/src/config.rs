@@ -529,7 +529,7 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         Some(s) => PolicyMode::parse(s).map_err(|e| format!("config: {e}"))?,
     };
 
-    // Resolve user tool plugins — supports pin/disable/env-override (job/phase3.md 3.3).
+    // Resolve user tool plugins — supports pin/disable/env-override (docs/internal/job/phase3.md 3.3).
     let plugins: Vec<ResolvedPlugin> = raw.plugins.iter()
         .filter_map(|rp| {
             let disabled = rp.disabled.unwrap_or(false) || rp.enabled == Some(false);

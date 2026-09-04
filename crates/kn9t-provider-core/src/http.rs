@@ -40,7 +40,7 @@ pub struct HttpResponse {
 
 /// R-PCORE-010/020 — send the request with a connect-only timeout.
 /// If `cancel` is `Some`, the response body is wrapped in `CancellableReader` so the
-/// next `read()` returns `Interrupted` (<1ms) when `cancel.cancelled()` (`job/instant-cut.md`).
+/// next `read()` returns `Interrupted` (<1ms) when `cancel.cancelled()` (`docs/internal/job/instant-cut.md`).
 pub fn send(req: HttpRequest, connect_timeout: Duration, cancel: Option<Cancel>) -> Result<HttpResponse, ProvErr> {
     let config = ureq::config::Config::builder()
         .timeout_connect(Some(connect_timeout))

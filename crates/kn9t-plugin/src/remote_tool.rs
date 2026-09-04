@@ -53,7 +53,7 @@ impl Tool for RemoteTool {
 
         // Tool calls can be long-running (bash has 120s default, but builds can take longer).
         // Use 5 minutes as the host timeout; the tool's internal timeout takes precedence.
-        // Cancellable: polls `Cancel` every 10ms and sends `HostMsg::Cancel` on fire (`job/instant-cut.md`).
+        // Cancellable: polls `Cancel` every 10ms and sends `HostMsg::Cancel` on fire (`docs/internal/job/instant-cut.md`).
         let result = self.host.call_raw_hook_str_streaming_cancellable(
             "tool_call",
             payload,

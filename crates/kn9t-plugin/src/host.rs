@@ -544,7 +544,7 @@ impl PluginHost {
     }
 
     /// Cancellable streaming hook — polls `Cancel` every 10ms and sends `HostMsg::Cancel` on fire.
-    /// `job/instant-cut.md` step 5.
+    /// `docs/internal/job/instant-cut.md` step 5.
     pub fn call_raw_hook_str_streaming_cancellable(
         &self,
         hook_str: &str,
@@ -631,7 +631,7 @@ impl PluginHost {
     }
 
     /// Cancellable streaming wait — polls `Cancel` every 10ms, sends `HostMsg::Cancel` on fire.
-    /// `job/instant-cut.md` step 4.
+    /// `docs/internal/job/instant-cut.md` step 4.
     pub fn wait_for_streaming_cancellable(
         &self,
         expected_id: u64,
