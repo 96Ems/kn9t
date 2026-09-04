@@ -24,7 +24,16 @@ rust-version = "1.94"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Patch crossterm to use the Windows VT input fix for bracketed paste
-# See: https://github.com/crossterm-rs/crossterm/pull/1030
+# Windows bracketed paste: crossterm 0.29.0 does not support Event::Paste on
+# Windows with modern terminals (Windows Terminal, Alacritty, WezTerm). The fix
+# is 38 commits in eitsupi's fork, PR #1030, not yet merged upstream.
+#
+# Without this patch: pasting multi-line text in the TUI inserts it character
+# by character as KeyEvent::Char, losing newlines or triggering premature submit.
+# With the patch: paste arrives as a single Event::Paste(String).
+#
+# The lock pins commit 94ed7154 so branch moves do not affect reproducibility.
+# Remove this patch once crossterm publishes a version containing PR #1030.
+# Track: https://github.com/crossterm-rs/crossterm/pull/1030
 [patch.crates-io]
-crossterm = { git = "https://github.com/eitsupi/crossterm", branch = "feature/windows-vt-input" }
+crossterm = { git = "https://github.com/eitsupi/crossterm", rev = "94ed7154e35d24a2f643c61760e1eb05b8ca9e63" }
