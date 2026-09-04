@@ -224,6 +224,26 @@ Write operations require an **X-Lease** header: the holder token minted by
 | `seq` | u64 |  |
 
 
+### `POST /session/{id}/tools` — Set the full list of tools DISABLED for this session (action endpoint, no PATCH; full replacement, appends a ToolsToggled event). Blocking is enforced at tool-execution time so the provider still sees every tool and the cache prefix is unchanged.
+
+- **Lease required:** yes
+
+**Request body**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `disabled` | string[] | yes | Complete set of tool names to disable for this session (replaces the previous set) |
+
+
+**Response `200`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `reenabled` | string[] |  |
+| `seq` | u64 |  |
+| `tools_set` | bool |  |
+
+
 ### `POST /approve` — Approve or deny a pending tool call (decision allow|deny|always, scope once|session|always)
 
 - **Lease required:** yes
@@ -565,6 +585,7 @@ Recommended client sequence: `POST /lease` → open `GET …/events?from=<seq>&l
 | `retry_attempt` | `attempt: u32`, `delay_ms: u64`, `error: string`, `max: u32`, `retry_kind: string` | no |
 | `turn_status` | `message: string`, `phase: string` | no |
 | `plugin_notification` | `message: string`, `plugin: string` | no |
+| `plugin_declared` | `plugin: string`, `tools_added: string[]`, `tools_removed: string[]` | no |
 | `interaction_request` | `id: u64`, `payload: object`, `plugin: string` | no |
 | `ui_directive` | `op: string`, `payload: object`, `plugin: string`, `target: string` | no |
 

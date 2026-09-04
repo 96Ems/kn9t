@@ -67,6 +67,14 @@ pub struct SetModelReq {
 /// Request body.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct SetToolsReq {
+    /// Complete set of tool names to disable for this session (replaces the previous set)
+    pub disabled: Vec<String>,
+}
+
+/// Request body.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApproveReq {
     /// Allowed values: allow | deny | always.
     pub decision: String,

@@ -43,6 +43,11 @@ type SetModelReq struct {
 	Provider string `json:"provider"`
 }
 
+// SetToolsReq — request body.
+type SetToolsReq struct {
+	Disabled []string `json:"disabled"`
+}
+
 // ApproveReq — request body.
 type ApproveReq struct {
 	Decision string `json:"decision"`

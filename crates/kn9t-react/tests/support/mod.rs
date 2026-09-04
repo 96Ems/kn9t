@@ -74,6 +74,7 @@ pub fn event_tag(e: &Event) -> String {
         Event::TurnStatus { .. } => "TurnStatus",
         Event::TitleChanged { .. } => "TitleChanged",
         Event::PluginNotification { .. } => "PluginNotification",
+        Event::PluginDeclared { .. } => "PluginDeclared",
         Event::InteractionRequest { .. } => "InteractionRequest",
         Event::UiDirective { .. } => "UiDirective",
     }

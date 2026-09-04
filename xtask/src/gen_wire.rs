@@ -56,6 +56,7 @@ fn sse_type(t: &str) -> &'static str {
         "u64" => "u64",
         "u32" => "u32",
         "string" => "String",
+        "string[]" => "Vec<String>",
         "number" => "f64",
         "bool" => "bool",
         "Message" => "WireMessage",
@@ -296,6 +297,7 @@ fn emit_http_requests(http: &Value) -> String {
         let wire_name = match name {
             "CreateSessionReq" => "CreateSessionReq",
             "PromptReq" => "PromptReq",
+            "SteerReq" => "SteerReq",
             "ApproveReq" => "ApprovalResp",
             "UiRespondReq" => "UiRespondReq",
             _ => continue,

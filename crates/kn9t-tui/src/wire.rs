@@ -105,6 +105,11 @@ pub enum SseFrame {
         message: String,
         plugin: String,
     },
+    PluginDeclared {
+        plugin: String,
+        tools_added: Vec<String>,
+        tools_removed: Vec<String>,
+    },
     InteractionRequest {
         id: u64,
         payload: serde_json::Value,
@@ -237,6 +242,12 @@ pub struct PromptReq {
     pub images: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+}
+
+/// `SteerReq` — request body (schema-derived).
+#[derive(Debug, Clone, Serialize)]
+pub struct SteerReq {
+    pub text: String,
 }
 
 /// `ApprovalResp` — request body (schema-derived).

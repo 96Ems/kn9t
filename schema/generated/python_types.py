@@ -58,6 +58,13 @@ class SetModelReq:
 
 
 @dataclass
+class SetToolsReq:
+    """Request body."""
+
+    disabled: List[str]
+
+
+@dataclass
 class ApproveReq:
     """Request body."""
 
