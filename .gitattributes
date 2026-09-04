@@ -25,6 +25,3 @@ schema/generated/**            text eol=lf
 # ── Raw bytes: never convert ──────────────────────────────────────────────────
 # Fixtures are captured provider bytes, replayed verbatim (R-RPLY-010).
 crates/kn9t-provider-replay/fixtures/** -text
-# Go plugin binaries.
-plugins/kn9t-agents-md/kn9t-agents-md binary
-plugins/kn9t-agents-md/kn9t-agents-md.exe binary

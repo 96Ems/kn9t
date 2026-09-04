@@ -56,7 +56,7 @@ cargo build --release
 # default tools ship as a separate plugin crate
 cd plugins/kn9t-tools && cargo build --release && cd ../..
 
-# optional: the Go and TypeScript plugins build independently
+# optional: the Go plugin builds independently (add .exe on Windows)
 cd plugins/kn9t-agents-md && go build -o kn9t-agents-md . && cd ../..
 ```
 
