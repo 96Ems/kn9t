@@ -2,7 +2,7 @@
 
 use kn9t_provider_core::{
     send, Backoff, HttpRequest, Quirks, AuthScheme, sse_lines,
-    CallId, Cancel, Chunk, ModelRef, ProvErr, Provider, Request, StopReason, Usage,
+    CallId, Cancel, Chunk, ModelRef, ProvErr, Provider, Request, Usage,
 };
 use std::time::Duration;
 
@@ -199,6 +199,17 @@ fn synthesize_chunks(
     let msg = &choices[0]["message"];
     let mut has_tools = false;
 
+    // Reasoning / thinking content, gated on the same quirk the streaming path
+    // honours (decode.rs). Without this a `streaming = false` provider silently
+    // dropped every thinking block that the streaming path would have emitted.
+    if quirks.thinking_style == "reasoning_content" {
+        if let Some(text) = msg.get("reasoning_content").and_then(|c| c.as_str()) {
+            if !text.is_empty() {
+                chunks.push(Chunk::Thinking { idx: 0, delta: text.to_owned() });
+            }
+        }
+    }
+
     if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
         if !text.is_empty() {
             chunks.push(Chunk::Text { idx: 0, delta: text.to_owned() });
@@ -218,11 +229,10 @@ fn synthesize_chunks(
     }
 
     let stop_str = choices[0].get("finish_reason").and_then(|r| r.as_str()).unwrap_or("stop");
-    let stop = match stop_str {
-        "tool_calls" => StopReason::ToolUse,
-        "length"     => StopReason::Length,
-        _            => if has_tools { StopReason::ToolUse } else { StopReason::Stop },
-    };
+    // Reuse the streaming path's mapping rather than a second inline copy: this one
+    // had drifted (no content_filter -> Refusal, and it ignored quirks.finish_reason,
+    // so a gateway that always reports "stop" mapped tool calls to Stop).
+    let stop = crate::decode::decode_stop(stop_str, has_tools, quirks);
     chunks.push(Chunk::Stop(stop));
 
     Ok(chunks)

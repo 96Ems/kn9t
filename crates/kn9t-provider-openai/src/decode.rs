@@ -4,8 +4,11 @@ use kn9t_provider_core::{CallId, Chunk, ModelRef, ProvErr, Quirks, StopReason, T
 use serde_json::Value;
 
 /// State accumulated while streaming, for tool-call correlation.
+///
+/// Crate-visible so it matches `decode_delta`'s visibility; the public surface
+/// is the `DecodeState` newtype, which keeps the fields private.
 #[derive(Default)]
-struct StreamState {
+pub(crate) struct StreamState {
     tools: Vec<ToolState>,
     has_tool_calls: bool,
 }
@@ -18,7 +21,10 @@ struct ToolState {
 }
 
 /// Decode a single SSE `data:` JSON payload into zero or more `Chunk`s.
-pub fn decode_delta(
+///
+/// Crate-internal: `StreamState` is private, so this was never callable from
+/// outside even while marked `pub`. `DecodeState::decode` is the public entry.
+pub(crate) fn decode_delta(
     json_bytes: &[u8],
     state: &mut StreamState,
     quirks: &Quirks,
@@ -116,7 +122,7 @@ pub fn decode_delta(
     Ok(chunks)
 }
 
-fn decode_stop(reason: &str, has_tools: bool, quirks: &Quirks) -> StopReason {
+pub(crate) fn decode_stop(reason: &str, has_tools: bool, quirks: &Quirks) -> StopReason {
     match reason {
         "stop"           => {
             if !quirks.finish_reason && has_tools {
