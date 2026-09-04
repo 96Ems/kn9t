@@ -2,11 +2,11 @@
 #![allow(clippy::unwrap_used)]
 
 use kn9t_core::{
-    CallId, Content, Event, ForkReason, Message, MsgId, ModelRef, Price, Role, SeqRange,
+    CallId, Content, Event, ForkReason, Message, MsgId, ModelRef, Price, Role,
     SessionId, Tokens, UsageKind,
 };
 use kn9t_core::Store;
-use kn9t_store::{CostRollup, SqliteStore, create_session, fork_session, has_orphan_tool_call};
+use kn9t_store::{SqliteStore, create_session, fork_session, has_orphan_tool_call};
 use tempfile::TempDir;
 
 // ── helpers ──────────────────────────────────────────────────────────────────

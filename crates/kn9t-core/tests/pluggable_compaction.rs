@@ -2,7 +2,7 @@
 
 #[test]
 fn p1_96e16_handoff_event_is_durable() {
-    use kn9t_core::{CallId, Event, SeqRange, Message, MsgId, Role, Content};
+    use kn9t_core::{CallId, Event};
     // Event::Handoff must exist and be durable (carries seq)
     let ev = Event::Handoff {
         seq: 1,

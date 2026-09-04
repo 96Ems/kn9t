@@ -113,6 +113,14 @@ fn resume_from_handoff_reconstructs_context() {
     assert!(serialized.contains("LARGE OUTPUT KEEP VERBATIM"), "keep must be verbatim in summary");
     assert!(!serialized.contains("small output to be summarized"), "summarize must NOT contain full original — only summary");
     assert!(serialized.contains("summarized: did X"), "summarize note must be present");
+    // Assert against the plan itself, not a hardcoded literal: every dropped id
+    // and its output must be gone from the summary.
+    for id in &drop_ids {
+        assert!(!serialized.contains(&id.0), "dropped id {} must be absent", id.0);
+        if let Some((_, output)) = orig.iter().find(|(oid, _)| oid == id) {
+            assert!(!serialized.contains(output), "dropped output must be absent");
+        }
+    }
     assert!(!serialized.contains("noise"), "drop must be absent");
     assert_eq!(resume_actions, vec!["retry the task"]);
 }

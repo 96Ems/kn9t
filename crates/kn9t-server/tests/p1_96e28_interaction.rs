@@ -51,7 +51,12 @@ fn pending_interaction_blocks_and_resolves_via_host_api_and_route() {
     let ev = sub.recv_timeout(std::time::Duration::from_secs(2)).expect("InteractionRequest SSE not emitted");
     let (id, plugin, payload) = match ev {
         kn9t_core::Event::InteractionRequest { id, plugin, payload } => (id, plugin, payload),
-        other => panic!("expected InteractionRequest"),
+        // `Event` deliberately has no Debug (GI-2: payloads are pure data), so
+        // name the variant via its serde tag instead.
+        other => panic!(
+            "expected InteractionRequest, got {}",
+            serde_json::to_value(&other).map(|v| v["kind"].to_string()).unwrap_or_else(|_| "<unknown>".into())
+        ),
     };
     assert_eq!(plugin, "kn9t-ask-user");
     assert_eq!(payload, json!({"question":"choose","choices":["a","b"]}));

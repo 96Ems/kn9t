@@ -6,7 +6,7 @@ mod support;
 
 use std::sync::{Arc, Mutex};
 
-use kn9t_core::{Content, Event, ProvErr, RequestPlan, Role, SessionId, StopReason, Store,
+use kn9t_core::{Content, Event, ProvErr, SessionId, StopReason, Store,
                 StoreErr, Tool, ToolRegistry};
 use kn9t_react::{ReactConfig, ReactLoop, RunParams};
 
@@ -29,6 +29,8 @@ fn run_params(store: &StubStore) -> RunParams {
         read_map: empty_read_map(),
         system: None,
         cancel: None,
+        disabled_tools: std::collections::HashSet::new(),
+        reactivation_reminder: None,
     }
 }
 
@@ -395,7 +397,7 @@ impl Tool for SlowToolWithExternalCancel {
     fn execute(
         &self,
         _args: &serde_json::Value,
-        ctx: &kn9t_core::ToolCtx,
+        _ctx: &kn9t_core::ToolCtx,
         cancel: &kn9t_core::Cancel,
     ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
         // Simulate work + signal cancel midway (as if user pressed ESC)
@@ -962,6 +964,8 @@ fn tool_output_reaches_second_provider_call() {
         read_map: empty_read_map(),
         system: None,
         cancel: None,
+        disabled_tools: std::collections::HashSet::new(),
+        reactivation_reminder: None,
     };
     params.session = SessionId::new();
     looop.run(params).expect("loop ran");
@@ -1002,8 +1006,6 @@ fn tool_output_reaches_second_provider_call() {
 fn p1_96e6_parallel_safe_after_tool_call_must_run() {
     use kn9t_core::{HookHost, Tool, ToolCtx, Cancel, Content, Message, ModelRef, ToolSpec};
     use std::sync::{Arc, Mutex};
-    use std::collections::HashMap;
-    use std::path::PathBuf;
 
     struct ParallelEchoTool;
     impl Tool for ParallelEchoTool {
@@ -1607,7 +1609,7 @@ fn p1_96e17_no_compactor_is_fail_closed() {
 
 #[test]
 fn p1_96e16_custom_compactor_overrides_provider_and_validates_ids() {
-    use kn9t_core::{CallId, CompactionPlan, Compactor, CompactSpan, Content, HandoffPlanData, HandoffSummary, Message, MsgId, Role, SeqRange};
+    use kn9t_core::{CallId, CompactionPlan, Compactor, CompactSpan, Content, HandoffPlanData, HandoffSummary, Message, MsgId, Role};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Store's compaction span will contain one ToolCall with id "tool-1"

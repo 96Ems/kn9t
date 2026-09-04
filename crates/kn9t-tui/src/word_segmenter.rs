@@ -125,11 +125,15 @@ mod tests {
         // 🚀 is 4 bytes. "hello " = 6, "🚀" = 4, " world" = 6
         let rocket_start = 6;
         let world_start = 11; // 6 + 4 + 1
-        
+
         // From end, should go to "world"
         let end = text.len();
         let prev = prev_word_boundary(text, end);
         assert_eq!(prev, world_start);
+
+        // ...and stepping back again lands on the emoji, not inside it.
+        let prev = prev_word_boundary(text, prev);
+        assert_eq!(prev, rocket_start);
     }
 
     #[test]
@@ -138,10 +142,19 @@ mod tests {
         // "hello " = 6, "你好" = 6 bytes (3 each), " world" = 6
         let nihao_start = 6;
         let world_start = 13; // 6 + 6 + 1
-        
+
         // Each CJK character is a word boundary
         let prev = prev_word_boundary(text, text.len());
         assert_eq!(prev, world_start);
+
+        // Walking further back must stop on a char boundary within the CJK run,
+        // never mid-codepoint, and reach the run's start.
+        let mut cur = prev;
+        while cur > nihao_start {
+            cur = prev_word_boundary(text, cur);
+            assert!(text.is_char_boundary(cur), "cut mid-codepoint at {cur}");
+        }
+        assert_eq!(cur, nihao_start);
     }
 
     #[test]

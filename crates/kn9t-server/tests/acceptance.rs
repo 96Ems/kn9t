@@ -305,6 +305,84 @@ fn p1_96e18_durable_appends_echo_on_sse_bus() {
     h.handle.shutdown();
 }
 
+// ── srv::sse_owns_lease — attached reader keeps its lease past idle ────────────
+
+/// Regression: a client that holds the write lease but only *reads* (sits on the
+/// event stream without writing) used to idle-lose its lease after the timeout,
+/// so its next `prompt` 409'd even though it was still connected — "the server
+/// stops responding after idle". The owning SSE stream (`?lease=<holder>`) now
+/// keeps the lease warm on every heartbeat (DESIGN §12.6).
+#[test]
+fn sse_owns_lease_survives_idle() {
+    // Short lease idle + fast heartbeat so the test runs in well under a second.
+    std::env::set_var("KN9T_SSE_HEARTBEAT_MS", "40");
+    let (store, tmp) = temp_store();
+    let token = kn9t_server::auth::generate_token();
+    let spec = model_spec();
+    let mut state = ServerState::new(store, token, Default::default(), Vec::new())
+        .with_default_model(spec.clone())
+        .with_lease_idle(Duration::from_millis(150));
+    state.model_registry = vec![spec];
+    let state = Arc::new(state);
+    let h = start(state);
+    let _tmp = tmp;
+
+    let id = make_session(&h);
+    let lease = acquire_lease(&h, &id);
+
+    // Open the owning SSE stream on a background thread and keep it connected.
+    // Passing ?lease=<holder> makes this stream the lease owner.
+    let sse_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sse_thread = {
+        let port = h.port;
+        let token = h.token.clone();
+        let id = id.clone();
+        let lease = lease.clone();
+        let stop = sse_stop.clone();
+        std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let req = format!(
+                "GET /session/{id}/events?from=0&lease={lease} HTTP/1.1\r\n\
+                 Host: 127.0.0.1\r\n\
+                 Authorization: Bearer {token}\r\n\
+                 Connection: keep-alive\r\n\r\n"
+            );
+            stream.write_all(req.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+            // Read (and discard) frames/heartbeats until told to stop; this keeps
+            // the connection alive so the server touches the lease each heartbeat.
+            let mut buf = [0u8; 512];
+            while !stop.load(Ordering::SeqCst) {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,          // server closed
+                    Ok(_) => {}              // frame or heartbeat — keep going
+                    Err(_) => {}             // read timeout — loop and re-check stop
+                }
+            }
+        })
+    };
+
+    // Idle far longer than the 150ms lease timeout while only the SSE stream is
+    // active (no writes). Several heartbeats (40ms) fire in this window.
+    std::thread::sleep(Duration::from_millis(500));
+
+    // The prompt must still succeed: the owning stream kept the lease warm.
+    let lease_hdr: [(&str, &str); 1] = [("X-Lease", &lease)];
+    let r = req_auth(&h, "POST", &format!("/session/{id}/prompt"), &lease_hdr,
+        serde_json::json!({ "text": "still here after idle" }));
+    assert_eq!(
+        r.status, 200,
+        "prompt after idle must succeed because the SSE stream owns+refreshes the lease; got {}: {}",
+        r.status, String::from_utf8_lossy(&r.body)
+    );
+
+    sse_stop.store(true, Ordering::SeqCst);
+    h.handle.shutdown();
+    let _ = sse_thread.join();
+    std::env::remove_var("KN9T_SSE_HEARTBEAT_MS");
+}
+
 // ── srv::auth_required (R-SRV-020) ────────────────────────────────────────────
 
 #[test]
@@ -1392,24 +1470,6 @@ impl kn9t_core::HookHost for DenyingHooks {
     fn get_api_key(&self, _provider: &str) -> Option<String> { None }
 }
 
-fn dummy_no_effect_registry() -> kn9t_core::ToolRegistry {
-    let spec = kn9t_core::ToolSpec {
-        name: "nope".into(),
-        description: "no effects".into(),
-        schema: serde_json::json!({"type":"object"}),
-        hidden: false,
-        effects: vec![],
-        policy: Default::default(),
-    };
-    struct NopeTool { spec: kn9t_core::ToolSpec }
-    impl kn9t_core::Tool for NopeTool {
-        fn spec(&self) -> &kn9t_core::ToolSpec { &self.spec }
-        fn execute(&self, _args: &serde_json::Value, _ctx: &kn9t_core::ToolCtx, _cancel: &kn9t_core::Cancel) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
-            Ok(kn9t_core::ToolOutput { content: vec![kn9t_core::Content::Text { text: "ok".into() }], details: None, is_error: false })
-        }
-    }
-    kn9t_core::ToolRegistry::from_tools(vec![Arc::new(NopeTool { spec }) as Arc<dyn kn9t_core::Tool>])
-}
 
 /// Provider that emits one bash tool call with the given cmd, then a final stop.
 struct OneToolProvider {

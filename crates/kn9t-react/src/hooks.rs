@@ -8,7 +8,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use kn9t_provider_core::{
-    Event, HookName, HookVeto, LiveEvent, Message, ModelRef, NextTurnPatch, Price, StopReason,
+    Event, HookName, HookVeto, LiveEvent, Message, ModelRef, NextTurnPatch, StopReason,
     Usage, UsageKind,
 };
 
@@ -189,7 +189,3 @@ impl ReactLoop {
     }
 }
 
-/// Per-tier cost in micros (96E-14, deterministic integer). Prices are micros per 1M tokens.
-fn compute_cost(tokens: &kn9t_provider_core::Tokens, price: &Price) -> i64 {
-    kn9t_provider_core::cost_micros(tokens, price)
-}

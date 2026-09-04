@@ -25,9 +25,16 @@ struct InteractionSlot {
     response: Mutex<Option<Value>>,
     cvar: Condvar,
     /// Debug meta: which session/plugin created this interaction.
+    ///
+    /// Captured for diagnostics only — never read for routing, which goes by the
+    /// slot id alone. Kept because an orphaned interaction is otherwise
+    /// impossible to attribute from a core dump or a debugger.
+    #[allow(dead_code)]
     session_id: String,
+    #[allow(dead_code)]
     plugin: String,
     /// The original request payload (for diagnostics, not used for routing).
+    #[allow(dead_code)]
     request_payload: Value,
 }
 

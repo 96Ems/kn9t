@@ -273,6 +273,10 @@ pub fn spawn_all_plugins_with_info(
 ///
 /// Production passes [`plugin_dir`]; tests inject a temp directory so discovery is
 /// hermetic and never touches the developer's real `~/.kn9t/plugins/`.
+///
+/// Test-only: production goes through `spawn_all_plugins` /
+/// `spawn_all_plugins_with_info`, which supply the canonical dir.
+#[cfg(test)]
 fn spawn_all_plugins_in_dir(
     user_plugins: &[ResolvedPlugin],
     discovery_dir: &Path,
@@ -453,7 +457,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Unique temp dir under the OS temp dir (no tempfile dep in src tests; GI-1).
+    ///
+    /// Only used by the `#[cfg(unix)]` discovery tests (executable-bit and
+    /// permission semantics have no Windows equivalent), so on Windows the whole
+    /// helper is dead. CI runs the suite on ubuntu, where it is exercised.
+    #[cfg_attr(windows, allow(dead_code))]
     struct TempDir(PathBuf);
+    #[cfg_attr(windows, allow(dead_code))]
     impl TempDir {
         fn new(tag: &str) -> TempDir {
             static N: AtomicUsize = AtomicUsize::new(0);

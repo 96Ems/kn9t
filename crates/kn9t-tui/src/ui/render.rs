@@ -106,6 +106,9 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             Overlay::CommandPalette => {
                 render_command_palette(f, app, area, theme);
             }
+            Overlay::ToolsManager { selected, filter } => {
+                render_tools_manager(f, app, *selected, filter, area, theme);
+            }
             _ => render_overlay(f, overlay, area, theme),
         }
     }
@@ -288,6 +291,9 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             }
             Overlay::CommandPalette => {
                 render_command_palette(f, app, area, theme);
+            }
+            Overlay::ToolsManager { selected, filter } => {
+                render_tools_manager(f, app, *selected, filter, area, theme);
             }
             _ => {} // Other overlays not applicable on welcome
         }
@@ -472,16 +478,15 @@ fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     }
     y += 1;
 
-    // Tools section.
+    // Tools section — now a concise summary instead of listing all tools.
     if y < area.y + area.height {
-        y = render_line_at(buf, content_x, y, w, "TOOLS", Style::default().bg(theme.tool_focus_bg).fg(theme.fg).add_modifier(Modifier::BOLD));
-        for tool in &app.tools {
-            if y >= area.y + area.height {
-                break;
-            }
-            let check = if tool.enabled { "☑" } else { "☐" };
-            let style = if tool.enabled { Style::default().bg(theme.tool_focus_bg).fg(theme.fg) } else { Style::default().bg(theme.tool_focus_bg).fg(theme.muted) };
-            y = render_line_at(buf, content_x, y, w, &format!("{} {}", check, tool.name), style);
+        let enabled_count = app.tools.iter().filter(|t| t.enabled).count();
+        let total_count = app.tools.len();
+        let header = format!("TOOLS {}/{}", enabled_count, total_count);
+        y = render_line_at(buf, content_x, y, w, &header, Style::default().bg(theme.tool_focus_bg).fg(theme.fg).add_modifier(Modifier::BOLD));
+        // Hint to open tools manager.
+        if y < area.y + area.height {
+            y = render_line_at(buf, content_x, y, w, "Ctrl+P → Manage", Style::default().bg(theme.tool_focus_bg).fg(theme.muted));
         }
     }
 
@@ -1140,9 +1145,9 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
             ];
 
             for line in help_lines {
-                if y >= overlay_y + overlay_h - 1 {
-                    break;
-                }
+        if y >= overlay_y + overlay_h - 2 {
+            break;
+        }
                 for (i, ch) in line.chars().enumerate() {
                     if (overlay_x + 2 + i as u16) < overlay_x + overlay_w {
                         buf[(overlay_x + 2 + i as u16, y)].set_char(ch).set_fg(theme.fg).set_bg(Color::Black);
@@ -1152,7 +1157,7 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
             }
         }
         
-        Overlay::ModelSelect { .. } | Overlay::SessionSelect { .. } | Overlay::WhichKey | Overlay::CommandPalette => {
+        Overlay::ModelSelect { .. } | Overlay::SessionSelect { .. } | Overlay::WhichKey | Overlay::CommandPalette | Overlay::ToolsManager { .. } => {
             // These overlays are rendered elsewhere with access to app state.
         }
     }
@@ -1248,7 +1253,9 @@ fn render_model_select(f: &mut Frame, app: &App, selected: usize, filter: &str, 
     #[derive(Clone)]
     enum Row<'a> {
         Header(&'a str),
-        Model(usize, &'a crate::model_selector::ModelEntry), // (original_idx, model)
+        // The original index is carried for symmetry with the other pickers but
+        // selection is resolved via `selected_row_idx`, so it is never read.
+        Model(#[allow(dead_code)] usize, &'a crate::model_selector::ModelEntry),
     }
     
     let mut rows: Vec<Row> = Vec::new();
@@ -1412,7 +1419,7 @@ fn render_session_select(f: &mut Frame, app: &App, selected: usize, filter: &str
     enum SessionRow<'a> {
         DateHeader(String),  // "Today", "Yesterday", "Aug 27", etc.
         NewSession,
-        Session(usize, &'a crate::session_manager::SessionEntry),
+        Session(#[allow(dead_code)] usize, &'a crate::session_manager::SessionEntry),
     }
     
     let mut rows: Vec<SessionRow> = Vec::new();
@@ -1555,6 +1562,178 @@ fn render_session_select(f: &mut Frame, app: &App, selected: usize, filter: &str
     
     // Footer.
     let footer = "↑/↓ select · Enter open · Del delete · Esc cancel";
+    let footer_x = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
+    let footer_y = overlay_y + overlay_h - 1;
+    for (i, ch) in footer.chars().enumerate() {
+        if footer_x + (i as u16) < overlay_x + overlay_w {
+            buf[(footer_x + i as u16, footer_y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+        }
+    }
+}
+
+fn render_tools_manager(f: &mut Frame, app: &App, selected: usize, filter: &str, area: Rect, theme: &Theme) {
+    let buf = f.buffer_mut();
+
+    // Dim background.
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            buf[(x, y)].set_fg(Color::DarkGray);
+        }
+    }
+
+    // Filter tools by name or plugin.
+    let filtered: Vec<(usize, &crate::app::ToolEntry)> = app.tools
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            filter.is_empty()
+                || fuzzy_match(&t.name, filter)
+                || t.plugin.as_ref().map(|p| fuzzy_match(p, filter)).unwrap_or(false)
+        })
+        .collect();
+
+    // Build rows grouped by plugin.
+    #[derive(Clone)]
+    enum ToolRow<'a> {
+        PluginHeader(&'a str),
+        Tool(#[allow(dead_code)] usize, &'a crate::app::ToolEntry),
+    }
+
+    let mut rows: Vec<ToolRow> = Vec::new();
+    let mut current_plugin: Option<&str> = None;
+    let mut selectable_idx = 0usize;
+    let mut selected_row_idx: Option<usize> = None;
+
+    for (orig_idx, tool) in &filtered {
+        let plugin = tool.plugin.as_deref().unwrap_or("builtin");
+        if current_plugin != Some(plugin) {
+            current_plugin = Some(plugin);
+            rows.push(ToolRow::PluginHeader(plugin));
+        }
+        if selectable_idx == selected {
+            selected_row_idx = Some(rows.len());
+        }
+        rows.push(ToolRow::Tool(*orig_idx, tool));
+        selectable_idx += 1;
+    }
+
+    // Overlay dimensions (need these before scroll calculation).
+    let overlay_w = 60.min(area.width.saturating_sub(4));
+    let overlay_h = (rows.len() as u16 + 6).min(area.height.saturating_sub(4)).max(10);
+    let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
+    let overlay_y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
+
+    // Calculate visible window for scrolling.
+    // Content area: title (1) + blank (1) + filter (1) + blank (1) + rows + footer (1) = 5 lines overhead
+    let content_start_y = overlay_y + 4; // after title + filter + spacing
+    let content_end_y = overlay_y + overlay_h - 2; // before footer
+    let max_visible_rows = (content_end_y.saturating_sub(content_start_y)) as usize;
+    
+    // Scroll so selected item is visible, preferring to show it in the middle.
+    let scroll_offset = if let Some(sel_row) = selected_row_idx {
+        if sel_row >= max_visible_rows {
+            // Keep selected item roughly centered, but don't scroll past the end
+            let ideal = sel_row.saturating_sub(max_visible_rows / 2);
+            let max_scroll = rows.len().saturating_sub(max_visible_rows);
+            ideal.min(max_scroll)
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    // Background.
+    for y in overlay_y..overlay_y + overlay_h {
+        for x in overlay_x..overlay_x + overlay_w {
+            buf[(x, y)].set_char(' ').set_bg(Color::Black);
+        }
+    }
+
+    // Title.
+    let enabled_count = app.tools.iter().filter(|t| t.enabled).count();
+    let total_count = app.tools.len();
+    let title = format!("TOOLS ({}/{})", enabled_count, total_count);
+    let title_x = overlay_x + (overlay_w.saturating_sub(title.len() as u16)) / 2;
+    let mut y = overlay_y + 1;
+    for (i, ch) in title.chars().enumerate() {
+        buf[(title_x + i as u16, y)].set_char(ch).set_fg(theme.primary).set_bg(Color::Black);
+    }
+    y += 1;
+
+    // Filter input.
+    let filter_display = if filter.is_empty() { "Type to filter..." } else { filter };
+    let filter_style = if filter.is_empty() { theme.muted } else { theme.fg };
+    for (i, ch) in format!("› {}", filter_display).chars().enumerate() {
+        let x = overlay_x + 2 + i as u16;
+        if x < overlay_x + overlay_w - 2 {
+            buf[(x, y)].set_char(ch).set_fg(filter_style).set_bg(Color::Black);
+        }
+    }
+    y += 2;
+
+    // Render rows with scrolling.
+    let mut tool_display_idx = 0usize;
+    for (row_idx, row) in rows.iter().enumerate() {
+        if row_idx < scroll_offset {
+            if matches!(row, ToolRow::Tool(..)) {
+                tool_display_idx += 1;
+            }
+            continue;
+        }
+        if y >= overlay_y + overlay_h - 2 {
+            break;
+        }
+        match row {
+            ToolRow::PluginHeader(name) => {
+                let header = format!("─ {} ─", name);
+                for (j, ch) in header.chars().enumerate() {
+                    let x = overlay_x + 2 + j as u16;
+                    if x < overlay_x + overlay_w - 2 {
+                        buf[(x, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+                    }
+                }
+                y += 1;
+            }
+            ToolRow::Tool(_, tool) => {
+                let is_selected = tool_display_idx == selected;
+                let (fg, bg) = if is_selected {
+                    (theme.bg, theme.primary)
+                } else {
+                    (theme.fg, Color::Black)
+                };
+
+                let check = if tool.enabled { "☑" } else { "☐" };
+                let line = format!(" {} {}", check, truncate(&tool.name, (overlay_w - 8) as usize));
+                for (j, ch) in line.chars().enumerate() {
+                    let x = overlay_x + 2 + j as u16;
+                    if x < overlay_x + overlay_w - 2 {
+                        buf[(x, y)].set_char(ch).set_fg(fg).set_bg(bg);
+                    }
+                }
+                // Fill rest of line.
+                for x in (overlay_x + 2 + line.chars().count() as u16)..overlay_x + overlay_w - 2 {
+                    buf[(x, y)].set_char(' ').set_bg(bg);
+                }
+                y += 1;
+                tool_display_idx += 1;
+            }
+        }
+    }
+
+    // Empty message.
+    if filtered.is_empty() {
+        let msg = "No matching tools";
+        for (i, ch) in msg.chars().enumerate() {
+            let x = overlay_x + 2 + i as u16;
+            if x < overlay_x + overlay_w - 2 {
+                buf[(x, y)].set_char(ch).set_fg(theme.muted).set_bg(Color::Black);
+            }
+        }
+    }
+
+    // Footer.
+    let footer = "↑/↓ select · Space toggle · Esc close";
     let footer_x = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
     let footer_y = overlay_y + overlay_h - 1;
     for (i, ch) in footer.chars().enumerate() {
