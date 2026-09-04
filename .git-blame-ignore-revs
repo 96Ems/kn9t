@@ -1,0 +1,5 @@
+# Commits that only reformat code, ignored by git blame.
+# Use: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: apply rustfmt to the entire workspace
+f584dfa3b30e3c5159e11478925e0a757d80b12e
