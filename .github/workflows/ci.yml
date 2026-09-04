@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # The mechanical invariant gates (GI-1, schema drift, mojibake, unwrap trend,
+  # SSE race wiring) -- the same script the pre-commit hook runs, so a clone that
+  # never ran `scripts/install-hooks.sh` cannot drift silently.
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # check-unwrap-trend.sh diffs against origin/main.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2
+      - run: bash scripts/check-ci.sh
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (warnings are errors -- AGENTS.md 8)
+        run: cargo build --workspace --all-targets
+        env:
+          RUSTFLAGS: -D warnings
+      - name: Test
+        run: cargo test --workspace --no-fail-fast
+
+  # Plugins are deliberately outside the workspace, each with its own
+  # [workspace] table (ADR-0004: a third-party plugin needs nothing from this
+  # repo). `cargo test --workspace` therefore never sees them.
+  plugins-rust:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [kn9t-tools, kn9t-anthropic, kn9t-test-plugin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+        working-directory: plugins/${{ matrix.plugin }}
+
+  plugins-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: plugins/kn9t-agents-md/go.mod
+      - run: go vet ./...
+        working-directory: plugins/kn9t-agents-md
+      - run: go build -o kn9t-agents-md .
+        working-directory: plugins/kn9t-agents-md
+
+  plugins-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'   # pyproject: requires-python >=3.11
+      - run: pip install pytest
+      # Tests are pytest-style bare functions; `unittest discover` silently
+      # collects zero of them (that is how a stale assert survived).
+      - run: python -m pytest tests/ -q
+        working-directory: plugins/kn9t-mcp
+      - name: Byte-compile the policy plugin
+        run: python -m py_compile plugins/kn9t-policy/kn9t-policy.py
+
+  plugins-ts:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [kn9t-compactor, kn9t-subagent, kn9t-ask-user]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: plugins/${{ matrix.plugin }}/package-lock.json
+      - run: npm ci
+        working-directory: plugins/${{ matrix.plugin }}
+      - name: Typecheck
+        run: npx tsc --noEmit -p tsconfig.json
+        working-directory: plugins/${{ matrix.plugin }}
+      # kn9t-ask-user ships no test/simulate.mjs yet.
+      - name: Protocol simulation
+        if: matrix.plugin != 'kn9t-ask-user'
+        run: npm test
+        working-directory: plugins/${{ matrix.plugin }}
