@@ -232,6 +232,12 @@ fn route(
         // ── plugin hot-reload (R-PLUG2-100) ──
         (Method::Post, ["plugin", name, "reload"]) => routes::plugin::reload(state, name),
 
+        // ── plugin hot-load (new plugin without restart) ──
+        (Method::Post, ["plugin", "load"]) => match parse_json::<routes::plugin::LoadPluginReq>(req) {
+            Ok(body) => routes::plugin::load(state, body),
+            Err(e) => e.into(),
+        },
+
         // ── 96E-28 generic interaction ──
         (Method::Post, ["ui-respond"]) => match parse_json::<api::UiRespondReq>(req) {
             Ok(body) => routes::interaction::respond(state, body).into(),

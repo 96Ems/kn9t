@@ -198,6 +198,12 @@ pub struct ServerState {
     /// hear about is harmless (it simply discovers the tool works when it tries), so
     /// this need not be event-sourced.
     pub pending_reactivation: Mutex<HashMap<String, std::collections::HashSet<String>>>,
+    /// Per-session queue of steering messages. `POST /session/{id}/steer` adds messages
+    /// here instead of appending directly to the store. The turn loop drains this queue
+    /// via `get_steering()` AFTER tool_results, ensuring valid transcript order:
+    /// `[tool_use] -> [tool_result] -> [steer]` instead of the buggy
+    /// `[tool_use] -> [steer] -> [tool_result]`.
+    pub pending_steering: Mutex<HashMap<String, Vec<kn9t_core::Message>>>,
 }
 
 impl ServerState {
@@ -251,7 +257,23 @@ impl ServerState {
             aborts: Mutex::new(HashMap::new()),
             hooks_override: Mutex::new(None),
             pending_reactivation: Mutex::new(HashMap::new()),
+            pending_steering: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Queue a steering message for the given session. Called by `POST /steer`.
+    /// The message will be drained by `get_steering()` during the turn, ensuring
+    /// it appears AFTER tool_results in the transcript.
+    pub fn queue_steering(&self, session: &str, msg: kn9t_core::Message) {
+        let mut map = self.pending_steering.lock().expect("pending_steering poisoned");
+        map.entry(session.to_owned()).or_default().push(msg);
+    }
+
+    /// Drain all pending steering messages for the given session. Called by
+    /// the HookHost wrapper's `get_steering()` implementation.
+    pub fn drain_steering(&self, session: &str) -> Vec<kn9t_core::Message> {
+        let mut map = self.pending_steering.lock().expect("pending_steering poisoned");
+        map.remove(session).unwrap_or_default()
     }
 
     /// Snapshot the current tool registry (clone under lock) — used by turns.
@@ -389,6 +411,181 @@ impl ServerState {
             );
             return Ok((new_decl_name, n));
         }
+    }
+
+    /// Hot-load a NEW plugin that wasn't present at startup.
+    ///
+    /// Unlike `reload_plugin` which replaces an existing plugin, this spawns
+    /// a brand new plugin and adds it to the registry. The plugin can be
+    /// specified inline (cmd + env) or loaded from config.toml.
+    pub fn load_plugin(
+        self: &Arc<Self>,
+        cmd: Vec<String>,
+        env: Vec<(String, String)>,
+    ) -> Result<(String, usize), String> {
+        if cmd.is_empty() {
+            return Err("empty command".to_string());
+        }
+
+        // Check if this plugin is already loaded (by comparing cmd[0]).
+        {
+            let spawn = self.plugin_spawn.lock().expect("spawn poisoned");
+            for (name, (existing_cmd, _)) in spawn.iter() {
+                if !existing_cmd.is_empty() && existing_cmd[0] == cmd[0] {
+                    return Err(format!(
+                        "plugin with cmd {:?} already loaded as '{}'",
+                        cmd[0], name
+                    ));
+                }
+            }
+        }
+
+        let env_refs: Vec<(&str, &str)> =
+            env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+
+        crate::log!("hot-load: spawning new plugin from {:?}", cmd);
+
+        let new_host = crate::tools::spawn_with_cmd_public(
+            &cmd,
+            &env_refs,
+            self.store.clone() as Arc<dyn kn9t_core::PluginKv>,
+        )
+        .map_err(|e| format!("spawn failed: {e}"))?;
+
+        let declared_name = new_host.name();
+
+        // Check if a plugin with this declared name already exists.
+        {
+            let hosts = self.plugin_hosts.lock().expect("hosts poisoned");
+            if hosts.iter().any(|h| h.name() == declared_name) {
+                // Shutdown the just-spawned host before returning error.
+                new_host.shutdown();
+                return Err(format!(
+                    "plugin '{}' already loaded (declared name collision)",
+                    declared_name
+                ));
+            }
+        }
+
+        let new_host = Arc::new(new_host);
+
+        // Install API handler.
+        new_host.set_api_handler(Arc::new(crate::host_api::ServerHostApi {
+            state: self.clone(),
+        }));
+
+        // Install declare callback.
+        {
+            let state_for_cb = self.clone();
+            new_host.set_on_declare(Box::new(move |plugin_name, _decl, added, removed| {
+                state_for_cb.on_plugin_declare(plugin_name, added, removed);
+            }));
+        }
+
+        let new_tools = crate::tools::extract_tools_public(&new_host);
+        let tools_count = new_tools.len();
+
+        // Record spawn recipe for future reload.
+        self.plugin_spawn
+            .lock()
+            .expect("spawn poisoned")
+            .insert(declared_name.clone(), (cmd, env));
+
+        // Add host and rebuild registry.
+        {
+            let mut hosts = self.plugin_hosts.lock().expect("hosts poisoned");
+            hosts.push(new_host.clone());
+
+            // Rebuild tool registry (dedup first wins).
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut all_tools: Vec<Arc<dyn kn9t_core::Tool>> = Vec::new();
+            for h in hosts.iter() {
+                let tools_for_host = if h.name() == declared_name {
+                    new_tools.clone()
+                } else {
+                    crate::tools::extract_tools_public(h)
+                };
+                for t in tools_for_host {
+                    let n = t.spec().name.clone();
+                    if seen.contains(&n) {
+                        continue;
+                    }
+                    seen.insert(n);
+                    all_tools.push(t);
+                }
+            }
+            let registry = ToolRegistry::from_tools(all_tools);
+            let total = registry.len();
+            *self.tools.lock().expect("tools poisoned") = registry;
+            crate::log!(
+                "hot-load: plugin '{}' loaded with {} tools, total tools now {}",
+                declared_name,
+                tools_count,
+                total
+            );
+        }
+
+        // Broadcast event so TUI can refresh.
+        let tool_names: Vec<String> = new_tools.iter().map(|t| t.spec().name.clone()).collect();
+        let event = kn9t_core::Event::PluginDeclared {
+            plugin: declared_name.clone(),
+            tools_added: tool_names,
+            tools_removed: vec![],
+        };
+        self.buses.broadcast_all(event);
+
+        Ok((declared_name, tools_count))
+    }
+
+    /// Load new plugins from config.toml that weren't present at startup.
+    ///
+    /// Re-reads the config file and spawns any [[plugin]] entries that aren't
+    /// already loaded. Returns the list of newly loaded plugins.
+    pub fn load_plugins_from_config(self: &Arc<Self>) -> Result<Vec<(String, usize)>, String> {
+        let config_path = crate::config::global_config_path();
+        let config = crate::config::load(&config_path)?;
+
+        let mut loaded = Vec::new();
+
+        for plugin_cfg in &config.plugins {
+            // Skip disabled plugins.
+            if plugin_cfg.disabled {
+                continue;
+            }
+
+            // Skip plugins without a cmd (env-only overrides).
+            let cmd = match &plugin_cfg.cmd {
+                Some(c) if !c.is_empty() => c.clone(),
+                _ => continue,
+            };
+
+            // Check if already loaded.
+            {
+                let spawn = self.plugin_spawn.lock().expect("spawn poisoned");
+                let already_loaded = spawn.values().any(|(existing_cmd, _)| {
+                    !existing_cmd.is_empty() && existing_cmd[0] == cmd[0]
+                });
+                if already_loaded {
+                    continue;
+                }
+            }
+
+            // Try to load.
+            match self.load_plugin(cmd, plugin_cfg.env.clone()) {
+                Ok((name, tools)) => {
+                    loaded.push((name, tools));
+                }
+                Err(e) => {
+                    crate::log!(
+                        "hot-load from config: plugin '{}' failed: {}",
+                        plugin_cfg.name,
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(loaded)
     }
 
     pub fn with_lease_idle(mut self, d: Duration) -> Self {

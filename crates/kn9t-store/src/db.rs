@@ -47,6 +47,27 @@ impl SqliteStore {
         self.model_specs.write().unwrap().insert(key, spec);
     }
 
+    /// Find a lightweight model from the given provider for auto-titling.
+    /// Prefers haiku variants, avoids thinking models.
+    pub fn find_title_model(&self, provider: &str) -> Option<ModelSpec> {
+        let specs = self.model_specs.read().ok()?;
+        // Prefer haiku non-thinking
+        specs
+            .values()
+            .filter(|m| m.r#ref.provider == provider)
+            .filter(|m| !m.r#ref.id.contains("thinking"))
+            .find(|m| m.r#ref.id.contains("haiku"))
+            .cloned()
+            .or_else(|| {
+                // Fallback: any non-thinking model
+                specs
+                    .values()
+                    .filter(|m| m.r#ref.provider == provider)
+                    .find(|m| !m.r#ref.id.contains("thinking"))
+                    .cloned()
+            })
+    }
+
     /// Get the current model for a session.
     /// Priority: last ModelChanged event > model_at_fork > SessionForked.
     pub fn get_model_spec_for_session(&self, session_id: &str) -> Option<ModelSpec> {

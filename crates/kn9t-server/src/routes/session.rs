@@ -326,6 +326,14 @@ pub fn prompt(state: &Arc<ServerState>, id: &str, req: api::PromptReq) -> JsonRe
 
 /// `POST /session/{id}/steer` — `{text}` [lease required]. Queues a steering
 /// message that the running/next turn folds in.
+///
+/// If a turn is running: the message is queued in-memory and will be drained by
+/// `get_steering()` AFTER tool_results. This prevents transcript corruption:
+/// `[tool_use] -> [tool_result] -> [steer]` instead of the invalid
+/// `[tool_use] -> [steer] -> [tool_result]`.
+///
+/// If no turn is running: the message is appended immediately to the store
+/// (original behavior).
 pub fn steer(state: &Arc<ServerState>, id: &str, req: api::SteerReq) -> JsonResp {
     let text = req.text;
     let sid = SessionId(id.to_owned());
@@ -335,6 +343,15 @@ pub fn steer(state: &Arc<ServerState>, id: &str, req: api::SteerReq) -> JsonResp
         content: vec![Content::Text { text }],
         silent: false,
     };
+
+    // If a turn is running, queue the message to prevent transcript corruption.
+    // The message will be drained by get_steering() AFTER tool_results.
+    if turn::is_turn_running(state, id) {
+        state.queue_steering(id, msg);
+        return JsonResp::ok(serde_json::json!({ "steered": true, "queued": true }));
+    }
+
+    // No turn running: append immediately (original behavior).
     match state.store.append(
         &sid,
         Event::MessageAppended {

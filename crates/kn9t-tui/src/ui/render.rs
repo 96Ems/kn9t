@@ -9,8 +9,9 @@ use ratatui::{
 };
 
 use crate::app::{App, InteractionState, Overlay, Screen, ToolHitArea};
-use crate::message_handler::{ToolCard, ToolTab};
+use crate::message_handler::ToolCard;
 use crate::slash::fuzzy_match;
+use crate::syntax;
 use crate::theme::Theme;
 use crate::thinking::{self, ContentSegment};
 use crate::ui::layout::{compute_with_input, Sidebar};
@@ -18,6 +19,9 @@ use crate::which_key;
 use serde_json;
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Right margin for tool cards (characters from right edge).
+const TOOL_CARD_RIGHT_MARGIN: usize = 20;
 
 /// Main render function.
 pub fn render(f: &mut Frame, app: &mut App) {
@@ -78,13 +82,13 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     if let Some(ref mut viewer) = app.diff_viewer {
         let buf = f.buffer_mut();
         if viewer.fullscreen {
-            viewer.render(area, buf);
+            viewer.render(area, buf, theme);
         } else {
             let w = area.width.min(100);
             let h = area.height.saturating_sub(4);
             let x = area.x + (area.width.saturating_sub(w)) / 2;
             let y = area.y + 2;
-            viewer.render(Rect::new(x, y, w, h), buf);
+            viewer.render(Rect::new(x, y, w, h), buf, theme);
         }
         return;
     }
@@ -337,13 +341,13 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     if let Some(ref mut viewer) = app.diff_viewer {
         let buf = f.buffer_mut();
         if viewer.fullscreen {
-            viewer.render(area, buf);
+            viewer.render(area, buf, theme);
         } else {
             let w = area.width.min(100);
             let h = area.height.saturating_sub(4);
             let x = area.x + (area.width.saturating_sub(w)) / 2;
             let y = area.y + 2;
-            viewer.render(Rect::new(x, y, w, h), buf);
+            viewer.render(Rect::new(x, y, w, h), buf, theme);
         }
     }
 }
@@ -808,8 +812,50 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         .as_ref()
         .and_then(|s| s.current_match())
         .map(|m| m.msg_idx);
+    
+    // Check if search is active (affects caching - search highlighting invalidates cache).
+    let search_active = app.search_state.is_some();
+    
+    // Count messages to determine if last message is "in progress".
+    let msg_count = app.transcript.messages().len();
+    let is_streaming = app.streaming;
 
     for (msg_idx, msg) in app.transcript.messages().iter().enumerate() {
+        // Can we use cached rendering for this message?
+        // Cache is valid when:
+        // - Not searching (search highlighting requires per-frame update)
+        // - Not the last message while streaming (may be incomplete)
+        // - Width hasn't changed (tracked in update_state)
+        let is_last_msg = msg_idx == msg_count.saturating_sub(1);
+        let can_use_cache = !search_active && !(is_last_msg && is_streaming);
+        
+        // Compute tool info hash - changes when tool state changes (expanded, scroll, status, etc.)
+        let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools);
+        
+        // Try cache first
+        if can_use_cache {
+            if let Some((cached_lines, cached_tools)) = app.render_cache.get_message(msg_idx, &msg.content, tool_info_hash) {
+                let base_line_idx = lines.len();
+                lines.extend(cached_lines.iter().cloned());
+                
+                // Restore tool positions with correct base offset
+                for tool_info in cached_tools {
+                    tool_line_info.push((
+                        tool_info.call_id.clone(),
+                        base_line_idx + tool_info.header_line_offset,
+                        base_line_idx + tool_info.content_end_offset,
+                    ));
+                }
+                continue;
+            }
+        }
+        
+        // Remember line count before rendering this message (for caching)
+        let lines_before = lines.len();
+        
+        // Track tool positions relative to message start (for caching)
+        let mut msg_tool_infos: Vec<crate::render_cache::CachedToolInfo> = Vec::new();
+        
         // Is this the message containing the current search match?
         let is_current_match_msg = current_match_msg_idx == Some(msg_idx);
 
@@ -933,10 +979,25 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
         // Tool cards.
         for card in &msg.tools {
+            // Track header position relative to message start (for cache)
+            let header_line_offset = lines.len() - lines_before;
             let header_line_idx = lines.len();
-            render_tool_card(card, app, &mut lines, inner_w, theme);
+            
+            render_tool_card(card, app, &mut lines, inner_w, theme, area.height as usize);
+            
             let content_end_line_idx = lines.len();
+            let content_end_offset = lines.len() - lines_before;
+            
+            // Add to global tool_line_info for click detection
             tool_line_info.push((card.call_id.clone(), header_line_idx, content_end_line_idx));
+            
+            // Add to message-local tool infos for caching
+            msg_tool_infos.push(crate::render_cache::CachedToolInfo {
+                call_id: card.call_id.clone(),
+                header_line_offset,
+                content_end_offset,
+            });
+            
             // 96E-27: collapsible subagent sub-entry nested under its spawning tool call
             if let Some(sub) = app.subagents.iter().find(|s| s.call_id == card.call_id) {
                 let collapsed = sub.collapsed;
@@ -994,7 +1055,20 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         }
 
         lines.push(Line::from("")); // spacing
+        
+        // Cache the rendered lines for this message if cacheable
+        if can_use_cache {
+            let msg_lines: Vec<Line<'static>> = lines[lines_before..].to_vec();
+            app.render_cache.set_message(msg_idx, &msg.content, tool_info_hash, msg_lines, msg_tool_infos);
+        }
     }
+    
+    // Update cache state
+    app.render_cache.update_state(
+        app.transcript.messages().len(),
+        app.transcript.live_delta().len(),
+        inner_w,
+    );
 
     // 96E-27: attached subagent full transcript on demand (session_read result)
     if let Some((ref call_id, ref transcript)) = app.attached_subagent {
@@ -1163,11 +1237,17 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             // Tab positions (approximate - tabs start at column 4)
             // Layout: "    " + " Progress " + " " + " Output " + " " + " Input "
             let tab_base_x = area.x + 4;
+            
+            // Card width calculation (must match render_tool_card)
+            let card_w = inner_w.saturating_sub(TOOL_CARD_RIGHT_MARGIN).max(50);
+            
             app.tool_hit_areas.push(ToolHitArea {
                 call_id,
                 header_y,
                 content_y_start,
                 content_y_end,
+                x_start: area.x,
+                x_end: area.x + card_w as u16,
                 progress_tab_x: (tab_base_x, tab_base_x + 10), // " Progress "
                 output_tab_x: (tab_base_x + 11, tab_base_x + 19), // " Output "
                 input_tab_x: (tab_base_x + 20, tab_base_x + 28), // " Input "
@@ -1178,14 +1258,54 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     let para = Paragraph::new(lines).scroll((scroll_offset as u16, 0));
     f.render_widget(para, area);
 
+    // ─────────────────────────────────────────────────────────────────
+    // Scrollbar on the right edge
+    // ─────────────────────────────────────────────────────────────────
+    if total > visible {
+        let buf = f.buffer_mut();
+        let scrollbar_x = area.x + area.width.saturating_sub(1);
+        let scrollbar_height = area.height as usize;
+        
+        // Store scrollbar area for mouse interaction
+        app.scrollbar_area = Some((scrollbar_x, area.y, area.y + area.height, total, visible));
+        
+        // Calculate thumb position and size
+        let thumb_size = (visible * scrollbar_height / total).max(1).min(scrollbar_height);
+        let thumb_pos = if max_scroll > 0 {
+            (max_scroll - effective_scroll) * (scrollbar_height - thumb_size) / max_scroll
+        } else {
+            scrollbar_height - thumb_size
+        };
+
+        // Draw scrollbar track and thumb
+        for i in 0..scrollbar_height {
+            let y = area.y + i as u16;
+            let in_thumb = i >= thumb_pos && i < thumb_pos + thumb_size;
+            
+            if in_thumb {
+                // Thumb - solid block
+                buf[(scrollbar_x, y)]
+                    .set_char('┃')
+                    .set_fg(theme.primary);
+            } else {
+                // Track - light line
+                buf[(scrollbar_x, y)]
+                    .set_char('│')
+                    .set_fg(theme.muted);
+            }
+        }
+    } else {
+        app.scrollbar_area = None;
+    }
+
     // Jump to end button (show when not at bottom).
     if effective_scroll > 0 {
-        let btn = "↓ Jump to end (Ctrl+End)";
-        let x = area.x + area.width.saturating_sub(btn.len() as u16 + 1);
+        let btn = "↓ End";
+        let x = area.x + area.width.saturating_sub(btn.len() as u16 + 2);
         let y = area.y + area.height.saturating_sub(1);
         let buf = f.buffer_mut();
         for (i, ch) in btn.chars().enumerate() {
-            if x + (i as u16) < area.x + area.width {
+            if x + (i as u16) < area.x + area.width - 1 {
                 buf[(x + i as u16, y)]
                     .set_char(ch)
                     .set_fg(theme.bg)
@@ -2544,423 +2664,566 @@ pub fn wrap_text(s: &str, width: usize) -> Vec<String> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Tool Card Rendering
+// Tool Card Rendering — Cards with background, margin, and syntax highlighting
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Visible lines in expanded tool output (for virtual scrolling).
-const TOOL_OUTPUT_VISIBLE_LINES: usize = 20;
+/// Default visible lines in expanded tool output (fallback when screen size unknown).
+const TOOL_OUTPUT_DEFAULT_VISIBLE_LINES: usize = 10;
 
-/// Render a single tool card with expand/collapse, tabs, and virtual scroll.
+/// Minimum visible lines in expanded tool output.
+const TOOL_OUTPUT_MIN_VISIBLE_LINES: usize = 5;
+
+/// Tool card background color (slightly lighter than terminal bg).
+const TOOL_CARD_BG: Color = Color::Rgb(30, 33, 39);
+
+/// Determine what content to show for a tool (smart defaults based on tool type).
+#[derive(Clone, Copy, PartialEq)]
+enum ToolDisplayMode {
+    /// Show diff/progress lines (edit, write)
+    Diff,
+    /// Show command output (bash, MCP tools)
+    Output,
+    /// Show just a summary in header (read - content is too long)
+    Summary,
+    /// Show streaming progress while running, output when done
+    Streaming,
+}
+
+fn get_tool_display_mode(name: &str) -> ToolDisplayMode {
+    match name {
+        "edit" | "write" => ToolDisplayMode::Diff,
+        "read" => ToolDisplayMode::Summary,
+        "bash" => ToolDisplayMode::Streaming,
+        _ => ToolDisplayMode::Output, // MCP tools, others
+    }
+}
+
+/// Render a single tool card with smart content display (no tabs).
+/// Cards show the most relevant content based on tool type.
+/// `available_height` is used to show more lines when terminal is tall.
 fn render_tool_card(
     card: &ToolCard,
     app: &App,
     lines: &mut Vec<Line>,
     inner_w: usize,
     theme: &Theme,
+    available_height: usize,
 ) {
     let is_focused = app.focused_tool.as_ref() == Some(&card.call_id);
-    let _is_running = card.status.starts_with("running");
+    let is_running = card.status.starts_with("running");
 
-    // Determine tool name color based on status
-    let name_color = match card.status.as_str() {
+    // Card width: use available width minus right margin (min 50 chars)
+    let card_w = inner_w.saturating_sub(TOOL_CARD_RIGHT_MARGIN).max(50);
+
+    // Status/accent color for left border
+    let accent_color = match card.status.as_str() {
         "done" => theme.success,
         "error" => theme.error,
-        _ => theme.tool, // Running or unknown
-    };
-
-    // Status indicator
-    let status_ch = match card.status.as_str() {
-        s if s.starts_with("running") => SPINNER[app.spinner_frame % SPINNER.len()],
-        "done" => '✓',
-        "error" => '✗',
-        _ => '?',
-    };
-    let status_color = match card.status.as_str() {
         s if s.starts_with("running") => theme.primary,
-        "done" => theme.success,
-        "error" => theme.error,
         _ => theme.muted,
     };
 
-    // Expand/collapse indicator
-    let expand_indicator = if card.expanded { "[-]" } else { "[+]" };
+    // Status icon
+    let status_icon = match card.status.as_str() {
+        s if s.starts_with("running") => SPINNER[app.spinner_frame % SPINNER.len()],
+        "done" => '✓',
+        "error" => '✗',
+        _ => '○',
+    };
 
-    // Key arg preview
-    let key_arg = format_tool_key_arg(&card.args, inner_w.saturating_sub(25));
+    // Card background
+    let card_bg = if is_focused {
+        theme.tool_focus_bg
+    } else {
+        TOOL_CARD_BG
+    };
 
-    // Build header line (clone strings to avoid lifetime issues)
-    let header_spans = vec![
+    let display_mode = get_tool_display_mode(&card.name);
+    let expand_icon = if card.expanded { '▾' } else { '▸' };
+
+    // Build header with smart summary
+    let header_extra = build_tool_header_extra(card, display_mode, card_w.saturating_sub(card.name.len() + 12));
+    
+    let header_text_len = 6 + card.name.len() + header_extra.chars().count();
+    let header_padding = card_w.saturating_sub(header_text_len + 1);
+
+    // ─────────────────────────────────────────────────────────────────
+    // Header: ┃ ▸ ✓ edit  src/app.rs  (or bash  cargo test)
+    // ─────────────────────────────────────────────────────────────────
+    lines.push(Line::from(vec![
+        Span::styled("┃", Style::default().fg(accent_color).bg(card_bg).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {} ", expand_icon), Style::default().fg(theme.muted).bg(card_bg)),
         Span::styled(
-            format!("  {} ", expand_indicator),
-            Style::default().fg(theme.muted),
+            format!("{} ", status_icon),
+            Style::default()
+                .fg(accent_color)
+                .bg(card_bg)
+                .add_modifier(if is_running { Modifier::BOLD } else { Modifier::empty() }),
         ),
-        Span::styled(format!("{} ", status_ch), Style::default().fg(status_color)),
         Span::styled(
             card.name.clone(),
-            Style::default().fg(name_color).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.fg).bg(card_bg).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("  {}", key_arg), Style::default().fg(theme.muted)),
-    ];
+        Span::styled(format!("  {}", header_extra), Style::default().fg(theme.muted).bg(card_bg)),
+        Span::styled(" ".repeat(header_padding), Style::default().bg(card_bg)),
+    ]));
 
-    // Apply focus highlight
-    if is_focused {
-        lines.push(Line::from(header_spans).style(Style::default().bg(theme.tool_focus_bg)));
+    // Expanded content (smart, no tabs)
+    // Calculate visible lines based on available terminal height
+    // Use most of the screen when expanded (leave room for header, footer, scrollbar hint)
+    let visible_lines = if available_height > 10 {
+        // Use ~60% of available height for expanded tool, capped reasonably
+        (available_height * 60 / 100).max(TOOL_OUTPUT_MIN_VISIBLE_LINES).min(50)
     } else {
-        lines.push(Line::from(header_spans));
-    }
-
-    // Expanded content
+        TOOL_OUTPUT_DEFAULT_VISIBLE_LINES
+    };
+    
     if card.expanded {
-        // Tab bar: Progress | Output | Input
-        let progress_style = if card.active_tab == ToolTab::Progress {
-            Style::default()
-                .fg(theme.tab_active_fg)
-                .bg(theme.tab_active_bg)
-        } else {
-            Style::default().fg(theme.tab_inactive_fg)
-        };
-        let output_style = if card.active_tab == ToolTab::Output {
-            Style::default()
-                .fg(theme.tab_active_fg)
-                .bg(theme.tab_active_bg)
-        } else {
-            Style::default().fg(theme.tab_inactive_fg)
-        };
-        let input_style = if card.active_tab == ToolTab::Input {
-            Style::default()
-                .fg(theme.tab_active_fg)
-                .bg(theme.tab_active_bg)
-        } else {
-            Style::default().fg(theme.tab_inactive_fg)
-        };
+        render_tool_smart_content(card, lines, card_w, theme, accent_color, card_bg, display_mode, is_running, visible_lines);
 
-        let tab_line = if is_focused {
-            Line::from(vec![
-                Span::raw("    "),
-                Span::styled(" Progress ", progress_style),
-                Span::raw(" "),
-                Span::styled(" Output ", output_style),
-                Span::raw(" "),
-                Span::styled(" Input ", input_style),
-            ])
-            .style(Style::default().bg(theme.tool_focus_bg))
-        } else {
-            Line::from(vec![
-                Span::raw("    "),
-                Span::styled(" Progress ", progress_style),
-                Span::raw(" "),
-                Span::styled(" Output ", output_style),
-                Span::raw(" "),
-                Span::styled(" Input ", input_style),
-            ])
-        };
-        lines.push(tab_line);
+        // Bottom accent bar with full background
+        lines.push(Line::from(vec![
+            Span::styled("┗", Style::default().fg(accent_color).bg(card_bg)),
+            Span::styled("━".repeat(card_w.saturating_sub(1)), Style::default().fg(accent_color).bg(card_bg).add_modifier(Modifier::DIM)),
+        ]));
+    }
+}
 
-        // Tab content
-        match card.active_tab {
-            ToolTab::Progress => {
-                render_tool_progress(card, lines, inner_w, theme, is_focused);
+/// Build the extra info shown in the header (path, command, summary).
+fn build_tool_header_extra(card: &ToolCard, mode: ToolDisplayMode, max_len: usize) -> String {
+    if let Ok(args) = serde_json::from_str::<serde_json::Value>(&card.args) {
+        match mode {
+            ToolDisplayMode::Diff | ToolDisplayMode::Summary => {
+                // Show path
+                if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                    let display = truncate(path, max_len.saturating_sub(10));
+                    if mode == ToolDisplayMode::Summary {
+                        // For read, add line count from output
+                        let line_count = card.output.as_ref()
+                            .map(|o| o.lines().count())
+                            .unwrap_or(0);
+                        if line_count > 0 {
+                            return format!("{}  ({} lines)", display, line_count);
+                        }
+                    }
+                    return display;
+                }
             }
-            ToolTab::Output => {
-                render_tool_output(card, lines, inner_w, theme, is_focused);
+            ToolDisplayMode::Streaming | ToolDisplayMode::Output => {
+                // Show command for bash, or key arg for others
+                if let Some(cmd) = args.get("cmd").or_else(|| args.get("command")).and_then(|v| v.as_str()) {
+                    return truncate(cmd, max_len);
+                }
+                // Fall back to first string arg
+                for (_k, v) in args.as_object().into_iter().flatten() {
+                    if let Some(s) = v.as_str() {
+                        return truncate(s, max_len);
+                    }
+                }
             }
-            ToolTab::Input => {
-                render_tool_input(card, lines, inner_w, theme, is_focused);
+        }
+    }
+    String::new()
+}
+
+/// Render tool content based on display mode (no tabs).
+fn render_tool_smart_content(
+    card: &ToolCard,
+    lines: &mut Vec<Line>,
+    card_w: usize,
+    theme: &Theme,
+    accent_color: Color,
+    card_bg: Color,
+    mode: ToolDisplayMode,
+    is_running: bool,
+    visible_lines: usize,
+) {
+    match mode {
+        ToolDisplayMode::Diff => {
+            // Show diff/progress lines with syntax highlighting
+            render_tool_diff_content(card, lines, card_w, theme, accent_color, card_bg, visible_lines);
+        }
+        ToolDisplayMode::Summary => {
+            // Read tool: just show a brief summary, content visible in header
+            render_tool_summary_content(card, lines, card_w, theme, accent_color, card_bg, visible_lines);
+        }
+        ToolDisplayMode::Streaming => {
+            // Bash: show progress while running, output when done
+            if is_running && !card.progress_lines.is_empty() {
+                render_tool_streaming_content(card, lines, card_w, theme, accent_color, card_bg, visible_lines);
+            } else {
+                render_tool_output_content(card, lines, card_w, theme, accent_color, card_bg, visible_lines);
             }
+        }
+        ToolDisplayMode::Output => {
+            // MCP tools and others: show output
+            render_tool_output_content(card, lines, card_w, theme, accent_color, card_bg, visible_lines);
         }
     }
 }
 
-/// Render the Progress tab content (streaming chunks).
-fn render_tool_progress(
+/// Render diff content (for edit/write tools).
+/// If progress_lines is empty, reconstruct diff from args (old_string/new_string).
+fn render_tool_diff_content(
     card: &ToolCard,
     lines: &mut Vec<Line>,
-    inner_w: usize,
+    card_w: usize,
     theme: &Theme,
-    is_focused: bool,
+    accent_color: Color,
+    card_bg: Color,
+    visible_lines: usize,
 ) {
-    let bg_style = if is_focused {
-        Style::default().bg(theme.tool_focus_bg)
+    let content_w = card_w.saturating_sub(8);
+    let lang = get_lang_from_args(&card.args);
+    let lang_ref = lang.as_deref();
+
+    // Get diff lines: from progress_lines if available, otherwise reconstruct from args
+    let diff_lines: Vec<String> = if !card.progress_lines.is_empty() {
+        card.progress_lines.clone()
     } else {
-        Style::default()
+        // Reconstruct diff from edit args (old_string, new_string)
+        reconstruct_diff_from_args(&card.args)
     };
 
-    if card.progress_lines.is_empty() {
-        let msg = if card.status.starts_with("running") {
-            "(waiting for progress...)"
-        } else {
-            "(no progress output)"
-        };
-        lines.push(
-            Line::from(Span::styled(
-                format!("    │ {}", msg),
-                Style::default().fg(theme.muted),
-            ))
-            .style(bg_style),
-        );
+    if diff_lines.is_empty() {
+        // Show output as fallback if available
+        if let Some(output) = &card.output {
+            if !output.is_empty() {
+                let display = truncate(output.lines().next().unwrap_or(""), content_w);
+                let padding = card_w.saturating_sub(display.chars().count() + 3);
+                lines.push(Line::from(vec![
+                    Span::styled("┃", Style::default().fg(accent_color).bg(card_bg)),
+                    Span::styled(" ", Style::default().bg(card_bg)),
+                    Span::styled(display, Style::default().fg(theme.success).bg(card_bg)),
+                    Span::styled(" ".repeat(padding), Style::default().bg(card_bg)),
+                ]));
+                return;
+            }
+        }
+        render_empty_line(lines, card_w, accent_color, card_bg, theme, "no changes");
         return;
     }
 
-    let total_lines = card.progress_lines.len();
+    let total = diff_lines.len();
     let start = card.scroll_offset;
-    let end = (start + TOOL_OUTPUT_VISIBLE_LINES).min(total_lines);
+    let end = (start + visible_lines).min(total);
 
-    for (i, line) in card.progress_lines[start..end].iter().enumerate() {
+    for (i, line) in diff_lines[start..end].iter().enumerate() {
         let line_num = start + i + 1;
+        let display = truncate(line, content_w);
+        let (highlighted_spans, line_bg) = highlight_diff_line(&display, lang_ref, theme, card_bg);
 
-        // Color diff lines appropriately
-        let line_color = if line.starts_with('+') && !line.starts_with("+++") {
-            theme.diff_add
-        } else if line.starts_with('-') && !line.starts_with("---") {
-            theme.diff_remove
-        } else if line.starts_with("@@") {
-            theme.primary
-        } else {
-            theme.fg
-        };
+        let mut spans = vec![
+            Span::styled("┃", Style::default().fg(accent_color).bg(card_bg)),
+            Span::styled(format!("{:>3} ", line_num), Style::default().fg(theme.muted).bg(card_bg)),
+        ];
+        
+        // Calculate content length from highlighted spans
+        let mut content_len = 0;
+        for span in &highlighted_spans {
+            content_len += span.content.chars().count();
+        }
+        spans.extend(highlighted_spans);
 
-        lines.push(
-            Line::from(Span::styled(
-                format!(
-                    "    │ {:>4}: {}",
-                    line_num,
-                    truncate(line, inner_w.saturating_sub(14))
-                ),
-                Style::default().fg(line_color),
-            ))
-            .style(bg_style),
-        );
+        // Padding: card_w - (border "┃" = 1) - (line num "NNN " = 4) - content
+        let used = 1 + 4 + content_len;
+        let padding = card_w.saturating_sub(used);
+        spans.push(Span::styled(" ".repeat(padding), Style::default().bg(line_bg)));
+
+        lines.push(Line::from(spans));
     }
 
-    // Scroll indicator
-    if total_lines > TOOL_OUTPUT_VISIBLE_LINES {
-        let pct = if total_lines > 0 {
-            (end * 100) / total_lines
-        } else {
-            100
-        };
-        lines.push(
-            Line::from(Span::styled(
-                format!("    └─ [{}/{}] {}%", end, total_lines, pct),
-                Style::default().fg(theme.muted),
-            ))
-            .style(bg_style),
-        );
-    }
+    render_scroll_hint(lines, card_w, accent_color, card_bg, theme, start, end, total, visible_lines);
 }
 
-/// Render the Output tab content (what the agent sees in tool_result).
-fn render_tool_output(
-    card: &ToolCard,
-    lines: &mut Vec<Line>,
-    inner_w: usize,
-    theme: &Theme,
-    is_focused: bool,
-) {
-    let bg_style = if is_focused {
-        Style::default().bg(theme.tool_focus_bg)
-    } else {
-        Style::default()
+/// Reconstruct a diff from edit/write tool args.
+/// For edit: uses old_string/new_string
+/// For write: uses content (all lines shown as added)
+fn reconstruct_diff_from_args(args: &str) -> Vec<String> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(args) else {
+        return Vec::new();
     };
 
-    // Output only (no progress lines - those are in Progress tab)
+    let old_string = v.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+    let new_string = v.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Handle edit tool (old_string -> new_string)
+    if !old_string.is_empty() || !new_string.is_empty() {
+        let mut diff_lines = Vec::new();
+
+        // Add removed lines (old_string)
+        for line in old_string.lines() {
+            diff_lines.push(format!("-{}", line));
+        }
+
+        // Add added lines (new_string)
+        for line in new_string.lines() {
+            diff_lines.push(format!("+{}", line));
+        }
+
+        return diff_lines;
+    }
+
+    // Handle write tool (content = new file)
+    if let Some(content) = v.get("content").and_then(|v| v.as_str()) {
+        if !content.is_empty() {
+            return content.lines().map(|l| format!("+{}", l)).collect();
+        }
+    }
+
+    Vec::new()
+}
+
+/// Render streaming content (bash while running).
+fn render_tool_streaming_content(
+    card: &ToolCard,
+    lines: &mut Vec<Line>,
+    card_w: usize,
+    theme: &Theme,
+    accent_color: Color,
+    card_bg: Color,
+    visible_lines: usize,
+) {
+    let content_w = card_w.saturating_sub(6);
+    let total = card.progress_lines.len();
+    let start = card.scroll_offset;
+    let end = (start + visible_lines).min(total);
+
+    for line in card.progress_lines[start..end].iter() {
+        let display = truncate(line, content_w);
+        let padding = card_w.saturating_sub(display.chars().count() + 3);
+
+        lines.push(Line::from(vec![
+            Span::styled("┃", Style::default().fg(accent_color).bg(card_bg)),
+            Span::styled(" ", Style::default().bg(card_bg)),
+            Span::styled(display, Style::default().fg(theme.fg).bg(card_bg)),
+            Span::styled(" ".repeat(padding), Style::default().bg(card_bg)),
+        ]));
+    }
+
+    render_scroll_hint(lines, card_w, accent_color, card_bg, theme, start, end, total, visible_lines);
+}
+
+/// Render output content (bash result, MCP tools).
+fn render_tool_output_content(
+    card: &ToolCard,
+    lines: &mut Vec<Line>,
+    card_w: usize,
+    theme: &Theme,
+    accent_color: Color,
+    card_bg: Color,
+    visible_lines: usize,
+) {
+    let content_w = card_w.saturating_sub(6);
+
     let output = match &card.output {
         Some(o) if !o.is_empty() => o,
         _ => {
             let msg = if card.status.starts_with("running") {
-                "(running...)"
+                "running..."
             } else {
-                "(no output)"
+                "no output"
             };
-            lines.push(
-                Line::from(Span::styled(
-                    format!("    │ {}", msg),
-                    Style::default().fg(theme.muted),
-                ))
-                .style(bg_style),
-            );
+            render_empty_line(lines, card_w, accent_color, card_bg, theme, msg);
             return;
         }
     };
 
     let output_lines: Vec<&str> = output.lines().collect();
-    let total_lines = output_lines.len();
-    let start = card.scroll_offset.min(total_lines);
-    let end = (start + TOOL_OUTPUT_VISIBLE_LINES).min(total_lines);
+    let total = output_lines.len();
+    let start = card.scroll_offset.min(total);
+    let end = (start + visible_lines).min(total);
 
-    // Error styling
-    let base_color = if card.status == "error" {
-        theme.error
-    } else {
-        theme.fg
+    let is_error = card.status == "error";
+    let base_color = if is_error { theme.error } else { theme.fg };
+
+    for line in output_lines[start..end].iter() {
+        let display = truncate(line, content_w);
+        let padding = card_w.saturating_sub(display.chars().count() + 3);
+
+        lines.push(Line::from(vec![
+            Span::styled("┃", Style::default().fg(accent_color).bg(card_bg)),
+            Span::styled(" ", Style::default().bg(card_bg)),
+            Span::styled(display, Style::default().fg(base_color).bg(card_bg)),
+            Span::styled(" ".repeat(padding), Style::default().bg(card_bg)),
+        ]));
+    }
+
+    render_scroll_hint(lines, card_w, accent_color, card_bg, theme, start, end, total, visible_lines);
+}
+
+/// Render summary content (for read tool - minimal since content shown in header).
+fn render_tool_summary_content(
+    card: &ToolCard,
+    lines: &mut Vec<Line>,
+    card_w: usize,
+    theme: &Theme,
+    accent_color: Color,
+    card_bg: Color,
+    visible_lines: usize,
+) {
+    // For read, show lines based on available space
+    let content_w = card_w.saturating_sub(6);
+
+    let output = match &card.output {
+        Some(o) if !o.is_empty() => o,
+        _ => {
+            render_empty_line(lines, card_w, accent_color, card_bg, theme, "no content");
+            return;
+        }
     };
+
+    // Get language for syntax highlighting
+    let lang = get_lang_from_args(&card.args);
+    let lang_ref = lang.as_deref();
+
+    let output_lines: Vec<&str> = output.lines().collect();
+    let total = output_lines.len();
+    let start = card.scroll_offset.min(total);
+    let end = (start + visible_lines).min(total);
 
     for (i, line) in output_lines[start..end].iter().enumerate() {
         let line_num = start + i + 1;
-        lines.push(
-            Line::from(Span::styled(
-                format!(
-                    "    │ {:>4}: {}",
-                    line_num,
-                    truncate(line, inner_w.saturating_sub(14))
-                ),
-                Style::default().fg(base_color),
-            ))
-            .style(bg_style),
-        );
+        let display = truncate(line, content_w.saturating_sub(4));
+        
+        // Syntax highlight the content
+        let highlighted = syntax::highlight_code_inline(&display, lang_ref, theme);
+        
+        let mut spans = vec![
+            Span::styled("┃", Style::default().fg(accent_color).bg(card_bg)),
+            Span::styled(format!("{:>3} ", line_num), Style::default().fg(theme.muted).bg(card_bg)),
+        ];
+        
+        let mut content_len = 0;
+        for span in highlighted {
+            content_len += span.content.chars().count();
+            spans.push(Span::styled(span.content.into_owned(), span.style.bg(card_bg)));
+        }
+
+        // Padding: card_w - (border "┃" = 1) - (line num "NNN " = 4) - content
+        let used = 1 + 4 + content_len;
+        let padding = card_w.saturating_sub(used);
+        spans.push(Span::styled(" ".repeat(padding), Style::default().bg(card_bg)));
+
+        lines.push(Line::from(spans));
     }
 
-    // Scroll indicator
-    if total_lines > TOOL_OUTPUT_VISIBLE_LINES {
-        let pct = if total_lines > 0 {
-            (end * 100) / total_lines
-        } else {
-            100
-        };
-        lines.push(
-            Line::from(Span::styled(
-                format!("    └─ [{}/{}] {}%", end, total_lines, pct),
-                Style::default().fg(theme.muted),
-            ))
-            .style(bg_style),
-        );
+    if total > visible_lines {
+        let remaining = total.saturating_sub(end);
+        let hint = format!("... {} more lines (scroll to see)", remaining);
+        let padding = card_w.saturating_sub(hint.len() + 3);
+        lines.push(Line::from(vec![
+            Span::styled("┃", Style::default().fg(accent_color).bg(card_bg)),
+            Span::styled(" ", Style::default().bg(card_bg)),
+            Span::styled(hint, Style::default().fg(theme.muted).bg(card_bg).add_modifier(Modifier::ITALIC)),
+            Span::styled(" ".repeat(padding), Style::default().bg(card_bg)),
+        ]));
     }
 }
 
-/// Render the Input tab content with key-value display.
-fn render_tool_input(
-    card: &ToolCard,
+/// Render an empty/placeholder line.
+fn render_empty_line(
     lines: &mut Vec<Line>,
-    inner_w: usize,
+    card_w: usize,
+    accent_color: Color,
+    card_bg: Color,
     theme: &Theme,
-    is_focused: bool,
+    msg: &str,
 ) {
-    let bg_style = if is_focused {
-        Style::default().bg(theme.tool_focus_bg)
+    let padding = card_w.saturating_sub(msg.len() + 3);
+    lines.push(Line::from(vec![
+        Span::styled("┃", Style::default().fg(accent_color).bg(card_bg)),
+        Span::styled(" ", Style::default().bg(card_bg)),
+        Span::styled(msg.to_string(), Style::default().fg(theme.muted).bg(card_bg).add_modifier(Modifier::ITALIC)),
+        Span::styled(" ".repeat(padding), Style::default().bg(card_bg)),
+    ]));
+}
+
+/// Render scroll hint if content is scrollable.
+fn render_scroll_hint(
+    lines: &mut Vec<Line>,
+    card_w: usize,
+    accent_color: Color,
+    card_bg: Color,
+    theme: &Theme,
+    _start: usize,
+    end: usize,
+    total: usize,
+    visible_lines: usize,
+) {
+    if total > visible_lines {
+        let hint = format!("↕ {}/{}", end, total);
+        let padding = card_w.saturating_sub(hint.len() + 3);
+        lines.push(Line::from(vec![
+            Span::styled("┃", Style::default().fg(accent_color).bg(card_bg)),
+            Span::styled(" ", Style::default().bg(card_bg)),
+            Span::styled(hint, Style::default().fg(theme.muted).bg(card_bg)),
+            Span::styled(" ".repeat(padding), Style::default().bg(card_bg)),
+        ]));
+    }
+}
+
+
+
+/// Get the file extension from tool args (for syntax highlighting).
+fn get_lang_from_args(args: &str) -> Option<String> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
+        if let Some(path) = v.get("path").and_then(|p| p.as_str()) {
+            return std::path::Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+/// Highlight a diff line with syntax highlighting.
+/// Returns spans with proper colors for +/- lines and syntax-highlighted content.
+fn highlight_diff_line(
+    line: &str,
+    lang: Option<&str>,
+    theme: &Theme,
+    card_bg: Color,
+) -> (Vec<Span<'static>>, Color) {
+    // Determine line type and colors
+    let (prefix, code_content, fg_color, bg_color) = if line.starts_with('+') && !line.starts_with("+++") {
+        // Added line
+        let content = line.strip_prefix('+').unwrap_or(line);
+        ("+", content, Color::Rgb(80, 250, 123), Color::Rgb(0, 45, 0))
+    } else if line.starts_with('-') && !line.starts_with("---") {
+        // Removed line
+        let content = line.strip_prefix('-').unwrap_or(line);
+        ("-", content, Color::Rgb(255, 85, 85), Color::Rgb(55, 0, 0))
+    } else if line.starts_with("@@") {
+        // Hunk header - no highlighting
+        return (vec![Span::styled(line.to_string(), Style::default().fg(theme.primary).bg(card_bg))], card_bg);
+    } else if line.starts_with("+++") || line.starts_with("---") {
+        // File header - no highlighting
+        return (vec![Span::styled(line.to_string(), Style::default().fg(theme.primary).bg(card_bg).add_modifier(Modifier::BOLD))], card_bg);
     } else {
-        Style::default()
+        // Context line
+        (" ", line.strip_prefix(' ').unwrap_or(line), theme.fg, card_bg)
     };
 
-    // Parse args JSON
-    if let Ok(args) = serde_json::from_str::<serde_json::Value>(&card.args) {
-        if let Some(obj) = args.as_object() {
-            for (key, value) in obj {
-                let value_str = match value {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
+    // Try to syntax highlight the code content
+    let highlighted = syntax::highlight_code_inline(code_content, lang, theme);
 
-                // Handle multi-line values
-                let value_lines: Vec<&str> = value_str.lines().collect();
-                if value_lines.len() <= 1 {
-                    // Single line value
-                    let max_val_len = inner_w.saturating_sub(key.len() + 12);
-                    lines.push(
-                        Line::from(vec![
-                            Span::raw("    │ "),
-                            Span::styled(
-                                format!("{}: ", key),
-                                Style::default().fg(theme.input_key),
-                            ),
-                            Span::styled(
-                                truncate(&value_str, max_val_len),
-                                Style::default().fg(theme.input_value),
-                            ),
-                        ])
-                        .style(bg_style),
-                    );
-                } else {
-                    // Multi-line value - show key then indented lines
-                    lines.push(
-                        Line::from(vec![
-                            Span::raw("    │ "),
-                            Span::styled(format!("{}:", key), Style::default().fg(theme.input_key)),
-                        ])
-                        .style(bg_style),
-                    );
+    let mut spans = Vec::with_capacity(highlighted.len() + 1);
+    
+    // Add prefix with diff color
+    spans.push(Span::styled(
+        prefix.to_string(),
+        Style::default().fg(fg_color).bg(bg_color),
+    ));
 
-                    let max_show = 30; // Limit displayed lines for very long content
-                    for vline in value_lines.iter().take(max_show) {
-                        lines.push(
-                            Line::from(Span::styled(
-                                format!("    │   {}", truncate(vline, inner_w.saturating_sub(12))),
-                                Style::default().fg(theme.input_value),
-                            ))
-                            .style(bg_style),
-                        );
-                    }
-                    if value_lines.len() > max_show {
-                        lines.push(
-                            Line::from(Span::styled(
-                                format!(
-                                    "    │   ... ({} more lines)",
-                                    value_lines.len() - max_show
-                                ),
-                                Style::default().fg(theme.muted),
-                            ))
-                            .style(bg_style),
-                        );
-                    }
-                }
-            }
-        } else {
-            // Not an object, show raw
-            lines.push(
-                Line::from(Span::styled(
-                    format!("    │ {}", truncate(&card.args, inner_w.saturating_sub(8))),
-                    Style::default().fg(theme.muted),
-                ))
-                .style(bg_style),
-            );
-        }
-    } else {
-        // Parse failed, show raw args
-        lines.push(
-            Line::from(Span::styled(
-                format!("    │ {}", truncate(&card.args, inner_w.saturating_sub(8))),
-                Style::default().fg(theme.muted),
-            ))
-            .style(bg_style),
-        );
+    // Add highlighted content, preserving syntax colors but with diff background
+    for span in highlighted {
+        let style = span.style.bg(bg_color);
+        spans.push(Span::styled(span.content.into_owned(), style));
     }
-}
 
-/// Format the key argument for a tool (path, command, content preview, etc).
-fn format_tool_key_arg(args_json: &str, max_len: usize) -> String {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(args_json) {
-        if let serde_json::Value::Object(map) = &v {
-            // Priority order for key args.
-            let key_priority = [
-                "path",
-                "filePath",
-                "file_path",
-                "command",
-                "content",
-                "query",
-                "url",
-            ];
-
-            for key in key_priority {
-                if let Some(val) = map.get(key) {
-                    let val_str = match val {
-                        serde_json::Value::String(s) => s.clone(),
-                        _ => val.to_string(),
-                    };
-                    return format!("{}={}", key, truncate(&val_str, max_len));
-                }
-            }
-
-            // Fallback: show first key.
-            if let Some((k, v)) = map.iter().next() {
-                let val_str = match v {
-                    serde_json::Value::String(s) => s.clone(),
-                    _ => v.to_string(),
-                };
-                return format!("{}={}", k, truncate(&val_str, max_len));
-            }
-        }
-    }
-    truncate(args_json, max_len)
+    (spans, bg_color)
 }
 
 // ── Approval nice display + dangerous highlighting ────────────

@@ -94,6 +94,18 @@ pub struct RenameReq {
 /// Request body.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PluginLoadReq {
+    /// Command + args to spawn the plugin
+    pub cmd: Option<Vec<String>>,
+    /// Environment variables to inject
+    pub env: Option<serde_json::Value>,
+    /// If true, re-read config.toml and load any new [[plugin]] entries
+    pub from_config: Option<bool>,
+}
+
+/// Request body.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UiRespondReq {
     /// Pending interaction id from interaction_request event
     pub id: u64,

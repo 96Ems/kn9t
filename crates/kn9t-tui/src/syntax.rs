@@ -92,6 +92,47 @@ pub fn highlight_code(
     lines
 }
 
+/// Highlight a single line of code inline (for diffs, tool output, etc.).
+/// Returns spans without line numbers.
+pub fn highlight_code_inline(
+    line: &str,
+    language: Option<&str>,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let ss = syntax_set();
+    let ts = theme_set();
+
+    let syntax_theme_name = if is_dark_theme(theme) {
+        "base16-ocean.dark"
+    } else {
+        "base16-ocean.light"
+    };
+
+    let syntax_theme = ts
+        .themes
+        .get(syntax_theme_name)
+        .unwrap_or_else(|| ts.themes.values().next().unwrap());
+
+    let syntax = language
+        .and_then(|lang| ss.find_syntax_by_token(lang))
+        .or_else(|| language.and_then(|lang| ss.find_syntax_by_extension(lang)))
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+
+    let mut highlighter = HighlightLines::new(syntax, syntax_theme);
+
+    match highlighter.highlight_line(line, ss) {
+        Ok(highlighted) => {
+            highlighted
+                .into_iter()
+                .map(|(style, text)| Span::styled(text.to_string(), syntect_to_ratatui_style(style)))
+                .collect()
+        }
+        Err(_) => {
+            vec![Span::styled(line.to_string(), Style::default().fg(theme.fg))]
+        }
+    }
+}
+
 /// Check if the theme is dark (simple heuristic).
 fn is_dark_theme(theme: &Theme) -> bool {
     // If background is darker than midpoint, it's a dark theme

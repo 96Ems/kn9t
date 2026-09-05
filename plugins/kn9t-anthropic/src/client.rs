@@ -54,6 +54,12 @@ pub fn complete(request: &Value, ctx: &ProviderCallCtx) -> ProviderResult {
         Err(e) => return ProviderResult::error(format!("serialise: {e}")),
     };
 
+    // Debug: dump request body if ANTHROPIC_DEBUG=1
+    if std::env::var("ANTHROPIC_DEBUG").as_deref() == Ok("1") {
+        eprintln!("[kn9t-anthropic] request body:\n{}", 
+            serde_json::to_string_pretty(&body).unwrap_or_else(|_| body_str.clone()));
+    }
+
     let url = format!("{}/v1/messages", cfg.endpoint);
     let resp = match ureq::post(&url)
         .set("x-api-key", &cfg.api_key)

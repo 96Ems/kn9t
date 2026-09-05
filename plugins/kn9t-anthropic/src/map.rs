@@ -164,9 +164,19 @@ fn map_content_block(c: &Value, role: &str) -> Vec<Value> {
         Some("tool_result") | Some("tool_call_result") => {
             let id = c.get("tool_call_id").or_else(|| c.get("id"))
                 .and_then(|i| i.as_str()).unwrap_or("");
-            let content_str = c.get("content").and_then(|ct| ct.as_str())
-                .or_else(|| c.get("text").and_then(|t| t.as_str()))
-                .unwrap_or("");
+            // kn9t ToolResult.content is Vec<Content>, not a string.
+            // Extract text from nested content blocks, or fall back to direct string.
+            let content_str = if let Some(arr) = c.get("content").and_then(|ct| ct.as_array()) {
+                arr.iter()
+                    .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                c.get("content").and_then(|ct| ct.as_str())
+                    .or_else(|| c.get("text").and_then(|t| t.as_str()))
+                    .unwrap_or("")
+                    .to_string()
+            };
             vec![json!({
                 "type": "tool_result",
                 "tool_use_id": id,
@@ -286,5 +296,135 @@ mod tests {
         assert_eq!(cache_write, 200);
         // Total context = 100 + 800 + 200 = 1100
         assert_eq!(input + cache_read + cache_write, 1100);
+    }
+
+    /// Test that kn9t-format tool_call is correctly mapped to Anthropic tool_use.
+    #[test]
+    fn tool_call_kn9t_format() {
+        // kn9t serializes Content::ToolCall as {"type":"tool_call",...}
+        let c = json!({
+            "type": "tool_call",
+            "id": "toolu_abc123",
+            "name": "read",
+            "args_json": r#"{"path":"test.txt"}"#
+        });
+        let parts = map_content_block(&c, "assistant");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "tool_use");
+        assert_eq!(parts[0]["id"], "toolu_abc123");
+        assert_eq!(parts[0]["name"], "read");
+        assert_eq!(parts[0]["input"]["path"], "test.txt");
+    }
+
+    /// Test that kn9t-format tool_result with nested content is correctly mapped.
+    #[test]
+    fn tool_result_kn9t_format() {
+        // kn9t serializes Content::ToolResult with content as Vec<Content>
+        let c = json!({
+            "type": "tool_result",
+            "id": "toolu_abc123",
+            "content": [{"type": "text", "text": "file contents here"}],
+            "is_error": false
+        });
+        let parts = map_content_block(&c, "tool");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "tool_result");
+        assert_eq!(parts[0]["tool_use_id"], "toolu_abc123");
+        assert_eq!(parts[0]["content"], "file contents here");
+    }
+
+    /// Test tool_call/tool_result pairing in a full message conversion.
+    #[test]
+    fn tool_use_pairing() {
+        let req = json!({
+            "model": { "id": "claude-sonnet-4-5" },
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_call",
+                        "id": "toolu_xyz",
+                        "name": "bash",
+                        "args_json": r#"{"cmd":"ls"}"#
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "content": [{
+                        "type": "tool_result",
+                        "id": "toolu_xyz",
+                        "content": [{"type": "text", "text": "file1\nfile2"}],
+                        "is_error": false
+                    }]
+                }
+            ],
+            "cache": []
+        });
+
+        let msgs = build_messages(&req, &[]);
+        let arr = msgs.as_array().unwrap();
+        assert_eq!(arr.len(), 2, "should have 2 messages");
+
+        // First message: assistant with tool_use
+        assert_eq!(arr[0]["role"], "assistant");
+        let content0 = arr[0]["content"].as_array().unwrap();
+        assert_eq!(content0[0]["type"], "tool_use");
+        assert_eq!(content0[0]["id"], "toolu_xyz");
+
+        // Second message: user (tool role becomes user) with tool_result
+        assert_eq!(arr[1]["role"], "user");
+        let content1 = arr[1]["content"].as_array().unwrap();
+        assert_eq!(content1[0]["type"], "tool_result");
+        assert_eq!(content1[0]["tool_use_id"], "toolu_xyz");
+        assert_eq!(content1[0]["content"], "file1\nfile2");
+    }
+
+    /// Regression test: kn9t ToolResult.content is Vec<Content>, not a string.
+    /// Before the fix, this was extracted as "" because as_str() returned None
+    /// on the array, causing tool results to lose their actual content.
+    #[test]
+    fn tool_result_content_not_lost() {
+        // This is the EXACT format kn9t serializes Content::ToolResult as:
+        // - "content" is an array of Content blocks, not a string
+        // - The bug was: c.get("content").and_then(|ct| ct.as_str()) returned None
+        //   because content is an array, then fallback to c.get("text") also None,
+        //   resulting in empty string ""
+        let tool_result_kn9t_format = json!({
+            "type": "tool_result",
+            "id": "toolu_test123",
+            "content": [
+                {"type": "text", "text": "first line"},
+                {"type": "text", "text": "second line"}
+            ],
+            "is_error": false
+        });
+
+        let parts = map_content_block(&tool_result_kn9t_format, "tool");
+        
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "tool_result");
+        assert_eq!(parts[0]["tool_use_id"], "toolu_test123");
+        
+        // THE BUG: before fix, this was "" (empty string)
+        // AFTER fix: correctly extracts "first line\nsecond line"
+        let content = parts[0]["content"].as_str().unwrap();
+        assert!(!content.is_empty(), "content must not be empty - this was the bug!");
+        assert_eq!(content, "first line\nsecond line");
+    }
+
+    /// Ensure we still handle the simple string format (for compatibility).
+    #[test]
+    fn tool_result_string_content_still_works() {
+        // Some providers or older formats might send content as a direct string
+        let tool_result_string_format = json!({
+            "type": "tool_result",
+            "id": "toolu_compat",
+            "content": "direct string content"
+        });
+
+        let parts = map_content_block(&tool_result_string_format, "tool");
+        
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["content"], "direct string content");
     }
 }

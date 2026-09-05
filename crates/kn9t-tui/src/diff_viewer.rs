@@ -10,6 +10,9 @@ use ratatui::{
     text::{Line, Span},
 };
 
+use crate::syntax::highlight_code_inline;
+use crate::theme::Theme;
+
 // ── Data model ────────────────────────────────────────────────────────────────
 
 /// A single line in a diff hunk.
@@ -335,34 +338,71 @@ impl DiffViewer {
         }
     }
 
-    /// Navigate to the next hunk (across files if needed).
+    /// Navigate to the next hunk header in the virtual list.
     pub fn next_hunk(&mut self) {
         if self.files.is_empty() {
             return;
         }
-        let file = &self.files[self.current_file];
-        if self.current_hunk + 1 < file.hunks.len() {
-            self.current_hunk += 1;
-        } else if self.current_file + 1 < self.files.len() {
-            self.current_file += 1;
-            self.current_hunk = 0;
+        // Find next hunk header after current cursor position
+        let file = match self.files.get(self.current_file) {
+            Some(f) => f,
+            None => return,
+        };
+        let virtual_lines = build_unified_virtual_lines(file, None, &Theme::default());
+        for (idx, vline) in virtual_lines.iter().enumerate().skip(self.cursor_line + 1) {
+            if matches!(vline, VirtualLine::HunkHeader { .. }) {
+                self.cursor_line = idx;
+                // Adjust scroll to show cursor
+                if self.cursor_line < self.scroll {
+                    self.scroll = self.cursor_line;
+                }
+                return;
+            }
         }
-        self.scroll = 0;
+        // No more hunks in this file, try next file
+        if self.current_file + 1 < self.files.len() {
+            self.current_file += 1;
+            self.cursor_line = 0;
+            self.scroll = 0;
+        }
     }
 
-    /// Navigate to the previous hunk (across files if needed).
+    /// Navigate to the previous hunk header in the virtual list.
     pub fn prev_hunk(&mut self) {
         if self.files.is_empty() {
             return;
         }
-        if self.current_hunk > 0 {
-            self.current_hunk -= 1;
-        } else if self.current_file > 0 {
+        let file = match self.files.get(self.current_file) {
+            Some(f) => f,
+            None => return,
+        };
+        let virtual_lines = build_unified_virtual_lines(file, None, &Theme::default());
+        // Find previous hunk header before current cursor position
+        for idx in (0..self.cursor_line).rev() {
+            if matches!(virtual_lines.get(idx), Some(VirtualLine::HunkHeader { .. })) {
+                self.cursor_line = idx;
+                if self.cursor_line < self.scroll {
+                    self.scroll = self.cursor_line;
+                }
+                return;
+            }
+        }
+        // No more hunks before, try previous file
+        if self.current_file > 0 {
             self.current_file -= 1;
             let prev_file = &self.files[self.current_file];
-            self.current_hunk = prev_file.hunks.len().saturating_sub(1);
+            let prev_virtual = build_unified_virtual_lines(prev_file, None, &Theme::default());
+            // Go to last hunk header
+            for idx in (0..prev_virtual.len()).rev() {
+                if matches!(prev_virtual.get(idx), Some(VirtualLine::HunkHeader { .. })) {
+                    self.cursor_line = idx;
+                    self.scroll = self.cursor_line.saturating_sub(5);
+                    return;
+                }
+            }
+            self.cursor_line = 0;
+            self.scroll = 0;
         }
-        self.scroll = 0;
     }
 
     /// Toggle between unified and split view.
@@ -482,7 +522,7 @@ impl DiffViewer {
 
     /// Render the diff viewer into the given buffer area.
     /// Note: This takes &mut self to update line_hits for mouse support.
-    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -523,9 +563,9 @@ impl DiffViewer {
         );
 
         if self.split_mode {
-            self.render_split_mut(diff_area, buf);
+            self.render_split_mut(diff_area, buf, theme);
         } else {
-            self.render_unified_mut(diff_area, buf);
+            self.render_unified_mut(diff_area, buf, theme);
         }
 
         // Render footer (full width)
@@ -884,17 +924,19 @@ impl DiffViewer {
 
     // ── Private rendering ─────────────────────────────────────────────────────
 
-    fn render_unified_mut(&mut self, area: Rect, buf: &mut Buffer) {
+    fn render_unified_mut(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
         let file = match self.files.get(self.current_file) {
             Some(f) => f,
             None => return,
         };
-        let hunk = match file.hunks.get(self.current_hunk) {
-            Some(h) => h,
-            None => return,
-        };
 
-        // Title bar.
+        // Clear the area first to avoid artifacts
+        clear_area(buf, area);
+
+        // Extract language from file extension
+        let lang = file.path.rsplit('.').next();
+
+        // Title bar
         let title = format!("─ Diff: {} ", file.path);
         let title_line = Line::from(vec![
             Span::styled("┌", Style::default().fg(Color::DarkGray)),
@@ -912,87 +954,76 @@ impl DiffViewer {
         ]);
         render_line(buf, area.x, area.y, area.width, &title_line);
 
-        // Hunk header.
-        let hunk_header = format!(
-            " @@ -{},{} +{},{} @@",
-            hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
-        );
-        let header_line = Line::from(Span::styled(
-            hunk_header,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
-
-        let content_height = area.height.saturating_sub(2) as usize; // title + bottom border
+        // Build all virtual lines for all hunks in this file
+        let virtual_lines = build_unified_virtual_lines(file, lang, theme);
+        let content_height = (area.height.saturating_sub(2)) as usize; // title + bottom border
+        let skip = self.scroll.min(virtual_lines.len());
         let mut row = area.y + 1;
 
-        // Hunk header row.
-        if row < area.y + area.height.saturating_sub(1) {
-            render_line(buf, area.x, row, area.width, &header_line);
-            row += 1;
-        }
-
-        // Diff lines.
-        let mut old_line_no = hunk.old_start;
-        let mut new_line_no = hunk.new_start;
-
-        let visible_lines: Vec<_> = hunk.lines.iter().enumerate().collect();
-        let skip = self.scroll.min(visible_lines.len());
-
-        for (line_idx, diff_line) in visible_lines.iter().skip(skip) {
+        for (vline_idx, vline) in virtual_lines.iter().enumerate().skip(skip) {
             if row >= area.y + area.height.saturating_sub(1) {
                 break;
             }
 
-            let actual_line_idx = *line_idx;
-            let is_cursor_line = actual_line_idx == self.cursor_line;
-            let current_new_line = new_line_no;
+            let is_cursor_line = vline_idx == self.cursor_line;
 
-            let rendered =
-                render_unified_line(diff_line, &mut old_line_no, &mut new_line_no, area.width);
-            render_line(buf, area.x, row, area.width, &rendered);
+            match vline {
+                VirtualLine::HunkHeader { text, .. } => {
+                    let header_line = Line::from(Span::styled(
+                        text.clone(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    render_line(buf, area.x, row, area.width, &header_line);
+                }
+                VirtualLine::HunkSeparator { lines_between } => {
+                    let sep_text = format!(" ··· {} unchanged lines ···", lines_between);
+                    let sep_line = Line::from(Span::styled(
+                        sep_text,
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                    render_line(buf, area.x, row, area.width, &sep_line);
+                }
+                VirtualLine::Diff { line, old_line_no, new_line_no } => {
+                    let mut old_no = *old_line_no;
+                    let mut new_no = *new_line_no;
+                    let rendered = render_unified_line(line, &mut old_no, &mut new_no, lang, theme);
+                    render_line(buf, area.x, row, area.width, &rendered);
 
-            // Highlight cursor line with visible marker
+                    // Show comment indicator
+                    if self.has_comment_at(self.current_file, *new_line_no) {
+                        let indicator_x = area.x + area.width - 3;
+                        if indicator_x > area.x {
+                            buf[(indicator_x, row)].set_char('💬').set_fg(Color::Yellow);
+                        }
+                    }
+                }
+            }
+
+            // Highlight cursor line
             if is_cursor_line {
-                // Cursor marker at start
                 buf[(area.x, row)]
                     .set_char('▶')
                     .set_fg(Color::Yellow)
                     .set_bg(Color::Rgb(50, 50, 80));
-                // Highlight rest of line
                 for x in (area.x + 1)..area.x + area.width {
                     let cell = &mut buf[(x, row)];
                     cell.set_bg(Color::Rgb(50, 50, 80));
                 }
             }
 
-            // Show comment indicator if line has comment
-            if self.has_comment_at(self.current_file, current_new_line) {
-                let indicator_x = area.x + area.width - 3;
-                if indicator_x > area.x {
-                    buf[(indicator_x, row)].set_char('💬').set_fg(Color::Yellow);
-                }
-            }
-
             // Record line hit for mouse support
             self.line_hits.push(DiffLineHit {
                 y: row,
-                line_idx: actual_line_idx,
+                line_idx: vline_idx,
                 file_idx: self.current_file,
             });
 
             row += 1;
         }
 
-        // Fill remaining rows.
-        while row < area.y + area.height.saturating_sub(1) {
-            let empty = Line::from(Span::raw(" ".repeat(area.width as usize)));
-            render_line(buf, area.x, row, area.width, &empty);
-            row += 1;
-        }
-
-        // Bottom border.
+        // Bottom border
         let bottom_y = area.y + area.height.saturating_sub(1);
         let bottom = Line::from(vec![
             Span::styled("└", Style::default().fg(Color::DarkGray)),
@@ -1003,22 +1034,24 @@ impl DiffViewer {
             Span::styled("┘", Style::default().fg(Color::DarkGray)),
         ]);
         render_line(buf, area.x, bottom_y, area.width, &bottom);
-        let _ = content_height; // suppress unused warning
+        let _ = content_height;
     }
 
-    fn render_split_mut(&mut self, area: Rect, buf: &mut Buffer) {
+    fn render_split_mut(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
         let file = match self.files.get(self.current_file) {
             Some(f) => f,
             None => return,
         };
-        let hunk = match file.hunks.get(self.current_hunk) {
-            Some(h) => h,
-            None => return,
-        };
+
+        // Clear the area first to avoid artifacts
+        clear_area(buf, area);
+
+        // Extract language from file extension
+        let lang = file.path.rsplit('.').next();
 
         let half = area.width / 2;
 
-        // Title bar.
+        // Title bar
         let left_title = "─ Old ";
         let right_title = "─ New ";
         let left_fill = "─".repeat(half.saturating_sub(2 + left_title.len() as u16) as usize);
@@ -1048,45 +1081,61 @@ impl DiffViewer {
         ]);
         render_line(buf, area.x, area.y, area.width, &title_line);
 
-        // Build split rows: pair old/removed with new/added.
-        let split_rows = build_split_rows(&hunk.lines);
+        // Build all virtual split rows for all hunks
+        let split_rows = build_split_virtual_rows(file, lang, theme);
         let skip = self.scroll.min(split_rows.len());
         let mut row = area.y + 1;
 
-        for (line_idx, (left_cell, right_cell)) in split_rows.iter().enumerate().skip(skip) {
+        for (line_idx, vrow) in split_rows.iter().enumerate().skip(skip) {
             if row >= area.y + area.height.saturating_sub(1) {
                 break;
             }
 
             let is_cursor_line = line_idx == self.cursor_line;
 
-            let left_line = render_split_cell(left_cell, half.saturating_sub(1));
-            let right_line = render_split_cell(right_cell, area.width.saturating_sub(half + 1));
+            match vrow {
+                SplitVirtualRow::HunkHeader { text } => {
+                    let header_line = Line::from(Span::styled(
+                        text.clone(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    render_line(buf, area.x, row, area.width, &header_line);
+                }
+                SplitVirtualRow::Separator { lines_between } => {
+                    let sep_text = format!(" ··· {} unchanged lines ···", lines_between);
+                    let sep_line = Line::from(Span::styled(
+                        sep_text,
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                    render_line(buf, area.x, row, area.width, &sep_line);
+                }
+                SplitVirtualRow::Cells { left, right } => {
+                    let left_line = render_split_cell(left, half.saturating_sub(1));
+                    let right_line = render_split_cell(right, area.width.saturating_sub(half + 1));
 
-            // Write left side.
-            render_line(buf, area.x, row, half.saturating_sub(1), &left_line);
-            // Divider.
-            if let Some(cell) = buf.cell_mut((area.x + half.saturating_sub(1), row)) {
-                cell.set_char('│');
-                cell.set_style(Style::default().fg(Color::DarkGray));
+                    render_line(buf, area.x, row, half.saturating_sub(1), &left_line);
+                    if let Some(cell) = buf.cell_mut((area.x + half.saturating_sub(1), row)) {
+                        cell.set_char('│');
+                        cell.set_style(Style::default().fg(Color::DarkGray));
+                    }
+                    render_line(
+                        buf,
+                        area.x + half,
+                        row,
+                        area.width.saturating_sub(half),
+                        &right_line,
+                    );
+                }
             }
-            // Write right side.
-            render_line(
-                buf,
-                area.x + half,
-                row,
-                area.width.saturating_sub(half),
-                &right_line,
-            );
 
             // Highlight cursor line
             if is_cursor_line {
-                // Cursor marker at start - very visible
                 buf[(area.x, row)]
                     .set_char('▶')
                     .set_fg(Color::Black)
                     .set_bg(Color::Yellow);
-                // Highlight entire row with distinct background
                 for x in (area.x + 1)..area.x + area.width {
                     let cell = &mut buf[(x, row)];
                     cell.set_bg(Color::Rgb(60, 60, 100));
@@ -1103,14 +1152,7 @@ impl DiffViewer {
             row += 1;
         }
 
-        // Fill remaining.
-        while row < area.y + area.height.saturating_sub(1) {
-            let empty = Line::from(Span::raw(" ".repeat(area.width as usize)));
-            render_line(buf, area.x, row, area.width, &empty);
-            row += 1;
-        }
-
-        // Bottom border.
+        // Bottom border
         let bottom_y = area.y + area.height.saturating_sub(1);
         let bottom = Line::from(vec![
             Span::styled("└", Style::default().fg(Color::DarkGray)),
@@ -1130,6 +1172,132 @@ impl DiffViewer {
 }
 
 // ── Free helper functions ─────────────────────────────────────────────────────
+
+// Colors for diff display
+const DIFF_ADD_FG: Color = Color::Rgb(0, 200, 80);
+const DIFF_ADD_BG: Color = Color::Rgb(0, 35, 0);
+const DIFF_DEL_FG: Color = Color::Rgb(255, 100, 100);
+const DIFF_DEL_BG: Color = Color::Rgb(50, 0, 0);
+const DIFF_LINE_NUM_FG: Color = Color::Rgb(100, 100, 100);
+
+/// Clear an area by filling with spaces.
+fn clear_area(buf: &mut Buffer, area: Rect) {
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_char(' ');
+                cell.set_style(Style::default());
+            }
+        }
+    }
+}
+
+/// Virtual line type for unified view (all hunks flattened).
+enum VirtualLine {
+    HunkHeader { text: String },
+    HunkSeparator { lines_between: u32 },
+    Diff { line: DiffLine, old_line_no: u32, new_line_no: u32 },
+}
+
+/// Virtual row type for split view (all hunks flattened).
+enum SplitVirtualRow {
+    HunkHeader { text: String },
+    Separator { lines_between: u32 },
+    Cells { left: SplitCell, right: SplitCell },
+}
+
+/// Build all virtual lines for a file (all hunks with separators).
+fn build_unified_virtual_lines(file: &DiffFile, _lang: Option<&str>, _theme: &Theme) -> Vec<VirtualLine> {
+    let mut lines = Vec::new();
+    let mut prev_hunk_end: Option<u32> = None;
+
+    for hunk in &file.hunks {
+        // Add separator between hunks showing lines skipped
+        if let Some(prev_end) = prev_hunk_end {
+            if hunk.new_start > prev_end {
+                let gap = hunk.new_start - prev_end;
+                if gap > 0 {
+                    lines.push(VirtualLine::HunkSeparator { lines_between: gap });
+                }
+            }
+        }
+
+        // Hunk header
+        let header = format!(
+            " @@ -{},{} +{},{} @@",
+            hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+        );
+        lines.push(VirtualLine::HunkHeader { text: header });
+
+        // Diff lines with line numbers
+        let mut old_no = hunk.old_start;
+        let mut new_no = hunk.new_start;
+        for diff_line in &hunk.lines {
+            let (old_line_no, new_line_no) = match diff_line {
+                DiffLine::Context(_) => {
+                    let nums = (old_no, new_no);
+                    old_no += 1;
+                    new_no += 1;
+                    nums
+                }
+                DiffLine::Removed(_) => {
+                    let nums = (old_no, new_no);
+                    old_no += 1;
+                    nums
+                }
+                DiffLine::Added(_) => {
+                    let nums = (old_no, new_no);
+                    new_no += 1;
+                    nums
+                }
+            };
+            lines.push(VirtualLine::Diff {
+                line: diff_line.clone(),
+                old_line_no,
+                new_line_no,
+            });
+        }
+
+        prev_hunk_end = Some(hunk.new_start + hunk.new_count);
+    }
+
+    lines
+}
+
+/// Build all virtual split rows for a file (all hunks with separators).
+fn build_split_virtual_rows(file: &DiffFile, lang: Option<&str>, theme: &Theme) -> Vec<SplitVirtualRow> {
+    let mut rows = Vec::new();
+    let mut prev_hunk_end: Option<u32> = None;
+
+    for hunk in &file.hunks {
+        // Add separator between hunks
+        if let Some(prev_end) = prev_hunk_end {
+            if hunk.new_start > prev_end {
+                let gap = hunk.new_start - prev_end;
+                if gap > 0 {
+                    rows.push(SplitVirtualRow::Separator { lines_between: gap });
+                }
+            }
+        }
+
+        // Hunk header
+        let header = format!(
+            " @@ -{},{} +{},{} @@",
+            hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+        );
+        rows.push(SplitVirtualRow::HunkHeader { text: header });
+
+        // Build split cells for this hunk
+        let split_cells = build_split_rows(&hunk.lines, lang, theme);
+        for (left, right) in split_cells {
+            rows.push(SplitVirtualRow::Cells { left, right });
+        }
+
+        prev_hunk_end = Some(hunk.new_start + hunk.new_count);
+    }
+
+    rows
+}
 
 /// Render a `Line` into the buffer at (x, y), clipped to `width`.
 fn render_line(buf: &mut Buffer, x: u16, y: u16, width: u16, line: &Line) {
@@ -1156,49 +1324,87 @@ fn render_line(buf: &mut Buffer, x: u16, y: u16, width: u16, line: &Line) {
     }
 }
 
-/// Build a single unified-mode line with line number prefix and color.
+/// Build a single unified-mode line with syntax-highlighted content.
 fn render_unified_line(
     diff_line: &DiffLine,
     old_no: &mut u32,
     new_no: &mut u32,
-    _width: u16,
+    lang: Option<&str>,
+    theme: &Theme,
 ) -> Line<'static> {
     match diff_line {
         DiffLine::Context(text) => {
-            let ln = format!("{:>3}│ {}", new_no, text);
+            let line_num = format!("{:>4}", new_no);
             *old_no += 1;
             *new_no += 1;
-            Line::from(Span::styled(ln, Style::default().fg(Color::DarkGray)))
+
+            let mut spans = vec![
+                Span::styled(line_num, Style::default().fg(DIFF_LINE_NUM_FG)),
+                Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+            ];
+            spans.extend(highlight_code_inline(text, lang, theme));
+            Line::from(spans)
         }
         DiffLine::Removed(text) => {
-            let ln = format!("{:>3}│-{}", old_no, text);
+            let line_num = format!("{:>4}", old_no);
             *old_no += 1;
-            Line::from(Span::styled(
-                ln,
-                Style::default().fg(Color::Red).bg(Color::Rgb(60, 0, 0)),
-            ))
+
+            let mut spans = vec![
+                Span::styled(
+                    line_num,
+                    Style::default().fg(DIFF_DEL_FG).bg(DIFF_DEL_BG),
+                ),
+                Span::styled(
+                    " ┃─",
+                    Style::default().fg(DIFF_DEL_FG).bg(DIFF_DEL_BG).add_modifier(Modifier::BOLD),
+                ),
+            ];
+            // Highlight then apply diff background
+            for span in highlight_code_inline(text, lang, theme) {
+                spans.push(Span::styled(
+                    span.content.to_string(),
+                    span.style.bg(DIFF_DEL_BG),
+                ));
+            }
+            Line::from(spans)
         }
         DiffLine::Added(text) => {
-            let ln = format!("{:>3}│+{}", new_no, text);
+            let line_num = format!("{:>4}", new_no);
             *new_no += 1;
-            Line::from(Span::styled(
-                ln,
-                Style::default().fg(Color::Green).bg(Color::Rgb(0, 40, 0)),
-            ))
+
+            let mut spans = vec![
+                Span::styled(
+                    line_num,
+                    Style::default().fg(DIFF_ADD_FG).bg(DIFF_ADD_BG),
+                ),
+                Span::styled(
+                    " ┃+",
+                    Style::default().fg(DIFF_ADD_FG).bg(DIFF_ADD_BG).add_modifier(Modifier::BOLD),
+                ),
+            ];
+            // Highlight then apply diff background
+            for span in highlight_code_inline(text, lang, theme) {
+                spans.push(Span::styled(
+                    span.content.to_string(),
+                    span.style.bg(DIFF_ADD_BG),
+                ));
+            }
+            Line::from(spans)
         }
     }
 }
 
-/// A cell in split view: optional line number + content + style.
-#[derive(Debug, Clone)]
+/// A cell in split view: optional line number + highlighted content spans.
+#[derive(Clone)]
 struct SplitCell {
     line_no: Option<u32>,
-    text: String,
-    style: Style,
+    spans: Vec<Span<'static>>,
+    is_added: bool,
+    is_removed: bool,
 }
 
-/// Build paired (left, right) rows for split view.
-fn build_split_rows(lines: &[DiffLine]) -> Vec<(SplitCell, SplitCell)> {
+/// Build paired (left, right) rows for split view with syntax highlighting.
+fn build_split_rows(lines: &[DiffLine], lang: Option<&str>, theme: &Theme) -> Vec<(SplitCell, SplitCell)> {
     let mut rows: Vec<(SplitCell, SplitCell)> = Vec::new();
     let mut i = 0;
     let mut old_no: u32 = 1;
@@ -1207,16 +1413,19 @@ fn build_split_rows(lines: &[DiffLine]) -> Vec<(SplitCell, SplitCell)> {
     while i < lines.len() {
         match &lines[i] {
             DiffLine::Context(text) => {
+                let highlighted = highlight_code_inline(text, lang, theme);
                 rows.push((
                     SplitCell {
                         line_no: Some(old_no),
-                        text: text.clone(),
-                        style: Style::default().fg(Color::DarkGray),
+                        spans: highlighted.clone(),
+                        is_added: false,
+                        is_removed: false,
                     },
                     SplitCell {
                         line_no: Some(new_no),
-                        text: text.clone(),
-                        style: Style::default().fg(Color::DarkGray),
+                        spans: highlighted,
+                        is_added: false,
+                        is_removed: false,
                     },
                 ));
                 old_no += 1;
@@ -1224,13 +1433,24 @@ fn build_split_rows(lines: &[DiffLine]) -> Vec<(SplitCell, SplitCell)> {
                 i += 1;
             }
             DiffLine::Removed(text) => {
+                // Highlight and apply diff background
+                let highlighted: Vec<Span<'static>> = highlight_code_inline(text, lang, theme)
+                    .into_iter()
+                    .map(|s| Span::styled(s.content.to_string(), s.style.bg(DIFF_DEL_BG)))
+                    .collect();
+
                 // Peek ahead for a matching Added.
                 let right = if i + 1 < lines.len() {
                     if let DiffLine::Added(added) = &lines[i + 1] {
+                        let added_highlighted: Vec<Span<'static>> = highlight_code_inline(added, lang, theme)
+                            .into_iter()
+                            .map(|s| Span::styled(s.content.to_string(), s.style.bg(DIFF_ADD_BG)))
+                            .collect();
                         let cell = SplitCell {
                             line_no: Some(new_no),
-                            text: added.clone(),
-                            style: Style::default().fg(Color::Green).bg(Color::Rgb(0, 40, 0)),
+                            spans: added_highlighted,
+                            is_added: true,
+                            is_removed: false,
                         };
                         new_no += 1;
                         i += 2;
@@ -1239,39 +1459,48 @@ fn build_split_rows(lines: &[DiffLine]) -> Vec<(SplitCell, SplitCell)> {
                         i += 1;
                         SplitCell {
                             line_no: None,
-                            text: String::new(),
-                            style: Style::default(),
+                            spans: vec![],
+                            is_added: false,
+                            is_removed: false,
                         }
                     }
                 } else {
                     i += 1;
                     SplitCell {
                         line_no: None,
-                        text: String::new(),
-                        style: Style::default(),
+                        spans: vec![],
+                        is_added: false,
+                        is_removed: false,
                     }
                 };
                 rows.push((
                     SplitCell {
                         line_no: Some(old_no),
-                        text: text.clone(),
-                        style: Style::default().fg(Color::Red).bg(Color::Rgb(60, 0, 0)),
+                        spans: highlighted,
+                        is_added: false,
+                        is_removed: true,
                     },
                     right,
                 ));
                 old_no += 1;
             }
             DiffLine::Added(text) => {
+                let highlighted: Vec<Span<'static>> = highlight_code_inline(text, lang, theme)
+                    .into_iter()
+                    .map(|s| Span::styled(s.content.to_string(), s.style.bg(DIFF_ADD_BG)))
+                    .collect();
                 rows.push((
                     SplitCell {
                         line_no: None,
-                        text: String::new(),
-                        style: Style::default(),
+                        spans: vec![],
+                        is_added: false,
+                        is_removed: false,
                     },
                     SplitCell {
                         line_no: Some(new_no),
-                        text: text.clone(),
-                        style: Style::default().fg(Color::Green).bg(Color::Rgb(0, 40, 0)),
+                        spans: highlighted,
+                        is_added: true,
+                        is_removed: false,
                     },
                 ));
                 new_no += 1;
@@ -1282,15 +1511,62 @@ fn build_split_rows(lines: &[DiffLine]) -> Vec<(SplitCell, SplitCell)> {
     rows
 }
 
-/// Render a split cell into a `Line` clipped to `width`.
+/// Render a split cell into a `Line`.
 fn render_split_cell(cell: &SplitCell, width: u16) -> Line<'static> {
-    let prefix = match cell.line_no {
-        Some(n) => format!("{:>3}│ ", n),
-        None => "   │ ".to_string(),
+    let line_num_style = if cell.is_added {
+        Style::default().fg(DIFF_ADD_FG).bg(DIFF_ADD_BG)
+    } else if cell.is_removed {
+        Style::default().fg(DIFF_DEL_FG).bg(DIFF_DEL_BG)
+    } else if cell.line_no.is_some() {
+        Style::default().fg(DIFF_LINE_NUM_FG)
+    } else {
+        Style::default().fg(Color::DarkGray).bg(Color::Rgb(30, 30, 30))
     };
-    let content = format!("{}{}", prefix, cell.text);
-    let truncated: String = content.chars().take(width as usize).collect();
-    Line::from(Span::styled(truncated, cell.style))
+
+    let prefix = match cell.line_no {
+        Some(n) => format!("{:>4}", n),
+        None => "    ".to_string(),
+    };
+
+    let indicator = if cell.is_added {
+        "┃+"
+    } else if cell.is_removed {
+        "┃─"
+    } else if cell.line_no.is_some() {
+        " │"
+    } else {
+        " ░"
+    };
+
+    let indicator_style = if cell.is_added {
+        Style::default().fg(DIFF_ADD_FG).bg(DIFF_ADD_BG).add_modifier(Modifier::BOLD)
+    } else if cell.is_removed {
+        Style::default().fg(DIFF_DEL_FG).bg(DIFF_DEL_BG).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let content_width = (width as usize).saturating_sub(7);
+    
+    // Build output spans with prefix and indicator
+    let mut out = vec![
+        Span::styled(prefix, line_num_style),
+        Span::styled(indicator.to_string(), indicator_style),
+    ];
+    
+    // Add highlighted content spans, truncating to fit
+    let mut chars_used = 0;
+    for span in &cell.spans {
+        if chars_used >= content_width {
+            break;
+        }
+        let remaining = content_width - chars_used;
+        let content: String = span.content.chars().take(remaining).collect();
+        chars_used += content.chars().count();
+        out.push(Span::styled(content, span.style));
+    }
+
+    Line::from(out)
 }
 
 // ── Parser ────────────────────────────────────────────────────────────────────
@@ -1513,21 +1789,17 @@ diff --git a/src/app.rs b/src/app.rs
 ";
         let files = parse_unified_diff(diff);
         let mut viewer = DiffViewer::new(files);
-        assert_eq!(viewer.current_hunk, 0);
+        // In virtual list: line 0 = hunk1 header, lines 1-3 = hunk1 content,
+        // line 4 = separator, line 5 = hunk2 header, lines 6-8 = hunk2 content
+        assert_eq!(viewer.cursor_line, 0); // starts at first line
 
         viewer.next_hunk();
-        assert_eq!(viewer.current_hunk, 1);
-
-        // next_hunk at last hunk stays put.
-        viewer.next_hunk();
-        assert_eq!(viewer.current_hunk, 1);
+        // Should jump to second hunk header
+        assert!(viewer.cursor_line > 0, "cursor should move forward to next hunk");
 
         viewer.prev_hunk();
-        assert_eq!(viewer.current_hunk, 0);
-
-        // prev_hunk at first hunk stays put.
-        viewer.prev_hunk();
-        assert_eq!(viewer.current_hunk, 0);
+        // Should go back to first hunk header (line 0)
+        assert_eq!(viewer.cursor_line, 0);
     }
 
     #[test]

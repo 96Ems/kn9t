@@ -400,6 +400,52 @@
     },
     {
       "method": "POST",
+      "path": "/plugin/load",
+      "lease": false,
+      "description": "Hot-load a new plugin without server restart. Either provide cmd inline or set from_config to reload config.toml and discover new [[plugin]] entries.",
+      "request": {
+        "type": "object",
+        "properties": {
+          "cmd": { "type": "array", "items": { "type": "string" }, "description": "Command + args to spawn the plugin" },
+          "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables to inject" },
+          "from_config": { "type": "boolean", "description": "If true, re-read config.toml and load any new [[plugin]] entries" }
+        },
+        "additionalProperties": false
+      },
+      "response": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "loaded": { "type": "string", "description": "Declared name of the loaded plugin (inline mode)" },
+              "tools": { "type": "integer", "description": "Number of tools registered by the plugin" }
+            },
+            "required": ["loaded", "tools"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "loaded": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "tools": { "type": "integer" }
+                  },
+                  "required": ["name", "tools"]
+                },
+                "description": "List of newly loaded plugins (from_config mode)"
+              },
+              "message": { "type": "string", "description": "Optional message when no new plugins found" }
+            },
+            "required": ["loaded"]
+          }
+        ]
+      }
+    },
+    {
+      "method": "POST",
       "path": "/ui-respond",
       "lease": false,
       "description": "96E-28: respond to a pending generic plugin→client interaction (opaque payload, unknown id rejected)",

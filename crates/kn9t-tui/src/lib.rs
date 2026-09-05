@@ -5,6 +5,8 @@
 //! R-TUI-030: 3-column layout with collapsible sidebars.
 
 pub mod app;
+#[cfg(test)]
+mod bench;
 pub mod client;
 pub mod reducer;
 
@@ -70,6 +72,7 @@ pub mod model_selector;
 pub mod page_state;
 pub mod prompt_history;
 pub mod prompt_stash;
+pub mod render_cache;
 pub mod search;
 pub mod session_manager;
 pub mod slash;

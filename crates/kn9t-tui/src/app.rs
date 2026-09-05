@@ -325,6 +325,8 @@ pub struct ToolHitArea {
     pub header_y: u16,              // Y position of header line
     pub content_y_start: u16,       // Y start of content area (tabs + output/input)
     pub content_y_end: u16,         // Y end of content area
+    pub x_start: u16,               // X start of card (for scroll detection)
+    pub x_end: u16,                 // X end of card (for scroll detection)
     pub progress_tab_x: (u16, u16), // X range for Progress tab
     pub output_tab_x: (u16, u16),   // X range for Output tab
     pub input_tab_x: (u16, u16),    // X range for Input tab
@@ -399,6 +401,11 @@ pub struct App {
     pub focused_tool: Option<String>,     // call_id of focused tool
     pub tool_hit_areas: Vec<ToolHitArea>, // Click detection areas from last render
 
+    // Scrollbar hit area for transcript (x, y_start, y_end, total_lines, visible_lines).
+    pub scrollbar_area: Option<(u16, u16, u16, usize, usize)>,
+    // Scrollbar drag state: if Some, we're dragging from this Y position.
+    scrollbar_dragging: bool,
+
     // Thinking block collapse state (UI-local).
     pub thinking_state: ThinkingState,
 
@@ -427,6 +434,9 @@ pub struct App {
     keybinds: Keybinds,
     tick_ctl: TickControl,
     term_width: u16,
+    
+    // Render cache for transcript (avoids re-parsing markdown on every frame).
+    pub render_cache: crate::render_cache::RenderCache,
 }
 
 impl App {
@@ -477,6 +487,8 @@ impl App {
             tool_mode: false,
             focused_tool: None,
             tool_hit_areas: Vec::new(),
+            scrollbar_area: None,
+            scrollbar_dragging: false,
             thinking_state: ThinkingState::new(),
             search_state: None,
             which_key_panel: WhichKeyPanel::new(),
@@ -485,6 +497,7 @@ impl App {
             keybinds,
             tick_ctl,
             term_width: 80,
+            render_cache: crate::render_cache::RenderCache::new(),
         }
     }
 
@@ -573,6 +586,9 @@ impl App {
         self.tool_mode = false;
         self.focused_tool = None;
         self.tool_hit_areas.clear();
+        
+        // Clear render cache (new session = new content).
+        self.render_cache.clear();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -715,7 +731,9 @@ impl App {
                         line_count += output.lines().count();
                     }
                 }
-                let visible_lines = 20; // Must match render constant
+                // Use a reasonable default for scroll calculation
+                // The actual visible lines depends on terminal height (handled in render)
+                let visible_lines = 50; // Max visible when terminal is tall
                 let max_scroll = line_count.saturating_sub(visible_lines);
                 tool.scroll_offset = (tool.scroll_offset as isize + delta)
                     .max(0)
@@ -873,16 +891,19 @@ impl App {
     ) -> io::Result<()> {
         let tx = event_loop.sender();
 
+        let mut needs_redraw = true;
+        
         loop {
-            // Render with CSI 2026 synchronized update (flicker-free).
-            // Begin synchronized update - terminal buffers all output.
-            let _ = execute!(terminal.backend_mut(), BeginSynchronizedUpdate);
-            terminal.draw(|f| {
-                self.term_width = f.area().width;
-                render(f, self);
-            })?;
-            // End synchronized update - terminal flushes buffer atomically.
-            let _ = execute!(terminal.backend_mut(), EndSynchronizedUpdate);
+            // Only render when needed (skip redundant redraws on Tick when not streaming)
+            if needs_redraw {
+                // Render with CSI 2026 synchronized update (flicker-free).
+                let _ = execute!(terminal.backend_mut(), BeginSynchronizedUpdate);
+                terminal.draw(|f| {
+                    self.term_width = f.area().width;
+                    render(f, self);
+                })?;
+                let _ = execute!(terminal.backend_mut(), EndSynchronizedUpdate);
+            }
 
             if self.quit {
                 break;
@@ -892,6 +913,9 @@ impl App {
             let Some(event) = event_loop.recv() else {
                 break;
             };
+
+            // Assume we need to redraw, unless it's just a tick with nothing happening
+            needs_redraw = true;
 
             // Handle event.
             match event {
@@ -917,13 +941,18 @@ impl App {
                             &self.session.state.session_id
                                 [..8.min(self.session.state.session_id.len())]
                         );
+                        needs_redraw = false; // Stale event, no need to redraw
                     }
                 }
                 Event::Tick => {
                     self.spinner_frame = self.spinner_frame.wrapping_add(1);
-                    if self.spinner_frame % 25 == 0 {
+                    if self.spinner_frame % 12 == 0 {
                         self.phrase_idx = self.phrase_idx.wrapping_add(1);
                     }
+                    // Only redraw on tick if streaming.
+                    // With 100ms ticks (10 FPS), we render each frame.
+                    // The spinner has 10 frames, so one full cycle takes ~1 second.
+                    needs_redraw = self.streaming;
                 }
                 Event::SseError(session_id, e) => {
                     // Phase 4 fix: R-TUI-230 — reconnect from last_seq instead of lying.
@@ -2473,14 +2502,31 @@ impl App {
 
         match mouse.kind {
             MouseEventKind::Moved => {
-                // Right sidebar stays expanded — no hover behavior needed.
+                // Handle scrollbar drag
+                if self.scrollbar_dragging {
+                    self.handle_scrollbar_drag(mouse.row);
+                }
+            }
+            MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                // Stop scrollbar dragging
+                self.scrollbar_dragging = false;
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                // Check if clicking on scrollbar
+                if self.handle_scrollbar_click(mouse.column, mouse.row) {
+                    return;
+                }
                 self.handle_click(mouse.column, mouse.row);
             }
+            MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                // Handle scrollbar drag
+                if self.scrollbar_dragging {
+                    self.handle_scrollbar_drag(mouse.row);
+                }
+            }
             MouseEventKind::ScrollUp => {
-                // Check if scrolling over a tool card output area
-                if let Some(call_id) = self.find_tool_at_y(mouse.row) {
+                // Check if scrolling over a tool card (both X and Y must be inside card)
+                if let Some(call_id) = self.find_tool_at(mouse.column, mouse.row) {
                     // Scroll within tool output
                     if let Some(tool) = self.tool_mut(&call_id) {
                         if tool.expanded {
@@ -2493,8 +2539,8 @@ impl App {
                 self.transcript.scroll_up(3);
             }
             MouseEventKind::ScrollDown => {
-                // Check if scrolling over a tool card output area
-                if let Some(call_id) = self.find_tool_at_y(mouse.row) {
+                // Check if scrolling over a tool card (both X and Y must be inside card)
+                if let Some(call_id) = self.find_tool_at(mouse.column, mouse.row) {
                     // Scroll within tool output
                     let call_id_clone = call_id.clone();
                     if let Some(tool) = self.tool_mut(&call_id_clone) {
@@ -2526,13 +2572,56 @@ impl App {
     }
 
     /// Find tool call_id if mouse Y is within a tool's content area.
-    fn find_tool_at_y(&self, y: u16) -> Option<String> {
+    /// Find tool at mouse position (checks both X and Y).
+    fn find_tool_at(&self, x: u16, y: u16) -> Option<String> {
         for hit in &self.tool_hit_areas {
-            if y >= hit.content_y_start && y < hit.content_y_end {
+            // Check if mouse is within the card bounds (both X and Y)
+            if y >= hit.content_y_start && y < hit.content_y_end
+                && x >= hit.x_start && x < hit.x_end
+            {
                 return Some(hit.call_id.clone());
             }
         }
         None
+    }
+
+    /// Handle scrollbar click - returns true if click was on scrollbar.
+    fn handle_scrollbar_click(&mut self, x: u16, y: u16) -> bool {
+        if let Some((sb_x, y_start, y_end, _total, _visible)) = self.scrollbar_area {
+            // Check if click is on scrollbar column (or 1 pixel to the left for easier clicking)
+            if x >= sb_x.saturating_sub(1) && x <= sb_x && y >= y_start && y < y_end {
+                self.scrollbar_dragging = true;
+                self.handle_scrollbar_drag(y);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Handle scrollbar drag - scroll to position based on Y coordinate.
+    fn handle_scrollbar_drag(&mut self, y: u16) {
+        if let Some((_, y_start, y_end, total, visible)) = self.scrollbar_area {
+            let scrollbar_height = (y_end - y_start) as usize;
+            if scrollbar_height == 0 || total <= visible {
+                return;
+            }
+
+            // Calculate relative position (0.0 to 1.0)
+            let relative_y = if y <= y_start {
+                0.0
+            } else if y >= y_end {
+                1.0
+            } else {
+                (y - y_start) as f64 / scrollbar_height as f64
+            };
+
+            // Convert to scroll position (inverted: top = max scroll, bottom = 0)
+            let max_scroll = total.saturating_sub(visible);
+            let new_scroll = ((1.0 - relative_y) * max_scroll as f64).round() as usize;
+            
+            // Set scroll position directly
+            self.transcript.set_scroll(new_scroll.min(max_scroll));
+        }
     }
 
     fn handle_click(&mut self, x: u16, y: u16) {

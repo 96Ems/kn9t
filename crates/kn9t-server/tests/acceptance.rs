@@ -3724,4 +3724,252 @@ mod srv {
             .expect_err("zero budget must fail");
         assert!(err.contains("budget"), "budget error surfaced, got {err}");
     }
+
+    // ── steer_during_tool_execution ───────────────────────────────────────────────
+    // Regression test: steering during tool execution must not corrupt the transcript.
+    // Without fix: [assistant:tool_use] -> [user:steer] -> [tool:tool_result] = INVALID
+    // The API must reject the steer while a turn is running (409 turn_running).
+
+    /// A provider that emits a tool call. The tool itself will block.
+    struct ToolCallProvider {
+        call_count: Arc<Mutex<u32>>,
+    }
+
+    impl Provider for ToolCallProvider {
+        fn name(&self) -> &str {
+            "tool-call"
+        }
+        fn stream(
+            &self,
+            req: &Request,
+            _cancel: &Cancel,
+        ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
+            // Title request (autotitle) - return plain text
+            if req.max_tokens == Some(16) {
+                return Ok(Box::new(
+                    vec![
+                        Ok(Chunk::Text {
+                            idx: 0,
+                            delta: "title".into(),
+                        }),
+                        Ok(Chunk::Usage(Usage {
+                            tokens: Tokens::default(),
+                            model: ModelRef {
+                                provider: "tool-call".into(),
+                                id: "m1".into(),
+                            },
+                        })),
+                        Ok(Chunk::Stop(StopReason::Stop)),
+                    ]
+                    .into_iter(),
+                ));
+            }
+
+            let n = {
+                let mut c = self.call_count.lock().unwrap();
+                let v = *c;
+                *c += 1;
+                v
+            };
+
+            if n == 0 {
+                // First call: emit tool_use for slow_tool
+                let chunks = vec![
+                    Ok(Chunk::ToolCall {
+                        idx: 0,
+                        id: kn9t_core::CallId("call_slow".into()),
+                        name: "slow_tool".into(),
+                    }),
+                    Ok(Chunk::ToolArgs {
+                        idx: 0,
+                        delta: r#"{"delay_ms": 500}"#.into(),
+                    }),
+                    Ok(Chunk::Usage(Usage {
+                        tokens: Tokens {
+                            input: 10,
+                            output: 5,
+                            ..Default::default()
+                        },
+                        model: ModelRef {
+                            provider: "tool-call".into(),
+                            id: "m1".into(),
+                        },
+                    })),
+                    Ok(Chunk::Stop(StopReason::ToolUse)),
+                ];
+                Ok(Box::new(chunks.into_iter()))
+            } else {
+                // Subsequent: just text
+                let chunks = vec![
+                    Ok(Chunk::Text {
+                        idx: 0,
+                        delta: "done".into(),
+                    }),
+                    Ok(Chunk::Usage(Usage {
+                        tokens: Tokens::default(),
+                        model: ModelRef {
+                            provider: "tool-call".into(),
+                            id: "m1".into(),
+                        },
+                    })),
+                    Ok(Chunk::Stop(StopReason::Stop)),
+                ];
+                Ok(Box::new(chunks.into_iter()))
+            }
+        }
+    }
+
+    /// A slow tool that blocks for a configurable duration.
+    struct SlowTool {
+        started: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl kn9t_core::Tool for SlowTool {
+        fn spec(&self) -> &kn9t_core::ToolSpec {
+            Box::leak(Box::new(kn9t_core::ToolSpec {
+                name: "slow_tool".into(),
+                description: "A tool that sleeps".into(),
+                schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "delay_ms": {"type": "integer"}
+                    }
+                }),
+                hidden: false,
+                effects: vec![],
+                policy: Default::default(),
+            }))
+        }
+
+        fn execute(
+            &self,
+            args: &serde_json::Value,
+            _ctx: &kn9t_core::ToolCtx,
+            cancel: &Cancel,
+        ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+            self.started.store(true, Ordering::SeqCst);
+            let delay = args["delay_ms"].as_u64().unwrap_or(100);
+            // Sleep in small increments checking cancel
+            let start = std::time::Instant::now();
+            while start.elapsed().as_millis() < delay as u128 {
+                if cancel.cancelled() {
+                    return Ok(kn9t_core::ToolOutput {
+                        content: vec![Content::Text {
+                            text: "cancelled".into(),
+                        }],
+                        details: None,
+                        is_error: true,
+                    });
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(kn9t_core::ToolOutput {
+                content: vec![Content::Text {
+                    text: "slept".into(),
+                }],
+                details: None,
+                is_error: false,
+            })
+        }
+    }
+
+    #[test]
+    fn steer_during_tool_execution_appends_after_tool_result() {
+        // Regression test for transcript corruption when steering during tool execution.
+        // BUG: steer appends directly to store, creating invalid sequence:
+        //   [assistant:tool_use] -> [user:steer] -> [tool:tool_result]
+        // FIX: steer must be buffered and appended AFTER tool_result:
+        //   [assistant:tool_use] -> [tool:tool_result] -> [user:steer]
+        
+        let tool_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let call_count = Arc::new(Mutex::new(0u32));
+
+        let provider: Arc<dyn Provider> = Arc::new(ToolCallProvider {
+            call_count: call_count.clone(),
+        });
+
+        let slow_tool: Arc<dyn kn9t_core::Tool> = Arc::new(SlowTool {
+            started: tool_started.clone(),
+        });
+        let mut tools = kn9t_core::ToolRegistry::new();
+        tools.push(slow_tool);
+
+        let (store, _tmp) = temp_store();
+        let token = kn9t_server::auth::generate_token();
+        let mut state =
+            ServerState::new(store.clone(), token.clone(), tools, Vec::new())
+                .with_default_model(model_spec())
+                .with_provider(provider);
+        state.model_registry = vec![model_spec()];
+        let state = Arc::new(state);
+
+        let h = start(state.clone());
+        let id = make_session(&h);
+        let lease = acquire_lease(&h, &id);
+        let lh: &str = &lease;
+
+        // Send prompt - will trigger tool_use then slow_tool execution
+        let r = req_auth(
+            &h,
+            "POST",
+            &format!("/session/{id}/prompt"),
+            &[("X-Lease", lh)],
+            serde_json::json!({ "text": "run slow tool" }),
+        );
+        assert_eq!(r.status, 200, "prompt accepted");
+
+        // Wait for tool to start executing
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !tool_started.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(tool_started.load(Ordering::SeqCst), "tool must start");
+
+        // Small delay to ensure we're solidly in the tool execution phase
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Steer while the tool is executing - should succeed (200)
+        let r_steer = req_auth(
+            &h,
+            "POST",
+            &format!("/session/{id}/steer"),
+            &[("X-Lease", lh)],
+            serde_json::json!({ "text": "change direction" }),
+        );
+        assert_eq!(
+            r_steer.status, 200,
+            "steer must be accepted, got {}: {}",
+            r_steer.status,
+            String::from_utf8_lossy(&r_steer.body)
+        );
+
+        // Wait for turn to complete
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while kn9t_server::turn::is_turn_running(&state, &id)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        // Verify transcript integrity
+        // CORRECT order: [user:prompt] [assistant:tool_use] [tool:tool_result] [user:steer] ...
+        // WRONG order:   [user:prompt] [assistant:tool_use] [user:steer] [tool:tool_result] ...
+        let roles: Vec<String> = store
+            .query_strings(
+                "SELECT role FROM messages WHERE session_id=?1 ORDER BY seq",
+                &[&id],
+            )
+            .unwrap();
+        
+        // The critical invariant: no user message between assistant (tool_use) and tool (tool_result)
+        let has_corruption = roles.windows(3).any(|w| w == ["assistant", "user", "tool"]);
+        
+        assert!(
+            !has_corruption,
+            "BUG: transcript corrupted - user message between tool_use and tool_result. Got {:?}",
+            roles
+        );
+
+        h.handle.shutdown();
+    }
 } // mod srv

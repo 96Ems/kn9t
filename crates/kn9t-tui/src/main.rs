@@ -41,7 +41,10 @@ fn main() -> io::Result<()> {
     spawn_input_thread(event_loop.sender());
 
     // Spawn tick thread (spinner animation, only active during streaming).
-    let tick_ctl = spawn_tick_thread(event_loop.sender(), std::time::Duration::from_millis(80));
+    // 100ms = 10 FPS for spinner (sufficient for smooth animation).
+    // Combined with the even/odd frame skip in app.rs, effective rate is ~5 FPS.
+    // This is enough for the spinner while minimizing CPU usage.
+    let tick_ctl = spawn_tick_thread(event_loop.sender(), std::time::Duration::from_millis(100));
 
     // Create app.
     let mut app = App::new(config, tick_ctl);

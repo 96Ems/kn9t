@@ -60,6 +60,13 @@ type RenameReq struct {
 	Name string `json:"name"`
 }
 
+// PluginLoadReq — request body.
+type PluginLoadReq struct {
+	Cmd *[]string `json:"cmd,omitempty"`
+	Env *map[string]any `json:"env,omitempty"`
+	FromConfig *bool `json:"from_config,omitempty"`
+}
+
 // UiRespondReq — request body.
 type UiRespondReq struct {
 	ID uint64 `json:"id"`

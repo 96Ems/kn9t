@@ -24,6 +24,80 @@ use crate::bus::SessionSink;
 use crate::state::ServerState;
 use crate::system_prompt;
 
+/// Wrapper HookHost that drains pending steering messages from ServerState.
+/// This ensures steering messages sent via POST /steer are appended AFTER
+/// tool_results, preventing transcript corruption.
+struct ServerHookHost {
+    inner: Arc<dyn HookHost>,
+    state: Arc<ServerState>,
+    session: String,
+}
+
+impl HookHost for ServerHookHost {
+    fn before_tool_call(
+        &self,
+        tool: &str,
+        args: &serde_json::Value,
+        cwd: &std::path::Path,
+    ) -> kn9t_core::HookVeto {
+        self.inner.before_tool_call(tool, args, cwd)
+    }
+
+    fn after_tool_call(
+        &self,
+        tool: &str,
+        args: &serde_json::Value,
+        result: Vec<Content>,
+    ) -> Vec<Content> {
+        self.inner.after_tool_call(tool, args, result)
+    }
+
+    fn before_request(
+        &self,
+        msgs: Vec<Message>,
+        model: &kn9t_core::ModelRef,
+        system: Option<&str>,
+    ) -> Vec<Message> {
+        self.inner.before_request(msgs, model, system)
+    }
+
+    fn should_stop_after_turn(
+        &self,
+        stop: kn9t_core::StopReason,
+        usage: &Usage,
+        turn: u32,
+    ) -> bool {
+        self.inner.should_stop_after_turn(stop, usage, turn)
+    }
+
+    fn prepare_next_turn(
+        &self,
+        stop: kn9t_core::StopReason,
+        usage: &Usage,
+    ) -> kn9t_core::NextTurnPatch {
+        self.inner.prepare_next_turn(stop, usage)
+    }
+
+    /// Drain pending steering messages from the server queue, then collect
+    /// any additional steering from plugins. This ensures POST /steer messages
+    /// appear AFTER tool_results in the transcript.
+    fn get_steering(&self) -> Vec<Message> {
+        // First: drain the server's pending steering queue for this session
+        let mut out = self.state.drain_steering(&self.session);
+        // Then: collect any plugin-generated steering
+        out.extend(self.inner.get_steering());
+        out
+    }
+
+    fn get_followup(&self) -> Vec<Message> {
+        self.inner.get_followup()
+    }
+
+    fn get_api_key(&self, provider: &str) -> Option<String> {
+        self.inner.get_api_key(provider)
+    }
+}
+
 /// 96E-17: the first plugin host that declared the `compactor` capability
 /// becomes the compaction delegate. None when no plugin provides it — the loop
 /// is then fail-closed (compaction demanded → turn ends, session cannot
@@ -254,7 +328,7 @@ pub(crate) fn compose_loop(
     // Each plugin host gets a reference to the bus and session for emitting events.
     let hosts = state.hosts_snapshot();
     // ADR-0008: a test may install hooks in-process rather than spawning a policy plugin.
-    let hooks: Arc<dyn HookHost> = if let Some(h) = state.hooks_override_snapshot() {
+    let inner_hooks: Arc<dyn HookHost> = if let Some(h) = state.hooks_override_snapshot() {
         h
     } else if hosts.is_empty() {
         Arc::new(kn9t_core::NoopHookHost)
@@ -266,6 +340,13 @@ pub(crate) fn compose_loop(
         }
         Arc::new(ComposedHookHost::new(hosts.clone()))
     };
+    // Wrap with ServerHookHost to drain pending steering messages from the queue.
+    // This ensures POST /steer messages are appended AFTER tool_results.
+    let hooks: Arc<dyn HookHost> = Arc::new(ServerHookHost {
+        inner: inner_hooks,
+        state: state.clone(),
+        session: session.0.clone(),
+    });
 
     let mut tools = state.tools_snapshot(); // R-PLUG2-110: tools from plugin subprocess
     if let Some(names) = tool_names {
@@ -502,6 +583,8 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
 /// assistant message yet, do nothing. Otherwise issue one cheap provider call, set
 /// the name, and record a `UsageKind::Title` usage row. Any failure is swallowed.
 pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
+    crate::log!("[autotitle] checking session={}", session.0);
+    
     // Already named? A name (at creation or via API) suppresses auto-titling.
     let name: Option<String> = state
         .store
@@ -513,6 +596,7 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
         .ok()
         .flatten();
     if name.is_some() {
+        crate::log!("[autotitle] already named, skipping");
         return;
     }
 
@@ -526,20 +610,35 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
         )
         .unwrap_or(0);
     if assistant_count == 0 {
+        crate::log!("[autotitle] no assistant messages yet, skipping");
         return;
     }
 
-    // Auto-title with the SESSION's model (same resolution as spawn_turn), falling
-    // back to the default model. Using the default unconditionally fired an extra
-    // provider call (and a silent 400 when that model had no credentials) on every
-    // turn of a flash-based session.
-    let model = state
-        .store
-        .get_model_spec_for_session(&session.0)
-        .or_else(|| state.default_model.clone());
-    let (Some(provider), Some(model)) = (state.provider.clone(), model) else {
+    // Auto-title with a lightweight model from the session's provider. Prefer haiku
+    // or a non-thinking variant to avoid expensive/slow title generation.
+    let session_model = state.store.get_model_spec_for_session(&session.0);
+    let provider_name = session_model
+        .as_ref()
+        .map(|m| m.r#ref.provider.as_str())
+        .or_else(|| state.default_model.as_ref().map(|m| m.r#ref.provider.as_str()));
+    
+    let Some(provider_name) = provider_name else {
+        crate::log!("[autotitle] no provider available");
         return;
     };
+    
+    // Find a cheap model from the same provider (prefer haiku, avoid thinking models)
+    let model = state
+        .store
+        .find_title_model(provider_name)
+        .or_else(|| session_model.clone())
+        .or_else(|| state.default_model.clone());
+    
+    let (Some(provider), Some(model)) = (state.provider.clone(), model) else {
+        crate::log!("[autotitle] no provider or model available");
+        return;
+    };
+    crate::log!("[autotitle] using model {}:{}", model.r#ref.provider, model.r#ref.id);
 
     // Gather a short transcript excerpt to title from (first user message text).
     let excerpt: String = state
@@ -577,9 +676,13 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
     };
 
     let cancel = Cancel::new();
+    crate::log!("[autotitle] calling provider.stream()");
     let stream = match provider.stream(&req, &cancel) {
         Ok(s) => s,
-        Err(_) => return, // best-effort: silently ignore
+        Err(e) => {
+            crate::log!("[autotitle] provider.stream() failed: {e:?}");
+            return;
+        }
     };
 
     // Fold the (small) title stream into text + usage.
@@ -596,13 +699,19 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
                 }
                 _ => {}
             },
-            Err(_) => return, // mid-stream failure: leave name null, no title
+            Err(e) => {
+                crate::log!("[autotitle] stream error: {e:?}");
+                return;
+            }
         }
     }
+    crate::log!("[autotitle] raw title: {:?}", title);
     let title = sanitize_title(&title);
     if title.is_empty() {
+        crate::log!("[autotitle] title empty after sanitize, skipping");
         return;
     }
+    crate::log!("[autotitle] setting title: {:?}", title);
 
     // Persist the name.
     let _ = state.store.execute_raw(

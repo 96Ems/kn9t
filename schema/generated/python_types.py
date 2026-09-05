@@ -81,6 +81,15 @@ class RenameReq:
 
 
 @dataclass
+class PluginLoadReq:
+    """Request body."""
+
+    cmd: Optional[List[str]] = None
+    env: Optional[Dict[str, Any]] = None
+    from_config: Optional[bool] = None
+
+
+@dataclass
 class UiRespondReq:
     """Request body."""
 

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 /// Active tab in expanded tool card.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum ToolTab {
     /// Progress chunks (streaming, shown during execution).
     Progress,

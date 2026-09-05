@@ -500,6 +500,19 @@ Write operations require an **X-Lease** header: the holder token minted by
 | `tools` | u64 | total tools after reload |
 
 
+### `POST /plugin/load` — Hot-load a new plugin without server restart. Either provide cmd inline or set from_config to reload config.toml and discover new [[plugin]] entries.
+
+- **Lease required:** no
+
+**Request body**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `cmd` | string[] | no | Command + args to spawn the plugin |
+| `env` | object | no | Environment variables to inject |
+| `from_config` | bool | no | If true, re-read config.toml and load any new [[plugin]] entries |
+
+
 ### `POST /ui-respond` — 96E-28: respond to a pending generic plugin→client interaction (opaque payload, unknown id rejected)
 
 - **Lease required:** no
