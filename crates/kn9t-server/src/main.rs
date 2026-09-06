@@ -35,6 +35,8 @@ fn run() -> std::io::Result<()> {
 
     let resolved = config::load(&cfg_path).unwrap_or_else(|e| {
         kn9t_server::log!("config warning: {e}; starting with no provider");
+        // Also print to stderr so user sees the error immediately
+        eprintln!("\n[kn9t] Configuration error:\n{e}\n");
         config::ResolvedConfig {
             providers: Vec::new(),
             models: Vec::new(),

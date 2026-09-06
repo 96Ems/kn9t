@@ -321,12 +321,37 @@ pub fn load(path: &Path) -> Result<ResolvedConfig, String> {
     let raw: RawConfig = if path.exists() {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("config: read {}: {e}", path.display()))?;
-        toml::from_str(&text).map_err(|e| format!("config: parse {}: {e}", path.display()))?
+        toml::from_str(&text).map_err(|e| format_toml_error(path, &text, e))?
     } else {
         RawConfig::default()
     };
 
     resolve(raw)
+}
+
+/// Format a TOML parse error with helpful suggestions for common mistakes.
+fn format_toml_error(path: &Path, text: &str, err: toml::de::Error) -> String {
+    let mut msg = format!("config: parse {}: {err}", path.display());
+
+    // Try to detect unescaped backslashes in Windows paths
+    if let Some(span) = err.span() {
+        let line_num = text[..span.start].matches('\n').count() + 1;
+        if let Some(line) = text.lines().nth(line_num.saturating_sub(1)) {
+            // Check for common Windows path patterns with unescaped backslashes
+            if line.contains(":\\") && !line.contains("\\\\") {
+                msg.push_str("\n\n");
+                msg.push_str("╭─ Suggestion ─────────────────────────────────────────────────╮\n");
+                msg.push_str("│ Windows paths require escaped backslashes in TOML strings.  │\n");
+                msg.push_str("│ Use one of these formats:                                   │\n");
+                msg.push_str("│   • Double backslashes:  \"C:\\\\Users\\\\...\"                   │\n");
+                msg.push_str("│   • Forward slashes:     \"C:/Users/...\"                     │\n");
+                msg.push_str("│   • Literal string:      'C:\\Users\\...'  (single quotes)   │\n");
+                msg.push_str("╰───────────────────────────────────────────────────────────────╯");
+            }
+        }
+    }
+
+    msg
 }
 
 // ── Resolution ────────────────────────────────────────────────────────────────
