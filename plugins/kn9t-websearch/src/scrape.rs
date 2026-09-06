@@ -87,7 +87,7 @@ impl PluginTool for Scrape {
             "formats": ["markdown"]
         });
 
-        let response = match ureq::post("https://api.firecrawl.dev/v1/scrape")
+        let response = match http::agent().post("https://api.firecrawl.dev/v1/scrape")
             .set("Content-Type", "application/json")
             .send_json(&body)
         {

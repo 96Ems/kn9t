@@ -1,5 +1,6 @@
 //! websearch tool — searches the web using Firecrawl's keyless API.
 
+use crate::http;
 use kn9t_plugin_sdk::{
     ctx::ToolCallCtx,
     traits::{PluginTool, ToolOutput},
@@ -87,7 +88,7 @@ impl PluginTool for WebSearch {
             "limit": limit
         });
 
-        let response = match ureq::post("https://api.firecrawl.dev/v2/search")
+        let response = match http::agent().post("https://api.firecrawl.dev/v2/search")
             .set("Content-Type", "application/json")
             .send_json(&body)
         {
