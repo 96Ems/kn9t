@@ -215,6 +215,24 @@ Notes:
 
 ---
 
+## 9.1 NEVER discard uncommitted changes without explicit permission
+
+**CRITICAL RULE:** Do NOT run `git checkout <path>`, `git restore <path>`, `git reset --hard`,
+or any command that discards uncommitted modifications without **explicitly asking the user
+first** and receiving confirmation.
+
+Uncommitted changes may contain hours of work. Discarding them is **irreversible data loss**.
+
+Before cleaning the worktree:
+1. Run `git status` to see what's modified
+2. **Ask the user:** "These files have uncommitted changes: X, Y, Z. Can I discard them?"
+3. Only proceed after explicit "yes"
+
+This applies even when you think the changes are "cleanup" or "unrelated". The user may have
+been working on them separately.
+
+---
+
 ## 10. No patches, fix the architecture
 
 When a bug reveals a design flaw, **fix the design** — do not patch around it. Patches

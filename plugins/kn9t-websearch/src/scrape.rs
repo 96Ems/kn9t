@@ -1,5 +1,6 @@
 //! scrape tool — fetches and extracts content from a URL using Firecrawl.
 
+use crate::http;
 use kn9t_plugin_sdk::{
     ctx::ToolCallCtx,
     traits::{PluginTool, ToolOutput},
