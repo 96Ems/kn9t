@@ -21,6 +21,7 @@ fn runtime_with_ask_user(state: serde_json::Value) -> LuaRuntime {
     rt.apply_plugin_lua_op(&PluginLuaOp::Register {
         plugin: "kn9t-ask-user".into(),
         source: ASK_USER_LUA.into(),
+        placement: Default::default(),
     });
     rt.apply_plugin_lua_op(&PluginLuaOp::SetState {
         plugin: "kn9t-ask-user".into(),
@@ -205,6 +206,20 @@ fn plugin_is_placed_by_the_builtin_layout() {
 
     let mut snap = kn9t_tui::lua::state::StateSnapshot::default();
     snap.plugin_views = rt.plugin_view_names();
+    // The built-in layout routes plugin views by their declared placement, so
+    // the structured specs are what it actually reads; publishing only the bare
+    // name list leaves it with nothing to place.
+    snap.plugin_view_specs = rt
+        .plugin_views()
+        .into_iter()
+        .map(|(name, p)| kn9t_tui::lua::state::PluginViewSpec {
+            title: p.title.clone().unwrap_or_else(|| name.clone()),
+            placement: p.zone.clone().unwrap_or_default(),
+            rows: p.rows.unwrap_or(0),
+            cols: p.cols.unwrap_or(0),
+            name,
+        })
+        .collect();
     rt.update_state(&snap);
     rt.update_context(&kn9t_tui::lua::context::ContextStats::default());
 

@@ -1,13 +1,13 @@
--- kn9t TUI — full UI defined in Lua
+-- kn9t TUI - full UI defined in Lua
 -- =================================
 -- Rust renders; Lua decides layout, content and styling.
 --
--- State, refreshed every frame (cheap — bounded size):
+-- State, refreshed every frame (cheap - bounded size):
 --   kn9t.state.session       {id, title, streaming, aborting, has_lease, last_seq}
 --   kn9t.state.usage         {turn={input,output,cache_read,cache_write},
 --                             total={...}, cost, toks_per_sec}
 --   kn9t.state.recent_tools  [{name, status}, ...] newest first, capped
---   kn9t.state.sessions      [{id, name, is_current}, ...] all known sessions —
+--   kn9t.state.sessions      [{id, name, is_current}, ...] all known sessions -
 --                            already cached, no HTTP call; feed to a "list"
 --                            widget and kn9t.action("switch_session", id)
 --   kn9t.state.message_count number
@@ -16,13 +16,13 @@
 --                             system_count, user_count, assistant_count, tool_count,
 --                             ctx_window, max_out}  -- from the server; nil if unknown
 --
--- On demand only (do NOT call every frame — copies text):
+-- On demand only (do NOT call every frame - copies text):
 --   kn9t.get_messages(from, to)  -> [{role, content, tools={...}}, ...]
 --   kn9t.get_tools()             -> [{name, description, plugin, enabled}, ...]
 --
 -- Widgets:
 --   {type="native", view=...}   one of kn9t.native_views:
---                               "transcript" | "input" | "status" | "diff" | "welcome"
+--                               "transcript" | "input" | "status" | "welcome"
 --   {type="text", content=... | spans={{text=,fg=,bold=},...},
 --                 markdown=bool, syntax="lang", math=bool, linkify=bool,
 --                 align="left"|"center"|"right", wrap=bool}
@@ -34,7 +34,7 @@
 --   {type="float", x=,y=,w=,h=, clear=bool, child=...}  -- popup over the layout
 --   {type="spacer"}
 --   {type="plugin", plugin="name"}
--- Any widget may also carry `id="..."` to make it clickable — see kn9t.on_click
+-- Any widget may also carry `id="..."` to make it clickable - see kn9t.on_click
 -- below. Sizing: size = {fixed=N} | {percent=N} | {flex=N}
 --
 -- Styling: fg/bg accept "red", "lightred"/"brightred", "#rgb", "#rrggbb",
@@ -50,8 +50,8 @@
 --   kn9t.on_click(id, function(local_x, local_y, button) ... end)
 --     Fires when the widget carrying that `id=` is clicked. Coordinates are
 --     local to the widget's own rect. Return false to let Rust's built-in
---     click handling (tool cards, diff viewer) still run; anything else
---     consumes the click. kn9t.remove_click(id) unbinds it.
+--     click handling (tool cards) still run; anything else consumes the
+--     click. kn9t.remove_click(id) unbinds it.
 --
 -- Commands (palette + slash), additive to the built-ins:
 --   kn9t.register_command({
@@ -66,31 +66,38 @@
 --   scroll_up/down/top/bottom, prev_message, next_message,
 --   prev_user_message, next_user_message, session_picker, new_session,
 --   switch_session (takes an id: kn9t.action("switch_session", id)),
---   open_diff (runs `git diff` and populates the viewer — pair this with
---     placing {type="native", view="diff"} in your layout; the native view
---     only draws an already-open viewer, it does not open one). While a
---     viewer is open, Rust routes every key into it FIRST (see app.rs
---     handle_key), so any Lua "close" binding must call
---     kn9t.action("diff_close") — that's the only thing that actually clears
---     App.diff_viewer. Flipping your own MAIN_VIEW-style state alone does
---     nothing on the Rust side and every key stays trapped in the viewer,
+--   focus_plugin (takes a plugin name: kn9t.action("focus_plugin", name);
+--     with no argument it releases focus). A focused plugin view receives keys
+--     it bound via kn9t.on_key BEFORE the host sees them, so a panel can own
+--     j/k while focused; Esc always releases. This is how an interactive
+--     plugin panel - the kn9t-git-integration diff review, for instance - is
+--     driven. Clicking a plugin view focuses it too.
 --   open_models, open_tools, open_palette, refresh_tools, search,
 --   toggle_thinking, tool_mode, abort, quit, compact-free editing actions,
---   cycle_model_next/prev, and the diff viewer:
---   diff_next_hunk, diff_prev_hunk, diff_next_file, diff_prev_file,
---   diff_cursor_up, diff_cursor_down, diff_toggle_split,
---   diff_toggle_fullscreen, diff_toggle_tree, diff_comment, diff_close
+--   cycle_model_next/prev
+--
+-- Diff review is NOT a native view: it ships as the kn9t-git-integration
+-- plugin, which runs `git diff` itself and renders/handles input in its own
+-- Lua. Place it like any plugin view ({type="plugin", plugin=...}) and focus
+-- it to interact.
 --
 -- Performance: render_ui()'s result is cached and only rebuilt when something
 -- Rust can see changed (message/tool counts, scroll, streaming, cost, size).
 -- A Lua-local toggle (a variable only this file knows about) is invisible to
--- that check — call kn9t.invalidate() after changing one, or the next redraw
+-- that check - call kn9t.invalidate() after changing one, or the next redraw
 -- may reuse last frame's tree.
 
 -- ── Config ──────────────────────────────────────────────────────────────────
-local SIDEBAR_WIDTH   = 34
-local SIDEBAR_VISIBLE = true
-local SIDEBAR_MIN_W   = 90     -- auto-hide below this terminal width
+-- Globals, not locals, so a user file layered on top (`~/.kn9t/tui/50_mine.lua`)
+-- can override any of them without copying this whole file.
+SIDEBAR_WIDTH   = 34
+SIDEBAR_VISIBLE = true
+SIDEBAR_MIN_W   = 90     -- auto-hide sidebars below this terminal width
+
+-- Which view the main pane shows, displayed in the header. "chat" is the only
+-- value this file produces; a plugin panel is a separate column, not a mode. A
+-- user file may set it to anything and render accordingly.
+MAIN_VIEW = "chat"
 
 -- Usable context before compaction. Comes from the model the server reports
 -- (kn9t.context.ctx_window); the fallback only applies when the provider does
@@ -372,22 +379,225 @@ end
 --
 -- Nothing here is per-plugin: the list comes from kn9t.state.plugin_views, so
 -- a newly registered plugin appears without editing this file.
+--
+-- A focused view is given far more room and a highlighted border: an
+-- interactive panel (a diff review, say) is unusable in a status-sized strip,
+-- but permanently reserving that space would crowd out the transcript. Focus is
+-- the signal for which of the two a view currently needs.
 PLUGIN_VIEW_ROWS = 8
+PLUGIN_VIEW_ROWS_FOCUSED = 24
 PLUGIN_COL_WIDTH = 34
 
-local function plugin_view_children(width)
-    local names = (kn9t.state and kn9t.state.plugin_views) or {}
+-- Build the boxes for plugin views in a given zone.
+--
+-- Routing is by the plugin's *declared* placement, never by its name: a plugin
+-- says `placement="sidebar"` / `"main"` when it registers, and this decides what
+-- that means. Installing a plugin therefore never requires editing this file,
+-- and a plugin still cannot seize space - the zone it asks for is a request this
+-- function is free to ignore.
+--
+-- `title` and `rows` come from the plugin too, with sane fallbacks: `title`
+-- defaults to the plugin id (which reads poorly as a heading, hence the hint),
+-- and `rows` to PLUGIN_VIEW_ROWS.
+local function plugin_views_in(zone)
+    local specs = (kn9t.state and kn9t.state.plugin_view_specs) or {}
+    local focused = (kn9t.state and kn9t.state.focused_plugin) or ""
     local out = {}
-    for _, name in ipairs(names) do
-        table.insert(out, {
-            type = "box",
-            title = " " .. name .. " ",
-            border = true,
-            size = { fixed = PLUGIN_VIEW_ROWS },
-            child = { type = "plugin", plugin = name },
-        })
+    for _, spec in ipairs(specs) do
+        -- An unplaced view defaults to the sidebar: somewhere visible beats
+        -- nowhere, and the narrow column is the least disruptive default.
+        local placed = (spec.placement ~= "" and spec.placement) or "sidebar"
+        if placed == zone then
+            local is_focused = (spec.name == focused)
+            local title = (spec.title ~= "" and spec.title) or spec.name
+            -- Focused panels get the room the plugin asked for: an interactive
+            -- view is unusable in a status-sized strip, but permanently
+            -- reserving that space would crowd out the transcript.
+            local rows = PLUGIN_VIEW_ROWS
+            if is_focused then
+                rows = (spec.rows > 0 and spec.rows) or PLUGIN_VIEW_ROWS_FOCUSED
+            end
+            table.insert(out, {
+                type = "box",
+                -- Spell out how to leave: the panel's own keys are the plugin's,
+                -- so nothing here can list them per-plugin.
+                title = is_focused and (" " .. title .. " - Esc to release ")
+                                    or (" " .. title .. " "),
+                border = true,
+                border_fg = is_focused and "cyan" or nil,
+                size = { fixed = rows },
+                child = { type = "plugin", plugin = spec.name },
+            })
+        end
     end
     return out
+end
+
+-- Focus the next plugin view, or release focus after the last one.
+--
+-- Cycling by index over kn9t.state.plugin_views keeps this free of plugin names:
+-- whatever is installed is reachable, in the order the host reports. Clicking a
+-- view focuses it too; this is the keyboard route, so a panel works without a
+-- mouse. Esc always releases (handled by the host).
+local function focus_cycle()
+    local names = (kn9t.state and kn9t.state.plugin_views) or {}
+    if #names == 0 then return false end
+    local focused = (kn9t.state and kn9t.state.focused_plugin) or ""
+    if focused == "" then
+        kn9t.action("focus_plugin", names[1])
+        return
+    end
+    for i, n in ipairs(names) do
+        if n == focused then
+            if i < #names then
+                kn9t.action("focus_plugin", names[i + 1])
+            else
+                kn9t.action("focus_plugin")   -- past the last: release
+            end
+            return
+        end
+    end
+    -- Focused view vanished (plugin unloaded): start over.
+    kn9t.action("focus_plugin", names[1])
+end
+
+kn9t.map("C-g", focus_cycle)
+kn9t.map("F10", focus_cycle)
+
+-- Clicking the left tab bar. Only one source today, so this just keeps the
+-- binding live for when a second tab lands.
+kn9t.on_click("left_tabbar", function()
+    LEFT_TAB = "sessions"
+    kn9t.invalidate()
+    return true
+end)
+
+
+-- ── Header ──────────────────────────────────────────────────────────────────
+--
+-- A breadcrumb on the left, an alert slot on the right. Left-aligned and
+-- right-aligned groups cannot coexist in one `text` node, so this is a
+-- horizontal split: breadcrumb takes the flex, the alert is sized to its own
+-- content.
+--
+-- `ALERT` is a plain global any config file (or a later override) can set:
+--   ALERT = { text = "reconnecting", fg = "yellow" }
+-- Set it to nil to clear. Remember kn9t.invalidate() after changing it, since
+-- the render cache cannot see a Lua-local variable.
+ALERT = nil
+
+local function build_header(width)
+    local left = {
+        { text = " kn9t ", fg = C.accent, bold = true },
+        { text = MAIN_VIEW == "chat" and "Chat" or MAIN_VIEW, fg = C.value },
+    }
+
+    local right = {}
+    if ALERT then
+        table.insert(right, { text = ALERT.text, fg = ALERT.fg or C.danger, bold = true })
+        table.insert(right, { text = "  ", fg = C.dim })
+    end
+
+    local right_w = 0
+    for _, s in ipairs(right) do right_w = right_w + #s.text end
+
+    local children = {
+        { type = "text", spans = left, size = { flex = 1 }, wrap = false },
+    }
+    if right_w > 0 then
+        table.insert(children, {
+            type = "text", spans = right, size = { fixed = right_w },
+            align = "right", wrap = false,
+        })
+    end
+
+    return {
+        type = "box",
+        border = "plain",
+        border_fg = C.dim,
+        size = { fixed = 3 },
+        child = { type = "split", direction = "horizontal", children = children },
+    }
+end
+
+
+-- ── Sessions list ───────────────────────────────────────────────────────────
+--
+-- `kn9t.state.sessions` is already a Rust-side cache, so reading it per frame
+-- costs no HTTP call. Clicking a row calls kn9t.action("switch_session", id) -
+-- the one action that carries data.
+--
+-- Each row is its own clickable text node rather than a `list` widget: `id=`
+-- wraps a whole widget, and a list is one node with N items, so a list cannot
+-- carry a per-row id today.
+
+-- Registered once per session id seen, so rebuilding the sidebar every frame
+-- does not re-register handlers. on_click replaces by id anyway; this just
+-- avoids the churn.
+local registered_session_clicks = {}
+
+local function session_list(inner_w)
+    local sessions = (kn9t.state and kn9t.state.sessions) or {}
+    if #sessions == 0 then
+        return { type = "text", content = "(no sessions yet)", fg = C.dim, size = { flex = 1 } }
+    end
+
+    local rows = {}
+    for _, s in ipairs(sessions) do
+        local id = "session_row_" .. s.id
+        if not registered_session_clicks[id] then
+            local sid = s.id
+            kn9t.on_click(id, function() kn9t.action("switch_session", sid); return true end)
+            registered_session_clicks[id] = true
+        end
+        local name = s.name or s.id
+        if #name > inner_w - 2 then name = name:sub(1, inner_w - 3) .. "~" end
+        table.insert(rows, {
+            id = id,
+            type = "text",
+            content = (s.is_current and "> " or "  ") .. name,
+            fg = s.is_current and C.accent or C.value,
+            size = { fixed = 1 },
+        })
+    end
+    return { type = "split", direction = "vertical", size = { flex = 1 }, children = rows }
+end
+
+
+-- ── Left sidebar: sessions ──────────────────────────────────────────────────
+--
+-- A tab bar so this column can host more than one source as things grow. It
+-- deliberately lists no plugin names: plugin views get their own column, driven
+-- entirely by kn9t.state.plugin_views, so installing a plugin never requires
+-- editing this file.
+LEFT_TAB = "sessions"
+LEFT_VISIBLE = true
+LEFT_WIDTH = 32
+
+local function left_tab_bar()
+    local function tab(label, active)
+        return { text = " " .. label .. " ", fg = active and C.value or C.dim, bold = active }
+    end
+    return {
+        type = "text",
+        id = "left_tabbar",
+        size = { fixed = 1 },
+        align = "center",
+        spans = { tab("Sessions", LEFT_TAB == "sessions") },
+    }
+end
+
+local function build_sidebar_left(inner_w)
+    return {
+        type = "box",
+        border = "plain",
+        border_fg = C.dim,
+        child = {
+            type = "split",
+            direction = "vertical",
+            children = { left_tab_bar(), session_list(inner_w) },
+        },
+    }
 end
 
 
@@ -406,8 +616,32 @@ function render_ui(width, height)
 
     -- Plugin views get their own column so they are independent of the info
     -- panel: hiding one must not hide the other.
-    local plugins = plugin_view_children(width)
+    -- A plugin that declared placement="main" takes over the centre column,
+    -- stacked above the transcript. This is what makes a full-size review panel
+    -- possible without this file knowing which plugin provides it.
+    local main_plugins = plugin_views_in("main")
+    if #main_plugins > 0 then
+        local stacked = { size = { flex = 1 }, type = "split", direction = "vertical",
+                          children = {} }
+        for _, p in ipairs(main_plugins) do
+            table.insert(stacked.children, p)
+        end
+        table.insert(stacked.children, main)
+        main.size = { flex = 1 }
+        main = stacked
+    end
+
+    local plugins = plugin_views_in("sidebar")
     local columns = { main }
+
+    if LEFT_VISIBLE and width >= SIDEBAR_MIN_W then
+        table.insert(columns, 1, {
+            type = "box",
+            border = false,
+            size = { fixed = LEFT_WIDTH },
+            child = build_sidebar_left(LEFT_WIDTH - 2),
+        })
+    end
 
     if #plugins > 0 and width >= SIDEBAR_MIN_W then
         table.insert(columns, {
@@ -428,14 +662,26 @@ function render_ui(width, height)
     end
 
     if #columns == 1 then
-        return main
+        return {
+            type = "split",
+            direction = "vertical",
+            children = { build_header(width), main },
+        }
     end
 
     main.size = { flex = 1 }
     return {
         type = "split",
-        direction = "horizontal",
-        children = columns,
+        direction = "vertical",
+        children = {
+            build_header(width),
+            {
+                type = "split",
+                direction = "horizontal",
+                size = { flex = 1 },
+                children = columns,
+            },
+        },
     }
 end
 
@@ -529,7 +775,22 @@ function tool_mode(name)
     return TOOL_MODES[name]
 end
 
-kn9t.map("F5", function() SIDEBAR_VISIBLE = not SIDEBAR_VISIBLE end)
+-- Sidebar toggles, independent per side. Both call kn9t.invalidate(): the render
+-- cache is fingerprinted from state Rust can see, and a Lua-local flag is not
+-- part of that, so without it the next redraw reuses the stale tree.
+kn9t.map("F1", function()
+    LEFT_VISIBLE = not LEFT_VISIBLE
+    kn9t.invalidate()
+end)
+kn9t.map("F2", function()
+    SIDEBAR_VISIBLE = not SIDEBAR_VISIBLE
+    kn9t.invalidate()
+end)
+-- Kept as an alias for the right sidebar: F5 was this file's original toggle.
+kn9t.map("F5", function()
+    SIDEBAR_VISIBLE = not SIDEBAR_VISIBLE
+    kn9t.invalidate()
+end)
 kn9t.map("F7", function() kn9t.action("scroll_top") end)
 kn9t.map("F8", function() kn9t.action("scroll_bottom") end)
 

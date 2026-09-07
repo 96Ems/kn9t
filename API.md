@@ -61,7 +61,7 @@ Write operations require an **X-Lease** header: the holder token minted by
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `sessions` | object[] |  |
+| `sessions` | object[] | Shape: `{created_at?: string, cwd?: string, head_seq: u64, id: string, name?: object}[]` |
 
 
 ### `GET /session/{id}` — Session snapshot: meta, model, head_seq, transcript
@@ -77,7 +77,7 @@ Write operations require an **X-Lease** header: the holder token minted by
 | `cost_usd` | number |  |
 | `ctx_tokens` | u64 |  |
 | `head_seq` | u64 |  |
-| `meta` | object |  |
+| `meta` | object | Shape: `{created_at?: string, cwd?: string, id: string, name?: object}` |
 | `model` | ModelRef |  |
 | `transcript` | object[] |  |
 
@@ -93,7 +93,7 @@ Write operations require an **X-Lease** header: the holder token minted by
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `origin_seq` | u64 | no |  |
-| `reason` | string | no |  |
+| `reason` | `fork` \| `rewind` \| `subagent` \| `tree` | no |  |
 
 
 **Response `200`**
@@ -252,9 +252,9 @@ Write operations require an **X-Lease** header: the holder token minted by
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `decision` | string | yes |  |
+| `decision` | `allow` \| `deny` \| `always` | yes |  |
 | `id` | u64 | yes |  |
-| `scope` | string | no |  |
+| `scope` | `once` \| `session` \| `always` | no |  |
 
 
 **Response `200`**
@@ -300,8 +300,8 @@ Write operations require an **X-Lease** header: the holder token minted by
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `auth` | object |  |
-| `models` | object[] |  |
+| `auth` | object | Shape: `{authenticated: bool, provider?: object}` |
+| `models` | object[] | Shape: `{api_id?: string, ctx_window?: u64, id: string, is_default?: bool, max_out?: u64, price?: object, provider: string}[]` |
 
 
 ### `GET /cost` — Usage cost analytics (?since=&group_by=model|kind|session)
@@ -312,7 +312,7 @@ Write operations require an **X-Lease** header: the holder token minted by
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `group_by` | string | Aggregation dimension (default model) (values: model \| kind \| session) |
+| `group_by` | `model` \| `kind` \| `session` | Aggregation dimension (default model) |
 | `since` | u64 | Only usage rows with ts >= since (ms epoch). 0 = all. |
 
 
@@ -323,7 +323,7 @@ Write operations require an **X-Lease** header: the holder token minted by
 | Field | Type | Description |
 |-------|------|-------------|
 | `group_by` | string |  |
-| `groups` | object[] |  |
+| `groups` | object[] | Shape: `{cost_usd: number, group: string, tokens_in: u64, tokens_out: u64}[]` |
 | `since` | u64 |  |
 | `total_cost_usd` | number |  |
 
@@ -427,7 +427,7 @@ Write operations require an **X-Lease** header: the holder token minted by
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `tools` | object[] |  |
+| `tools` | object[] | Shape: `{description?: string, disabled?: bool, hidden?: bool, name: string, plugin?: string}[]` |
 
 
 
@@ -651,7 +651,7 @@ All plugin communication is newline-delimited JSON (NdJSON) over stdin/stdout.
 
 | `t` | Fields | Notes |
 |-----|--------|-------|
-| `apiresult` | `error: string`, `id: u64`, `ok: bool`, `result: object` |  |
+| `apiresult` | `error?: string`, `id: u64`, `ok: bool`, `result?: object` |  |
 | `cancel` | `id: u64` |  |
 | `hello` | `kn9t: string`, `proto: u64` |  |
 | `hook` | `hook: string`, `id: u64`, `payload: object` |  |
@@ -663,8 +663,8 @@ All plugin communication is newline-delimited JSON (NdJSON) over stdin/stdout.
 |-----|--------|-------|
 | `chunk` | `id: u64` |  |
 | `done` | `id: u64` |  |
-| `hello` | `capabilities: string[]`, `events: string[]`, `hooks: string[]`, `name: string`, `provider: object`, `tools: object[]` |  |
-| `request` | `id: u64`, `op: string`, `payload: object` | Plugin → host API request (host_api capability). Ops: provider_complete, session_read, tool_execute, session_fork, session_prompt, tool_list, ui_directive, ui_register_lua, ui_set_state, ui_clear. TUI display is plugin-supplied Lua: send the source once with ui_register_lua {source} (defines render(state) returning a widget tree), then push data with ui_set_state {state} (arbitrary JSON) and tear down with ui_clear. The host does not interpret the Lua or the state; the widget vocabulary belongs to the TUI. |
+| `hello` | `capabilities?: string[]`, `events?: string[]`, `hooks?: string[]`, `name: string`, `provider?: ProviderDecl`, `tools?: ToolSpec[]` |  |
+| `request` | `id: u64`, `op: string`, `payload: object` | Plugin → host API request (host_api capability). Ops: provider_complete, session_read, tool_execute, session_fork, session_prompt, tool_list, ui_directive, ui_register_lua, ui_set_state, ui_clear. TUI display is plugin-supplied Lua: send the source once with ui_register_lua {source} (defines render(state) returning a widget tree), then push data with ui_set_state {state} (arbitrary JSON) and tear down with ui_clear. The host does not interpret the Lua or the state; the widget vocabulary belongs to the TUI. A registered view is interactive, not render-only: inside its chunk it may call kn9t.on_click(id, fn) to handle clicks on widgets carrying that id, kn9t.on_key(key, fn) to handle keys while the view holds focus, and kn9t.insert_input(text) to append to the user's prompt. Handlers are keyed per plugin, so two plugins may reuse the same id or key without colliding; a handler returning false falls through to the host. Keys only reach a focused view (Esc blurs), so a plugin cannot swallow global keybinds. |
 | `result` | `id: u64` |  |
 
 ### 5.4 `Content`
@@ -678,9 +678,9 @@ All plugin communication is newline-delimited JSON (NdJSON) over stdin/stdout.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `content` | object[] |  |
-| `role` | string |  |
-| `silent` | bool |  |
+| `content` | Content[] |  |
+| `role` | `user` \| `assistant` |  |
+| `silent` | bool | Default: `false` |
 
 ### 5.6 `ModelDecl`
 
@@ -688,7 +688,7 @@ All plugin communication is newline-delimited JSON (NdJSON) over stdin/stdout.
 |-------|------|-------------|
 | `ctx_window` | u64 |  |
 | `id` | string |  |
-| `price` | object |  |
+| `price` | object | Shape: `{cache_read?: number, cache_write?: number, input?: number, output?: number}` |
 
 ### 5.7 `ModelRef`
 
@@ -702,17 +702,17 @@ All plugin communication is newline-delimited JSON (NdJSON) over stdin/stdout.
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | string |  |
-| `models` | object[] |  |
+| `models` | ModelDecl[] |  |
 
 ### 5.9 `ToolSpec`
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `description` | string |  |
-| `effects` | object[] |  |
-| `hidden` | bool |  |
+| `effects` | object[] | Shape: `{field: string, kind: shell\|fs_read\|fs_write\|network}[]`. Default: `[]` |
+| `hidden` | bool | Default: `false` |
 | `name` | string |  |
-| `parallel_safe` | bool |  |
+| `parallel_safe` | bool | Default: `false` |
 | `schema` | object |  |
 
 ### 5.10 `Usage`
@@ -724,7 +724,7 @@ All plugin communication is newline-delimited JSON (NdJSON) over stdin/stdout.
 | `input` | u64 |  |
 | `output` | u64 |  |
 
-### 5.5 Handshake sequence
+### 5.11 Handshake sequence
 
 ```
 Host   →  {"t": "hello", "proto": 1, "kn9t": "0.1.0"}
@@ -735,7 +735,7 @@ Plugin →  {"t": "hello", "name": "my-plugin", "hooks": [...], "tools": [...], 
 A plugin declares itself with `name` (unique id), `hooks`, `tools` (see `ToolSpec`),
 `capabilities` (e.g. `["streaming", "cancelable"]`), and the `events` it wants.
 
-### 5.6 Flattened body fields
+### 5.12 Flattened body fields
 
 The protocol wraps hook **bodies** with `#[serde(flatten)]` — body fields sit at the
 **same level** as `t` and `id`, NOT nested under a `"body"` key:
@@ -751,7 +751,7 @@ The protocol wraps hook **bodies** with `#[serde(flatten)]` — body fields sit 
 
 This applies to `result`, `chunk`, and `done` plugin→host messages.
 
-### 5.7 Lifecycle hooks
+### 5.13 Lifecycle hooks
 
 Plugins subscribe to lifecycle hooks in the hello message. Each hook invocation is
 `{"t": "hook", "id": <int>, "hook": "<name>", "payload": {...}}`; the plugin answers with
@@ -759,16 +759,103 @@ Plugins subscribe to lifecycle hooks in the hello message. Each hook invocation 
 
 | Hook | Payload | Reply | Composition | Failure posture |
 |------|---------|-------|-------------|-----------------|
-| `before_tool_call` | `{session_id, tool, args}` | `{action: "allow"\|"deny"\|"replace", ...}` | First-deny-wins | **Deny** (fail closed) |
-| `after_tool_call` | `{session_id, tool, args, result}` | `{action: "keep"\|"replace", content}` | Pipeline | Keep original |
-| `before_request` | `{session_id, messages, model, system}` | `{action: "keep"\|"replace", messages}` | Pipeline | Use original |
-| `should_stop_after_turn` | `{session_id, stop, usage, turn}` | `{action: "continue"\|"stop"}` | Any-says-stop | Continue |
+| `after_tool_call` | `{args, cwd, result, session_id, tool}` | `{action: "keep"\|"replace", content}` | Pipeline | Keep original |
+| `before_request` | `{messages, model, session_id, system}` | `{action: "keep"\|"replace", messages}` | Pipeline | Use original |
+| `before_tool_call` | `{args, cwd, session_id, tool}` | `{action: "allow"\|"deny"\|"replace", ...}` | First-deny-wins | **Deny** (fail closed) |
+| `get_api_key` | `{provider, session_id}` | `{key}` | First non-null | Fall back to config |
+| `get_followup` | `{cwd, session_id}` | `{messages}` | Concat | Empty |
+| `get_steering` | `{cwd, session_id}` | `{messages}` | Concat | Empty |
 | `prepare_next_turn` | `{session_id, stop, usage}` | `{model?, thinking?}` | Pipeline | No change |
-| `get_steering` | `{session_id}` | `{messages}` | Concat | Empty |
-| `get_followup` | `{session_id}` | `{messages}` | Concat | Empty |
-| `get_api_key` | `{session_id, provider}` | `{key}` | First non-null | Fall back to config |
+| `should_stop_after_turn` | `{session_id, stop, turn, usage}` | `{action: "continue"\|"stop"}` | Any-says-stop | Continue |
+| `tool_call` | `{args, cwd, session_id, tool}` | `{content, is_error}` | Single handler | Error result |
 
 **All hooks include `session_id`**, so plugins can keep per-session state.
+
+Hooks whose payload includes `cwd` also carry the session's working directory.
+This is what lets a plugin bootstrap per-session background work (a poller, a
+file watcher) from a real lifecycle signal - `get_steering` fires every turn -
+instead of shipping a dummy agent-callable tool purely to obtain a host channel.
+In the Rust SDK, override `PluginHook::call_with_ctx` to receive a
+`HookCtx { host, session_id, cwd }`; plain `call` remains available for hooks
+that only transform their payload.
+
+#### Hook payload fields
+
+**`after_tool_call`**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `args` | object | yes |  |
+| `cwd` | string | yes | Working directory of the session |
+| `result` | Content[] | yes |  |
+| `session_id` | string | yes |  |
+| `tool` | string | yes |  |
+
+**`before_request`**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `messages` | Message[] | yes |  |
+| `model` | ModelRef | yes |  |
+| `session_id` | string | yes |  |
+| `system` | string | no |  |
+
+**`before_tool_call`**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `args` | object | yes | Tool arguments |
+| `cwd` | string | yes | Working directory of the session |
+| `session_id` | string | yes | Session ID |
+| `tool` | string | yes | Tool name |
+
+**`get_api_key`**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `provider` | string | yes |  |
+| `session_id` | string | yes |  |
+
+**`get_followup`**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `cwd` | string | yes | Working directory of the session |
+| `session_id` | string | yes | Session ID |
+
+**`get_steering`**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `cwd` | string | yes | Working directory of the session |
+| `session_id` | string | yes | Session ID |
+
+**`prepare_next_turn`**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `session_id` | string | yes |  |
+| `stop` | `end_turn` \| `max_tokens` \| `stop_sequence` \| `tool_use` | yes |  |
+| `usage` | Usage | yes |  |
+
+**`should_stop_after_turn`**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `session_id` | string | yes |  |
+| `stop` | `end_turn` \| `max_tokens` \| `stop_sequence` \| `tool_use` | yes |  |
+| `turn` | u64 | yes |  |
+| `usage` | Usage | yes |  |
+
+**`tool_call`**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `args` | object | yes |  |
+| `cwd` | string | yes | Working directory of the session |
+| `session_id` | string | yes |  |
+| `tool` | string | yes |  |
+
 ---
 
 ## 6. Common Types

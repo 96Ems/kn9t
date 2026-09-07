@@ -86,6 +86,13 @@ pub enum PluginLuaOp {
     Register {
         plugin: String,
         source: String,
+        /// How the plugin would like to be placed, if it said.
+        ///
+        /// A hint, not an instruction: a config routes on it (`"sidebar"` /
+        /// `"main"` / `"status"`) instead of matching plugin names, and is free
+        /// to ignore it. Without this a config could only place a view by
+        /// hardcoding the plugin's name.
+        placement: PluginPlacement,
     },
     SetState {
         plugin: String,
@@ -94,6 +101,53 @@ pub enum PluginLuaOp {
     Clear {
         plugin: String,
     },
+}
+
+/// A plugin's declared placement preferences, as sent with `ui_register_lua`.
+///
+/// Every field is optional because a plugin that only wants to draw something
+/// should not have to answer layout questions. `None`/empty means "the config
+/// decides", which is the safe default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PluginPlacement {
+    /// `"sidebar"` | `"main"` | `"status"`. Validated server-side, so an
+    /// unknown value never reaches here.
+    pub zone: Option<String>,
+    /// Human-readable panel title. Falls back to the plugin name, which is an
+    /// id and reads poorly as a heading ("kn9t-git-integration" vs "Git").
+    pub title: Option<String>,
+    /// Preferred height in rows / width in columns. Advisory: a config clamps
+    /// them to what the terminal actually has.
+    pub rows: Option<u16>,
+    pub cols: Option<u16>,
+}
+
+impl PluginPlacement {
+    /// Read the optional placement fields out of a `register_lua` payload.
+    pub fn from_payload(payload: &serde_json::Value) -> Self {
+        let str_field = |k: &str| {
+            payload
+                .get(k)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        };
+        // `as_u64` then narrow: a negative or absurd value becomes None rather
+        // than wrapping into a nonsense size.
+        let dim = |k: &str| {
+            payload
+                .get(k)
+                .and_then(|v| v.as_u64())
+                .filter(|n| *n > 0 && *n <= u16::MAX as u64)
+                .map(|n| n as u16)
+        };
+        Self {
+            zone: str_field("placement"),
+            title: str_field("title"),
+            rows: dim("rows"),
+            cols: dim("cols"),
+        }
+    }
 }
 
 impl State {
@@ -465,6 +519,7 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                         state.plugin_lua_pending.push(PluginLuaOp::Register {
                             plugin: plugin.clone(),
                             source: src.to_string(),
+                            placement: PluginPlacement::from_payload(&payload),
                         });
                     }
                 }
@@ -1371,9 +1426,16 @@ mod tests {
         );
         assert_eq!(s.plugin_lua_pending.len(), 1);
         match &s.plugin_lua_pending[0] {
-            PluginLuaOp::Register { plugin, source } => {
+            PluginLuaOp::Register {
+                plugin,
+                source,
+                placement,
+            } => {
                 assert_eq!(plugin, "demo");
                 assert_eq!(source, src);
+                // No placement fields in the payload: the plugin said nothing,
+                // so every hint stays None and the config decides.
+                assert_eq!(placement, &PluginPlacement::default());
             }
             other => panic!("expected Register, got {other:?}"),
         }

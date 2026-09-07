@@ -542,6 +542,21 @@ impl HostApiClient {
 
 // ── ToolCallCtx ──────────────────────────────────────────────────────────────
 
+/// Context passed to [`PluginHook::call_with_ctx`](crate::traits::PluginHook::call_with_ctx).
+///
+/// Deliberately narrower than [`ToolCallCtx`]: a hook is not a tool call, so
+/// there is no cancel token or progress sink. What it does get is the two
+/// things a hook previously had no way to obtain — a host channel and the
+/// session's working directory.
+pub struct HookCtx {
+    /// Plugin → host API client, with the hook's session auto-injected.
+    pub host: HostApiClient,
+    /// Session id from the hook payload. Every hook carries one (API.md §5.7).
+    pub session_id: Option<String>,
+    /// Working directory of the session, when the hook payload reported one.
+    pub cwd: Option<std::path::PathBuf>,
+}
+
 /// Context passed to [`PluginTool::execute`](crate::traits::PluginTool::execute).
 pub struct ToolCallCtx {
     // NOTE: fields are pub so plugin authors can access them directly.

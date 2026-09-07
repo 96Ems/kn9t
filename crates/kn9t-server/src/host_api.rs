@@ -377,6 +377,13 @@ impl ServerHostApi {
     ///
     /// The server does not parse the Lua: it is opaque here and only meaningful
     /// to the TUI, which owns the widget vocabulary.
+    ///
+    /// Optional `placement` / `title` / `rows` / `cols` travel alongside the
+    /// source. They are the plugin's *request*, not a command: a plugin says "I
+    /// am a main-pane panel called Diff review wanting ~24 rows", and the TUI
+    /// config decides whether to honour it. Without them a config could only
+    /// place a view by hardcoding the plugin's name, which is the coupling this
+    /// removes — see `plugin_ui.rs`'s "Who decides placement".
     fn ui_register_lua(
         &self,
         session: Option<&str>,
@@ -400,12 +407,32 @@ impl ServerHostApi {
             ));
         }
 
+        // Unknown placements are rejected here rather than silently defaulting:
+        // a typo that quietly becomes "sidebar" is harder to notice than an
+        // error at registration.
+        const PLACEMENTS: &[&str] = &["sidebar", "main", "status"];
+        let placement = payload.get("placement").and_then(|v| v.as_str());
+        if let Some(p) = placement {
+            if !PLACEMENTS.contains(&p) {
+                return Err(format!(
+                    "ui_register_lua: unknown placement {p:?} (expected one of {PLACEMENTS:?})"
+                ));
+            }
+        }
+
+        let mut forward = json!({"source": source});
+        for key in ["placement", "title", "rows", "cols"] {
+            if let Some(v) = payload.get(key) {
+                forward[key] = v.clone();
+            }
+        }
+
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
         sink.emit(kn9t_core::LiveEvent::UiDirective {
             plugin: plugin.to_string(),
             target: "lua".to_string(),
             op: "register_lua".to_string(),
-            payload: json!({"source": source}),
+            payload: forward,
         });
         Ok(json!({"ok": true}))
     }

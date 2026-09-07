@@ -201,6 +201,20 @@ pub trait PluginHook: Send + Sync {
     /// Handle a hook invocation. Return a JSON reply matching the hook's reply
     /// schema (spec §2.6). Called synchronously; return quickly.
     fn call(&self, hook: &str, payload: &Value) -> Value;
+
+    /// Same as [`call`](Self::call) but with a [`HookCtx`](crate::ctx::HookCtx),
+    /// giving access to the host API and the session's `cwd`.
+    ///
+    /// Default-forwards to `call`, so existing handlers keep working unchanged.
+    /// Override this instead of `call` when a hook needs to reach the host —
+    /// pushing a TUI view, say — rather than only transform its payload.
+    ///
+    /// This is what lets a plugin bootstrap from a real lifecycle signal: every
+    /// hook carries `session_id` and `cwd`, so a plugin no longer needs a dummy
+    /// agent-callable tool just to learn where it is and get a host channel.
+    fn call_with_ctx(&self, hook: &str, payload: &Value, _ctx: &crate::ctx::HookCtx) -> Value {
+        self.call(hook, payload)
+    }
 }
 
 // ── PluginEventSink ───────────────────────────────────────────────────────────

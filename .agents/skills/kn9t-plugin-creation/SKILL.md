@@ -273,23 +273,70 @@ let prompt_result = ctx.api.session_prompt(
 
 Available ops: `provider_complete`, `session_read`, `tool_execute`, `session_fork`, `session_prompt`
 
-## Python Plugin Example
+## Python Plugin Structure
+
+> **⚠️ REQUIRED:** Python plugins must follow this structure for `kn9t install-plugins` to detect and install them.
+
+### Directory Layout
+
+```
+plugins/
+└── kn9t-my-plugin/           # Plugin directory (in project plugins/)
+    ├── pyproject.toml        # REQUIRED: Makes it detectable as Python plugin
+    └── kn9t_my_plugin/       # Module dir (underscores, not hyphens)
+        ├── __init__.py       # Can be empty
+        └── __main__.py       # Entry point for `python -m kn9t_my_plugin`
+```
+
+### pyproject.toml (REQUIRED)
+
+```toml
+[project]
+name = "kn9t-my-plugin"
+version = "0.1.0"
+description = "My kn9t plugin"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+```
+
+### \_\_init\_\_.py
+
+```python
+"""kn9t-my-plugin package."""
+```
+
+### \_\_main\_\_.py
 
 ```python
 #!/usr/bin/env python3
-"""Minimal Python plugin."""
+"""My kn9t plugin - entry point for python -m kn9t_my_plugin"""
 import json
 import sys
 
-def main():
-    # Read host hello
-    hello = json.loads(sys.stdin.readline())
-    assert hello["t"] == "hello"
+def read_msg():
+    """Read JSON line from stdin."""
+    line = sys.stdin.readline()
+    return json.loads(line) if line else None
+
+def write_msg(msg):
+    """Write JSON line to stdout."""
+    sys.stdout.write(json.dumps(msg, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+def run():
+    # Handshake
+    hello = read_msg()
+    if not hello or hello.get("t") != "hello":
+        return
     
-    # Send our hello
-    print(json.dumps({
+    print(f"Connected to kn9t {hello.get('kn9t', '?')}", file=sys.stderr)
+    
+    write_msg({
         "t": "hello",
-        "name": "python-plugin",
+        "name": "kn9t-my-plugin",
         "capabilities": [],
         "tools": [{
             "name": "greet",
@@ -299,28 +346,120 @@ def main():
         }],
         "hooks": [],
         "events": []
-    }), flush=True)
+    })
     
     # Main loop
     while True:
-        line = sys.stdin.readline()
-        if not line:
+        msg = read_msg()
+        if not msg:
             break
-        msg = json.loads(line)
         
-        if msg["t"] == "shutdown":
+        if msg.get("t") == "shutdown":
             break
-        elif msg["t"] == "hook" and msg["hook"] == "tool_call":
+        
+        if msg.get("t") == "hook" and msg.get("hook") == "tool_call":
             name = msg["payload"]["args"].get("name", "World")
-            print(json.dumps({
+            write_msg({
                 "t": "done",
                 "id": msg["id"],
                 "content": [{"type": "text", "text": f"Hello, {name}!"}],
                 "is_error": False
-            }), flush=True)
+            })
 
 if __name__ == "__main__":
-    main()
+    run()
+```
+
+### Installation
+
+After creating the plugin structure, run:
+
+```bash
+kn9t install-plugins
+```
+
+This will:
+1. Detect `pyproject.toml` → Python plugin
+2. Add a `[[plugin]]` entry to `~/.kn9t/config.toml`:
+
+```toml
+[[plugin]]
+name = "kn9t-my-plugin"
+cmd  = ["python", "-m", "kn9t_my_plugin"]
+
+[plugin.env]
+PYTHONPATH = "C:\\path\\to\\plugins\\kn9t-my-plugin"
+```
+
+### Hook-Only Plugin Example (Policy Gate)
+
+For plugins that only implement hooks (no tools), like approval gates:
+
+```python
+# kn9t_policy/__main__.py
+#!/usr/bin/env python3
+"""Policy plugin - intercepts tool calls via before_tool_call hook."""
+import json
+import sys
+import fnmatch
+
+DANGEROUS_COMMANDS = ["git checkout*", "git reset*", "rm -rf*", "git clean*"]
+
+def matches(value, patterns):
+    return any(fnmatch.fnmatch(value, p) for p in patterns)
+
+def read_msg():
+    line = sys.stdin.readline()
+    return json.loads(line) if line else None
+
+def write_msg(msg):
+    sys.stdout.write(json.dumps(msg, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+def run():
+    hello = read_msg()
+    if not hello or hello.get("t") != "hello":
+        return
+    
+    write_msg({
+        "t": "hello",
+        "name": "kn9t-policy",
+        "capabilities": [],
+        "hooks": ["before_tool_call"],  # Register for this hook
+        "tools": [],
+        "events": []
+    })
+    
+    while True:
+        msg = read_msg()
+        if not msg:
+            break
+        
+        if msg.get("t") == "shutdown":
+            break
+        
+        if msg.get("t") == "hook" and msg.get("hook") == "before_tool_call":
+            hook_id = msg.get("id", 0)
+            payload = msg.get("payload", {})
+            tool = payload.get("tool", "")
+            args = payload.get("args", {})
+            
+            # Check bash commands
+            if tool == "bash":
+                cmd = args.get("cmd", "")
+                if matches(cmd, DANGEROUS_COMMANDS):
+                    write_msg({"t": "result", "id": hook_id, "action": "ask", 
+                               "reason": f"Destructive command: {cmd}"})
+                    continue
+            
+            write_msg({"t": "result", "id": hook_id, "action": "allow"})
+        
+        elif msg.get("t") == "hook":
+            # Other hooks: allow by default
+            write_msg({"t": "result", "id": msg.get("id", 0), "action": "allow"})
+
+if __name__ == "__main__":
+    run()
 ```
 
 ## TypeScript Plugin Example
@@ -465,25 +604,60 @@ func writeJSON(v interface{}) {
 
 ## Installation
 
-Plugins are discovered from `~/.kn9t/plugins/`:
+### Using `kn9t install-plugins` (Recommended)
+
+Place your plugin in `<project>/plugins/` and run:
 
 ```bash
-# Rust plugin
+kn9t install-plugins
+```
+
+Detection rules (from `cmd_install_plugins.rs`):
+| File Present | Plugin Kind | Action |
+|--------------|-------------|--------|
+| `Cargo.toml` | Rust | `cargo build --release` → copy exe to `~/.kn9t/plugins/` |
+| `go.mod` | Go | `go build` → copy exe to `~/.kn9t/plugins/` |
+| `package.json` | Node | `npm install && npm run build` → add `[[plugin]]` to config |
+| `pyproject.toml` | Python | Add `[[plugin]]` to config (no build needed) |
+
+### Manual Installation
+
+**Binary plugins (Rust/Go):** Copy to `~/.kn9t/plugins/`:
+
+```bash
+# Rust
 cargo build --release -p my-plugin
 cp target/release/my-plugin ~/.kn9t/plugins/
 
-# Python plugin
-chmod +x my_plugin.py
-cp my_plugin.py ~/.kn9t/plugins/
+# Go
+go build -o my-plugin .
+cp my-plugin ~/.kn9t/plugins/
 ```
 
-Or pin in config (`~/.kn9t/config.toml`):
+**Interpreted plugins (Python/Node):** Add to `~/.kn9t/config.toml`:
+
+```toml
+# Python plugin
+[[plugin]]
+name = "kn9t-my-plugin"
+cmd  = ["python", "-m", "kn9t_my_plugin"]
+
+[plugin.env]
+PYTHONPATH = "/path/to/plugins/kn9t-my-plugin"
+
+# Node plugin
+[[plugin]]
+name = "kn9t-node-plugin"
+cmd  = ["node", "/path/to/plugins/kn9t-node-plugin/dist/main.js"]
+```
+
+### With Environment Variables
 
 ```toml
 [[plugin]]
 name = "my-plugin"
 cmd = ["python", "-m", "my_plugin"]
-env = { MY_API_KEY = "..." }
+env = { MY_API_KEY = "secret", DEBUG = "1" }
 ```
 
 ## Hot Reload

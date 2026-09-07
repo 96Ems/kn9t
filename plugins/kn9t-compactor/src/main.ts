@@ -78,6 +78,183 @@ function hostRequest(op: string, payload: unknown): ApiResult {
   }
 }
 
+// ── UI state for live compaction viewer ──────────────────────────────────────
+
+interface CompactorState {
+  status: "reading" | "triage" | "triage_retry" | "summary" | "complete" | "error";
+  session_id: string;
+  messages_count: number;
+  tool_calls_count: number;
+  decisions: Array<{ id: string; action: string; name?: string }>;
+  summary_preview: string;
+  error?: string;
+  [key: string]: unknown;
+}
+
+/** Lua source for the compactor TUI widget — live compaction viewer. */
+const COMPACTOR_LUA = `
+function render(state)
+  local status = state.status or "unknown"
+  local session_id = state.session_id or ""
+  local messages_count = state.messages_count or 0
+  local tool_calls_count = state.tool_calls_count or 0
+  local decisions = state.decisions or {}
+  local summary_preview = state.summary_preview or ""
+  local short_id = session_id:sub(1, 8)
+  
+  -- Status styling
+  local status_color = "gray"
+  local status_icon = "○"
+  local status_text = status
+  if status == "reading" then
+    status_color = "blue"
+    status_icon = "◔"
+    status_text = "reading transcript"
+  elseif status == "triage" then
+    status_color = "yellow"
+    status_icon = "↻"
+    status_text = "planning (triage)"
+  elseif status == "triage_retry" then
+    status_color = "yellow"
+    status_icon = "↻"
+    status_text = "planning (retry)"
+  elseif status == "summary" then
+    status_color = "cyan"
+    status_icon = "↻"
+    status_text = "summarizing"
+  elseif status == "complete" then
+    status_color = "green"
+    status_icon = "✓"
+    status_text = "compacted"
+  elseif status == "error" then
+    status_color = "red"
+    status_icon = "✕"
+    status_text = "failed"
+  end
+  
+  -- Build header
+  local header = status_icon .. " " .. status_text
+  if short_id ~= "" then
+    header = header .. "  │  " .. short_id
+  end
+  
+  -- Build info line
+  local info = ""
+  if messages_count > 0 then
+    info = tostring(messages_count) .. " messages"
+    if tool_calls_count > 0 then
+      info = info .. ", " .. tostring(tool_calls_count) .. " tool calls"
+    end
+  end
+  
+  -- Build decisions list
+  local items = {}
+  if info ~= "" then
+    table.insert(items, { text = info, fg = "gray" })
+  end
+  
+  -- Show decisions once available
+  local keep_count = 0
+  local summarize_count = 0
+  local drop_count = 0
+  for _, d in ipairs(decisions) do
+    if d.action == "keep" then keep_count = keep_count + 1
+    elseif d.action == "summarize" then summarize_count = summarize_count + 1
+    elseif d.action == "drop" then drop_count = drop_count + 1
+    end
+  end
+  
+  if #decisions > 0 then
+    local decision_line = ""
+    if keep_count > 0 then decision_line = decision_line .. "✓ keep:" .. keep_count .. " " end
+    if summarize_count > 0 then decision_line = decision_line .. "≈ summarize:" .. summarize_count .. " " end
+    if drop_count > 0 then decision_line = decision_line .. "✕ drop:" .. drop_count end
+    table.insert(items, { text = decision_line, fg = "white" })
+  end
+  
+  -- Show individual decisions (limited)
+  local shown = 0
+  for _, d in ipairs(decisions) do
+    if shown >= 5 then
+      table.insert(items, { text = "  ... and " .. (#decisions - shown) .. " more", fg = "gray" })
+      break
+    end
+    local icon = "○"
+    local color = "gray"
+    if d.action == "keep" then
+      icon = "✓"
+      color = "green"
+    elseif d.action == "summarize" then
+      icon = "≈"
+      color = "yellow"
+    elseif d.action == "drop" then
+      icon = "✕"
+      color = "red"
+    end
+    local line = "  " .. icon .. " " .. (d.name or d.id:sub(1,12))
+    table.insert(items, { text = line, fg = color })
+    shown = shown + 1
+  end
+  
+  -- Show summary preview
+  if summary_preview ~= "" then
+    local preview = summary_preview
+    if #preview > 60 then
+      preview = preview:sub(1, 57) .. "..."
+    end
+    table.insert(items, { text = "📝 " .. preview, fg = "cyan" })
+  end
+  
+  -- Error message
+  if state.error then
+    table.insert(items, { text = "⚠ " .. state.error, fg = "red" })
+  end
+  
+  return {
+    type = "box",
+    border = "rounded",
+    title = "📦 Compactor",
+    border_fg = status_color,
+    padding = { 0, 1 },
+    child = {
+      type = "split",
+      direction = "vertical",
+      children = {
+        {
+          type = "text",
+          content = header,
+          fg = status_color,
+        },
+        {
+          type = "list",
+          items = items,
+        },
+      },
+      sizes = { 1, "fill" },
+    },
+  }
+end
+`;
+
+/** Register the Lua UI widget for this plugin (once per session). */
+const registeredSessions = new Set<string>();
+
+function ensureLuaRegistered(session: string): void {
+  if (registeredSessions.has(session)) return;
+  hostRequest("ui_register_lua", { session, source: COMPACTOR_LUA });
+  registeredSessions.add(session);
+}
+
+/** Push UI state update to TUI. */
+function uiSetState(session: string, state: CompactorState): void {
+  hostRequest("ui_set_state", { session, state: state as unknown as Record<string, unknown> });
+}
+
+/** Clear the UI widget when done. */
+function uiClear(session: string): void {
+  hostRequest("ui_clear", { session });
+}
+
 // ── Effect programs (the agent turn) ─────────────────────────────────────────
 
 const TRIAGE_SYSTEM =
@@ -241,15 +418,55 @@ function compactProgram(hookPayload: Record<string, unknown>) {
     const start = replaced?.start ?? 0;
     const end = replaced?.end ?? Number.MAX_SAFE_INTEGER;
 
+    // Initialize UI state
+    const state: CompactorState = {
+      status: "reading",
+      session_id: session,
+      messages_count: 0,
+      tool_calls_count: 0,
+      decisions: [],
+      summary_preview: "",
+    };
+    
+    // Register UI widget and show initial state
+    ensureLuaRegistered(session);
+    uiSetState(session, state);
+
     // 1. Read the span to be replaced.
     const read = hostRequest("session_read", { session, start, end });
-    if (!read.ok) return yield* _(Effect.fail(new Error(`session_read: ${read.error}`)));
+    if (!read.ok) {
+      state.status = "error";
+      state.error = `session_read: ${read.error}`;
+      uiSetState(session, state);
+      return yield* _(Effect.fail(new Error(`session_read: ${read.error}`)));
+    }
     const messages = ((read.result as { messages?: MessageWire[] })["messages"] ?? []) as MessageWire[];
 
     const inv = inventory(messages);
     const knownIds = [...inv.byId.keys()];
+    
+    // Update UI with message/tool counts
+    state.messages_count = messages.length;
+    state.tool_calls_count = knownIds.length;
+    uiSetState(session, state);
+    
     if (knownIds.length === 0 && messages.length === 0) {
+      state.status = "error";
+      state.error = "span is empty — nothing to compact";
+      uiSetState(session, state);
       return yield* _(Effect.fail(new Error("span is empty — nothing to compact")));
+    }
+
+    // Build a map of tool call id -> tool name for display
+    const toolNameById = new Map<string, string>();
+    for (const m of messages) {
+      for (const block of m.content) {
+        if (block["type"] === "tool_call") {
+          const id = String(block["id"] ?? "");
+          const name = String(block["name"] ?? "");
+          if (id && name) toolNameById.set(id, name);
+        }
+      }
     }
 
     const triageUser =
@@ -261,16 +478,29 @@ function compactProgram(hookPayload: Record<string, unknown>) {
     // both failure modes: the model answered without calling the tool, or it
     // cited ids not in the inventory. Only after the shot is spent do we fall
     // back (empty plan) rather than abort the whole compaction.
+    state.status = "triage";
+    uiSetState(session, state);
+    
     let decisions: Decision[] = [];
     let resumeActions: string[] = [];
     let correction = "";
     for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt === 1) {
+        state.status = "triage_retry";
+        uiSetState(session, state);
+      }
+      
       const msgs = [
         { id: "sys-triage", role: "system", silent: false, content: [{ type: "text", text: TRIAGE_SYSTEM }] },
         { id: "usr-triage", role: "user", silent: false, content: [{ type: "text", text: triageUser + correction }] },
       ];
       const r = hostRequest("provider_complete", { session, messages: msgs, tools: [TRIAGE_TOOL] });
-      if (!r.ok) return yield* _(Effect.fail(new Error(`provider(triage): ${r.error}`)));
+      if (!r.ok) {
+        state.status = "error";
+        state.error = `provider(triage): ${r.error}`;
+        uiSetState(session, state);
+        return yield* _(Effect.fail(new Error(`provider(triage): ${r.error}`)));
+      }
       const content = ((r.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
       const args = toolCallArgs(content, "submit_triage");
       if (!args) {
@@ -314,23 +544,43 @@ function compactProgram(hookPayload: Record<string, unknown>) {
       correction = "\n\nYour previous submit_triage call cited unknown ids. Cite only:\n" + knownIds.join(", ");
     }
 
+    // Update UI with decisions
+    state.decisions = decisions.map(d => ({
+      id: d.id,
+      action: d.action,
+      name: toolNameById.get(d.id),
+    }));
+    uiSetState(session, state);
+
     // 3. Summary pass — the model MUST deliver its summary via submit_summary.
     // This must NOT round-trip full tool outputs back into the LLM's context
     // (96E-17: summarize_tool_result never requires full output to leave the
     // host). We send only previews + decisions; kept results are copied
     // verbatim host-side, summarized ones use the triage note.
+    state.status = "summary";
+    uiSetState(session, state);
+    
     const summaryMsgs = [
       { id: "sys-summary", role: "system", silent: false, content: [{ type: "text", text: SUMMARY_SYSTEM }] },
       { id: "usr-summary", role: "user", silent: false, content: [{ type: "text", text: `Decisions:\n${JSON.stringify(decisions)}\n\nInventory:\n${inv.text}` }] },
     ];
     const s = hostRequest("provider_complete", { session, messages: summaryMsgs, tools: [SUMMARY_TOOL] });
-    if (!s.ok) return yield* _(Effect.fail(new Error(`provider(summary): ${s.error}`)));
+    if (!s.ok) {
+      state.status = "error";
+      state.error = `provider(summary): ${s.error}`;
+      uiSetState(session, state);
+      return yield* _(Effect.fail(new Error(`provider(summary): ${s.error}`)));
+    }
     const sContent = ((s.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
     const sArgs = toolCallArgs(sContent, "submit_summary");
     const summaryText =
       sArgs && typeof sArgs["summary"] === "string" && sArgs["summary"].trim().length > 0
         ? String(sArgs["summary"])
         : "(compaction summary unavailable — model did not call submit_summary)";
+
+    // Update UI with summary preview
+    state.summary_preview = summaryText.slice(0, 100);
+    uiSetState(session, state);
 
     // 4. Assemble the plan: summary message embeds kept tool results VERBATIM.
     const kept = decisions.filter((d) => d.action === "keep");
@@ -351,6 +601,10 @@ function compactProgram(hookPayload: Record<string, unknown>) {
       drop: decisions.filter((d) => d.action === "drop").map((d) => d.id),
       resume_actions: resumeActions,
     };
+
+    // Mark as complete
+    state.status = "complete";
+    uiSetState(session, state);
 
     return {
       summary: { id: "compacted-1", role: "assistant", silent: false, content },

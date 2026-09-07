@@ -231,13 +231,6 @@ pub const COMMANDS: &[PaletteCommand] = &[
         keybinding: None,
         category: Category::View,
     },
-    PaletteCommand {
-        id: "diff_viewer",
-        label: "Open Diff Viewer",
-        description: "View file diffs from tool results",
-        keybinding: None,
-        category: Category::View,
-    },
     // Tools
     PaletteCommand {
         id: "models",

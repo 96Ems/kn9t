@@ -44,7 +44,7 @@ pub fn generate(http: &Value) -> Result<String, String> {
     s.push('\n');
     s.push_str(&emit_http_requests(http));
     s.push('\n');
-    s.push_str(PINNED_MODEL_TYPES);
+    s.push_str(&model_types_struct(http));
     Ok(s)
 }
 
@@ -174,24 +174,76 @@ pub struct WireModelRef {
 }
 "#;
 
-/// Model-info types (GET /models) — pinned to match the server's registry output.
-const PINNED_MODEL_TYPES: &str = r#"/// Model info (GET /models).
-#[derive(Debug, Clone, Deserialize)]
-pub struct ModelInfo {
-    pub provider: String,
-    pub id: String,
-    #[serde(default)]
-    pub api_id: Option<String>,
-    #[serde(default)]
-    pub is_default: bool,
+/// Model-info types (GET /models), derived from the schema.
+///
+/// This used to be a hardcoded `PINNED_MODEL_TYPES` string that listed only
+/// `provider`/`id`/`api_id`/`is_default`. The schema has always also defined
+/// `ctx_window`, `max_out` and `price`, so every `xtask generate` run *deleted*
+/// those fields from `wire.rs` and broke `model_selector.rs`, which reads them
+/// (TRACKING B3). Reading the schema here is what stops that from recurring.
+///
+/// `#[serde(default)]` on every optional field so a server that omits one still
+/// deserializes — the TUI must tolerate an older server.
+fn model_types_struct(http: &Value) -> String {
+    let item = routes(http)
+        .into_iter()
+        .find(|r| r.method == "GET" && r.path == "/models")
+        .and_then(|r| r.response_object())
+        .and_then(|resp| resp.get("properties"))
+        .and_then(|p| p.get("models"))
+        .and_then(|a| a.get("items"));
+
+    let mut s = String::new();
+    s.push_str("/// Model info (GET /models).\n");
+    s.push_str("#[derive(Debug, Clone, Deserialize)]\n");
+    s.push_str("pub struct ModelInfo {\n");
+    if let Some(item) = item {
+        let req = required(item);
+        for (key, prop) in properties(item) {
+            let ty = model_field_type(prop, &req, &key);
+            if !req.iter().any(|r| r == &key) {
+                s.push_str("    #[serde(default)]\n");
+            }
+            s.push_str(&format!("    pub {key}: {ty},\n"));
+        }
+    }
+    s.push_str("}\n\n");
+
+    s.push_str("/// Models list response.\n");
+    s.push_str("#[derive(Debug, Clone, Deserialize)]\n");
+    s.push_str("pub struct ModelsList {\n");
+    s.push_str("    pub models: Vec<ModelInfo>,\n");
+    s.push_str("}\n");
+    s
 }
 
-/// Models list response.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ModelsList {
-    pub models: Vec<ModelInfo>,
+/// Rust type for a `ModelInfo` field.
+///
+/// Two deliberate departures from the generic `prop_type`:
+///
+/// - token counts are `usize`, not `u64`: they are compared against and divided
+///   by other `usize` lengths in the context gauge, and `u64` would only add
+///   casts at every use site;
+/// - `price` stays `serde_json::Value`: nothing in the TUI reads it, so naming a
+///   struct for it would be dead code that still has to be kept in sync.
+fn model_field_type(prop: &Value, req: &[String], key: &str) -> String {
+    let base = match prop.get("type").and_then(|t| t.as_str()) {
+        Some("integer") => "usize".to_string(),
+        Some("boolean") => "bool".to_string(),
+        Some("string") => "String".to_string(),
+        _ => "serde_json::Value".to_string(),
+    };
+    // Left bare when the schema marks it required, and also for `bool` and
+    // opaque `Value`: `#[serde(default)]` already covers an omitted field
+    // (`false` / `Null`), so wrapping those in `Option` would add unwrapping at
+    // every use site for no extra information.
+    let bare = req.iter().any(|r| r == key) || base == "bool" || base == "serde_json::Value";
+    if bare {
+        base
+    } else {
+        format!("Option<{base}>")
+    }
 }
-"#;
 
 // ── HTTP responses (Deserialize) ───────────────────────────────────────────────
 
@@ -337,4 +389,97 @@ fn emit_serialize_struct(name: &str, obj: &Value) -> String {
     }
     s.push_str("}\n");
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn http_schema() -> Value {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask lives one level below the workspace root");
+        serde_json::from_str(
+            &std::fs::read_to_string(root.join("schema/http.json")).expect("read http.json"),
+        )
+        .expect("parse http.json")
+    }
+
+    /// Every field the schema defines for a model must appear in the generated
+    /// `ModelInfo`.
+    ///
+    /// This is the TRACKING B3 regression guard: `ModelInfo` used to be a
+    /// hardcoded string listing four fields, so each `xtask generate` silently
+    /// deleted `ctx_window`/`max_out`/`price` from `wire.rs` and broke
+    /// `model_selector.rs`, which reads the first two.
+    #[test]
+    fn model_info_keeps_every_schema_field() {
+        let http = http_schema();
+        let out = generate(&http).expect("generator must succeed");
+
+        let item = routes(&http)
+            .into_iter()
+            .find(|r| r.method == "GET" && r.path == "/models")
+            .and_then(|r| r.response_object())
+            .and_then(|resp| resp.get("properties"))
+            .and_then(|p| p.get("models"))
+            .and_then(|a| a.get("items"))
+            .expect("schema must define GET /models item shape");
+
+        let fields: Vec<String> = properties(item).into_iter().map(|(k, _)| k).collect();
+        assert!(fields.len() >= 4, "sanity: expected several fields");
+
+        for f in &fields {
+            assert!(
+                out.contains(&format!("pub {f}:")),
+                "ModelInfo is missing schema field '{f}' - generated:\n{out}"
+            );
+        }
+        // The two the TUI actually reads, named explicitly so a future edit that
+        // drops them fails with an obvious message.
+        assert!(out.contains("pub ctx_window:"));
+        assert!(out.contains("pub max_out:"));
+    }
+
+    /// Token counts must stay `usize`: `model_selector.rs` and the context gauge
+    /// compare them against other `usize` values.
+    #[test]
+    fn model_token_counts_are_optional_usize() {
+        let out = generate(&http_schema()).unwrap();
+        assert!(out.contains("pub ctx_window: Option<usize>"), "got:\n{out}");
+        assert!(out.contains("pub max_out: Option<usize>"), "got:\n{out}");
+    }
+
+    /// Optional fields need `#[serde(default)]` or an older server that omits
+    /// one would fail to deserialize entirely.
+    #[test]
+    fn optional_model_fields_have_serde_default() {
+        let out = generate(&http_schema()).unwrap();
+        let idx = out.find("pub struct ModelInfo").expect("ModelInfo present");
+        let body = &out[idx..];
+        let end = body.find("\n}").expect("struct is closed");
+        let body = &body[..end];
+
+        for line in body.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix("pub ") else {
+                continue;
+            };
+            // `required` fields may be bare; optional ones must be defaulted.
+            if rest.contains("Option<") {
+                let name = rest.split(':').next().unwrap_or("?");
+                assert!(
+                    body.contains(&format!("#[serde(default)]\n    pub {name}:"))
+                        || body.contains(&format!("#[serde(default)]\r\n    pub {name}:")),
+                    "optional field '{name}' lacks #[serde(default)]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generation_is_deterministic() {
+        let http = http_schema();
+        assert_eq!(generate(&http).unwrap(), generate(&http).unwrap());
+    }
 }

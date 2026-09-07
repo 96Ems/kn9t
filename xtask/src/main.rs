@@ -40,7 +40,10 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Some("--check") => match check() {
+        // Both spellings: the flag form is what `scripts/check-schema.sh` and the
+        // docs use, while the bare word matches `generate` and is what anyone
+        // guessing the subcommand tries first.
+        Some("--check") | Some("check") => match check() {
             Ok(_) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("{e}");
@@ -48,11 +51,13 @@ fn main() -> ExitCode {
             }
         },
         Some(other) => {
-            eprintln!("xtask: unknown subcommand '{other}' (expected 'generate')");
+            eprintln!("xtask: unknown subcommand '{other}' (expected 'generate' or 'check')");
             ExitCode::FAILURE
         }
         None => {
-            eprintln!("usage: cargo run -p xtask -- generate");
+            eprintln!("usage: cargo run -p xtask -- <generate|check>");
+            eprintln!("  generate  regenerate api.rs, wire.rs, API.md and the Go/Python stubs");
+            eprintln!("  check     verify every committed output matches the schema (no writes)");
             ExitCode::FAILURE
         }
     }

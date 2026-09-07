@@ -425,10 +425,27 @@ impl Runner {
     }
 
     fn dispatch_hook_handler(&self, id: u64, hook: &str, payload: Value) {
+        // Every hook carries session_id and (where the host knows one) cwd, so
+        // build the ctx once and hand it to whichever handler claims the hook.
+        let session = payload
+            .get("session_id")
+            .or_else(|| payload.get("session"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let cwd = payload
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(std::path::PathBuf::from);
+        let ctx = crate::ctx::HookCtx {
+            host: self.make_host_client(session.clone()),
+            session_id: session,
+            cwd,
+        };
+
         // Find first hook handler that declares this hook name.
         for h in self.hooks.iter() {
             if h.hooks().iter().any(|n| *n == hook) {
-                let reply_body = h.call(hook, &payload);
+                let reply_body = h.call_with_ctx(hook, &payload, &ctx);
                 self.write_msg(&PluginMsg::Result {
                     id,
                     body: reply_body,

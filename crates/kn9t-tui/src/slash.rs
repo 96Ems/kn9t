@@ -68,11 +68,6 @@ pub const COMMANDS: &[SlashCommand] = &[
         args: "",
     },
     SlashCommand {
-        name: "diff",
-        description: "Open diff viewer",
-        args: "",
-    },
-    SlashCommand {
         name: "keys",
         description: "Show keybindings",
         args: "",

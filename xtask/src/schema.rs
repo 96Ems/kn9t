@@ -178,7 +178,34 @@ pub fn prop_type(prop: &Value, required: &[String], key: &str, model_ref_ty: &st
 
 /// Human-readable type for API.md tables (e.g. `string`, `u64`, `string[]`, `ModelRef`).
 /// Nullable unions (schema `["type","null"]`) render as `inner \| null`.
+///
+/// Resolves `$ref` to the bare definition name and renders `enum` members inline,
+/// so a table cell never silently degrades to `object` when the schema in fact
+/// says exactly which shape or which values are allowed.
 pub fn markdown_type(prop: &Value) -> String {
+    // A `$ref` is the most specific thing the schema can say; prefer it.
+    if let Some(name) = ref_name(prop) {
+        return name.to_string();
+    }
+
+    // An enum is more informative than its underlying primitive.
+    if let Some(members) = enum_members(prop) {
+        return members
+            .iter()
+            .map(|m| format!("`{m}`"))
+            .collect::<Vec<_>>()
+            .join(" \\| ");
+    }
+
+    // Arrays of refs / of inline objects: name the element type.
+    if prop.get("type").and_then(|t| t.as_str()) == Some("array") {
+        if let Some(items) = prop.get("items") {
+            if let Some(name) = ref_name(items) {
+                return format!("{name}[]");
+            }
+        }
+    }
+
     let t = rust_type(prop, "ModelRef");
     let compact = match t.as_str() {
         "String" => "string".to_string(),
@@ -194,6 +221,87 @@ pub fn markdown_type(prop: &Value) -> String {
         format!("{} \\| null", inner.trim_end_matches('>'))
     } else {
         compact
+    }
+}
+
+/// Bare definition name behind a `$ref` (`#/definitions/Usage` → `Usage`).
+pub fn ref_name(prop: &Value) -> Option<&str> {
+    prop.get("$ref")
+        .and_then(|r| r.as_str())
+        .and_then(|r| r.rsplit('/').next())
+}
+
+/// String members of an `enum`, if this subschema is one.
+pub fn enum_members(prop: &Value) -> Option<Vec<&str>> {
+    let arr = prop.get("enum")?.as_array()?;
+    let members: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+    if members.is_empty() {
+        None
+    } else {
+        Some(members)
+    }
+}
+
+/// The `default` of a property, rendered compactly for a docs table.
+///
+/// Returned as a display string rather than a `Value` because that is all the
+/// caller needs, and `[]`/`false` are clearer than their JSON spellings.
+pub fn default_display(prop: &Value) -> Option<String> {
+    let d = prop.get("default")?;
+    Some(match d {
+        Value::String(s) => format!("`\"{s}\"`"),
+        Value::Array(a) if a.is_empty() => "`[]`".to_string(),
+        Value::Object(o) if o.is_empty() => "`{}`".to_string(),
+        other => format!("`{other}`"),
+    })
+}
+
+/// Inline `{a, b, c}` summary of an object subschema's own properties.
+///
+/// Used for a nested object that has no named definition to link to: without
+/// this the table cell would read `object` and the shape would be invisible.
+///
+/// Each field carries its type, and an enum field its allowed values — an
+/// element type like `ToolSpec.effects[].kind` is only documented here, so
+/// listing the name alone would still lose the values.
+pub fn inline_shape(prop: &Value) -> Option<String> {
+    let props = properties(prop);
+    if props.is_empty() {
+        return None;
+    }
+    let req = required(prop);
+    let parts: Vec<String> = props
+        .into_iter()
+        .map(|(k, sub)| {
+            let opt = if req.iter().any(|r| r == &k) { "" } else { "?" };
+            match enum_members(sub) {
+                Some(members) => format!("{k}{opt}: {}", members.join("\\|")),
+                None => format!("{k}{opt}: {}", plain_type(sub)),
+            }
+        })
+        .collect();
+    Some(format!("{{{}}}", parts.join(", ")))
+}
+
+/// Type name without markdown escaping, for use inside an inline shape.
+///
+/// `markdown_type` escapes `|` for table cells; inside a backticked inline shape
+/// that escaping would render literally as `\|`.
+fn plain_type(prop: &Value) -> String {
+    if let Some(name) = ref_name(prop) {
+        return name.to_string();
+    }
+    match prop.get("type").and_then(|t| t.as_str()) {
+        Some("string") => "string".to_string(),
+        Some("integer") => "u64".to_string(),
+        Some("number") => "number".to_string(),
+        Some("boolean") => "bool".to_string(),
+        Some("array") => match prop.get("items") {
+            Some(items) => format!("{}[]", plain_type(items)),
+            None => "object[]".to_string(),
+        },
+        Some("object") => "object".to_string(),
+        _ => "object".to_string(),
     }
 }
 

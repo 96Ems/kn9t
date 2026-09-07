@@ -570,12 +570,10 @@ impl ServerState {
                 _ => continue,
             };
 
-            // Check if already loaded.
+            // Check if already loaded (by full cmd, not just interpreter).
             {
                 let spawn = self.plugin_spawn.lock().expect("spawn poisoned");
-                let already_loaded = spawn
-                    .values()
-                    .any(|(existing_cmd, _)| !existing_cmd.is_empty() && existing_cmd[0] == cmd[0]);
+                let already_loaded = spawn.values().any(|(existing_cmd, _)| *existing_cmd == cmd);
                 if already_loaded {
                     continue;
                 }

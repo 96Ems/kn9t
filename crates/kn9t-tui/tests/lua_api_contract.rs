@@ -330,10 +330,9 @@ fn documented_actions_are_all_handled() {
         "open_tools",
         "open_palette",
         "refresh_tools",
-        "open_diff",
-        "diff_next_hunk",
-        "diff_prev_hunk",
-        "diff_close",
+        // Diff review is a plugin panel now, reached by focusing it rather than
+        // by host actions; `focus_plugin` is what replaced `open_diff`.
+        "focus_plugin",
         "toggle_thinking",
         "new_session",
         "abort",

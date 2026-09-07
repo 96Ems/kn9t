@@ -74,27 +74,11 @@ pub enum Action {
     CycleModelNext, // F2: next model
     CycleModelPrev, // Shift+F2: previous model
 
-    // Diff viewer. Exposed as actions rather than hardcoded keys so a config can
-    // rebind them; `default_tui.lua` maps the historical j/k/[/]/n/p/u/f/b set.
-    //
-    // `OpenDiff` is what actually populates `App.diff_viewer` (runs `git diff`
-    // and parses it) — everything else here only navigates/closes a viewer
-    // that already exists. Placing `{type="native", view="diff"}` in a
-    // render_ui() layout draws the viewer if one is open; it does not open
-    // one. A config that only flips its own MAIN_VIEW state and never calls
-    // this action gets a blank pane, which is exactly the bug this fixes.
-    OpenDiff,
-    DiffNextHunk,
-    DiffPrevHunk,
-    DiffNextFile,
-    DiffPrevFile,
-    DiffCursorDown,
-    DiffCursorUp,
-    DiffToggleSplit,
-    DiffToggleFullscreen,
-    DiffToggleTree,
-    DiffComment,
-    DiffClose,
+    // Diff review is no longer a native view: it ships as `kn9t-git-integration`,
+    // which owns its own parsing, rendering and keys (`kn9t.on_key`). There is
+    // deliberately no `OpenDiff` action — a plugin panel is reached by focusing
+    // it (`focus_plugin`, or a click), not by a host action that opens a
+    // host-owned widget.
 
     // Overlays reachable from Lua without going through the palette.
     OpenModels,
@@ -112,6 +96,13 @@ pub enum Action {
     /// alongside as `Option<String>` — see `keymap::drain_pending_actions`
     /// and `App::execute_action`'s second parameter.
     SwitchSession,
+    /// Give keyboard focus to a plugin view, or clear focus when the argument
+    /// is absent/empty. Carries the plugin name alongside, same as
+    /// `SwitchSession` — see `App::execute_action`'s second parameter.
+    ///
+    /// This is what lets a config bind a key to reach a plugin panel; clicking
+    /// the panel does the same thing.
+    FocusPlugin,
     ExpandCard,
 }
 
@@ -330,28 +321,25 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "next_user_message" => Some(Action::NextUserMessage),
         "cycle_model_next" | "model_next" => Some(Action::CycleModelNext),
         "cycle_model_prev" | "model_prev" => Some(Action::CycleModelPrev),
-        "open_diff" | "diff" => Some(Action::OpenDiff),
-        "diff_next_hunk" => Some(Action::DiffNextHunk),
-        "diff_prev_hunk" => Some(Action::DiffPrevHunk),
-        "diff_next_file" => Some(Action::DiffNextFile),
-        "diff_prev_file" => Some(Action::DiffPrevFile),
-        "diff_cursor_down" => Some(Action::DiffCursorDown),
-        "diff_cursor_up" => Some(Action::DiffCursorUp),
-        "diff_toggle_split" => Some(Action::DiffToggleSplit),
-        "diff_toggle_fullscreen" => Some(Action::DiffToggleFullscreen),
-        "diff_toggle_tree" => Some(Action::DiffToggleTree),
-        "diff_comment" => Some(Action::DiffComment),
-        "diff_close" => Some(Action::DiffClose),
         "open_models" | "models" => Some(Action::OpenModels),
         "open_tools" | "tools" => Some(Action::OpenTools),
         "open_palette" | "palette" => Some(Action::OpenPalette),
         "refresh_tools" => Some(Action::RefreshTools),
         "switch_session" => Some(Action::SwitchSession),
+        "focus_plugin" => Some(Action::FocusPlugin),
         _ => None,
     }
 }
 
 fn parse_key(s: &str) -> Option<KeyPattern> {
+    // A literal single space is a valid key, but `trim()` below would erase it
+    // and leave an empty string that falls through to `None`. Handled first so
+    // `" "` and the `"Space"` spelling both work — `key_event_to_string` never
+    // emits `" "`, but a plugin binding printable characters in a loop does.
+    if s == " " {
+        return Some(kp(KeyCode::Char(' '), false, false, false));
+    }
+
     let s = s.trim();
     let mut ctrl = false;
     let mut alt = false;
@@ -387,6 +375,14 @@ fn parse_key(s: &str) -> Option<KeyPattern> {
         "End" | "end" => KeyCode::End,
         "PageUp" | "pageup" | "PgUp" | "pgup" => KeyCode::PageUp,
         "PageDown" | "pagedown" | "PgDn" | "pgdn" => KeyCode::PageDown,
+        // Editing keys. These must round-trip with `key_event_to_string`, which
+        // already emits "Backspace"/"Delete"/"Insert": without these arms a
+        // binding on any of them was silently rejected as unparseable even
+        // though the live event produced exactly that name.
+        "Backspace" | "backspace" | "BS" | "bs" => KeyCode::Backspace,
+        "Delete" | "delete" | "Del" | "del" => KeyCode::Delete,
+        "Insert" | "insert" | "Ins" | "ins" => KeyCode::Insert,
+        "BackTab" | "backtab" => KeyCode::BackTab,
         "F1" | "f1" => KeyCode::F(1),
         "F2" | "f2" => KeyCode::F(2),
         "F3" | "f3" => KeyCode::F(3),
@@ -525,5 +521,53 @@ mod keymap_bridge_tests {
         assert!(!is_valid_key_string("NotAKey"));
         assert!(!is_valid_key_string("Ctrl+T"));
         assert!(is_valid_key_string("C-t"));
+    }
+
+    /// `key_event_to_string` and `parse_key` must agree: the TUI turns a live
+    /// event into a name, then looks that name up among registered bindings. Any
+    /// name the former emits but the latter rejects is a key that can never be
+    /// bound — `Backspace` and `Delete` were exactly that, so a plugin view
+    /// binding them got "ignoring unparseable key" and silently lost the key.
+    ///
+    /// Only codes `key_event_to_string` actually emits are listed: `Insert` and
+    /// `BackTab` fall into its `_ => None` arm, so they never reach a lookup and
+    /// asserting on them would test a path that does not exist.
+    #[test]
+    fn emitted_key_names_parse_back() {
+        for code in [
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Tab,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::F(1),
+            KeyCode::F(10),
+            KeyCode::Char('j'),
+            KeyCode::Char(' '),
+        ] {
+            let ev = KeyEvent::new(code, KeyModifiers::NONE);
+            let name = key_event_to_string(ev)
+                .unwrap_or_else(|| panic!("{code:?} must produce a name"));
+            assert!(
+                is_valid_key_string(&name),
+                "{code:?} emits {name:?}, which parse_key rejects"
+            );
+        }
+    }
+
+    /// A bare space is a real key a plugin can bind while capturing text; the
+    /// `trim()` in `parse_key` used to erase it into an empty string.
+    #[test]
+    fn space_is_bindable_both_spellings() {
+        assert!(is_valid_key_string(" "), "literal space");
+        assert!(is_valid_key_string("Space"), "named space");
     }
 }

@@ -701,14 +701,18 @@ impl LuaRuntime {
         // Split the borrow: `plugin_ui` needs `&Lua` while being mutated.
         let LuaState { lua, plugin_ui, .. } = &mut *state;
         match op {
-            PluginLuaOp::Register { plugin, source } => {
-                plugin_ui.register(lua, plugin, source);
+            PluginLuaOp::Register {
+                plugin,
+                source,
+                placement,
+            } => {
+                plugin_ui.register(lua, plugin, source, placement.clone());
             }
             PluginLuaOp::SetState { plugin, state } => {
                 plugin_ui.set_state(lua, plugin, state);
             }
             PluginLuaOp::Clear { plugin } => {
-                plugin_ui.remove(plugin);
+                plugin_ui.remove(lua, plugin);
             }
         }
     }
@@ -724,10 +728,69 @@ impl LuaRuntime {
             .collect()
     }
 
+    /// `(name, placement)` for every registered view, in stable order.
+    pub fn plugin_views(&self) -> Vec<(String, crate::reducer::PluginPlacement)> {
+        let state = self.inner.read().unwrap();
+        state
+            .plugin_ui
+            .views()
+            .into_iter()
+            .map(|(name, p)| (name.to_string(), p.clone()))
+            .collect()
+    }
+
     /// Build one plugin's widget tree, or the error to display in its place.
     pub fn build_plugin_view(&self, plugin: &str) -> Result<widgets::Widget, String> {
         let state = self.inner.read().unwrap();
         state.plugin_ui.build(&state.lua, plugin)
+    }
+
+    /// Dispatch a click at rect-local `(x, y)` to `plugin`'s handler for `id`.
+    pub fn dispatch_plugin_click(
+        &self,
+        plugin: &str,
+        id: &str,
+        local_x: u16,
+        local_y: u16,
+        button: &str,
+    ) -> bool {
+        let state = self.inner.read().unwrap();
+        state
+            .plugin_ui
+            .dispatch_click(&state.lua, plugin, id, local_x, local_y, button)
+    }
+
+    /// Dispatch `key` to `plugin`'s handler. Returns true if consumed.
+    pub fn dispatch_plugin_key(&self, plugin: &str, key: &str) -> bool {
+        let state = self.inner.read().unwrap();
+        state.plugin_ui.dispatch_key(&state.lua, plugin, key)
+    }
+
+    /// Whether `plugin` binds `key` at all (without invoking the handler).
+    pub fn plugin_has_key(&self, plugin: &str, key: &str) -> bool {
+        let state = self.inner.read().unwrap();
+        state.plugin_ui.has_key(&state.lua, plugin, key)
+    }
+
+    /// Force a UI rebuild next frame.
+    ///
+    /// The Rust-side equivalent of `kn9t.invalidate()`: bumps the same epoch the
+    /// render fingerprint folds in. Needed when host code changes something the
+    /// fingerprint cannot observe — plugin focus, or a plugin's Lua-local state
+    /// after one of its handlers ran.
+    pub fn invalidate_ui(&self) {
+        let state = self.inner.read().unwrap();
+        let Ok(kn9t) = state.lua.globals().get::<mlua::Table>("kn9t") else {
+            return;
+        };
+        let epoch: i64 = kn9t.get("_epoch").unwrap_or(0);
+        let _ = kn9t.set("_epoch", epoch + 1);
+    }
+
+    /// Drain side effects queued by plugin view handlers.
+    pub fn drain_plugin_effects(&self) -> Vec<plugin_ui::PluginEffect> {
+        let state = self.inner.read().unwrap();
+        plugin_ui::drain_effects(&state.lua)
     }
 
     /// Update context stats for Lua status bar customization.

@@ -60,7 +60,6 @@ mod tui {
 }
 pub mod command_palette;
 pub mod config;
-pub mod diff_viewer;
 pub mod event;
 pub mod hyperlinks;
 pub mod input_history;

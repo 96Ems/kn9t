@@ -417,9 +417,6 @@ pub struct App {
     // Command palette state.
     pub command_palette: crate::command_palette::CommandPalette,
 
-    // Diff viewer (separate from overlay - needs &mut for mouse hit tracking).
-    pub diff_viewer: Option<crate::diff_viewer::DiffViewer>,
-
     // 96E-23: structured UI directives (session-scoped, transport only until 96E-25).
     pub ui_directives: Vec<(String, String, String, serde_json::Value)>,
     // 96E-27: collapsible subagent sub-entries
@@ -541,7 +538,6 @@ impl App {
             search_state: None,
             which_key_panel: WhichKeyPanel::new(),
             command_palette: crate::command_palette::CommandPalette::new(),
-            diff_viewer: None,
             keybinds,
             tick_ctl,
             term_width: 80,
@@ -1258,27 +1254,48 @@ impl App {
 
     fn handle_key(&mut self, key: crossterm::event::KeyEvent, tx: &Sender<Event>) {
         crate::log!(
-            "KEY: {:?} mods={:?} screen={:?} overlay={:?} diff={:?} slash={}",
+            "KEY: {:?} mods={:?} screen={:?} overlay={:?} plugin={:?} slash={}",
             key.code,
             key.modifiers,
             self.screen,
             self.overlay.is_some(),
-            self.diff_viewer.is_some(),
+            self.focused_plugin.as_deref(),
             self.slash.active
         );
-
-        // Diff viewer handling (separate from overlay).
-        if self.diff_viewer.is_some() {
-            crate::log!("  -> diff_viewer handler");
-            self.handle_overlay_key(key, tx);
-            return;
-        }
 
         // Overlay handling.
         if self.overlay.is_some() {
             crate::log!("  -> overlay handler");
             self.handle_overlay_key(key, tx);
             return;
+        }
+
+        // A focused plugin view gets first refusal, but only for keys it
+        // actually binds — checked via `plugin_has_key` so an unbound key still
+        // reaches the host. Esc always blurs instead of dispatching, otherwise a
+        // plugin could trap focus with no way out.
+        //
+        // Placed after overlays (a modal is strictly on top) but before global
+        // keybinds, so a focused panel can own j/k without the host stealing them.
+        if let Some(plugin) = self.focused_plugin.clone() {
+            if let Some(runtime) = self.lua_runtime.clone() {
+                if key.code == KeyCode::Esc {
+                    crate::log!("  -> blur plugin '{}'", plugin);
+                    self.focused_plugin = None;
+                    runtime.invalidate_ui();
+                    return;
+                }
+                if let Some(key_str) = crate::keybind::key_event_to_string(key) {
+                    if runtime.plugin_has_key(&plugin, &key_str) {
+                        let consumed = runtime.dispatch_plugin_key(&plugin, &key_str);
+                        self.apply_plugin_effects(&runtime);
+                        if consumed {
+                            crate::log!("  -> plugin '{}' consumed {}", plugin, key_str);
+                            return;
+                        }
+                    }
+                }
+            }
         }
 
         // Search mode handling (intercepts keys when search bar is open).
@@ -1607,69 +1624,6 @@ impl App {
     }
 
     fn handle_overlay_key(&mut self, key: crossterm::event::KeyEvent, tx: &Sender<Event>) {
-        // Handle diff viewer separately (not in Overlay enum)
-        if let Some(ref mut viewer) = self.diff_viewer {
-            if viewer.commenting {
-                match key.code {
-                    KeyCode::Esc => {
-                        viewer.cancel_comment();
-                    }
-                    KeyCode::Enter => {
-                        viewer.add_comment();
-                    }
-                    KeyCode::Backspace => {
-                        viewer.comment_input.pop();
-                    }
-                    KeyCode::Char(c) => {
-                        viewer.comment_input.push(c);
-                    }
-                    _ => {}
-                }
-                return;
-            }
-
-            // A Lua handler gets first refusal, so `kn9t.map` can rebind the
-            // viewer like any other key. Returning false falls through to the
-            // defaults below.
-            if let Some(key_str) = crate::keybind::key_event_to_string(key) {
-                let consumed = self
-                    .lua_runtime
-                    .clone()
-                    .is_some_and(|rt| rt.dispatch_keymap(&self.lua_keymaps, &key_str));
-                self.run_queued_lua_actions(tx);
-                if consumed {
-                    return;
-                }
-            }
-
-            // Built-in defaults, expressed as the same actions Lua can bind.
-            let action = match key.code {
-                KeyCode::Esc => Some(Action::DiffClose),
-                KeyCode::Char(']') => Some(Action::DiffNextHunk),
-                KeyCode::Char('[') => Some(Action::DiffPrevHunk),
-                KeyCode::Char('u') => Some(Action::DiffToggleSplit),
-                KeyCode::Char('f') => Some(Action::DiffToggleFullscreen),
-                KeyCode::Char('j') | KeyCode::Down => Some(Action::DiffCursorDown),
-                KeyCode::Char('k') | KeyCode::Up => Some(Action::DiffCursorUp),
-                KeyCode::Char('c') | KeyCode::Enter => Some(Action::DiffComment),
-                KeyCode::Char('n') => Some(Action::DiffNextFile),
-                KeyCode::Char('p') => Some(Action::DiffPrevFile),
-                KeyCode::Char('b') => Some(Action::DiffToggleTree),
-                _ => None,
-            };
-            if let Some(action) = action {
-                self.execute_action(action, None, tx);
-            } else if let Some(ref mut viewer) = self.diff_viewer {
-                // Paging has no action form: it is a scroll amount, not a command.
-                match key.code {
-                    KeyCode::PageDown => viewer.scroll_down(10),
-                    KeyCode::PageUp => viewer.scroll_up(10),
-                    _ => {}
-                }
-            }
-            return;
-        }
-
         match &mut self.overlay {
             Some(Overlay::Approval { selected, .. }) => match key.code {
                 KeyCode::Left => *selected = selected.saturating_sub(1),
@@ -2225,12 +2179,6 @@ impl App {
     }
 
     fn handle_welcome_key(&mut self, key: crossterm::event::KeyEvent, tx: &Sender<Event>) {
-        // Handle diff viewer first (separate from overlay).
-        if self.diff_viewer.is_some() {
-            self.handle_overlay_key(key, tx);
-            return;
-        }
-
         // Handle overlay (same logic as chat screen).
         if self.overlay.is_some() {
             self.handle_overlay_key(key, tx);
@@ -2484,6 +2432,32 @@ impl App {
         }
     }
 
+    /// Apply side effects queued by a plugin view's handlers.
+    ///
+    /// Plugin views deliberately cannot reach `kn9t.action`, so this is a much
+    /// narrower vocabulary than `run_queued_lua_actions`: a plugin nudges the
+    /// host, it does not drive it.
+    ///
+    /// Always invalidates the UI cache — a handler ran, so the view's Lua-local
+    /// state almost certainly changed, and the render fingerprint cannot see
+    /// inside a plugin's environment to notice.
+    fn apply_plugin_effects(&mut self, runtime: &std::sync::Arc<crate::lua::LuaRuntime>) {
+        use crate::lua::plugin_ui::PluginEffect;
+        for effect in runtime.drain_plugin_effects() {
+            match effect {
+                PluginEffect::InsertInput { plugin, text } => {
+                    crate::log!("plugin {} inserted {} chars into input", plugin, text.len());
+                    if !self.input.is_empty() && !self.input.ends_with('\n') {
+                        self.input.push('\n');
+                    }
+                    self.input.push_str(&text);
+                    self.cursor_col = self.input.chars().count();
+                }
+            }
+        }
+        runtime.invalidate_ui();
+    }
+
     /// Run a `kn9t.register_command` handler by its registered id, then run
     /// any `kn9t.action(...)` it queued — same as a keymap or click handler,
     /// since a command handler is just another Lua entry point that can want
@@ -2637,50 +2611,6 @@ impl App {
                 self.cycle_model_prev();
             }
 
-            // Opens the diff viewer (runs `git diff`, parses it). This is the
-            // action `{type="native", view="diff"}` needs paired with it in a
-            // Lua layout — placing the native view only draws an already-open
-            // viewer, it does not open one.
-            Action::OpenDiff => {
-                self.open_git_diff();
-            }
-
-            // Diff viewer. Each is a no-op with no viewer open, so a Lua config
-            // can bind them unconditionally without guarding on state.
-            Action::DiffNextHunk
-            | Action::DiffPrevHunk
-            | Action::DiffNextFile
-            | Action::DiffPrevFile
-            | Action::DiffCursorDown
-            | Action::DiffCursorUp
-            | Action::DiffToggleSplit
-            | Action::DiffToggleFullscreen
-            | Action::DiffToggleTree
-            | Action::DiffComment => {
-                if let Some(ref mut v) = self.diff_viewer {
-                    match action {
-                        Action::DiffNextHunk => {
-                            v.next_hunk();
-                            v.cursor_line = 0;
-                        }
-                        Action::DiffPrevHunk => {
-                            v.prev_hunk();
-                            v.cursor_line = 0;
-                        }
-                        Action::DiffNextFile => v.next_file(),
-                        Action::DiffPrevFile => v.prev_file(),
-                        Action::DiffCursorDown => v.cursor_down(),
-                        Action::DiffCursorUp => v.cursor_up(),
-                        Action::DiffToggleSplit => v.toggle_split_mode(),
-                        Action::DiffToggleFullscreen => v.toggle_fullscreen(),
-                        Action::DiffToggleTree => v.toggle_file_tree(),
-                        Action::DiffComment => v.start_comment(),
-                        _ => unreachable!("outer match restricts these variants"),
-                    }
-                }
-            }
-            Action::DiffClose => self.close_diff_viewer(),
-
             // Overlays, so a config can bind them directly instead of only
             // reaching them through the palette.
             Action::OpenModels => {
@@ -2706,6 +2636,26 @@ impl App {
                 }
             }
 
+            // Focus a plugin view by name, or blur when given nothing. Only
+            // accepts a plugin that actually has a registered UI, so a typo in
+            // a config leaves focus alone instead of black-holing every key.
+            Action::FocusPlugin => {
+                let Some(runtime) = self.lua_runtime.clone() else {
+                    return;
+                };
+                match arg.filter(|a| !a.is_empty()) {
+                    None => self.focused_plugin = None,
+                    Some(name) => {
+                        if runtime.plugin_view_names().iter().any(|p| p == name) {
+                            self.focused_plugin = Some(name.to_string());
+                        } else {
+                            crate::log!("focus_plugin: no view registered for '{}'", name);
+                        }
+                    }
+                }
+                runtime.invalidate_ui();
+            }
+
             // Search mode actions are handled in handle_search_key, not here.
             Action::CloseSearch
             | Action::NextMatch
@@ -2713,24 +2663,6 @@ impl App {
             | Action::ToggleRegex
             | Action::ToggleCase => {}
             _ => {}
-        }
-    }
-
-    /// Close the diff viewer, carrying any review comments into the input.
-    ///
-    /// Shared by the key path and the `diff_close` action so comments cannot be
-    /// dropped by closing one way rather than the other.
-    fn close_diff_viewer(&mut self) {
-        let Some(viewer) = self.diff_viewer.take() else {
-            return;
-        };
-        if viewer.has_comments() {
-            let comments = viewer.format_comments();
-            if !self.input.is_empty() && !self.input.ends_with('\n') {
-                self.input.push('\n');
-            }
-            self.input.push_str(&comments);
-            self.cursor_col = self.input.chars().count();
         }
     }
 
@@ -2830,35 +2762,6 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent, tx: &Sender<Event>) {
-        // Handle diff viewer mouse events first (separate from overlay)
-        if let Some(ref mut viewer) = self.diff_viewer {
-            if !viewer.commenting {
-                match mouse.kind {
-                    MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                        // Click on file tree or diff line
-                        viewer.handle_click_at(mouse.column, mouse.row);
-                        return;
-                    }
-                    MouseEventKind::ScrollUp => {
-                        viewer.handle_scroll(-3);
-                        return;
-                    }
-                    MouseEventKind::ScrollDown => {
-                        viewer.handle_scroll(3);
-                        return;
-                    }
-                    MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                        // Right click to add comment
-                        if viewer.select_by_click(mouse.row) {
-                            viewer.start_comment();
-                        }
-                        return;
-                    }
-                    _ => {}
-                }
-            }
-            return;
-        }
 
         match mouse.kind {
             MouseEventKind::Moved => {
@@ -3013,6 +2916,36 @@ impl App {
                     }
                 }
             }
+
+            // Plugin views before the base tree: a plugin subtree is painted
+            // *into* a slot of that tree, so it is strictly on top of it.
+            // Clicking a plugin view also focuses it, which is what makes its
+            // `on_key` bindings live.
+            let plugin_hit = self
+                .plugin_view_areas
+                .iter()
+                .find(|(_, rect)| {
+                    x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+                })
+                .map(|(plugin, _)| plugin.clone());
+            if let Some(plugin) = plugin_hit {
+                if self.focused_plugin.as_deref() != Some(plugin.as_str()) {
+                    self.focused_plugin = Some(plugin.clone());
+                    runtime.invalidate_ui();
+                }
+            }
+            for (plugin, id, rect) in self.plugin_click_areas.clone() {
+                if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+                {
+                    let local_x = x - rect.x;
+                    let local_y = y - rect.y;
+                    if runtime.dispatch_plugin_click(&plugin, &id, local_x, local_y, button) {
+                        self.apply_plugin_effects(&runtime);
+                        return;
+                    }
+                }
+            }
+
             for (id, rect) in self.lua_click_areas.clone() {
                 if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
                 {
@@ -3973,7 +3906,8 @@ impl App {
                 }
             }
             "compact" => {
-                // Phase 4: POST /session/{id}/compact (lease required, engine at exec.rs:139).
+                // Fire-and-forget: POST /session/{id}/compact triggers background compaction.
+                // Result comes via SSE Event::Compacted (handled by reducer).
                 let sid = self.session.state.session_id.clone();
                 let lease = self.session.state.lease.clone();
                 if sid.is_empty() {
@@ -3981,9 +3915,9 @@ impl App {
                         .push(Message::new("system", "No active session to compact."));
                 } else if let (Some(client), Some(holder)) = (&self.client, lease) {
                     match client.compact_session(&sid, &holder) {
-                        Ok(seq) => self
+                        Ok(()) => self
                             .transcript
-                            .push(Message::new("system", format!("Compacted (seq={})", seq))),
+                            .push(Message::new("system", "Compaction started...")),
                         Err(e) => self
                             .transcript
                             .push(Message::new("system", format!("Compact failed: {}", e))),
@@ -4033,10 +3967,6 @@ impl App {
             }
             "search" => {
                 self.open_search();
-            }
-            "diff" => {
-                // Run git diff and open diff viewer
-                self.open_git_diff();
             }
             "keys" => {
                 self.which_key_panel = WhichKeyPanel::new();
@@ -4152,10 +4082,6 @@ impl App {
                 self.which_key_panel = WhichKeyPanel::new();
                 self.overlay = Some(Overlay::WhichKey);
             }
-            "diff_viewer" => {
-                self.open_git_diff();
-            }
-
             // Tools
             "models" => {
                 self.overlay = Some(Overlay::ModelSelect {
@@ -4164,6 +4090,7 @@ impl App {
                 });
             }
             "compact" => {
+                // Fire-and-forget: triggers background compaction, result via SSE.
                 let sid = self.session.state.session_id.clone();
                 let lease = self.session.state.lease.clone();
                 if sid.is_empty() {
@@ -4171,9 +4098,9 @@ impl App {
                         .push(Message::new("system", "No active session to compact."));
                 } else if let (Some(client), Some(holder)) = (&self.client, lease) {
                     match client.compact_session(&sid, &holder) {
-                        Ok(seq) => self
+                        Ok(()) => self
                             .transcript
-                            .push(Message::new("system", format!("Compacted (seq={})", seq))),
+                            .push(Message::new("system", "Compaction started...")),
                         Err(e) => self
                             .transcript
                             .push(Message::new("system", format!("Compact failed: {}", e))),
@@ -4246,76 +4173,6 @@ impl App {
             _ => {}
         }
     }
-
-    /// Open diff viewer with current git diff.
-    fn open_git_diff(&mut self) {
-        use std::process::Command;
-
-        // Phase 4 fix: use the session's cwd from snapshot (not env::current_dir which is the TUI process cwd).
-        let cwd = self
-            .session
-            .state
-            .cwd
-            .as_deref()
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-
-        // Run git diff
-        let output = Command::new("git")
-            .args(["diff", "--no-color"])
-            .current_dir(&cwd)
-            .output();
-
-        match output {
-            Ok(out) if out.status.success() => {
-                let diff_text = String::from_utf8_lossy(&out.stdout);
-                if diff_text.trim().is_empty() {
-                    // No changes, try staged
-                    let staged = Command::new("git")
-                        .args(["diff", "--cached", "--no-color"])
-                        .current_dir(&cwd)
-                        .output();
-
-                    match staged {
-                        Ok(out) if out.status.success() && !out.stdout.is_empty() => {
-                            let diff_text = String::from_utf8_lossy(&out.stdout);
-                            let files = crate::diff_viewer::parse_unified_diff(&diff_text);
-                            if files.is_empty() {
-                                self.transcript
-                                    .push(Message::new("system", "No changes to display."));
-                            } else {
-                                let viewer = crate::diff_viewer::DiffViewer::new(files);
-                                self.diff_viewer = Some(viewer);
-                            }
-                        }
-                        _ => {
-                            self.transcript
-                                .push(Message::new("system", "No uncommitted changes."));
-                        }
-                    }
-                } else {
-                    let files = crate::diff_viewer::parse_unified_diff(&diff_text);
-                    if files.is_empty() {
-                        self.transcript
-                            .push(Message::new("system", "No changes to display."));
-                    } else {
-                        let viewer = crate::diff_viewer::DiffViewer::new(files);
-                        self.diff_viewer = Some(viewer);
-                    }
-                }
-            }
-            Ok(_) => {
-                self.transcript.push(Message::new(
-                    "system",
-                    "Not a git repository or git command failed.",
-                ));
-            }
-            Err(e) => {
-                self.transcript
-                    .push(Message::new("system", &format!("Failed to run git: {}", e)));
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -4341,52 +4198,5 @@ mod mouse_routing_tests {
         // Before the first frame nothing is recorded; clicks must still work.
         let a = app();
         assert!(!a.is_outside_transcript(10));
-    }
-
-    /// `Action::OpenDiff` must actually populate `diff_viewer` — the bug this
-    /// pins: `{type="native", view="diff"}` only ever *draws* an existing
-    /// viewer (see `ui/render.rs`'s "diff" arm), so a Lua config that placed
-    /// the native view and flipped its own MAIN_VIEW state without ever
-    /// reaching this action got a blank pane. `diff` and `open_diff` were
-    /// slash-command-only; no `Action` reached `open_git_diff()` at all.
-    #[test]
-    fn open_diff_action_populates_the_viewer() {
-        let dir = std::env::temp_dir().join(format!(
-            "kn9t_tui_open_diff_test_{}_{:?}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(&dir)
-                .output()
-                .expect("git must be on PATH for this test")
-        };
-        git(&["init", "-q", "-b", "main"]);
-        git(&["config", "user.email", "test@example.com"]);
-        git(&["config", "user.name", "test"]);
-        std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
-        git(&["add", "a.txt"]);
-        git(&["commit", "-q", "-m", "initial"]);
-        std::fs::write(dir.join("a.txt"), "hello world\n").unwrap();
-
-        let mut a = app();
-        a.session.state.cwd = Some(dir.display().to_string());
-        assert!(a.diff_viewer.is_none(), "starts with no viewer open");
-
-        let (tx, _rx) = std::sync::mpsc::channel();
-        a.execute_action(Action::OpenDiff, None, &tx);
-
-        assert!(
-            a.diff_viewer.is_some(),
-            "Action::OpenDiff must populate diff_viewer, not just be a valid action name"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

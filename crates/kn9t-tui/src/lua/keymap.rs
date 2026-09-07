@@ -444,7 +444,7 @@ mod tests {
         // Accepted names round-trip to a real Action.
         for name in [
             "scroll_top",
-            "diff_next_hunk",
+            "focus_plugin",
             "open_tools",
             "session_picker",
             "refresh_tools",
@@ -456,6 +456,15 @@ mod tests {
             );
         }
         // A removed action is rejected at registration time, not silently queued.
+        // `diff_next_hunk` belonged to the native diff viewer, which is gone:
+        // diff review is now the `kn9t-git-integration` plugin panel, binding its
+        // own keys through `kn9t.on_key` rather than through host actions.
+        for gone in ["toggle_right", "diff_next_hunk", "open_diff", "diff_close"] {
+            assert!(
+                crate::keybind::parse_action(gone).is_none(),
+                "{gone} must no longer resolve to an Action"
+            );
+        }
         let ok: bool = lua
             .load(r#"return kn9t.action("toggle_right")"#)
             .eval()

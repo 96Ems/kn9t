@@ -79,6 +79,23 @@ fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
     String::from_utf8(output.stdout).ok()
 }
 
+/// Like [`run_git`] but tolerant of a non-zero exit.
+///
+/// `git diff` exits non-zero in normal, non-error situations (notably with
+/// `--exit-code` semantics in some configs), and its stdout is still the diff.
+/// Treating that as failure would silently show an empty review panel.
+///
+/// Uses `from_utf8_lossy`: a diff of a file with mixed encodings must degrade
+/// to replacement characters rather than discarding the whole hunk.
+pub fn run_git_raw(cwd: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Parse `git status --branch --porcelain=v2` output.
 ///
 /// Format reference (porcelain v2, not the human-readable default):

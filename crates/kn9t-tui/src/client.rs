@@ -409,17 +409,14 @@ impl Client {
         Ok(())
     }
 
-    /// Trigger manual compaction (POST /session/{id}/compact — Phase 4, lease required, engine at exec.rs:139).
-    pub fn compact_session(&self, session_id: &str, lease: &str) -> Result<u64, ClientError> {
-        let resp = self
-            .request("POST", &format!("/session/{}/compact", session_id))
+    /// Trigger manual compaction (POST /session/{id}/compact — fire-and-forget).
+    /// Returns immediately; result comes via SSE Event::Compacted.
+    pub fn compact_session(&self, session_id: &str, lease: &str) -> Result<(), ClientError> {
+        self.request("POST", &format!("/session/{}/compact", session_id))
             .set("X-Lease", lease)
             .call()
             .map_err(|e| ClientError::Http(e.to_string()))?;
-        let body: serde_json::Value = resp
-            .into_json()
-            .map_err(|e| ClientError::Json(e.to_string()))?;
-        Ok(body.get("seq").and_then(|v| v.as_u64()).unwrap_or(0))
+        Ok(())
     }
 
     /// Export a session transcript (GET /session/{id}/export — Phase 4, replaces placeholder).

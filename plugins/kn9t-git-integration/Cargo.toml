@@ -1,12 +1,12 @@
 [package]
-name = "kn9t-git-status"
+name = "kn9t-git-integration"
 version = "0.1.0"
 edition = "2021"
 
 [workspace]
 
 [[bin]]
-name = "kn9t-git-status"
+name = "kn9t-git-integration"
 path = "src/main.rs"
 
 [dependencies]

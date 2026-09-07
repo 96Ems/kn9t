@@ -144,7 +144,7 @@ pub enum Widget {
 ///
 /// Published to Lua as `kn9t.native_views` so a config can degrade gracefully
 /// on an older binary instead of silently leaving a hole in the layout.
-pub const NATIVE_VIEWS: &[&str] = &["transcript", "input", "status", "diff", "welcome"];
+pub const NATIVE_VIEWS: &[&str] = &["transcript", "input", "status", "welcome"];
 
 impl Widget {
     /// Concatenated text of a `Text` node, ignoring per-span styling.
@@ -1212,9 +1212,20 @@ fn compute_split_rects(area: Rect, direction: SplitDirection, sizes: &[SplitSize
             SplitSize::Flex(f) => flex_unit * f,
         };
 
+        // Clamp to parent bounds: a Lua layout that requests more space than
+        // exists must not produce rects outside the buffer. Without this,
+        // ratatui panics on the out-of-bounds write.
         let rect = match direction {
-            SplitDirection::Horizontal => Rect::new(area.x + offset, area.y, len, area.height),
-            SplitDirection::Vertical => Rect::new(area.x, area.y + offset, area.width, len),
+            SplitDirection::Horizontal => {
+                let x = (area.x + offset).min(area.x + area.width);
+                let w = len.min(area.width.saturating_sub(offset));
+                Rect::new(x, area.y, w, area.height)
+            }
+            SplitDirection::Vertical => {
+                let y = (area.y + offset).min(area.y + area.height);
+                let h = len.min(area.height.saturating_sub(offset));
+                Rect::new(area.x, y, area.width, h)
+            }
         };
 
         rects.push(rect);

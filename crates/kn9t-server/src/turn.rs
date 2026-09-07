@@ -795,3 +795,122 @@ fn sanitize_title(s: &str) -> String {
 fn compute_cost(tokens: &Tokens, price: &Price) -> i64 {
     kn9t_core::cost_micros(tokens, price)
 }
+
+/// Spawn a background compaction for `session`. Fire-and-forget: emits
+/// `Event::Compacted` via SSE when done, or `Event::Error` on failure.
+///
+/// 96E-17 fail-closed, same posture as the automatic path (`exec.rs:223`):
+/// compaction is the compactor plugin's job alone. No plugin (or a failing one)
+/// means NO compaction — the session keeps its transcript and simply runs to the
+/// context ceiling. A host-side "summary of N messages" fallback would be worse
+/// than nothing: it destroys the span and silently looks like success.
+pub fn spawn_compact(
+    state: Arc<ServerState>,
+    session: SessionId,
+    compact_span: kn9t_core::CompactSpan,
+) {
+    std::thread::spawn(move || {
+        state.idle.turn_started();
+        crate::log!("[spawn_compact] starting: session={}", session.0);
+
+        // Registering a cancel makes the compaction abortable via /abort AND makes
+        // `is_turn_running` reject a concurrent /prompt — a user message landing
+        // mid-compaction would race the Compacted event over the same span.
+        register_cancel(&state, &session.0, Cancel::new());
+
+        // Get model for compaction
+        let model_ref = state
+            .store
+            .get_model_spec_for_session(&session.0)
+            .or_else(|| state.default_model_snapshot())
+            .map(|m| m.r#ref.clone())
+            .unwrap_or_else(|| kn9t_core::ModelRef {
+                provider: "unknown".into(),
+                id: "unknown".into(),
+            });
+
+        // The plugin host reads session/bus/cwd from THREAD-LOCAL storage
+        // (PluginHost::set_session -> TL_SESSION). `compose_loop` does this for
+        // turn threads; this is a fresh thread, so it must do it too — otherwise
+        // the hook payload carries `"session": null` and the plugin bails out.
+        let bus = state.buses.bus_for(&session.0);
+        let sink: Arc<dyn EventSink> = Arc::new(SessionSink::with_store(
+            bus,
+            state.store.clone(),
+            session.clone(),
+        ));
+
+        // 96E-17: the compactor plugin is the ONLY compaction engine.
+        let compaction_result = {
+            let hosts = state.hosts_snapshot();
+            let compactor_host = hosts
+                .iter()
+                .find(|h| h.has_capability("compactor"))
+                .cloned();
+
+            match compactor_host {
+                Some(host) => {
+                    host.set_bus(sink.clone());
+                    host.set_session(&session.0);
+                    host.set_cwd(&state.cwd);
+
+                    use kn9t_core::Compactor;
+                    kn9t_plugin::RemoteCompactor::new(host)
+                        .compact(compact_span.clone(), &model_ref)
+                }
+                None => Err(
+                    "no compactor plugin installed; compaction unavailable (session continues \
+                     uncompacted until the context ceiling)"
+                        .to_string(),
+                ),
+            }
+        };
+
+        let compaction_plan = match compaction_result {
+            Ok(plan) => plan,
+            Err(e) => {
+                // Surface the failure instead of silently degrading to a one-liner:
+                // a fallback that looks like success hides a broken compactor.
+                crate::log!("[spawn_compact] compactor failed: {e}");
+                state.buses.publish(
+                    &session.0,
+                    Event::Error {
+                        message: format!("Compaction failed: {e}"),
+                    },
+                );
+                clear_cancel(&state, &session.0);
+                state.idle.turn_ended();
+                return;
+            }
+        };
+
+        let event = Event::Compacted {
+            seq: 0,
+            replaced: compact_span.replaced.clone(),
+            summary: compaction_plan.summary,
+        };
+
+        match state.store.append(&session, event) {
+            Ok(seq) => {
+                crate::log!(
+                    "[spawn_compact] completed: session={} seq={}",
+                    session.0,
+                    seq
+                );
+            }
+            Err(e) => {
+                crate::log!("[spawn_compact] store error: {}", e.0);
+                // Emit error event so TUI knows something went wrong
+                state.buses.publish(
+                    &session.0,
+                    Event::Error {
+                        message: format!("Compaction failed: {}", e.0),
+                    },
+                );
+            }
+        }
+
+        clear_cancel(&state, &session.0);
+        state.idle.turn_ended();
+    });
+}

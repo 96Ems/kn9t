@@ -41,6 +41,8 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     // it. Without this, a region Lua stopped drawing would keep taking clicks.
     app.transcript_area = None;
     app.lua_click_areas.clear();
+    app.plugin_click_areas.clear();
+    app.plugin_view_areas.clear();
 
     // Publish live state before any Lua runs this frame, so render_ui() and
     // render_status() observe the same snapshot.
@@ -126,25 +128,11 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     }
 }
 
-/// Diff viewer + overlays (approval, help, model select, ...).
+/// Overlays (approval, help, model select, ...).
 ///
 /// Shared by the Lua layout and the error shell, so overlays behave identically
 /// no matter which path drew the frame.
 fn render_chat_overlays(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
-    // Diff viewer (separate from overlay - needs &mut for mouse hit tracking)
-    if let Some(ref mut viewer) = app.diff_viewer {
-        let buf = f.buffer_mut();
-        if viewer.fullscreen {
-            viewer.render(area, buf, theme);
-        } else {
-            let w = area.width.min(100);
-            let h = area.height.saturating_sub(4);
-            let x = area.x + (area.width.saturating_sub(w)) / 2;
-            let y = area.y + 2;
-            viewer.render(Rect::new(x, y, w, h), buf, theme);
-        }
-        return;
-    }
 
     // Overlay (approval, help, model select, session select, etc).
     if let Some(ref overlay) = app.overlay {
@@ -313,14 +301,6 @@ fn render_native_view(f: &mut Frame, app: &mut App, view: &str, area: Rect, them
             }
         }
         "status" => render_status(f, app, area, theme),
-        // The diff viewer, placed by Lua. Rust still owns diff parsing, syntax
-        // highlighting and scroll maths; Lua decides where it goes and how big.
-        "diff" => {
-            if let Some(ref mut viewer) = app.diff_viewer {
-                let buf = f.buffer_mut();
-                viewer.render(area, buf, theme);
-            }
-        }
         "welcome" => render_welcome(f, app, area, theme),
         other => {
             crate::log!("Lua native view: unknown '{}'", other);
@@ -338,12 +318,12 @@ fn render_native_view(f: &mut Frame, app: &mut App, view: &str, area: Rect, them
 /// hide the actual cause.
 fn render_plugin_views(
     f: &mut Frame,
-    app: &App,
+    app: &mut App,
     root: &crate::lua::widgets::Widget,
     area: Rect,
     theme: &Theme,
 ) {
-    let Some(ref runtime) = app.lua_runtime else {
+    let Some(runtime) = app.lua_runtime.clone() else {
         return;
     };
 
@@ -354,6 +334,16 @@ fn render_plugin_views(
         match runtime.build_plugin_view(&plugin) {
             Ok(widget) => {
                 crate::lua::widgets::render_widget(f, &widget, rect, theme, &app.lua_input_states);
+
+                // Record hit geometry for the plugin's own `id=` widgets, using
+                // the tree that was just painted — without this a plugin view
+                // could declare `id=` and bind `on_click` and never be hit.
+                app.plugin_view_areas.push((plugin.clone(), rect));
+                let mut ids: Vec<(String, Rect)> = Vec::new();
+                crate::lua::widgets::collect_clickable_areas(&widget, rect, &mut ids);
+                for (id, id_rect) in ids {
+                    app.plugin_click_areas.push((plugin.clone(), id, id_rect));
+                }
             }
             Err(err) => {
                 let msg = format!("[{plugin}] {err}");
@@ -582,20 +572,6 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                 render_tools_manager(f, app, *selected, filter, area, theme);
             }
             _ => {} // Other overlays not applicable on welcome
-        }
-    }
-
-    // Diff viewer (separate from overlay - needs &mut for mouse hit tracking)
-    if let Some(ref mut viewer) = app.diff_viewer {
-        let buf = f.buffer_mut();
-        if viewer.fullscreen {
-            viewer.render(area, buf, theme);
-        } else {
-            let w = area.width.min(100);
-            let h = area.height.saturating_sub(4);
-            let x = area.x + (area.width.saturating_sub(w)) / 2;
-            let y = area.y + 2;
-            viewer.render(Rect::new(x, y, w, h), buf, theme);
         }
     }
 }
@@ -3280,70 +3256,34 @@ fn highlight_diff_line(
     (spans, bg_color)
 }
 
-// ── Approval nice display + dangerous highlighting ────────────
+// ── Approval nice display ────────────
+// NOTE: The TUI does NOT decide what needs approval — that's the policy plugin's job.
+// This function only generates a human-readable description for the overlay.
 fn approval_reason(tool: &str, args: &str) -> Option<String> {
     let val: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
     match tool {
         "bash" => {
             let cmd = val.get("cmd").and_then(|v| v.as_str()).unwrap_or(args);
-            let lower = cmd.to_lowercase();
-            let always_ask = [
-                "rm",
-                "mv",
-                "cp",
-                "chmod",
-                "chown",
-                "kill",
-                "dd",
-                "curl",
-                "wget",
-                "ssh",
-                "scp",
-                "sh",
-                "bash",
-                "zsh",
-                "python",
-                "python3",
-                "node",
-                "perl",
-                "ruby",
-                "eval",
-                "pwsh",
-                "powershell",
-                "iex",
-                "sudo",
-                "mkfs",
-                "fdisk",
-                "reboot",
-                "shutdown",
-            ];
-            for w in always_ask {
-                if lower
-                    .split_whitespace()
-                    .any(|tok| tok.eq_ignore_ascii_case(w))
-                {
-                    return Some(format!("Uses `{}` (always requires approval)", w));
-                }
-            }
-            if cmd.contains('>') || cmd.contains('<') {
-                return Some("Contains redirection (`>`/`<`)".into());
-            }
-            if cmd.contains("$(") || cmd.contains('`') {
-                return Some("Contains command substitution".into());
-            }
-            if lower.contains("sudo") {
-                return Some("Uses `sudo` (never permitted without explicit approval)".into());
-            }
-            return Some("Potentially destructive shell command".into());
+            // Just show the command, don't judge it
+            Some(format!("Command: `{}`", truncate_cmd(cmd, 60)))
         }
         "write" | "edit" => {
             let path = val.get("path").and_then(|v| v.as_str()).unwrap_or("");
             if !path.is_empty() {
-                return Some(format!("Writes to `{}`", path));
+                Some(format!("Writes to `{}`", path))
+            } else {
+                Some("Writes to file".into())
             }
-            return Some("Writes to file".into());
         }
         _ => None,
+    }
+}
+
+fn truncate_cmd(cmd: &str, max: usize) -> String {
+    if cmd.len() <= max {
+        cmd.to_string()
+    } else {
+        format!("{}...", &cmd[..max])
     }
 }
 fn bash_highlight_spans(cmd: &str, theme: &Theme) -> Vec<Span<'static>> {

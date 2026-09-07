@@ -135,14 +135,394 @@ function textBlocks(content: unknown): string {
     .join("\n");
 }
 
+/** Lua source for the subagent TUI widget — live transcript viewer.
+ * 
+ * State structure:
+ * {
+ *   status: "forking" | "running" | "complete" | "error",
+ *   session_id: string,
+ *   task: string,
+ *   transcript: [
+ *     { role: "assistant", text: "I'll read..." },
+ *     { role: "tool", name: "read", status: "running" | "complete" | "error", summary?: string },
+ *     { role: "assistant", text: "I see the issue..." },
+ *   ],
+ *   error?: string
+ * }
+ */
+const SUBAGENT_LUA = `
+function render(state)
+  local status = state.status or "unknown"
+  local session_id = state.session_id or ""
+  local task = state.task or ""
+  local transcript = state.transcript or {}
+  local short_id = session_id:sub(1, 8)
+  
+  -- Status styling
+  local status_color = "gray"
+  local status_icon = "○"
+  if status == "forking" then
+    status_color = "blue"
+    status_icon = "◔"
+  elseif status == "running" then
+    status_color = "yellow"
+    status_icon = "↻"
+  elseif status == "complete" then
+    status_color = "green"
+    status_icon = "✓"
+  elseif status == "error" then
+    status_color = "red"
+    status_icon = "✕"
+  end
+  
+  -- Build header
+  local header = status_icon .. " " .. status
+  if short_id ~= "" then
+    header = header .. "  │  " .. short_id
+  end
+  
+  -- Build transcript items for list widget
+  local items = {}
+  for i, entry in ipairs(transcript) do
+    if entry.role == "assistant" then
+      -- Assistant text: just show it
+      local text = entry.text or ""
+      if #text > 80 then
+        text = text:sub(1, 77) .. "..."
+      end
+      table.insert(items, { text = text, fg = "white" })
+    elseif entry.role == "tool" then
+      -- Tool call: show as mini-card
+      local tool_icon = "○"
+      local tool_color = "gray"
+      if entry.status == "running" then
+        tool_icon = "↻"
+        tool_color = "yellow"
+      elseif entry.status == "complete" then
+        tool_icon = "✓"
+        tool_color = "green"
+      elseif entry.status == "error" then
+        tool_icon = "✕"
+        tool_color = "red"
+      end
+      local tool_line = "  " .. tool_icon .. " " .. (entry.name or "?")
+      if entry.summary then
+        tool_line = tool_line .. ": " .. entry.summary
+      end
+      table.insert(items, { text = tool_line, fg = tool_color })
+    elseif entry.role == "thinking" then
+      -- Thinking: dimmed
+      local text = entry.text or ""
+      if #text > 60 then
+        text = text:sub(1, 57) .. "..."
+      end
+      table.insert(items, { text = "💭 " .. text, fg = "gray" })
+    end
+  end
+  
+  -- If no transcript yet, show task
+  if #items == 0 then
+    local display_task = task
+    if #task > 60 then
+      display_task = task:sub(1, 57) .. "..."
+    end
+    table.insert(items, { text = display_task, fg = "gray" })
+  end
+  
+  return {
+    type = "box",
+    border = "rounded",
+    title = "⚡ Sub-agent",
+    border_fg = status_color,
+    padding = { 0, 1 },
+    child = {
+      type = "split",
+      direction = "vertical",
+      children = {
+        {
+          type = "text",
+          content = header,
+          fg = status_color,
+        },
+        {
+          type = "list",
+          items = items,
+        },
+      },
+      sizes = { 1, "fill" },
+    },
+  }
+end
+`;
+
+/** Register the Lua UI widget for this plugin (once per session). */
+const registeredSessions = new Set<string>();
+
+function ensureLuaRegistered(session: string): void {
+  if (registeredSessions.has(session)) return;
+  hostRequest("ui_register_lua", { session, source: SUBAGENT_LUA });
+  registeredSessions.add(session);
+}
+
+/** Push UI state update to TUI. */
+function uiSetState(session: string, state: SubagentState): void {
+  hostRequest("ui_set_state", { session, state: state as unknown as Record<string, unknown> });
+}
+
+/** Clear the UI widget when done. */
+function uiClear(session: string): void {
+  hostRequest("ui_clear", { session });
+}
+
+// ── Transcript types for UI ────────────────────────────────────────────────
+
+interface TranscriptEntry {
+  role: "assistant" | "tool" | "thinking";
+  text?: string;
+  name?: string;
+  status?: "running" | "complete" | "error";
+  summary?: string;
+  [key: string]: unknown;  // Index signature for JSON serialization
+}
+
+interface SubagentState {
+  status: "forking" | "running" | "complete" | "error";
+  session_id: string;
+  task: string;
+  transcript: TranscriptEntry[];
+  error?: string;
+  [key: string]: unknown;  // Index signature for JSON serialization
+}
+
+// ── Agent loop types ───────────────────────────────────────────────────────
+
+interface Message {
+  role: string;
+  content: ContentBlock[];
+}
+
+interface ContentBlock {
+  type: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  args_json?: string;
+  content?: ContentBlock[];
+  is_error?: boolean;
+}
+
+interface ToolSpec {
+  name: string;
+  description: string;
+  schema: Record<string, unknown>;
+}
+
+// ── Mini agent loop (runs in child session, streams to parent UI) ──────────
+
+const MAX_TURNS = 20;  // Safety limit
+
+function runAgentLoop(
+  childSession: string,
+  parentSession: string,
+  task: string,
+  toolNames: string[] | undefined,
+  state: SubagentState
+): { result: string; is_error: boolean } {
+  
+  // Get available tools
+  const toolListRes = hostRequest("tool_list", { session: childSession });
+  const allTools: string[] = toolListRes.ok && Array.isArray(toolListRes.result?.["tools"]) 
+    ? toolListRes.result!["tools"] as string[]
+    : [];
+  
+  // Filter to requested tools (or all if not specified, minus subagent if recursion denied)
+  let activeTools = toolNames ?? allTools;
+  if (!RECURSION_ALLOWED) {
+    activeTools = activeTools.filter(t => t !== SPAWN_TOOL);
+  }
+
+  // Build messages array - start with the task
+  const messages: Message[] = [
+    { role: "user", content: [{ type: "text", text: `You are a sub-agent. Complete this task yourself: ${task}` }] }
+  ];
+
+  let finalResult = "";
+  let turns = 0;
+
+  while (turns < MAX_TURNS) {
+    turns++;
+
+    // Call provider_complete
+    const completeRes = hostRequest("provider_complete", {
+      session: childSession,
+      messages,
+      tools: activeTools,
+    });
+
+    if (!completeRes.ok) {
+      state.status = "error";
+      state.error = completeRes.error;
+      uiSetState(parentSession, state);
+      return { result: `provider_complete failed: ${completeRes.error}`, is_error: true };
+    }
+
+    const content = completeRes.result?.["content"] as ContentBlock[] ?? [];
+    const stop = completeRes.result?.["stop"] as string ?? "stop";
+
+    // Process response content
+    const assistantContent: ContentBlock[] = [];
+    const toolCalls: ContentBlock[] = [];
+    let assistantText = "";
+
+    for (const block of content) {
+      if (block.type === "text" && block.text) {
+        assistantText += block.text;
+        assistantContent.push(block);
+        // Update transcript with assistant text
+        state.transcript.push({ role: "assistant", text: block.text });
+        uiSetState(parentSession, state);
+      } else if (block.type === "thinking" && block.text) {
+        assistantContent.push(block);
+        state.transcript.push({ role: "thinking", text: block.text });
+        uiSetState(parentSession, state);
+      } else if (block.type === "tool_call" || block.type === "tool_use") {
+        toolCalls.push(block);
+        assistantContent.push(block);
+      }
+    }
+
+    // Add assistant message to history
+    messages.push({ role: "assistant", content: assistantContent });
+
+    // If no tool calls, we're done
+    if (toolCalls.length === 0 || stop === "stop") {
+      finalResult = assistantText;
+      break;
+    }
+
+    // Execute tool calls
+    const toolResults: ContentBlock[] = [];
+    
+    for (const call of toolCalls) {
+      const toolName = call.name ?? "unknown";
+      const callId = call.id ?? `call-${Date.now()}`;
+      let args: Record<string, unknown> = {};
+      
+      try {
+        args = call.args_json ? JSON.parse(call.args_json) : {};
+      } catch {
+        args = {};
+      }
+
+      // Show tool as running in transcript
+      const toolEntry: TranscriptEntry = { 
+        role: "tool", 
+        name: toolName, 
+        status: "running",
+        summary: summarizeToolArgs(toolName, args)
+      };
+      state.transcript.push(toolEntry);
+      uiSetState(parentSession, state);
+
+      // Execute the tool
+      const execRes = hostRequest("tool_execute", {
+        session: childSession,
+        name: toolName,
+        args,
+      });
+
+      // Update tool status
+      const toolIdx = state.transcript.length - 1;
+      const toolEntryRef = state.transcript[toolIdx];
+      if (execRes.ok) {
+        const toolContent = execRes.result?.["content"] as ContentBlock[] ?? [];
+        const isError = execRes.result?.["is_error"] as boolean ?? false;
+        
+        if (toolEntryRef) {
+          toolEntryRef.status = isError ? "error" : "complete";
+          toolEntryRef.summary = summarizeToolResult(toolName, toolContent);
+        }
+        uiSetState(parentSession, state);
+
+        toolResults.push({
+          type: "tool_result",
+          id: callId,
+          content: toolContent,
+          is_error: isError,
+        });
+      } else {
+        if (toolEntryRef) {
+          toolEntryRef.status = "error";
+          toolEntryRef.summary = execRes.error ?? "failed";
+        }
+        uiSetState(parentSession, state);
+
+        toolResults.push({
+          type: "tool_result", 
+          id: callId,
+          content: [{ type: "text", text: execRes.error ?? "tool execution failed" }],
+          is_error: true,
+        });
+      }
+    }
+
+    // Add tool results to messages
+    messages.push({ role: "tool", content: toolResults });
+  }
+
+  if (turns >= MAX_TURNS) {
+    return { result: `Reached maximum turns (${MAX_TURNS}). Last output: ${finalResult}`, is_error: true };
+  }
+
+  return { result: finalResult, is_error: false };
+}
+
+/** Create a short summary of tool arguments for display. */
+function summarizeToolArgs(name: string, args: Record<string, unknown>): string {
+  if (name === "read" || name === "write" || name === "edit") {
+    const path = args["path"];
+    return typeof path === "string" ? path : "";
+  }
+  if (name === "bash") {
+    const cmd = args["cmd"];
+    if (typeof cmd === "string") {
+      return cmd.length > 40 ? cmd.substring(0, 37) + "..." : cmd;
+    }
+  }
+  if (name === "subagent") {
+    const task = args["task"];
+    if (typeof task === "string") {
+      return task.length > 40 ? task.substring(0, 37) + "..." : task;
+    }
+  }
+  return "";
+}
+
+/** Create a short summary of tool result for display. */
+function summarizeToolResult(name: string, content: ContentBlock[]): string {
+  const text = content
+    .filter(b => b.type === "text" && b.text)
+    .map(b => b.text!)
+    .join(" ");
+  
+  if (name === "read") {
+    const match = text.match(/\((\d+) lines?\)/);
+    return match ? `${match[1]} lines` : "done";
+  }
+  if (name === "edit" || name === "write") {
+    return "done";
+  }
+  if (name === "bash") {
+    if (text.includes("error") || text.includes("Error")) return "error";
+    return text.length > 30 ? text.substring(0, 27) + "..." : (text || "done");
+  }
+  
+  return text.length > 30 ? text.substring(0, 27) + "..." : (text || "done");
+}
+
 /**
  * Handle one `subagent` tool call: fork a child session and run the task
- * synchronously inside it. The result returns to the calling agent together
- * with the child session id (so it can be inspected afterwards).
- *
- * Soft anti-delegation nudge: the child is told to complete the task itself
- * (it MAY still spawn, but pointless delegation is discouraged — the child
- * otherwise tends to mimic spawn-heavy parent transcripts).
+ * with a streaming mini-agent loop that updates the UI after each step.
  */
 function spawnSession(args: Record<string, unknown>, session: string): {
   content: Array<Record<string, unknown>>;
@@ -154,35 +534,49 @@ function spawnSession(args: Record<string, unknown>, session: string): {
   }
   const model = typeof args["model"] === "string" ? args["model"] : undefined;
   const budget = typeof args["budget_usd"] === "number" ? args["budget_usd"] : DEFAULT_BUDGET_USD;
-  // Recursion policy is this plugin's (end-user's) choice: explicit tools win;
-  // otherwise inherit the parent toolset, except when recursion is denied.
   const tools = Array.isArray(args["tools"])
     ? (args["tools"] as unknown[]).filter((t): t is string => typeof t === "string")
-    : RECURSION_ALLOWED
-      ? undefined
-      : noSpawnToolset(session);
+    : undefined;
 
-  // 1. Fork: the child inherits the parent transcript (full context) and the
-  //    budget is captured in the ForkSnapshot (R-PLUG-130).
+  // Initialize UI state
+  const state: SubagentState = {
+    status: "forking",
+    session_id: "",
+    task,
+    transcript: [],
+  };
+
+  // Register UI widget and show initial state
+  ensureLuaRegistered(session);
+  uiSetState(session, state);
+
+  // 1. Fork the session
   const fork = hostRequest("session_fork", { session, copy_events: true, budget_usd: budget, model });
-  if (!fork.ok) return { content: [{ type: "text", text: `session_fork: ${fork.error}` }], is_error: true };
+  if (!fork.ok) {
+    state.status = "error";
+    state.error = fork.error;
+    uiSetState(session, state);
+    return { content: [{ type: "text", text: `session_fork: ${fork.error}` }], is_error: true };
+  }
   const child = String(fork.result?.["session"] ?? "");
+  state.session_id = child;
+  state.status = "running";
+  uiSetState(session, state);
 
-  // 2. Prompt: the child runs its own turn (model at fork, tool subset, hooks).
-  const childTask = `You are a sub-agent session. Complete this task yourself: ${task}`;
-  const prompt = hostRequest("session_prompt", { session: child, text: childTask, tools });
-  if (!prompt.ok) return { content: [{ type: "text", text: `session_prompt: ${prompt.error}` }], is_error: true };
+  // 2. Run the agent loop with streaming updates
+  const { result, is_error } = runAgentLoop(child, session, task, tools, state);
 
-  const raw = prompt.result?.["result"];
-  const result = typeof raw === "string" ? raw : textBlocks(raw);
+  // 3. Update final status
+  state.status = is_error ? "error" : "complete";
+  uiSetState(session, state);
+
+  // Return structured output
   return {
     content: [
-      {
-        type: "text",
-        text: `[sub-agent session ${child}] ${result}`,
-      },
+      { type: "text", text: result },
+      { type: "text", text: `\n\n───────────────────────────────────────\n📎 Sub-agent session: ${child}\n   View with: kn9t attach ${child.substring(0, 8)}` },
     ],
-    is_error: false,
+    is_error,
   };
 }
 

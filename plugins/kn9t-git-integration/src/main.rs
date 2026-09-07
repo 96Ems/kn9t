@@ -1,26 +1,41 @@
-//! kn9t-git-status — background git status/log poller for the TUI sidebar.
+//! kn9t-git-integration — git integration for the TUI: status, log and a
+//! reviewable working-tree diff.
 //!
-//! Ships a `git_status` tool (real, agent-callable — "show me the current
-//! git state" is a legitimate ask) that doubles as the bootstrap trigger for
-//! a background poll thread: the plugin protocol gives no way to reach the
-//! host API outside a live tool/hook dispatch (`PluginHook::call` gets no
-//! `ctx`, and there is no session-start hook), so the first `git_status`
-//! call in a session is what starts the thread that keeps pushing updates
-//! afterward on its own timer. See `poller.rs` for the detail.
+//! # Why there is no `git_status` tool
 //!
-//! Rust does the git invocation (real subprocess, real shell access — this
-//! process, unlike the TUI's Lua sandbox, is exactly where that belongs);
-//! Lua only renders. `ui.lua` is sent once via `ui_register_lua`, then every
-//! poll pushes fresh JSON via `ui_set_state`. See AGENTS.md 11.1 and the
-//! session's design notes for why the split is drawn there.
+//! This plugin used to ship one, ostensibly because "show me the current git
+//! state" is a legitimate ask. In practice it existed mainly as a bootstrap
+//! trigger: `PluginHook::call` received no host client, so the only way to
+//! obtain one was inside a live tool dispatch. That workaround cost more than
+//! it bought — the model was offered a tool duplicating a sidebar that already
+//! displayed the same information, so it could burn a turn fetching what the
+//! user could already see.
+//!
+//! `PluginHook::call_with_ctx` removed the gap. `get_steering` fires every turn
+//! carrying `session_id` and `cwd`, which is exactly what the poller needs, so
+//! bootstrap now follows a real lifecycle signal (see `bootstrap.rs`) and this
+//! plugin exposes no agent-facing tools at all.
+//!
+//! # Division of labour
+//!
+//! Rust runs `git` and parses it: this is a native process with real shell
+//! access, unlike the TUI's sandboxed Lua (no `io`, no `os.execute`), so it is
+//! the only place that work can happen.
+//!
+//! Lua renders *and* handles input. `ui.lua` is sent once via
+//! `ui_register_lua`, then each poll pushes fresh JSON via `ui_set_state`. The
+//! view binds its own keys and clicks through `kn9t.on_key`/`kn9t.on_click`, so
+//! the interactive diff panel ships with this plugin instead of every user
+//! having to paste it into their own `tui.lua`.
 
+mod bootstrap;
+mod diff;
 mod git;
 mod poller;
-mod tool;
 mod ui;
 
 fn main() {
-    kn9t_plugin_sdk::Plugin::new("kn9t-git-status")
-        .tool(tool::GitStatus)
+    kn9t_plugin_sdk::Plugin::new("kn9t-git-integration")
+        .hook(bootstrap::Bootstrap)
         .run();
 }

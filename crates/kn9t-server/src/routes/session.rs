@@ -521,11 +521,11 @@ pub fn rename(state: &Arc<ServerState>, id: &str, req: api::RenameReq) -> JsonRe
 }
 
 /// `POST /session/{id}/compact` — manually trigger compaction [lease required].
-/// The engine already exists (`exec.rs:139 run_compaction`); previously only
-/// reachable via automatic threshold. This endpoint forces a compaction over
-/// the oldest half of messages. If a provider is available it summarizes via
-/// the model; otherwise a deterministic local summary is used so the endpoint
-/// works offline and the test needs no network.
+///
+/// Fire-and-forget (mirrors `prompt`): spawns a background thread and returns
+/// `{"accepted": true}` immediately so the TUI never blocks. The compactor plugin
+/// streams live progress over SSE and the result arrives as `Event::Compacted`.
+/// 96E-17: no compactor plugin means no compaction — there is no host-side fallback.
 pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
     let sid = SessionId(id.to_owned());
     // 404 if session missing.
@@ -535,6 +535,16 @@ pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
         .is_ok();
     if !exists {
         return JsonResp::error(404, "not_found", "session not found");
+    }
+
+    // A turn (or another compaction) in flight owns the transcript tail; a second
+    // span over the same messages would race two Compacted events.
+    if turn::is_turn_running(state, id) {
+        return JsonResp::error(
+            409,
+            "turn_running",
+            "A turn is already running for this session. Wait for it to finish before compacting.",
+        );
     }
 
     // Try automatic compaction via plan_request first (threshold-based).
@@ -599,101 +609,11 @@ pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
         }
     };
 
-    // Build a summary message. Prefer provider summarization if a provider is
-    // available; otherwise use a deterministic local summary so the endpoint
-    // is testable offline.
-    let default_model = state.default_model_snapshot();
-    let summary = if let (Some(provider), Some(model)) = (
-        state.provider_snapshot().or_else(|| {
-            default_model
-                .as_ref()
-                .and_then(|m| state.get_provider(&m.r#ref.provider))
-        }),
-        default_model
-            .clone()
-            .or_else(|| state.store.get_model_spec_for_session(id)),
-    ) {
-        // Try provider summarize (best-effort, 16 max_tokens, short timeout via Cancel).
-        let mut msgs = compact_span.messages.clone();
-        msgs.push(Message {
-            id: MsgId::new(),
-            role: Role::User,
-            content: vec![Content::Text {
-                text: "Summarize the conversation so far, preserving decisions, file paths, and open tasks, so it can replace the older messages.".to_string(),
-            }],
-            silent: false,
-        });
-        let req = kn9t_core::Request {
-            model: &model,
-            system: Some("You produce only a concise summary, nothing else."),
-            messages: &msgs,
-            tools: &[],
-            thinking: kn9t_core::Thinking::Off,
-            max_tokens: Some(256),
-            cache: &[],
-        };
-        let cancel = kn9t_core::Cancel::new();
-        match provider.stream(&req, &cancel) {
-            Ok(stream) => {
-                let mut text = String::new();
-                for item in stream {
-                    if let Ok(kn9t_core::Chunk::Text { delta, .. }) = item {
-                        text.push_str(&delta);
-                    }
-                }
-                let t = text.trim().to_string();
-                if t.is_empty() {
-                    deterministic_summary(&compact_span.messages)
-                } else {
-                    Message {
-                        id: MsgId::new(),
-                        role: Role::Assistant,
-                        content: vec![Content::Text { text: t }],
-                        silent: false,
-                    }
-                }
-            }
-            Err(_) => deterministic_summary(&compact_span.messages),
-        }
-    } else {
-        deterministic_summary(&compact_span.messages)
-    };
+    // Fire-and-forget: spawn background compaction thread.
+    // Result comes via SSE Event::Compacted.
+    turn::spawn_compact(state.clone(), sid, compact_span);
 
-    let event = Event::Compacted {
-        seq: 0,
-        replaced: compact_span.replaced.clone(),
-        summary,
-    };
-    let seq = match state.store.append(&sid, event.clone()) {
-        Ok(s) => s,
-        Err(e) => return JsonResp::error(500, "store_error", &e.0),
-    };
-    // 96E-18: SSE echo via the store after-append observer (seq-stamped there).
-    JsonResp::ok(serde_json::json!({ "compacted": true, "seq": seq, "message": "compacted" }))
-}
-
-fn deterministic_summary(msgs: &[Message]) -> Message {
-    let excerpt: String = msgs
-        .iter()
-        .flat_map(|m| m.content.iter())
-        .filter_map(|c| match c {
-            Content::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    let snippet: String = excerpt.chars().take(200).collect();
-    let text = if snippet.is_empty() {
-        format!("Summary of {} earlier messages.", msgs.len())
-    } else {
-        format!("Summary of {} earlier messages: {}", msgs.len(), snippet)
-    };
-    Message {
-        id: MsgId::new(),
-        role: Role::Assistant,
-        content: vec![Content::Text { text }],
-        silent: false,
-    }
+    JsonResp::ok(serde_json::json!({ "accepted": true, "message": "compaction started" }))
 }
 
 /// `GET /session/{id}/export` — full transcript + events dump (replaces TUI
