@@ -181,7 +181,7 @@ function TUI.build_sidebar_right(width, height)
 
     return {
         type = "box",
-        title = " " .. (ctx.model or "kn9t") .. " ",
+        title = " [F2] " .. (ctx.model or "kn9t") .. " ",
         border = true,
         child = {
             type = "split",

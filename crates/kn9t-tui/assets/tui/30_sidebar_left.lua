@@ -56,7 +56,7 @@ function TUI.build_sidebar_left(height)
         type = "box",
         border = "plain",
         border_fg = C.dim,
-        title = " Sessions ",
+        title = " [F1] Sessions ",
         child = session_list(inner_w, height),
     }
 end

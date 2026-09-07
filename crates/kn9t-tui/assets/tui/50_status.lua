@@ -63,5 +63,26 @@ function render_status()
         put(ctx.phase or "idle", C.dim)
     end
 
+    -- Contextual help bar (right-aligned)
+    put("  ", nil)
+    local focused = (kn9t.state and kn9t.state.focused_plugin) or ""
+    if focused ~= "" then
+        -- Plugin focused: show plugin controls
+        put("j/k", C.accent)
+        put(":nav ", C.dim)
+        put("d", C.accent)
+        put(":diff ", C.dim)
+        put("Esc", C.accent)
+        put(":release", C.dim)
+    else
+        -- Normal mode: show global controls
+        put("C-p", C.accent)
+        put(":cmd ", C.dim)
+        put("F1/F2", C.accent)
+        put(":side ", C.dim)
+        put("F10", C.accent)
+        put(":git", C.dim)
+    end
+
     return seg
 end

@@ -25,10 +25,15 @@ local function plugin_views_in(zone)
                 if is_focused then
                     rows = (spec.rows > 0 and spec.rows) or (TUI.PLUGIN_VIEW_ROWS_FOCUSED or 24)
                 end
+                local box_title
+                if is_focused then
+                    box_title = " " .. title .. " [Esc] release [d] diff [j/k] nav "
+                else
+                    box_title = " [F10] " .. title .. " "
+                end
                 table.insert(out, {
                     type = "box",
-                    title = is_focused and (" " .. title .. " - Esc to release ")
-                                        or (" " .. title .. " "),
+                    title = box_title,
                     border = true,
                     border_fg = is_focused and "cyan" or nil,
                     size = { fixed = rows },
