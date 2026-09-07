@@ -309,13 +309,7 @@ pub enum Screen {
     Chat,
 }
 
-/// Pending action from welcome screen (legacy — kept for compat, no longer queued).
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub enum WelcomeAction {
-    Select,
-    NewSession,
-}
+
 
 /// Hit area for tool card click detection.
 #[derive(Debug, Clone)]

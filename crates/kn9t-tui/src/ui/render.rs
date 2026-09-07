@@ -1631,12 +1631,7 @@ fn render_model_select(
     #[derive(Clone)]
     enum Row<'a> {
         Header(&'a str),
-        // The original index is carried for symmetry with the other pickers but
-        // selection is resolved via `selected_row_idx`, so it is never read.
-        Model(
-            #[allow(dead_code)] usize,
-            &'a crate::model_selector::ModelEntry,
-        ),
+        Model(&'a crate::model_selector::ModelEntry),
     }
 
     let mut rows: Vec<Row> = Vec::new();
@@ -1644,7 +1639,7 @@ fn render_model_select(
     let mut selectable_idx = 0usize; // Index for selection (headers don't count)
     let mut selected_row_idx: Option<usize> = None; // Row index of selected model
 
-    for (orig_idx, model) in &filtered {
+    for (_orig_idx, model) in &filtered {
         if current_provider != Some(&model.provider) {
             current_provider = Some(&model.provider);
             rows.push(Row::Header(&model.provider));
@@ -1652,7 +1647,7 @@ fn render_model_select(
         if selectable_idx == selected {
             selected_row_idx = Some(rows.len());
         }
-        rows.push(Row::Model(*orig_idx, model));
+        rows.push(Row::Model(model));
         selectable_idx += 1;
     }
 
@@ -1745,7 +1740,7 @@ fn render_model_select(
                 }
                 y += 1;
             }
-            Row::Model(_, model) => {
+            Row::Model(model) => {
                 let is_selected = model_display_idx == selected;
                 let (fg, bg) = if is_selected {
                     (theme.bg, theme.primary)
@@ -1840,10 +1835,7 @@ fn render_session_select(
     enum SessionRow<'a> {
         DateHeader(String), // "Today", "Yesterday", "Aug 27", etc.
         NewSession,
-        Session(
-            #[allow(dead_code)] usize,
-            &'a crate::session_manager::SessionEntry,
-        ),
+        Session(&'a crate::session_manager::SessionEntry),
     }
 
     let mut rows: Vec<SessionRow> = Vec::new();
@@ -1853,7 +1845,7 @@ fn render_session_select(
 
     // Group sessions by date.
     let mut current_date: Option<String> = None;
-    for (orig_idx, session) in &filtered {
+    for (_orig_idx, session) in &filtered {
         let date_label = session
             .created_at
             .as_ref()
@@ -1864,7 +1856,7 @@ fn render_session_select(
             current_date = Some(date_label.clone());
             rows.push(SessionRow::DateHeader(date_label));
         }
-        rows.push(SessionRow::Session(*orig_idx, session));
+        rows.push(SessionRow::Session(session));
     }
 
     // Center overlay.
@@ -1958,7 +1950,7 @@ fn render_session_select(
                 y += 1;
                 selectable_idx += 1;
             }
-            SessionRow::Session(_, session) => {
+            SessionRow::Session(session) => {
                 let is_selected = selectable_idx == selected;
                 let is_active = session.id == app.session.state.session_id;
 

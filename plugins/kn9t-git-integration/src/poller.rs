@@ -78,20 +78,29 @@ fn run(host: HostApiClient, cwd: PathBuf) {
         // idempotent re-sending is the only thing that self-heals. The cost is
         // ~12 KB over a local pipe every few seconds, and the host's
         // `register()` replaces the entry rather than accumulating.
-        let registered = host
+        //
+        // Two views: "files" in sidebar for navigation, "diff" in main for content.
+        let reg_files = host
             .call(
                 "ui_register_lua",
                 serde_json::json!({
-                    "source": ui::LUA_SOURCE,
-                    // Declared, not imposed: the config routes on these and may
-                    // ignore them. Saying "sidebar" keeps the status/log view in
-                    // the narrow column by default, while `rows` is what a
-                    // config uses to give the panel real space once focused —
-                    // the alternative was every user naming this plugin in their
-                    // own tui.lua to place it.
+                    "id": "files",
+                    "source": ui::LUA_FILES,
                     "placement": "sidebar",
                     "title": "Git",
-                    "rows": 24,
+                }),
+            )
+            .is_ok();
+
+        let reg_diff = host
+            .call(
+                "ui_register_lua",
+                serde_json::json!({
+                    "id": "diff",
+                    "source": ui::LUA_DIFF,
+                    "placement": "main",
+                    "title": "Diff",
+                    "rows": 30,
                 }),
             )
             .is_ok();
@@ -106,14 +115,18 @@ fn run(host: HostApiClient, cwd: PathBuf) {
         tick = tick.wrapping_add(1);
 
         let payload = ui::state_to_json(state.as_ref(), &files);
-        let pushed = host
-            .call("ui_set_state", serde_json::json!({ "state": payload }))
+        // Push the same state to both views.
+        let push_files = host
+            .call("ui_set_state", serde_json::json!({ "id": "files", "state": payload }))
+            .is_ok();
+        let push_diff = host
+            .call("ui_set_state", serde_json::json!({ "id": "diff", "state": payload }))
             .is_ok();
 
-        // Only a failure of *both* counts as "the session is gone": a transient
-        // error on one of the two would otherwise creep toward the give-up
+        // Only a failure of *all* counts as "the session is gone": a transient
+        // error on one of them would otherwise creep toward the give-up
         // threshold during a perfectly healthy session.
-        if registered || pushed {
+        if reg_files || reg_diff || push_files || push_diff {
             consecutive_failures = 0;
         } else {
             consecutive_failures += 1;

@@ -2,7 +2,7 @@
 
 /// Build the system prompt with platform-specific tool descriptions.
 pub fn build_system_prompt(platform: &str) -> String {
-    let shell_info = match platform {
+    let _shell_info = match platform {
         "windows" => "PowerShell. Use PowerShell syntax: `Get-ChildItem` (not ls), `Select-String` (not grep), `$env:VAR` for env vars, `;` to chain commands.",
         _ => "Bash. Use standard Unix commands: `ls`, `grep`, `find`, `cat`, etc.",
     };

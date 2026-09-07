@@ -13,8 +13,7 @@
 
 use crate::host::PluginHost;
 use kn9t_core::{
-    CompactSpan, CompactionPlan, Compactor, Content, HandoffPlanData, HandoffSummary, Message,
-    ModelRef, MsgId, Role,
+    CompactSpan, CompactionPlan, Compactor, HandoffPlanData, Message, ModelRef,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -73,42 +72,4 @@ impl Compactor for RemoteCompactor {
     }
 }
 
-// ── test helpers (host-side plan fabrication; used by react acceptance tests) ──
 
-/// Build a `CompactionPlan` from a summary text (kept/verbatim content optional).
-#[allow(dead_code)]
-pub fn plan_from_text(text: &str) -> CompactionPlan {
-    CompactionPlan {
-        summary: Message {
-            id: MsgId::new(),
-            role: Role::Assistant,
-            content: vec![Content::Text {
-                text: text.to_string(),
-            }],
-            silent: false,
-        },
-        handoff: None,
-    }
-}
-
-/// Build a `HandoffPlanData` value from explicit lists (unit-test friendly).
-#[allow(dead_code)]
-pub fn handoff_from_lists(
-    keep: Vec<String>,
-    summarize: Vec<(String, String)>,
-    drop: Vec<String>,
-    resume_actions: Vec<String>,
-) -> HandoffPlanData {
-    HandoffPlanData {
-        keep: keep.into_iter().map(kn9t_core::CallId).collect(),
-        summarize: summarize
-            .into_iter()
-            .map(|(id, summary)| HandoffSummary {
-                id: kn9t_core::CallId(id),
-                summary,
-            })
-            .collect(),
-        drop_ids: drop.into_iter().map(kn9t_core::CallId).collect(),
-        resume_actions,
-    }
-}

@@ -552,29 +552,6 @@ enum CallPlan {
     Deny(String),
 }
 
-/// Turn a tool result into `Content` (for parallel path: returns the raw result content and
-/// error flag; after_tool_call is applied on the sequential path by the caller).
-#[allow(dead_code)]
-fn tool_result_content(
-    id: &kn9t_provider_core::CallId,
-    out: Result<kn9t_provider_core::ToolOutput, kn9t_provider_core::ToolErr>,
-) -> (Content, bool) {
-    match out {
-        Ok(o) => {
-            let is_error = o.is_error;
-            (
-                Content::ToolResult {
-                    id: id.clone(),
-                    content: o.content,
-                    is_error,
-                },
-                is_error,
-            )
-        }
-        Err(e) => (synth_error(id, &e.0), true),
-    }
-}
-
 /// A synthesized `is_error` tool result so no `ToolCall` is left without its `ToolResult`
 /// (DESIGN sec.7.5 invariant; R-RCT-060).
 fn synth_error(id: &kn9t_provider_core::CallId, msg: &str) -> Content {
