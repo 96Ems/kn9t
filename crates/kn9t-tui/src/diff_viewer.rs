@@ -979,13 +979,15 @@ impl DiffViewer {
                 }
                 VirtualLine::HunkSeparator { lines_between } => {
                     let sep_text = format!(" ··· {} unchanged lines ···", lines_between);
-                    let sep_line = Line::from(Span::styled(
-                        sep_text,
-                        Style::default().fg(Color::DarkGray),
-                    ));
+                    let sep_line =
+                        Line::from(Span::styled(sep_text, Style::default().fg(Color::DarkGray)));
                     render_line(buf, area.x, row, area.width, &sep_line);
                 }
-                VirtualLine::Diff { line, old_line_no, new_line_no } => {
+                VirtualLine::Diff {
+                    line,
+                    old_line_no,
+                    new_line_no,
+                } => {
                     let mut old_no = *old_line_no;
                     let mut new_no = *new_line_no;
                     let rendered = render_unified_line(line, &mut old_no, &mut new_no, lang, theme);
@@ -1105,10 +1107,8 @@ impl DiffViewer {
                 }
                 SplitVirtualRow::Separator { lines_between } => {
                     let sep_text = format!(" ··· {} unchanged lines ···", lines_between);
-                    let sep_line = Line::from(Span::styled(
-                        sep_text,
-                        Style::default().fg(Color::DarkGray),
-                    ));
+                    let sep_line =
+                        Line::from(Span::styled(sep_text, Style::default().fg(Color::DarkGray)));
                     render_line(buf, area.x, row, area.width, &sep_line);
                 }
                 SplitVirtualRow::Cells { left, right } => {
@@ -1194,9 +1194,17 @@ fn clear_area(buf: &mut Buffer, area: Rect) {
 
 /// Virtual line type for unified view (all hunks flattened).
 enum VirtualLine {
-    HunkHeader { text: String },
-    HunkSeparator { lines_between: u32 },
-    Diff { line: DiffLine, old_line_no: u32, new_line_no: u32 },
+    HunkHeader {
+        text: String,
+    },
+    HunkSeparator {
+        lines_between: u32,
+    },
+    Diff {
+        line: DiffLine,
+        old_line_no: u32,
+        new_line_no: u32,
+    },
 }
 
 /// Virtual row type for split view (all hunks flattened).
@@ -1207,7 +1215,11 @@ enum SplitVirtualRow {
 }
 
 /// Build all virtual lines for a file (all hunks with separators).
-fn build_unified_virtual_lines(file: &DiffFile, _lang: Option<&str>, _theme: &Theme) -> Vec<VirtualLine> {
+fn build_unified_virtual_lines(
+    file: &DiffFile,
+    _lang: Option<&str>,
+    _theme: &Theme,
+) -> Vec<VirtualLine> {
     let mut lines = Vec::new();
     let mut prev_hunk_end: Option<u32> = None;
 
@@ -1265,7 +1277,11 @@ fn build_unified_virtual_lines(file: &DiffFile, _lang: Option<&str>, _theme: &Th
 }
 
 /// Build all virtual split rows for a file (all hunks with separators).
-fn build_split_virtual_rows(file: &DiffFile, lang: Option<&str>, theme: &Theme) -> Vec<SplitVirtualRow> {
+fn build_split_virtual_rows(
+    file: &DiffFile,
+    lang: Option<&str>,
+    theme: &Theme,
+) -> Vec<SplitVirtualRow> {
     let mut rows = Vec::new();
     let mut prev_hunk_end: Option<u32> = None;
 
@@ -1350,13 +1366,13 @@ fn render_unified_line(
             *old_no += 1;
 
             let mut spans = vec![
-                Span::styled(
-                    line_num,
-                    Style::default().fg(DIFF_DEL_FG).bg(DIFF_DEL_BG),
-                ),
+                Span::styled(line_num, Style::default().fg(DIFF_DEL_FG).bg(DIFF_DEL_BG)),
                 Span::styled(
                     " ┃─",
-                    Style::default().fg(DIFF_DEL_FG).bg(DIFF_DEL_BG).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(DIFF_DEL_FG)
+                        .bg(DIFF_DEL_BG)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ];
             // Highlight then apply diff background
@@ -1373,13 +1389,13 @@ fn render_unified_line(
             *new_no += 1;
 
             let mut spans = vec![
-                Span::styled(
-                    line_num,
-                    Style::default().fg(DIFF_ADD_FG).bg(DIFF_ADD_BG),
-                ),
+                Span::styled(line_num, Style::default().fg(DIFF_ADD_FG).bg(DIFF_ADD_BG)),
                 Span::styled(
                     " ┃+",
-                    Style::default().fg(DIFF_ADD_FG).bg(DIFF_ADD_BG).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(DIFF_ADD_FG)
+                        .bg(DIFF_ADD_BG)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ];
             // Highlight then apply diff background
@@ -1404,7 +1420,11 @@ struct SplitCell {
 }
 
 /// Build paired (left, right) rows for split view with syntax highlighting.
-fn build_split_rows(lines: &[DiffLine], lang: Option<&str>, theme: &Theme) -> Vec<(SplitCell, SplitCell)> {
+fn build_split_rows(
+    lines: &[DiffLine],
+    lang: Option<&str>,
+    theme: &Theme,
+) -> Vec<(SplitCell, SplitCell)> {
     let mut rows: Vec<(SplitCell, SplitCell)> = Vec::new();
     let mut i = 0;
     let mut old_no: u32 = 1;
@@ -1442,10 +1462,13 @@ fn build_split_rows(lines: &[DiffLine], lang: Option<&str>, theme: &Theme) -> Ve
                 // Peek ahead for a matching Added.
                 let right = if i + 1 < lines.len() {
                     if let DiffLine::Added(added) = &lines[i + 1] {
-                        let added_highlighted: Vec<Span<'static>> = highlight_code_inline(added, lang, theme)
-                            .into_iter()
-                            .map(|s| Span::styled(s.content.to_string(), s.style.bg(DIFF_ADD_BG)))
-                            .collect();
+                        let added_highlighted: Vec<Span<'static>> =
+                            highlight_code_inline(added, lang, theme)
+                                .into_iter()
+                                .map(|s| {
+                                    Span::styled(s.content.to_string(), s.style.bg(DIFF_ADD_BG))
+                                })
+                                .collect();
                         let cell = SplitCell {
                             line_no: Some(new_no),
                             spans: added_highlighted,
@@ -1520,7 +1543,9 @@ fn render_split_cell(cell: &SplitCell, width: u16) -> Line<'static> {
     } else if cell.line_no.is_some() {
         Style::default().fg(DIFF_LINE_NUM_FG)
     } else {
-        Style::default().fg(Color::DarkGray).bg(Color::Rgb(30, 30, 30))
+        Style::default()
+            .fg(Color::DarkGray)
+            .bg(Color::Rgb(30, 30, 30))
     };
 
     let prefix = match cell.line_no {
@@ -1539,21 +1564,27 @@ fn render_split_cell(cell: &SplitCell, width: u16) -> Line<'static> {
     };
 
     let indicator_style = if cell.is_added {
-        Style::default().fg(DIFF_ADD_FG).bg(DIFF_ADD_BG).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(DIFF_ADD_FG)
+            .bg(DIFF_ADD_BG)
+            .add_modifier(Modifier::BOLD)
     } else if cell.is_removed {
-        Style::default().fg(DIFF_DEL_FG).bg(DIFF_DEL_BG).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(DIFF_DEL_FG)
+            .bg(DIFF_DEL_BG)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
     let content_width = (width as usize).saturating_sub(7);
-    
+
     // Build output spans with prefix and indicator
     let mut out = vec![
         Span::styled(prefix, line_num_style),
         Span::styled(indicator.to_string(), indicator_style),
     ];
-    
+
     // Add highlighted content spans, truncating to fit
     let mut chars_used = 0;
     for span in &cell.spans {
@@ -1795,7 +1826,10 @@ diff --git a/src/app.rs b/src/app.rs
 
         viewer.next_hunk();
         // Should jump to second hunk header
-        assert!(viewer.cursor_line > 0, "cursor should move forward to next hunk");
+        assert!(
+            viewer.cursor_line > 0,
+            "cursor should move forward to next hunk"
+        );
 
         viewer.prev_hunk();
         // Should go back to first hunk header (line 0)

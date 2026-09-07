@@ -28,9 +28,9 @@ pub enum Action {
     PrevMessage, // Ctrl+K
     NextMessage, // Ctrl+J
 
-    // Sidebar
-    ToggleLeft,  // Ctrl+B
-    ToggleRight, // Ctrl+R (or always visible)
+    // Session picker (Ctrl+B). Sidebars are defined in tui.lua, so there is no
+    // built-in sidebar action: a config toggles its own panel in Lua.
+    SessionPicker,
 
     // Sessions
     NewSession, // Ctrl+N
@@ -74,12 +74,44 @@ pub enum Action {
     CycleModelNext, // F2: next model
     CycleModelPrev, // Shift+F2: previous model
 
+    // Diff viewer. Exposed as actions rather than hardcoded keys so a config can
+    // rebind them; `default_tui.lua` maps the historical j/k/[/]/n/p/u/f/b set.
+    //
+    // `OpenDiff` is what actually populates `App.diff_viewer` (runs `git diff`
+    // and parses it) — everything else here only navigates/closes a viewer
+    // that already exists. Placing `{type="native", view="diff"}` in a
+    // render_ui() layout draws the viewer if one is open; it does not open
+    // one. A config that only flips its own MAIN_VIEW state and never calls
+    // this action gets a blank pane, which is exactly the bug this fixes.
+    OpenDiff,
+    DiffNextHunk,
+    DiffPrevHunk,
+    DiffNextFile,
+    DiffPrevFile,
+    DiffCursorDown,
+    DiffCursorUp,
+    DiffToggleSplit,
+    DiffToggleFullscreen,
+    DiffToggleTree,
+    DiffComment,
+    DiffClose,
+
+    // Overlays reachable from Lua without going through the palette.
+    OpenModels,
+    OpenTools,
+    OpenPalette,
+    RefreshTools,
+
     // Unused for now
     PrevUser,
     NextUser,
     PrevAssistant,
     NextAssistant,
-    SessionList,
+    /// Switch to a session by id. The id itself is not carried on the enum
+    /// (which stays `Copy`, matching every other variant here); it travels
+    /// alongside as `Option<String>` — see `keymap::drain_pending_actions`
+    /// and `App::execute_action`'s second parameter.
+    SwitchSession,
     ExpandCard,
 }
 
@@ -179,7 +211,7 @@ impl Keybinds {
         // ─── Sidebar ───
         bindings.insert(
             kp(KeyCode::Char('b'), true, false, false),
-            Action::ToggleLeft,
+            Action::SessionPicker,
         ); // Ctrl+B: toggle left
 
         // ─── Sessions ───
@@ -260,7 +292,8 @@ impl Keybinds {
     }
 }
 
-fn parse_action(name: &str) -> Option<Action> {
+/// Parse an action name, as used in config files and `kn9t.action("...")`.
+pub fn parse_action(name: &str) -> Option<Action> {
     match name {
         "quit" => Some(Action::Quit),
         "abort" => Some(Action::Abort),
@@ -274,8 +307,10 @@ fn parse_action(name: &str) -> Option<Action> {
         "scroll_bottom" => Some(Action::ScrollBottom),
         "prev_message" => Some(Action::PrevMessage),
         "next_message" => Some(Action::NextMessage),
-        "toggle_left" => Some(Action::ToggleLeft),
-        "toggle_right" => Some(Action::ToggleRight),
+        // `toggle_left`/`toggle_right` are kept as aliases: they named this
+        // behaviour in existing configs, and silently dropping a binding is
+        // worse than an imprecise name.
+        "session_picker" | "toggle_left" => Some(Action::SessionPicker),
         "new_session" => Some(Action::NewSession),
         "tool_mode" | "toolmode" => Some(Action::ToolMode),
         "undo" => Some(Action::Undo),
@@ -295,6 +330,23 @@ fn parse_action(name: &str) -> Option<Action> {
         "next_user_message" => Some(Action::NextUserMessage),
         "cycle_model_next" | "model_next" => Some(Action::CycleModelNext),
         "cycle_model_prev" | "model_prev" => Some(Action::CycleModelPrev),
+        "open_diff" | "diff" => Some(Action::OpenDiff),
+        "diff_next_hunk" => Some(Action::DiffNextHunk),
+        "diff_prev_hunk" => Some(Action::DiffPrevHunk),
+        "diff_next_file" => Some(Action::DiffNextFile),
+        "diff_prev_file" => Some(Action::DiffPrevFile),
+        "diff_cursor_down" => Some(Action::DiffCursorDown),
+        "diff_cursor_up" => Some(Action::DiffCursorUp),
+        "diff_toggle_split" => Some(Action::DiffToggleSplit),
+        "diff_toggle_fullscreen" => Some(Action::DiffToggleFullscreen),
+        "diff_toggle_tree" => Some(Action::DiffToggleTree),
+        "diff_comment" => Some(Action::DiffComment),
+        "diff_close" => Some(Action::DiffClose),
+        "open_models" | "models" => Some(Action::OpenModels),
+        "open_tools" | "tools" => Some(Action::OpenTools),
+        "open_palette" | "palette" => Some(Action::OpenPalette),
+        "refresh_tools" => Some(Action::RefreshTools),
+        "switch_session" => Some(Action::SwitchSession),
         _ => None,
     }
 }
@@ -357,4 +409,121 @@ fn parse_key(s: &str) -> Option<KeyPattern> {
         alt,
         shift,
     })
+}
+
+/// Whether `s` is a key string this system can actually match.
+///
+/// Lets Lua keymap registration reject typos up front instead of creating
+/// bindings that could never fire.
+pub fn is_valid_key_string(s: &str) -> bool {
+    parse_key(s).is_some()
+}
+
+/// Whether `name` is a known action, for validating `kn9t.action("...")`.
+pub fn is_valid_action_name(name: &str) -> bool {
+    parse_action(name).is_some()
+}
+
+/// Canonical key name for a `KeyEvent`, in the same syntax `parse_key` accepts.
+///
+/// Used to look up Lua keymaps: Lua registers `"C-t"`, we turn the live event
+/// back into `"C-t"` and compare. Round-trips with [`parse_key`].
+pub fn key_event_to_string(key: KeyEvent) -> Option<String> {
+    let mut s = String::new();
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        s.push_str("C-");
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        s.push_str("A-");
+    }
+    if key.modifiers.contains(KeyModifiers::SHIFT) {
+        s.push_str("S-");
+    }
+
+    match key.code {
+        KeyCode::Enter => s.push_str("Enter"),
+        KeyCode::Esc => s.push_str("Esc"),
+        KeyCode::Tab => s.push_str("Tab"),
+        KeyCode::Up => s.push_str("Up"),
+        KeyCode::Down => s.push_str("Down"),
+        KeyCode::Left => s.push_str("Left"),
+        KeyCode::Right => s.push_str("Right"),
+        KeyCode::Home => s.push_str("Home"),
+        KeyCode::End => s.push_str("End"),
+        KeyCode::PageUp => s.push_str("PageUp"),
+        KeyCode::PageDown => s.push_str("PageDown"),
+        KeyCode::Backspace => s.push_str("Backspace"),
+        KeyCode::Delete => s.push_str("Delete"),
+        KeyCode::F(n) => s.push_str(&format!("F{n}")),
+        KeyCode::Char(' ') => s.push_str("Space"),
+        KeyCode::Char(c) => s.push(c),
+        _ => return None,
+    }
+
+    Some(s)
+}
+
+#[cfg(test)]
+mod keymap_bridge_tests {
+    use super::*;
+
+    fn ev(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, mods)
+    }
+
+    /// The Lua keymap layer compares `key_event_to_string(event)` against the
+    /// string Lua registered. If the two spellings ever diverge, every binding
+    /// silently stops firing — so pin the round-trip.
+    #[test]
+    fn key_string_round_trips_through_parse_key() {
+        let cases = [
+            ("C-t", ev(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+            ("A-y", ev(KeyCode::Char('y'), KeyModifiers::ALT)),
+            ("Enter", ev(KeyCode::Enter, KeyModifiers::NONE)),
+            ("Esc", ev(KeyCode::Esc, KeyModifiers::NONE)),
+            ("F5", ev(KeyCode::F(5), KeyModifiers::NONE)),
+            ("Space", ev(KeyCode::Char(' '), KeyModifiers::NONE)),
+            ("PageUp", ev(KeyCode::PageUp, KeyModifiers::NONE)),
+            ("C-Home", ev(KeyCode::Home, KeyModifiers::CONTROL)),
+        ];
+
+        for (expected, event) in cases {
+            let s =
+                key_event_to_string(event).unwrap_or_else(|| panic!("no string for {expected}"));
+            assert_eq!(s, expected, "event -> string");
+            assert!(
+                is_valid_key_string(&s),
+                "'{s}' must parse back, or Lua maps would be rejected"
+            );
+            assert_eq!(
+                parse_key(&s),
+                Some(KeyPattern {
+                    code: event.code,
+                    ctrl: event.modifiers.contains(KeyModifiers::CONTROL),
+                    alt: event.modifiers.contains(KeyModifiers::ALT),
+                    shift: event.modifiers.contains(KeyModifiers::SHIFT),
+                }),
+                "string -> pattern for '{s}'"
+            );
+        }
+    }
+
+    #[test]
+    fn modifier_order_is_canonical() {
+        // C- then A- then S-, matching how parse_key strips prefixes.
+        let e = ev(
+            KeyCode::Char('x'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        );
+        let s = key_event_to_string(e).unwrap();
+        assert_eq!(s, "C-A-S-x");
+        assert!(is_valid_key_string(&s));
+    }
+
+    #[test]
+    fn typos_are_invalid() {
+        assert!(!is_valid_key_string("NotAKey"));
+        assert!(!is_valid_key_string("Ctrl+T"));
+        assert!(is_valid_key_string("C-t"));
+    }
 }

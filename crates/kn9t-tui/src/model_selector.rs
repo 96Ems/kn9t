@@ -11,6 +11,10 @@ pub struct ModelEntry {
     pub id: String,
     pub api_id: Option<String>,
     pub is_default: bool,
+    /// Usable context window in tokens, as reported by `GET /models`.
+    pub ctx_window: Option<usize>,
+    /// Maximum output tokens, as reported by `GET /models`.
+    pub max_out: Option<usize>,
 }
 
 impl ModelEntry {
@@ -66,6 +70,8 @@ impl ModelSelector {
                     id: m.id.clone(),
                     api_id: m.api_id.clone(),
                     is_default: m.is_default,
+                    ctx_window: m.ctx_window,
+                    max_out: m.max_out,
                 })
                 .collect();
 
@@ -207,18 +213,24 @@ mod tests {
                 id: "gpt-4".into(),
                 api_id: Some("gpt-4-turbo".into()),
                 is_default: true,
+                ctx_window: None,
+                max_out: None,
             },
             ModelEntry {
                 provider: "anthropic".into(),
                 id: "claude-3".into(),
                 api_id: Some("claude-3-opus".into()),
                 is_default: false,
+                ctx_window: None,
+                max_out: None,
             },
             ModelEntry {
                 provider: "anthropic".into(),
                 id: "claude-3-sonnet".into(),
                 api_id: None,
                 is_default: false,
+                ctx_window: None,
+                max_out: None,
             },
         ]
     }
@@ -251,6 +263,8 @@ mod tests {
             id: "anthropic".into(),
             api_id: Some("anthropic::2024-10-22::claude-haiku-4-5-latest".into()),
             is_default: false,
+            ctx_window: None,
+            max_out: None,
         };
         // Should extract just the last segment after "::".
         assert_eq!(model.display_name(), "claude-haiku-4-5-latest");

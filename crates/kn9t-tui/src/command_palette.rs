@@ -2,10 +2,15 @@
 //!
 //! Unlike slash commands (which require typing /), the command palette
 //! provides instant access to all actions via fuzzy search.
+//!
+//! Entries come from two sources: the built-in `COMMANDS` (compile-time,
+//! `'static`) and `kn9t.register_command(...)` (runtime, owned `String`s).
+//! `PaletteEntry` normalizes both into one thing the palette can search,
+//! display and select without caring which source a given command came from.
 
 use crate::slash::fuzzy_match;
 
-/// A command entry in the palette.
+/// A built-in command entry in the palette.
 #[derive(Debug, Clone)]
 pub struct PaletteCommand {
     pub id: &'static str,
@@ -39,7 +44,55 @@ impl Category {
     }
 }
 
-/// All available commands.
+/// One searchable/selectable palette row, from either source.
+///
+/// Built fresh on `open()`/query changes from `COMMANDS` plus whatever
+/// `kn9t.register_command` currently has registered — see
+/// `CommandPalette::refresh` and its `lua_commands` parameter. This is an
+/// owned snapshot (not `&'static` for the Lua case) since a Lua string cannot
+/// be `'static`.
+#[derive(Debug, Clone)]
+pub struct PaletteEntry {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub keybinding: Option<String>,
+    /// Grouping label for display. Built-ins use `Category::label()`; Lua
+    /// commands use whatever string `category=` gave, or "Lua" if omitted.
+    pub category: String,
+    /// Whether this entry came from `kn9t.register_command`, so the executor
+    /// knows to call the Lua handler instead of matching `id` against the
+    /// built-in Rust `match`.
+    pub is_lua: bool,
+}
+
+impl From<&PaletteCommand> for PaletteEntry {
+    fn from(cmd: &PaletteCommand) -> Self {
+        Self {
+            id: cmd.id.to_string(),
+            label: cmd.label.to_string(),
+            description: cmd.description.to_string(),
+            keybinding: cmd.keybinding.map(|s| s.to_string()),
+            category: cmd.category.label().to_string(),
+            is_lua: false,
+        }
+    }
+}
+
+impl From<&crate::lua::commands::LuaCommand> for PaletteEntry {
+    fn from(cmd: &crate::lua::commands::LuaCommand) -> Self {
+        Self {
+            id: cmd.id.clone(),
+            label: cmd.label.clone(),
+            description: cmd.description.clone(),
+            keybinding: None,
+            category: cmd.category.clone(),
+            is_lua: true,
+        }
+    }
+}
+
+/// All available built-in commands.
 pub const COMMANDS: &[PaletteCommand] = &[
     // Navigation
     PaletteCommand {
@@ -172,13 +225,6 @@ pub const COMMANDS: &[PaletteCommand] = &[
         category: Category::View,
     },
     PaletteCommand {
-        id: "toggle_sidebar",
-        label: "Toggle Sidebar",
-        description: "Show/hide right sidebar",
-        keybinding: None,
-        category: Category::View,
-    },
-    PaletteCommand {
         id: "keybindings",
         label: "Show Keybindings",
         description: "Display all keyboard shortcuts",
@@ -245,7 +291,10 @@ pub struct CommandPalette {
     pub active: bool,
     /// Current search query.
     pub query: String,
-    /// Filtered command indices.
+    /// All entries as of the last `refresh` (built-ins + Lua-registered),
+    /// before filtering. `matches` indexes into THIS, not into `COMMANDS`.
+    entries: Vec<PaletteEntry>,
+    /// Filtered indices into `entries`.
     pub matches: Vec<usize>,
     /// Selected index in matches.
     pub selected: usize,
@@ -256,10 +305,20 @@ impl CommandPalette {
         Self::default()
     }
 
-    /// Open the palette.
-    pub fn open(&mut self) {
+    /// Open the palette, snapshotting `lua_commands` alongside the built-ins.
+    ///
+    /// A snapshot rather than a live reference: the palette can stay open
+    /// across a hot-reload without needing `&App` on every keystroke, and a
+    /// reload mid-search simply won't be reflected until the palette is
+    /// reopened — an acceptable staleness window for an interactive picker.
+    pub fn open(&mut self, lua_commands: &crate::lua::commands::LuaCommandRegistry) {
         self.active = true;
         self.query.clear();
+        self.entries = COMMANDS
+            .iter()
+            .map(PaletteEntry::from)
+            .chain(lua_commands.iter().map(PaletteEntry::from))
+            .collect();
         self.update_matches();
         self.selected = 0;
     }
@@ -300,8 +359,13 @@ impl CommandPalette {
     }
 
     /// Get selected command.
-    pub fn selected_command(&self) -> Option<&'static PaletteCommand> {
-        self.matches.get(self.selected).map(|&i| &COMMANDS[i])
+    pub fn selected_command(&self) -> Option<&PaletteEntry> {
+        self.matches.get(self.selected).map(|&i| &self.entries[i])
+    }
+
+    /// All current entries, for the renderer.
+    pub fn entries(&self) -> &[PaletteEntry] {
+        &self.entries
     }
 
     /// Move selection up.
@@ -323,14 +387,15 @@ impl CommandPalette {
     }
 
     fn update_matches(&mut self) {
-        self.matches = COMMANDS
+        self.matches = self
+            .entries
             .iter()
             .enumerate()
             .filter(|(_, cmd)| {
                 // Match against label and description
-                fuzzy_match(cmd.label, &self.query)
-                    || fuzzy_match(cmd.description, &self.query)
-                    || fuzzy_match(cmd.id, &self.query)
+                fuzzy_match(&cmd.label, &self.query)
+                    || fuzzy_match(&cmd.description, &self.query)
+                    || fuzzy_match(&cmd.id, &self.query)
             })
             .map(|(i, _)| i)
             .collect();
@@ -340,11 +405,16 @@ impl CommandPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lua::commands::LuaCommandRegistry;
+
+    fn empty_lua() -> LuaCommandRegistry {
+        LuaCommandRegistry::new()
+    }
 
     #[test]
     fn test_palette_open_shows_all() {
         let mut palette = CommandPalette::new();
-        palette.open();
+        palette.open(&empty_lua());
         assert!(palette.active);
         assert_eq!(palette.matches.len(), COMMANDS.len());
     }
@@ -352,7 +422,7 @@ mod tests {
     #[test]
     fn test_palette_filter() {
         let mut palette = CommandPalette::new();
-        palette.open();
+        palette.open(&empty_lua());
         palette.set_query("search");
         assert!(palette.matches.len() < COMMANDS.len());
         assert!(palette.selected_command().is_some());
@@ -361,11 +431,40 @@ mod tests {
     #[test]
     fn test_palette_navigation() {
         let mut palette = CommandPalette::new();
-        palette.open();
+        palette.open(&empty_lua());
         let initial = palette.selected;
         palette.select_next();
         assert_eq!(palette.selected, initial + 1);
         palette.select_prev();
         assert_eq!(palette.selected, initial);
+    }
+
+    /// The actual point of this refactor: a Lua-registered command must show
+    /// up in the palette alongside the built-ins, searchable the same way.
+    #[test]
+    fn lua_registered_command_appears_in_palette() {
+        let lua = mlua::Lua::new();
+        crate::lua::commands::install_command_api(&lua).unwrap();
+        lua.load(
+            r#"
+            kn9t.register_command({
+                id = "my_thing", label = "My Thing", description = "does stuff",
+                handler = function() end,
+            })
+        "#,
+        )
+        .exec()
+        .unwrap();
+        let mut reg = LuaCommandRegistry::new();
+        crate::lua::commands::drain_pending_commands(&lua, &mut reg).unwrap();
+
+        let mut palette = CommandPalette::new();
+        palette.open(&reg);
+        assert_eq!(palette.matches.len(), COMMANDS.len() + 1);
+
+        palette.set_query("My Thing");
+        let found = palette.selected_command().expect("must match");
+        assert_eq!(found.id, "my_thing");
+        assert!(found.is_lua);
     }
 }

@@ -2,12 +2,14 @@
 //!
 //! R-TUI-010: NO kn9t-* workspace dependencies. HTTP + SSE only.
 //! R-TUI-020: Pure event-driven architecture (block on recv, zero polling).
-//! R-TUI-030: 3-column layout with collapsible sidebars.
+//! R-TUI-030: The whole screen is defined in Lua (`render_ui`); Rust supplies
+//! native views (transcript, input, status, diff) and draws them where Lua says.
 
 pub mod app;
 #[cfg(test)]
 mod bench;
 pub mod client;
+pub mod lua;
 pub mod reducer;
 
 #[cfg(test)]
@@ -69,7 +71,6 @@ pub mod log;
 pub mod markdown;
 pub mod message_handler;
 pub mod model_selector;
-pub mod page_state;
 pub mod prompt_history;
 pub mod prompt_stash;
 pub mod render_cache;
@@ -82,6 +83,5 @@ pub mod thinking;
 pub mod token_tracker;
 pub mod ui;
 pub mod which_key;
-pub mod widgets;
 pub mod wire;
 pub mod word_segmenter;

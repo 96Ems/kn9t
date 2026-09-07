@@ -69,16 +69,16 @@ pub struct RenderCache {
     /// Cache: message index → (content_hash, rendered lines).
     /// Key is message index because messages are append-only.
     messages: HashMap<usize, CachedMessage>,
-    
+
     /// Last known message count (for invalidation).
     last_message_count: usize,
-    
+
     /// Last known live delta length (to detect streaming changes).
     last_delta_len: usize,
-    
+
     /// Last terminal width (re-render on resize).
     last_width: usize,
-    
+
     /// Dirty flag: set when cache needs full rebuild.
     dirty: bool,
 }
@@ -87,27 +87,27 @@ impl RenderCache {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Mark cache as dirty (full rebuild needed).
     pub fn invalidate(&mut self) {
         self.dirty = true;
     }
-    
+
     /// Check if cache needs rebuild based on current state.
-    pub fn needs_rebuild(
-        &self,
-        message_count: usize,
-        delta_len: usize,
-        width: usize,
-    ) -> bool {
+    pub fn needs_rebuild(&self, message_count: usize, delta_len: usize, width: usize) -> bool {
         self.dirty
             || message_count != self.last_message_count
             || width != self.last_width
             || delta_len != self.last_delta_len
     }
-    
+
     /// Get cached lines and tool infos for a message, or None if not cached/stale.
-    pub fn get_message(&self, index: usize, content: &str, tool_info_hash: u64) -> Option<(&[Line<'static>], &[CachedToolInfo])> {
+    pub fn get_message(
+        &self,
+        index: usize,
+        content: &str,
+        tool_info_hash: u64,
+    ) -> Option<(&[Line<'static>], &[CachedToolInfo])> {
         let entry = self.messages.get(&index)?;
         let hash = content_hash(content, tool_info_hash);
         if entry.content_hash == hash {
@@ -116,24 +116,27 @@ impl RenderCache {
             None
         }
     }
-    
+
     /// Cache rendered lines for a message with tool position info.
     pub fn set_message(
-        &mut self, 
-        index: usize, 
-        content: &str, 
-        tool_info_hash: u64, 
+        &mut self,
+        index: usize,
+        content: &str,
+        tool_info_hash: u64,
         lines: Vec<Line<'static>>,
         tool_infos: Vec<CachedToolInfo>,
     ) {
         let hash = content_hash(content, tool_info_hash);
-        self.messages.insert(index, CachedMessage {
-            content_hash: hash,
-            lines,
-            tool_infos,
-        });
+        self.messages.insert(
+            index,
+            CachedMessage {
+                content_hash: hash,
+                lines,
+                tool_infos,
+            },
+        );
     }
-    
+
     /// Update state tracking after a render pass.
     pub fn update_state(&mut self, message_count: usize, delta_len: usize, width: usize) {
         self.last_message_count = message_count;
@@ -141,12 +144,12 @@ impl RenderCache {
         self.last_width = width;
         self.dirty = false;
     }
-    
+
     /// Prune stale cache entries (messages that no longer exist).
     pub fn prune(&mut self, current_message_count: usize) {
         self.messages.retain(|&idx, _| idx < current_message_count);
     }
-    
+
     /// Clear all cached data (e.g., on session switch).
     pub fn clear(&mut self) {
         self.messages.clear();
@@ -159,32 +162,32 @@ impl RenderCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_cache_state() {
         let mut cache = RenderCache::new();
         cache.update_state(5, 100, 80);
-        
+
         // Same state - no rebuild
         assert!(!cache.needs_rebuild(5, 100, 80));
-        
+
         // Different width - needs rebuild
         assert!(cache.needs_rebuild(5, 100, 100));
-        
+
         // Different message count - needs rebuild
         assert!(cache.needs_rebuild(6, 100, 80));
-        
+
         // Different delta - needs rebuild
         assert!(cache.needs_rebuild(5, 200, 80));
     }
-    
+
     #[test]
     fn test_cache_clear() {
         let mut cache = RenderCache::new();
         cache.update_state(5, 100, 80);
-        
+
         cache.clear();
-        
+
         // After clear, needs rebuild
         assert!(cache.needs_rebuild(0, 0, 80));
         assert!(cache.dirty);

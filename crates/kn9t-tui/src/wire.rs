@@ -294,6 +294,15 @@ pub struct ModelInfo {
     pub api_id: Option<String>,
     #[serde(default)]
     pub is_default: bool,
+    /// Usable context window, in tokens.
+    ///
+    /// `GET /models` has always returned this; it used to be dropped here, so
+    /// the context gauge had to hardcode a 200k denominator and read wrong on
+    /// every other model (TRACKING B3).
+    #[serde(default)]
+    pub ctx_window: Option<usize>,
+    #[serde(default)]
+    pub max_out: Option<usize>,
 }
 
 /// Models list response.

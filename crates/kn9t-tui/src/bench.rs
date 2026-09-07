@@ -228,7 +228,9 @@ fn bench_render_cache() {
         for (idx, msg) in transcript.messages().iter().enumerate() {
             if msg.role == "assistant" && !msg.content.is_empty() {
                 let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools);
-                if let Some((cached, _tool_infos)) = cache.get_message(idx, &msg.content, tool_info_hash) {
+                if let Some((cached, _tool_infos)) =
+                    cache.get_message(idx, &msg.content, tool_info_hash)
+                {
                     for line in cached {
                         lines.push(line.clone());
                     }
@@ -269,7 +271,11 @@ fn bench_transcript_render_simulation() {
 }
 
 /// Simulate transcript rendering (without actual ratatui Frame).
-fn render_transcript_sim(transcript: &Transcript, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+fn render_transcript_sim(
+    transcript: &Transcript,
+    theme: &Theme,
+    width: usize,
+) -> Vec<Line<'static>> {
     use ratatui::style::{Modifier, Style};
     use ratatui::text::Span;
 
@@ -367,7 +373,9 @@ fn render_transcript_with_cache(
         // Try cache first for assistant messages
         if msg.role == "assistant" && !msg.content.is_empty() {
             let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools);
-            if let Some((cached, _tool_infos)) = cache.get_message(idx, &msg.content, tool_info_hash) {
+            if let Some((cached, _tool_infos)) =
+                cache.get_message(idx, &msg.content, tool_info_hash)
+            {
                 // Role line
                 lines.push(Line::from(Span::styled(
                     format!("◂ {}", msg.role),

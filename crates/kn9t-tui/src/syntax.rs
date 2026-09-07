@@ -121,14 +121,15 @@ pub fn highlight_code_inline(
     let mut highlighter = HighlightLines::new(syntax, syntax_theme);
 
     match highlighter.highlight_line(line, ss) {
-        Ok(highlighted) => {
-            highlighted
-                .into_iter()
-                .map(|(style, text)| Span::styled(text.to_string(), syntect_to_ratatui_style(style)))
-                .collect()
-        }
+        Ok(highlighted) => highlighted
+            .into_iter()
+            .map(|(style, text)| Span::styled(text.to_string(), syntect_to_ratatui_style(style)))
+            .collect(),
         Err(_) => {
-            vec![Span::styled(line.to_string(), Style::default().fg(theme.fg))]
+            vec![Span::styled(
+                line.to_string(),
+                Style::default().fg(theme.fg),
+            )]
         }
     }
 }

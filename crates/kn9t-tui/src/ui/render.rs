@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 
@@ -14,7 +14,6 @@ use crate::slash::fuzzy_match;
 use crate::syntax;
 use crate::theme::Theme;
 use crate::thinking::{self, ContentSegment};
-use crate::ui::layout::{compute_with_input, Sidebar};
 use crate::which_key;
 use serde_json;
 
@@ -38,46 +37,100 @@ pub fn render(f: &mut Frame, app: &mut App) {
 const MAX_INPUT_LINES: u16 = 10;
 
 fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
-    let areas = compute_with_input(area, &app.layout, &app.input, MAX_INPUT_LINES);
+    // Reset hit-test geometry: whatever is actually drawn this frame re-records
+    // it. Without this, a region Lua stopped drawing would keep taking clicks.
+    app.transcript_area = None;
+    app.lua_click_areas.clear();
 
-    // Right sidebar.
-    if areas.right.width > 0 {
-        render_right_sidebar(f, app, areas.right, theme);
+    // Publish live state before any Lua runs this frame, so render_ui() and
+    // render_status() observe the same snapshot.
+    if let Some(ref runtime) = app.lua_runtime {
+        // Measured from the previous frame, so the number Lua receives matches
+        // the box Lua actually drew. Falls back to the full width on frame one.
+        let input_width = app.input_width.unwrap_or(area.width);
+        let input_height =
+            crate::ui::layout::input_height_for(input_width, &app.input, MAX_INPUT_LINES);
+        let stats = crate::lua::context::collect_stats(
+            app.transcript.messages(),
+            &app.tokens,
+            &app.current_model_name(),
+            &app.turn_phase,
+            app.session.session_title().unwrap_or(""),
+            input_height,
+            app.streaming,
+            app.model_sel.current_model(),
+        );
+        runtime.update_context(&stats);
+
+        // Cheap bounded snapshot; message bodies stay behind lazy accessors so
+        // per-frame cost does not scale with transcript length.
+        let snap = crate::lua::state::StateSnapshot::collect(app);
+        runtime.update_state(&snap);
+
+        // Refresh the backing store for `kn9t.get_messages`/`get_tools` only
+        // when the transcript actually changed — the version check is the whole
+        // reason this can be done from the render path at all.
+        let version = crate::lua::state::LazyData::version(app);
+        runtime.refresh_lazy(version, || crate::lua::state::LazyData::collect(app));
     }
 
-    // Transcript (also populates tool_hit_areas).
-    // When search is active, shrink transcript by 1 row to make room for the bar.
-    let transcript_area = if app.search_state.is_some() && areas.transcript.height > 1 {
-        Rect::new(
-            areas.transcript.x,
-            areas.transcript.y,
-            areas.transcript.width,
-            areas.transcript.height - 1,
-        )
-    } else {
-        areas.transcript
-    };
-    render_transcript(f, app, transcript_area, theme);
+    // The built-in Lua UI always loads, so it normally owns the whole frame.
+    let outcome = app
+        .lua_runtime
+        .as_ref()
+        .map(|rt| rt.build_ui_outcome(area.width, area.height))
+        .unwrap_or(crate::lua::widgets::UiOutcome::NotDefined);
 
-    // Search bar (at the bottom of the transcript area, above input).
-    if let Some(ref search) = app.search_state {
-        let bar_y = areas.transcript.y + areas.transcript.height - 1;
-        let bar_area = Rect::new(areas.transcript.x, bar_y, areas.transcript.width, 1);
-        let buf = f.buffer_mut();
-        search.render_bar(bar_area, buf);
+    match outcome {
+        crate::lua::widgets::UiOutcome::Ok(root) => {
+            // Lua-declared widgets first, then native views at Lua's rects.
+            crate::lua::widgets::render_widget(f, &root, area, theme, &app.lua_input_states);
+
+            let mut natives: Vec<(String, Rect)> = Vec::new();
+            crate::lua::widgets::collect_natives(&root, area, &mut natives);
+            for (view, rect) in natives {
+                render_native_view(f, app, &view, rect, theme);
+            }
+
+            // Record `id="..."` rects for click dispatch, following the exact
+            // geometry just painted — same reasoning as `transcript_area`.
+            app.lua_click_areas.clear();
+            crate::lua::widgets::collect_clickable_areas(&root, area, &mut app.lua_click_areas);
+
+            render_plugin_views(f, app, &root, area, theme);
+
+            render_lua_panels(f, app, area, theme);
+            render_chat_overlays(f, app, area, theme);
+            return;
+        }
+        crate::lua::widgets::UiOutcome::Failed(err) => {
+            // Broken config: show a usable minimum plus the error, never the
+            // full Rust chrome, which would look like nothing is wrong.
+            render_lua_error_shell(f, app, area, theme, &err);
+            render_chat_overlays(f, app, area, theme);
+            return;
+        }
+        crate::lua::widgets::UiOutcome::NotDefined => {
+            // Only reachable if the embedded built-in itself failed to load,
+            // which is a build-time bug (covered by default_config tests).
+            // There is deliberately no second Rust layout to fall back to.
+            render_lua_error_shell(
+                f,
+                app,
+                area,
+                theme,
+                "built-in UI failed to load (no render_ui defined)",
+            );
+            render_chat_overlays(f, app, area, theme);
+        }
     }
+}
 
-    // Input.
-    render_input(f, app, areas.input, theme);
-
-    // Slash command dropdown (above input).
-    if app.slash.active {
-        render_slash_dropdown(f, app, areas.input, theme);
-    }
-
-    // Status bar.
-    render_status(f, app, areas.status, theme);
-
+/// Diff viewer + overlays (approval, help, model select, ...).
+///
+/// Shared by the Lua layout and the error shell, so overlays behave identically
+/// no matter which path drew the frame.
+fn render_chat_overlays(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     // Diff viewer (separate from overlay - needs &mut for mouse hit tracking)
     if let Some(ref mut viewer) = app.diff_viewer {
         let buf = f.buffer_mut();
@@ -114,6 +167,201 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                 render_tools_manager(f, app, *selected, filter, area, theme);
             }
             _ => render_overlay(f, overlay, area, theme),
+        }
+    }
+}
+
+/// Minimal shell shown when the user's Lua UI is broken.
+///
+/// Deliberately *not* the Rust chrome: a red banner naming the error, plus the
+/// transcript and input so the session stays usable while the config is fixed.
+fn render_lua_error_shell(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme, err: &str) {
+    use ratatui::layout::{Constraint, Direction, Layout};
+    use ratatui::widgets::{Paragraph, Wrap};
+
+    let input_h = crate::ui::layout::input_height_for(
+        app.input_width.unwrap_or(area.width),
+        &app.input,
+        MAX_INPUT_LINES,
+    );
+    // Cap the banner so a long error cannot squeeze out the transcript.
+    let banner_h = 3.min(area.height.saturating_sub(input_h + 2)).max(1);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(banner_h),
+            Constraint::Min(1),
+            Constraint::Length(input_h),
+        ])
+        .split(area);
+
+    let banner = Paragraph::new(format!("tui.lua error: {err}"))
+        .style(
+            Style::default()
+                .fg(theme.error)
+                .add_modifier(Modifier::BOLD),
+        )
+        .wrap(Wrap { trim: true });
+    f.render_widget(banner, rows[0]);
+
+    render_transcript(f, app, rows[1], theme);
+    render_input(f, app, rows[2], theme);
+}
+
+/// Render Lua-registered floating panels on top of the layout.
+fn render_lua_panels(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
+    // Reset unconditionally, mirroring `lua_click_areas`: a panel that just
+    // hid itself must stop taking clicks, not keep its last rect forever.
+    app.lua_panel_click_areas.clear();
+
+    let Some(runtime) = app.lua_runtime.clone() else {
+        return;
+    };
+    if app.lua_panels.is_empty() {
+        return;
+    }
+    // Resolve geometry first: build_panel_widget borrows the runtime, and the
+    // input states are borrowed again while rendering.
+    let jobs: Vec<(crate::lua::widgets::Widget, Rect)> = app
+        .lua_panels
+        .visible()
+        .filter_map(|panel| {
+            let widget = runtime.build_panel_widget(panel)?;
+            let rect = compute_panel_area(panel, area);
+            (rect.width > 0 && rect.height > 0).then_some((widget, rect))
+        })
+        .collect();
+
+    for (widget, rect) in &jobs {
+        crate::lua::widgets::collect_clickable_areas(widget, *rect, &mut app.lua_panel_click_areas);
+    }
+    for (widget, rect) in jobs {
+        crate::lua::widgets::render_widget(f, &widget, rect, theme, &app.lua_input_states);
+    }
+}
+
+/// Resolve a panel's declared position into a concrete rect.
+///
+/// `position` is a free-form string from Lua, so unknown values fall back to
+/// centred-floating rather than erroring: a typo should misplace a panel, not
+/// take the UI down.
+fn compute_panel_area(panel: &crate::lua::panels::Panel, area: Rect) -> Rect {
+    let w = panel.width.unwrap_or(area.width / 3).min(area.width);
+    let h = panel.height.unwrap_or(area.height / 3).min(area.height);
+
+    match panel.position.as_str() {
+        "left" => Rect::new(area.x, area.y, w, area.height),
+        "right" => Rect::new(
+            area.x + area.width.saturating_sub(w),
+            area.y,
+            w,
+            area.height,
+        ),
+        "top" => Rect::new(area.x, area.y, area.width, h),
+        "bottom" => Rect::new(
+            area.x,
+            area.y + area.height.saturating_sub(h),
+            area.width,
+            h,
+        ),
+        _ => {
+            // Explicit x/y when given, otherwise centre it.
+            let x = panel
+                .x
+                .map(|v| area.x + v.min(area.width.saturating_sub(w)))
+                .unwrap_or(area.x + (area.width.saturating_sub(w)) / 2);
+            let y = panel
+                .y
+                .map(|v| area.y + v.min(area.height.saturating_sub(h)))
+                .unwrap_or(area.y + (area.height.saturating_sub(h)) / 2);
+            Rect::new(x, y, w, h)
+        }
+    }
+}
+
+/// Render a Rust-owned view at a rect chosen by Lua.
+///
+/// This is the mechanism/policy boundary: Lua decides *where*, Rust decides
+/// *how* (markdown, syntax highlighting, scroll math, render cache).
+fn render_native_view(f: &mut Frame, app: &mut App, view: &str, area: Rect, theme: &Theme) {
+    match view {
+        "transcript" => {
+            // Record what was actually drawn, so hit-testing follows the Lua
+            // layout instead of assuming a fixed region.
+            app.transcript_area = Some(area);
+            let transcript_area = if app.search_state.is_some() && area.height > 1 {
+                Rect::new(area.x, area.y, area.width, area.height - 1)
+            } else {
+                area
+            };
+            render_transcript(f, app, transcript_area, theme);
+            if let Some(ref search) = app.search_state {
+                let bar_y = area.y + area.height - 1;
+                let bar_area = Rect::new(area.x, bar_y, area.width, 1);
+                let buf = f.buffer_mut();
+                search.render_bar(bar_area, buf);
+            }
+        }
+        "input" => {
+            // Record the width Lua gave us; `input_height_for` reads it next
+            // frame so the published row count cannot drift from the layout.
+            app.input_width = Some(area.width);
+            render_input(f, app, area, theme);
+            if app.slash.active {
+                render_slash_dropdown(f, app, area, theme);
+            }
+        }
+        "status" => render_status(f, app, area, theme),
+        // The diff viewer, placed by Lua. Rust still owns diff parsing, syntax
+        // highlighting and scroll maths; Lua decides where it goes and how big.
+        "diff" => {
+            if let Some(ref mut viewer) = app.diff_viewer {
+                let buf = f.buffer_mut();
+                viewer.render(area, buf, theme);
+            }
+        }
+        "welcome" => render_welcome(f, app, area, theme),
+        other => {
+            crate::log!("Lua native view: unknown '{}'", other);
+        }
+    }
+}
+
+/// Draw every `{type="plugin", plugin="name"}` slot the layout declared.
+///
+/// The plugin's registered Lua produces the subtree; this only supplies the
+/// rect, so a plugin cannot choose its own placement or size.
+///
+/// A plugin that is broken or absent gets an error message drawn in its slot
+/// rather than empty space — a silent blank would look like a layout bug and
+/// hide the actual cause.
+fn render_plugin_views(
+    f: &mut Frame,
+    app: &App,
+    root: &crate::lua::widgets::Widget,
+    area: Rect,
+    theme: &Theme,
+) {
+    let Some(ref runtime) = app.lua_runtime else {
+        return;
+    };
+
+    let mut slots: Vec<(String, Rect)> = Vec::new();
+    crate::lua::widgets::collect_plugin_slots(root, area, &mut slots);
+
+    for (plugin, rect) in slots {
+        match runtime.build_plugin_view(&plugin) {
+            Ok(widget) => {
+                crate::lua::widgets::render_widget(f, &widget, rect, theme, &app.lua_input_states);
+            }
+            Err(err) => {
+                let msg = format!("[{plugin}] {err}");
+                let para = Paragraph::new(msg)
+                    .style(Style::default().fg(theme.error))
+                    .wrap(Wrap { trim: true });
+                f.render_widget(para, rect);
+            }
         }
     }
 }
@@ -398,402 +646,6 @@ fn wrap_input_for_welcome(
     (display_lines, cursor_row, cursor_col)
 }
 
-fn render_right_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    if app.layout.right == Sidebar::Collapsed {
-        // Collapsed: full-height heavy border with distinct background.
-        let buf = f.buffer_mut();
-        for y in area.y..area.y + area.height {
-            for x in area.x..area.x + area.width {
-                buf[(x, y)].set_bg(theme.tool_focus_bg);
-            }
-        }
-        for y in area.y..area.y + area.height {
-            buf[(area.x, y)].set_char('┃').set_style(
-                Style::default()
-                    .fg(theme.tool_focus_border)
-                    .bg(theme.tool_focus_bg)
-                    .add_modifier(Modifier::BOLD),
-            );
-        }
-        return;
-    }
-
-    let buf = f.buffer_mut();
-
-    // Fill sidebar background to distinguish from transcript.
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            buf[(x, y)].set_bg(theme.tool_focus_bg);
-        }
-    }
-
-    // Heavy left border in accent color.
-    for y in area.y..area.y + area.height {
-        buf[(area.x, y)].set_char('┃').set_style(
-            Style::default()
-                .fg(theme.tool_focus_border)
-                .bg(theme.tool_focus_bg)
-                .add_modifier(Modifier::BOLD),
-        );
-    }
-
-    // Content is inset by one column so text doesn't overwrite the border.
-    let content_x = area.x + 1;
-    let content_w = (area.width as usize).saturating_sub(1);
-    if content_w == 0 {
-        return;
-    }
-    let mut y = area.y;
-    let w = content_w;
-
-    // Session info at the top.
-    if !app.session.state.session_id.is_empty() {
-        // Show short session ID (first 8 chars).
-        let sid = &app.session.state.session_id;
-        let short_id = if sid.len() > 8 {
-            &sid[..8]
-        } else {
-            sid.as_str()
-        };
-        y = render_line_at(
-            buf,
-            content_x,
-            y,
-            w,
-            &format!("#{}", short_id),
-            Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
-        );
-        // Show title if available.
-        if let Some(title) = app.session.session_title() {
-            y = render_line_at(
-                buf,
-                content_x,
-                y,
-                w,
-                title,
-                Style::default().bg(theme.tool_focus_bg).fg(theme.primary),
-            );
-        }
-        y += 1;
-    }
-
-    // Model section.
-    y = render_line_at(
-        buf,
-        content_x,
-        y,
-        w,
-        "MODEL",
-        Style::default()
-            .bg(theme.tool_focus_bg)
-            .fg(theme.fg)
-            .add_modifier(Modifier::BOLD),
-    );
-    y = render_line_at(
-        buf,
-        content_x,
-        y,
-        w,
-        &app.current_model_name(),
-        Style::default().bg(theme.tool_focus_bg).fg(theme.primary),
-    );
-    y = render_line_at(
-        buf,
-        content_x,
-        y,
-        w,
-        &format!("${:.4}", app.tokens.cost),
-        Style::default().bg(theme.tool_focus_bg).fg(theme.warning),
-    );
-    y += 1;
-
-    // Last turn stats - what matters for context window usage.
-    // Anthropic: input = non-cached tokens, cache_read = cached tokens
-    // Total context = input + cache_read; cache_hit% = cache_read / total
-    y = render_line_at(
-        buf,
-        content_x,
-        y,
-        w,
-        "LAST TURN",
-        Style::default()
-            .bg(theme.tool_focus_bg)
-            .fg(theme.fg)
-            .add_modifier(Modifier::BOLD),
-    );
-    let lt_input = app.tokens.last_turn_input();
-    let lt_output = app.tokens.last_turn_output();
-    let lt_cache_read = app.tokens.last_turn_cache_read();
-    let lt_cache_write = app.tokens.last_turn_cache_write();
-    if lt_input > 0 || lt_cache_read > 0 {
-        let total_input = lt_input + lt_cache_read;
-        if lt_cache_read > 0 && total_input > 0 {
-            let hit_pct = (lt_cache_read as f64 / total_input as f64 * 100.0) as u32;
-            y = render_line_at(
-                buf,
-                content_x,
-                y,
-                w,
-                &format!("in: {} ({}%)", format_tokens(total_input), hit_pct),
-                Style::default().bg(theme.tool_focus_bg).fg(theme.success),
-            );
-        } else {
-            y = render_line_at(
-                buf,
-                content_x,
-                y,
-                w,
-                &format!("in: {}", format_tokens(lt_input)),
-                Style::default().bg(theme.tool_focus_bg).fg(theme.fg),
-            );
-        }
-        y = render_line_at(
-            buf,
-            content_x,
-            y,
-            w,
-            &format!("out: {}", format_tokens(lt_output)),
-            Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
-        );
-        if lt_cache_read > 0 || lt_cache_write > 0 {
-            y = render_line_at(
-                buf,
-                content_x,
-                y,
-                w,
-                &format!(
-                    "r:{} w:{}",
-                    format_tokens(lt_cache_read),
-                    format_tokens(lt_cache_write)
-                ),
-                Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
-            );
-        }
-    } else {
-        y = render_line_at(
-            buf,
-            content_x,
-            y,
-            w,
-            "-",
-            Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
-        );
-    }
-
-    if let Some(tps) = app.tokens.last_toks_per_sec {
-        y = render_line_at(
-            buf,
-            content_x,
-            y,
-            w,
-            &format!("{:.0} tok/s", tps),
-            Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
-        );
-    }
-    y += 1;
-
-    // Session totals - cumulative for billing/cost.
-    // tokens_in = non-cached tokens, cache_read = cached tokens, total = both
-    y = render_line_at(
-        buf,
-        content_x,
-        y,
-        w,
-        "SESSION",
-        Style::default()
-            .bg(theme.tool_focus_bg)
-            .fg(theme.fg)
-            .add_modifier(Modifier::BOLD),
-    );
-    let s_in = app.tokens.tokens_in();
-    let s_out = app.tokens.tokens_out();
-    let s_cache_read = app.tokens.cache_read();
-    let s_cache_write = app.tokens.cache_write();
-    let session_total = s_in + s_cache_read;
-    if s_cache_read > 0 && session_total > 0 {
-        let session_hit_pct = (s_cache_read as f64 / session_total as f64 * 100.0) as u32;
-        y = render_line_at(
-            buf,
-            content_x,
-            y,
-            w,
-            &format!(
-                "in: {} ({}%)",
-                format_tokens(session_total),
-                session_hit_pct
-            ),
-            Style::default().bg(theme.tool_focus_bg).fg(theme.success),
-        );
-    } else {
-        y = render_line_at(
-            buf,
-            content_x,
-            y,
-            w,
-            &format!("in: {}", format_tokens(s_in)),
-            Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
-        );
-    }
-    y = render_line_at(
-        buf,
-        content_x,
-        y,
-        w,
-        &format!("out: {}", format_tokens(s_out)),
-        Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
-    );
-    if s_cache_read > 0 || s_cache_write > 0 {
-        y = render_line_at(
-            buf,
-            content_x,
-            y,
-            w,
-            &format!(
-                "r:{} w:{}",
-                format_tokens(s_cache_read),
-                format_tokens(s_cache_write)
-            ),
-            Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
-        );
-    }
-    y += 1;
-
-    // Tools section — now a concise summary instead of listing all tools.
-    if y < area.y + area.height {
-        let enabled_count = app.tools.iter().filter(|t| t.enabled).count();
-        let total_count = app.tools.len();
-        let header = format!("TOOLS {}/{}", enabled_count, total_count);
-        y = render_line_at(
-            buf,
-            content_x,
-            y,
-            w,
-            &header,
-            Style::default()
-                .bg(theme.tool_focus_bg)
-                .fg(theme.fg)
-                .add_modifier(Modifier::BOLD),
-        );
-        // Hint to open tools manager.
-        if y < area.y + area.height {
-            y = render_line_at(
-                buf,
-                content_x,
-                y,
-                w,
-                "Ctrl+P → Manage",
-                Style::default().bg(theme.tool_focus_bg).fg(theme.muted),
-            );
-        }
-    }
-
-    // 96E-25: plugin pages (toggleable side panel, multiple pages via tabs)
-    if !app.ui_pages.is_empty() && y < area.y + area.height {
-        y = render_line_at(
-            buf,
-            content_x,
-            y,
-            w,
-            "PAGES",
-            Style::default()
-                .bg(theme.tool_focus_bg)
-                .fg(theme.fg)
-                .add_modifier(Modifier::BOLD),
-        );
-        // Tab bar: show page tabs, highlight selected
-        let selected = app
-            .ui_page_selected
-            .clone()
-            .or_else(|| app.ui_pages.keys().next().cloned());
-        let mut tab_line: Vec<Span> = Vec::new();
-        for key in app.ui_pages.keys() {
-            let label = crate::widgets::page_tab_label(&key.0, &key.1, 10);
-            let is_sel = selected.as_ref().map(|s| s == key).unwrap_or(false);
-            let style = if is_sel {
-                Style::default()
-                    .bg(theme.tab_active_bg)
-                    .fg(theme.tab_active_fg)
-            } else {
-                Style::default()
-                    .bg(theme.tool_focus_bg)
-                    .fg(theme.tab_inactive_fg)
-            };
-            tab_line.push(Span::styled(format!(" {} ", label), style));
-            tab_line.push(Span::raw(" "));
-        }
-        if !tab_line.is_empty() && y < area.y + area.height {
-            render_spanned_line_at(buf, content_x, y, w, Line::from(tab_line));
-            y += 1;
-        }
-        // Render selected page placeholders
-        if let Some(sel) = selected {
-            if let Some(page) = app.ui_pages.get(&sel) {
-                // Page header
-                if y < area.y + area.height {
-                    y = render_line_at(
-                        buf,
-                        content_x,
-                        y,
-                        w,
-                        &format!("{}/{}", page.plugin, page.page_id),
-                        Style::default()
-                            .bg(theme.tool_focus_bg)
-                            .fg(theme.primary)
-                            .add_modifier(Modifier::BOLD),
-                    );
-                }
-                for pid in &page.order {
-                    if y >= area.y + area.height {
-                        break;
-                    }
-                    if let Some(ph) = page.placeholders.get(pid) {
-                        let lines = crate::widgets::render_placeholder(pid, ph, w, theme);
-                        for line in lines {
-                            if y >= area.y + area.height {
-                                break;
-                            }
-                            render_spanned_line_at(buf, content_x, y, w, line);
-                            y += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn render_line_at(
-    buf: &mut ratatui::buffer::Buffer,
-    x: u16,
-    y: u16,
-    w: usize,
-    text: &str,
-    style: Style,
-) -> u16 {
-    let truncated = truncate(text, w);
-    for (i, ch) in truncated.chars().enumerate() {
-        buf[(x + i as u16, y)].set_char(ch).set_style(style);
-    }
-    y + 1
-}
-
-fn render_spanned_line_at(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, w: usize, line: Line) {
-    let mut cx = x;
-    let end_x = x + w as u16;
-    for span in line.spans {
-        for ch in span.content.chars() {
-            if cx >= end_x {
-                break;
-            }
-            buf[(cx, y)].set_char(ch).set_style(span.style);
-            cx += 1;
-        }
-        if cx >= end_x {
-            break;
-        }
-    }
-}
-
 fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     if area.height == 0 {
         return;
@@ -812,10 +664,10 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         .as_ref()
         .and_then(|s| s.current_match())
         .map(|m| m.msg_idx);
-    
+
     // Check if search is active (affects caching - search highlighting invalidates cache).
     let search_active = app.search_state.is_some();
-    
+
     // Count messages to determine if last message is "in progress".
     let msg_count = app.transcript.messages().len();
     let is_streaming = app.streaming;
@@ -828,16 +680,19 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         // - Width hasn't changed (tracked in update_state)
         let is_last_msg = msg_idx == msg_count.saturating_sub(1);
         let can_use_cache = !search_active && !(is_last_msg && is_streaming);
-        
+
         // Compute tool info hash - changes when tool state changes (expanded, scroll, status, etc.)
         let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools);
-        
+
         // Try cache first
         if can_use_cache {
-            if let Some((cached_lines, cached_tools)) = app.render_cache.get_message(msg_idx, &msg.content, tool_info_hash) {
+            if let Some((cached_lines, cached_tools)) =
+                app.render_cache
+                    .get_message(msg_idx, &msg.content, tool_info_hash)
+            {
                 let base_line_idx = lines.len();
                 lines.extend(cached_lines.iter().cloned());
-                
+
                 // Restore tool positions with correct base offset
                 for tool_info in cached_tools {
                     tool_line_info.push((
@@ -849,13 +704,13 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                 continue;
             }
         }
-        
+
         // Remember line count before rendering this message (for caching)
         let lines_before = lines.len();
-        
+
         // Track tool positions relative to message start (for caching)
         let mut msg_tool_infos: Vec<crate::render_cache::CachedToolInfo> = Vec::new();
-        
+
         // Is this the message containing the current search match?
         let is_current_match_msg = current_match_msg_idx == Some(msg_idx);
 
@@ -982,22 +837,22 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             // Track header position relative to message start (for cache)
             let header_line_offset = lines.len() - lines_before;
             let header_line_idx = lines.len();
-            
+
             render_tool_card(card, app, &mut lines, inner_w, theme, area.height as usize);
-            
+
             let content_end_line_idx = lines.len();
             let content_end_offset = lines.len() - lines_before;
-            
+
             // Add to global tool_line_info for click detection
             tool_line_info.push((card.call_id.clone(), header_line_idx, content_end_line_idx));
-            
+
             // Add to message-local tool infos for caching
             msg_tool_infos.push(crate::render_cache::CachedToolInfo {
                 call_id: card.call_id.clone(),
                 header_line_offset,
                 content_end_offset,
             });
-            
+
             // 96E-27: collapsible subagent sub-entry nested under its spawning tool call
             if let Some(sub) = app.subagents.iter().find(|s| s.call_id == card.call_id) {
                 let collapsed = sub.collapsed;
@@ -1027,42 +882,24 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                     ),
                 ]);
                 lines.push(header);
-                if !collapsed {
-                    // Expanded: show page placeholders live if linked
-                    if let Some(pk) = &sub.page_key {
-                        if let Some(page) = app.ui_pages.get(pk) {
-                            for pid in &page.order {
-                                if let Some(ph) = page.placeholders.get(pid) {
-                                    let ph_lines = crate::widgets::render_placeholder(
-                                        pid,
-                                        ph,
-                                        inner_w.saturating_sub(6),
-                                        theme,
-                                    );
-                                    for l in ph_lines {
-                                        let mut indented = vec![Span::raw("      ")];
-                                        indented.extend(l.spans);
-                                        lines.push(Line::from(indented));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if vis == "silent" {
-                    // silent: minimal one-liner already shown, no page preview
-                }
             }
         }
 
         lines.push(Line::from("")); // spacing
-        
+
         // Cache the rendered lines for this message if cacheable
         if can_use_cache {
             let msg_lines: Vec<Line<'static>> = lines[lines_before..].to_vec();
-            app.render_cache.set_message(msg_idx, &msg.content, tool_info_hash, msg_lines, msg_tool_infos);
+            app.render_cache.set_message(
+                msg_idx,
+                &msg.content,
+                tool_info_hash,
+                msg_lines,
+                msg_tool_infos,
+            );
         }
     }
-    
+
     // Update cache state
     app.render_cache.update_state(
         app.transcript.messages().len(),
@@ -1117,7 +954,7 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     // Live delta — render as markdown.
     if !app.transcript.live_delta().is_empty() {
         lines.push(Line::from(Span::styled(
-            "◂ assistant",
+            "◂ kn9t",
             Style::default()
                 .fg(theme.assistant)
                 .add_modifier(Modifier::BOLD),
@@ -1237,10 +1074,10 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             // Tab positions (approximate - tabs start at column 4)
             // Layout: "    " + " Progress " + " " + " Output " + " " + " Input "
             let tab_base_x = area.x + 4;
-            
+
             // Card width calculation (must match render_tool_card)
             let card_w = inner_w.saturating_sub(TOOL_CARD_RIGHT_MARGIN).max(50);
-            
+
             app.tool_hit_areas.push(ToolHitArea {
                 call_id,
                 header_y,
@@ -1265,12 +1102,14 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         let buf = f.buffer_mut();
         let scrollbar_x = area.x + area.width.saturating_sub(1);
         let scrollbar_height = area.height as usize;
-        
+
         // Store scrollbar area for mouse interaction
         app.scrollbar_area = Some((scrollbar_x, area.y, area.y + area.height, total, visible));
-        
+
         // Calculate thumb position and size
-        let thumb_size = (visible * scrollbar_height / total).max(1).min(scrollbar_height);
+        let thumb_size = (visible * scrollbar_height / total)
+            .max(1)
+            .min(scrollbar_height);
         let thumb_pos = if max_scroll > 0 {
             (max_scroll - effective_scroll) * (scrollbar_height - thumb_size) / max_scroll
         } else {
@@ -1281,17 +1120,13 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         for i in 0..scrollbar_height {
             let y = area.y + i as u16;
             let in_thumb = i >= thumb_pos && i < thumb_pos + thumb_size;
-            
+
             if in_thumb {
                 // Thumb - solid block
-                buf[(scrollbar_x, y)]
-                    .set_char('┃')
-                    .set_fg(theme.primary);
+                buf[(scrollbar_x, y)].set_char('┃').set_fg(theme.primary);
             } else {
                 // Track - light line
-                buf[(scrollbar_x, y)]
-                    .set_char('│')
-                    .set_fg(theme.muted);
+                buf[(scrollbar_x, y)].set_char('│').set_fg(theme.muted);
             }
         }
     } else {
@@ -1436,6 +1271,25 @@ fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 }
 
 fn render_status(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
+    // Lua owns the status line when it defines `render_status()`. This is the
+    // whole point of the hook: without it the built-in Lua status bar was built
+    // every frame and thrown away, and no config could change this line.
+    if let Some(spans) = app
+        .lua_runtime
+        .as_ref()
+        .and_then(|rt| rt.call_status_spans())
+    {
+        let line = Line::from(
+            spans
+                .iter()
+                .map(|s| Span::styled(s.text.clone(), s.style.to_ratatui_style(theme)))
+                .collect::<Vec<_>>(),
+        );
+        f.render_widget(Paragraph::new(line), area);
+        return;
+    }
+
+    // Fallback only for a config with no `render_status`.
     // Last turn context and cache hit.
     let lt_input = app.tokens.last_turn_input();
     let lt_cache_read = app.tokens.last_turn_cache_read();
@@ -1688,12 +1542,11 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
 }
 
 fn render_slash_dropdown(f: &mut Frame, app: &App, input_area: Rect, theme: &Theme) {
-    use crate::slash::COMMANDS;
-
     let matches = &app.slash.matches;
     if matches.is_empty() {
         return;
     }
+    let entries = app.slash.entries();
 
     let buf = f.buffer_mut();
 
@@ -1714,7 +1567,9 @@ fn render_slash_dropdown(f: &mut Frame, app: &App, input_area: Rect, theme: &The
 
     // Items.
     for (i, &cmd_idx) in matches.iter().enumerate().take(dropdown_h as usize) {
-        let cmd = &COMMANDS[cmd_idx];
+        let Some(cmd) = entries.get(cmd_idx) else {
+            continue;
+        };
         let y = dropdown_y + i as u16;
         let is_selected = i == app.slash.selected;
 
@@ -2395,10 +2250,9 @@ fn render_tools_manager(
 }
 
 fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    use crate::command_palette::COMMANDS;
-
     let buf = f.buffer_mut();
     let palette = &app.command_palette;
+    let entries = palette.entries();
 
     // Dim background.
     for y in area.y..area.y + area.height {
@@ -2520,7 +2374,9 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             break;
         }
 
-        let cmd = &COMMANDS[cmd_idx];
+        let Some(cmd) = entries.get(cmd_idx) else {
+            continue;
+        };
         let is_selected = i == palette.selected;
         let (fg, bg) = if is_selected {
             (theme.bg, theme.primary)
@@ -2534,7 +2390,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         }
 
         // Command label.
-        let label = cmd.label;
+        let label = &cmd.label;
         for (j, ch) in label.chars().enumerate() {
             let x = overlay_x + 2 + j as u16;
             if x < overlay_x + overlay_w - 20 {
@@ -2543,7 +2399,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         }
 
         // Keybinding (right-aligned).
-        if let Some(kb) = cmd.keybinding {
+        if let Some(kb) = cmd.keybinding.as_deref() {
             let kb_x = overlay_x + overlay_w - 2 - kb.len() as u16;
             let kb_fg = if is_selected { theme.bg } else { theme.muted };
             for (j, ch) in kb.chars().enumerate() {
@@ -2673,9 +2529,6 @@ const TOOL_OUTPUT_DEFAULT_VISIBLE_LINES: usize = 10;
 /// Minimum visible lines in expanded tool output.
 const TOOL_OUTPUT_MIN_VISIBLE_LINES: usize = 5;
 
-/// Tool card background color (slightly lighter than terminal bg).
-const TOOL_CARD_BG: Color = Color::Rgb(30, 33, 39);
-
 /// Determine what content to show for a tool (smart defaults based on tool type).
 #[derive(Clone, Copy, PartialEq)]
 enum ToolDisplayMode {
@@ -2689,7 +2542,35 @@ enum ToolDisplayMode {
     Streaming,
 }
 
-fn get_tool_display_mode(name: &str) -> ToolDisplayMode {
+impl ToolDisplayMode {
+    /// Parse a mode named by Lua, or `None` for an unknown name.
+    fn from_name(s: &str) -> Option<Self> {
+        Some(match s {
+            "diff" => Self::Diff,
+            "output" => Self::Output,
+            "summary" => Self::Summary,
+            "streaming" => Self::Streaming,
+            _ => return None,
+        })
+    }
+}
+
+/// How a tool's card should be displayed.
+///
+/// Lua decides via `tool_mode(name)`; the built-in mapping is the fallback so a
+/// config that defines nothing keeps the current behaviour. Previously this was
+/// a hardcoded `match` on tool name, which meant a plugin's tool could never
+/// choose how it rendered.
+fn get_tool_display_mode(app: &App, name: &str) -> ToolDisplayMode {
+    if let Some(mode) = app
+        .lua_runtime
+        .as_ref()
+        .and_then(|rt| rt.call_tool_mode(name))
+        .and_then(|s| ToolDisplayMode::from_name(&s))
+    {
+        return mode;
+    }
+
     match name {
         "edit" | "write" => ToolDisplayMode::Diff,
         "read" => ToolDisplayMode::Summary,
@@ -2735,15 +2616,19 @@ fn render_tool_card(
     let card_bg = if is_focused {
         theme.tool_focus_bg
     } else {
-        TOOL_CARD_BG
+        theme.tool_card_bg
     };
 
-    let display_mode = get_tool_display_mode(&card.name);
+    let display_mode = get_tool_display_mode(app, &card.name);
     let expand_icon = if card.expanded { '▾' } else { '▸' };
 
     // Build header with smart summary
-    let header_extra = build_tool_header_extra(card, display_mode, card_w.saturating_sub(card.name.len() + 12));
-    
+    let header_extra = build_tool_header_extra(
+        card,
+        display_mode,
+        card_w.saturating_sub(card.name.len() + 12),
+    );
+
     let header_text_len = 6 + card.name.len() + header_extra.chars().count();
     let header_padding = card_w.saturating_sub(header_text_len + 1);
 
@@ -2751,20 +2636,39 @@ fn render_tool_card(
     // Header: ┃ ▸ ✓ edit  src/app.rs  (or bash  cargo test)
     // ─────────────────────────────────────────────────────────────────
     lines.push(Line::from(vec![
-        Span::styled("┃", Style::default().fg(accent_color).bg(card_bg).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" {} ", expand_icon), Style::default().fg(theme.muted).bg(card_bg)),
+        Span::styled(
+            "┃",
+            Style::default()
+                .fg(accent_color)
+                .bg(card_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {} ", expand_icon),
+            Style::default().fg(theme.muted).bg(card_bg),
+        ),
         Span::styled(
             format!("{} ", status_icon),
             Style::default()
                 .fg(accent_color)
                 .bg(card_bg)
-                .add_modifier(if is_running { Modifier::BOLD } else { Modifier::empty() }),
+                .add_modifier(if is_running {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
         ),
         Span::styled(
             card.name.clone(),
-            Style::default().fg(theme.fg).bg(card_bg).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.fg)
+                .bg(card_bg)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("  {}", header_extra), Style::default().fg(theme.muted).bg(card_bg)),
+        Span::styled(
+            format!("  {}", header_extra),
+            Style::default().fg(theme.muted).bg(card_bg),
+        ),
         Span::styled(" ".repeat(header_padding), Style::default().bg(card_bg)),
     ]));
 
@@ -2773,18 +2677,36 @@ fn render_tool_card(
     // Use most of the screen when expanded (leave room for header, footer, scrollbar hint)
     let visible_lines = if available_height > 10 {
         // Use ~60% of available height for expanded tool, capped reasonably
-        (available_height * 60 / 100).max(TOOL_OUTPUT_MIN_VISIBLE_LINES).min(50)
+        (available_height * 60 / 100)
+            .max(TOOL_OUTPUT_MIN_VISIBLE_LINES)
+            .min(50)
     } else {
         TOOL_OUTPUT_DEFAULT_VISIBLE_LINES
     };
-    
+
     if card.expanded {
-        render_tool_smart_content(card, lines, card_w, theme, accent_color, card_bg, display_mode, is_running, visible_lines);
+        render_tool_smart_content(
+            card,
+            lines,
+            card_w,
+            theme,
+            accent_color,
+            card_bg,
+            display_mode,
+            is_running,
+            visible_lines,
+        );
 
         // Bottom accent bar with full background
         lines.push(Line::from(vec![
             Span::styled("┗", Style::default().fg(accent_color).bg(card_bg)),
-            Span::styled("━".repeat(card_w.saturating_sub(1)), Style::default().fg(accent_color).bg(card_bg).add_modifier(Modifier::DIM)),
+            Span::styled(
+                "━".repeat(card_w.saturating_sub(1)),
+                Style::default()
+                    .fg(accent_color)
+                    .bg(card_bg)
+                    .add_modifier(Modifier::DIM),
+            ),
         ]));
     }
 }
@@ -2799,9 +2721,8 @@ fn build_tool_header_extra(card: &ToolCard, mode: ToolDisplayMode, max_len: usiz
                     let display = truncate(path, max_len.saturating_sub(10));
                     if mode == ToolDisplayMode::Summary {
                         // For read, add line count from output
-                        let line_count = card.output.as_ref()
-                            .map(|o| o.lines().count())
-                            .unwrap_or(0);
+                        let line_count =
+                            card.output.as_ref().map(|o| o.lines().count()).unwrap_or(0);
                         if line_count > 0 {
                             return format!("{}  ({} lines)", display, line_count);
                         }
@@ -2811,7 +2732,11 @@ fn build_tool_header_extra(card: &ToolCard, mode: ToolDisplayMode, max_len: usiz
             }
             ToolDisplayMode::Streaming | ToolDisplayMode::Output => {
                 // Show command for bash, or key arg for others
-                if let Some(cmd) = args.get("cmd").or_else(|| args.get("command")).and_then(|v| v.as_str()) {
+                if let Some(cmd) = args
+                    .get("cmd")
+                    .or_else(|| args.get("command"))
+                    .and_then(|v| v.as_str())
+                {
                     return truncate(cmd, max_len);
                 }
                 // Fall back to first string arg
@@ -2841,23 +2766,63 @@ fn render_tool_smart_content(
     match mode {
         ToolDisplayMode::Diff => {
             // Show diff/progress lines with syntax highlighting
-            render_tool_diff_content(card, lines, card_w, theme, accent_color, card_bg, visible_lines);
+            render_tool_diff_content(
+                card,
+                lines,
+                card_w,
+                theme,
+                accent_color,
+                card_bg,
+                visible_lines,
+            );
         }
         ToolDisplayMode::Summary => {
             // Read tool: just show a brief summary, content visible in header
-            render_tool_summary_content(card, lines, card_w, theme, accent_color, card_bg, visible_lines);
+            render_tool_summary_content(
+                card,
+                lines,
+                card_w,
+                theme,
+                accent_color,
+                card_bg,
+                visible_lines,
+            );
         }
         ToolDisplayMode::Streaming => {
             // Bash: show progress while running, output when done
             if is_running && !card.progress_lines.is_empty() {
-                render_tool_streaming_content(card, lines, card_w, theme, accent_color, card_bg, visible_lines);
+                render_tool_streaming_content(
+                    card,
+                    lines,
+                    card_w,
+                    theme,
+                    accent_color,
+                    card_bg,
+                    visible_lines,
+                );
             } else {
-                render_tool_output_content(card, lines, card_w, theme, accent_color, card_bg, visible_lines);
+                render_tool_output_content(
+                    card,
+                    lines,
+                    card_w,
+                    theme,
+                    accent_color,
+                    card_bg,
+                    visible_lines,
+                );
             }
         }
         ToolDisplayMode::Output => {
             // MCP tools and others: show output
-            render_tool_output_content(card, lines, card_w, theme, accent_color, card_bg, visible_lines);
+            render_tool_output_content(
+                card,
+                lines,
+                card_w,
+                theme,
+                accent_color,
+                card_bg,
+                visible_lines,
+            );
         }
     }
 }
@@ -2915,9 +2880,12 @@ fn render_tool_diff_content(
 
         let mut spans = vec![
             Span::styled("┃", Style::default().fg(accent_color).bg(card_bg)),
-            Span::styled(format!("{:>3} ", line_num), Style::default().fg(theme.muted).bg(card_bg)),
+            Span::styled(
+                format!("{:>3} ", line_num),
+                Style::default().fg(theme.muted).bg(card_bg),
+            ),
         ];
-        
+
         // Calculate content length from highlighted spans
         let mut content_len = 0;
         for span in &highlighted_spans {
@@ -2928,12 +2896,25 @@ fn render_tool_diff_content(
         // Padding: card_w - (border "┃" = 1) - (line num "NNN " = 4) - content
         let used = 1 + 4 + content_len;
         let padding = card_w.saturating_sub(used);
-        spans.push(Span::styled(" ".repeat(padding), Style::default().bg(line_bg)));
+        spans.push(Span::styled(
+            " ".repeat(padding),
+            Style::default().bg(line_bg),
+        ));
 
         lines.push(Line::from(spans));
     }
 
-    render_scroll_hint(lines, card_w, accent_color, card_bg, theme, start, end, total, visible_lines);
+    render_scroll_hint(
+        lines,
+        card_w,
+        accent_color,
+        card_bg,
+        theme,
+        start,
+        end,
+        total,
+        visible_lines,
+    );
 }
 
 /// Reconstruct a diff from edit/write tool args.
@@ -3001,7 +2982,17 @@ fn render_tool_streaming_content(
         ]));
     }
 
-    render_scroll_hint(lines, card_w, accent_color, card_bg, theme, start, end, total, visible_lines);
+    render_scroll_hint(
+        lines,
+        card_w,
+        accent_color,
+        card_bg,
+        theme,
+        start,
+        end,
+        total,
+        visible_lines,
+    );
 }
 
 /// Render output content (bash result, MCP tools).
@@ -3049,7 +3040,17 @@ fn render_tool_output_content(
         ]));
     }
 
-    render_scroll_hint(lines, card_w, accent_color, card_bg, theme, start, end, total, visible_lines);
+    render_scroll_hint(
+        lines,
+        card_w,
+        accent_color,
+        card_bg,
+        theme,
+        start,
+        end,
+        total,
+        visible_lines,
+    );
 }
 
 /// Render summary content (for read tool - minimal since content shown in header).
@@ -3085,25 +3086,34 @@ fn render_tool_summary_content(
     for (i, line) in output_lines[start..end].iter().enumerate() {
         let line_num = start + i + 1;
         let display = truncate(line, content_w.saturating_sub(4));
-        
+
         // Syntax highlight the content
         let highlighted = syntax::highlight_code_inline(&display, lang_ref, theme);
-        
+
         let mut spans = vec![
             Span::styled("┃", Style::default().fg(accent_color).bg(card_bg)),
-            Span::styled(format!("{:>3} ", line_num), Style::default().fg(theme.muted).bg(card_bg)),
+            Span::styled(
+                format!("{:>3} ", line_num),
+                Style::default().fg(theme.muted).bg(card_bg),
+            ),
         ];
-        
+
         let mut content_len = 0;
         for span in highlighted {
             content_len += span.content.chars().count();
-            spans.push(Span::styled(span.content.into_owned(), span.style.bg(card_bg)));
+            spans.push(Span::styled(
+                span.content.into_owned(),
+                span.style.bg(card_bg),
+            ));
         }
 
         // Padding: card_w - (border "┃" = 1) - (line num "NNN " = 4) - content
         let used = 1 + 4 + content_len;
         let padding = card_w.saturating_sub(used);
-        spans.push(Span::styled(" ".repeat(padding), Style::default().bg(card_bg)));
+        spans.push(Span::styled(
+            " ".repeat(padding),
+            Style::default().bg(card_bg),
+        ));
 
         lines.push(Line::from(spans));
     }
@@ -3115,7 +3125,13 @@ fn render_tool_summary_content(
         lines.push(Line::from(vec![
             Span::styled("┃", Style::default().fg(accent_color).bg(card_bg)),
             Span::styled(" ", Style::default().bg(card_bg)),
-            Span::styled(hint, Style::default().fg(theme.muted).bg(card_bg).add_modifier(Modifier::ITALIC)),
+            Span::styled(
+                hint,
+                Style::default()
+                    .fg(theme.muted)
+                    .bg(card_bg)
+                    .add_modifier(Modifier::ITALIC),
+            ),
             Span::styled(" ".repeat(padding), Style::default().bg(card_bg)),
         ]));
     }
@@ -3134,7 +3150,13 @@ fn render_empty_line(
     lines.push(Line::from(vec![
         Span::styled("┃", Style::default().fg(accent_color).bg(card_bg)),
         Span::styled(" ", Style::default().bg(card_bg)),
-        Span::styled(msg.to_string(), Style::default().fg(theme.muted).bg(card_bg).add_modifier(Modifier::ITALIC)),
+        Span::styled(
+            msg.to_string(),
+            Style::default()
+                .fg(theme.muted)
+                .bg(card_bg)
+                .add_modifier(Modifier::ITALIC),
+        ),
         Span::styled(" ".repeat(padding), Style::default().bg(card_bg)),
     ]));
 }
@@ -3163,8 +3185,6 @@ fn render_scroll_hint(
     }
 }
 
-
-
 /// Get the file extension from tool args (for syntax highlighting).
 fn get_lang_from_args(args: &str) -> Option<String> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
@@ -3187,30 +3207,51 @@ fn highlight_diff_line(
     card_bg: Color,
 ) -> (Vec<Span<'static>>, Color) {
     // Determine line type and colors
-    let (prefix, code_content, fg_color, bg_color) = if line.starts_with('+') && !line.starts_with("+++") {
-        // Added line
-        let content = line.strip_prefix('+').unwrap_or(line);
-        ("+", content, Color::Rgb(80, 250, 123), Color::Rgb(0, 45, 0))
-    } else if line.starts_with('-') && !line.starts_with("---") {
-        // Removed line
-        let content = line.strip_prefix('-').unwrap_or(line);
-        ("-", content, Color::Rgb(255, 85, 85), Color::Rgb(55, 0, 0))
-    } else if line.starts_with("@@") {
-        // Hunk header - no highlighting
-        return (vec![Span::styled(line.to_string(), Style::default().fg(theme.primary).bg(card_bg))], card_bg);
-    } else if line.starts_with("+++") || line.starts_with("---") {
-        // File header - no highlighting
-        return (vec![Span::styled(line.to_string(), Style::default().fg(theme.primary).bg(card_bg).add_modifier(Modifier::BOLD))], card_bg);
-    } else {
-        // Context line
-        (" ", line.strip_prefix(' ').unwrap_or(line), theme.fg, card_bg)
-    };
+    let (prefix, code_content, fg_color, bg_color) =
+        if line.starts_with('+') && !line.starts_with("+++") {
+            // Added line
+            let content = line.strip_prefix('+').unwrap_or(line);
+            ("+", content, Color::Rgb(80, 250, 123), Color::Rgb(0, 45, 0))
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            // Removed line
+            let content = line.strip_prefix('-').unwrap_or(line);
+            ("-", content, Color::Rgb(255, 85, 85), Color::Rgb(55, 0, 0))
+        } else if line.starts_with("@@") {
+            // Hunk header - no highlighting
+            return (
+                vec![Span::styled(
+                    line.to_string(),
+                    Style::default().fg(theme.primary).bg(card_bg),
+                )],
+                card_bg,
+            );
+        } else if line.starts_with("+++") || line.starts_with("---") {
+            // File header - no highlighting
+            return (
+                vec![Span::styled(
+                    line.to_string(),
+                    Style::default()
+                        .fg(theme.primary)
+                        .bg(card_bg)
+                        .add_modifier(Modifier::BOLD),
+                )],
+                card_bg,
+            );
+        } else {
+            // Context line
+            (
+                " ",
+                line.strip_prefix(' ').unwrap_or(line),
+                theme.fg,
+                card_bg,
+            )
+        };
 
     // Try to syntax highlight the code content
     let highlighted = syntax::highlight_code_inline(code_content, lang, theme);
 
     let mut spans = Vec::with_capacity(highlighted.len() + 1);
-    
+
     // Add prefix with diff color
     spans.push(Span::styled(
         prefix.to_string(),
@@ -4227,7 +4268,6 @@ fn render_interaction_overlay(
 
 #[cfg(test)]
 mod golden {
-    use super::*;
     use crate::app::Overlay;
     use crate::theme::Theme;
     use ratatui::{backend::TestBackend, Terminal};
@@ -4362,189 +4402,6 @@ mod golden {
         assert!(
             snap.contains("HELP") || snap.contains("Navigation") || snap.contains("Actions"),
             "help overlay must contain headings, got:\n{snap}"
-        );
-    }
-
-    fn render_sidebar_with_pages_to_string(
-        width: u16,
-        height: u16,
-        pages: Vec<((String, String), crate::page_state::UiPage)>,
-        selected: Option<(String, String)>,
-    ) -> String {
-        use crate::app::App;
-        use crate::config::Config;
-        use crate::event::TickControl;
-        use ratatui::layout::Rect;
-        let backend = TestBackend::new(width, height);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let th = theme();
-        // Build a minimal App with pages
-        let mut app = App::new(Config::default(), TickControl::dummy());
-        for (k, pg) in pages {
-            app.ui_pages.insert(k, pg);
-        }
-        app.ui_page_selected = selected;
-        terminal
-            .draw(|f| {
-                let area = Rect::new(0, 0, width, height);
-                super::render_right_sidebar(f, &app, area, &th);
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let mut out = String::new();
-        for y in 0..height {
-            for x in 0..width {
-                out.push_str(buffer[(x, y)].symbol());
-            }
-            if y + 1 < height {
-                out.push('\n');
-            }
-        }
-        out
-    }
-
-    #[test]
-    fn golden_pages_panel_renders_declared_page_distinct_from_transcript() {
-        use crate::page_state::{Placeholder, PlaceholderKind, UiPage};
-        use serde_json::json;
-        use std::collections::HashMap;
-        let mut ph = HashMap::new();
-        ph.insert(
-            "status".to_string(),
-            Placeholder {
-                kind: PlaceholderKind::Text,
-                value: json!("running"),
-            },
-        );
-        ph.insert(
-            "prog".to_string(),
-            Placeholder {
-                kind: PlaceholderKind::Bar,
-                value: json!(42),
-            },
-        );
-        let mut ph2 = HashMap::new();
-        ph2.insert(
-            "items".to_string(),
-            Placeholder {
-                kind: PlaceholderKind::List,
-                value: json!(["a", "b"]),
-            },
-        );
-        let pages = vec![
-            (
-                ("plug1".to_string(), "dash".to_string()),
-                UiPage {
-                    plugin: "plug1".into(),
-                    page_id: "dash".into(),
-                    order: vec!["status".into(), "prog".into()],
-                    placeholders: ph,
-                },
-            ),
-            (
-                ("plug2".to_string(), "other".to_string()),
-                UiPage {
-                    plugin: "plug2".into(),
-                    page_id: "other".into(),
-                    order: vec!["items".into()],
-                    placeholders: ph2,
-                },
-            ),
-        ];
-        let snap = render_sidebar_with_pages_to_string(
-            30,
-            20,
-            pages,
-            Some(("plug1".to_string(), "dash".to_string())),
-        );
-        // Must show PAGES header and selected page content, distinct from transcript
-        assert!(
-            snap.contains("PAGES"),
-            "must show PAGES section header, got:\n{snap}"
-        );
-        assert!(
-            snap.contains("plug1/dash") || snap.contains("dash"),
-            "must show selected page header, got:\n{snap}"
-        );
-        assert!(
-            snap.contains("status") || snap.contains("running"),
-            "must render text placeholder, got:\n{snap}"
-        );
-        assert!(
-            snap.contains("42%") || snap.contains("prog"),
-            "must render bar placeholder, got:\n{snap}"
-        );
-        // Must show tab switcher for multiple pages (labels truncated to 10 chars, so check prefix)
-        assert!(
-            snap.contains("plug1/dash") && (snap.contains("plug2/oth") || snap.contains("other")),
-            "must show tab switcher for concurrent pages, got:\n{snap}"
-        );
-    }
-
-    #[test]
-    fn golden_placeholder_write_updates_without_full_rerender() {
-        // Declare then write: verify bar value changes
-        use crate::page_state::{Placeholder, PlaceholderKind, UiPage};
-        use serde_json::json;
-        use std::collections::HashMap;
-        let mut ph = HashMap::new();
-        ph.insert(
-            "prog".to_string(),
-            Placeholder {
-                kind: PlaceholderKind::Bar,
-                value: json!(0),
-            },
-        );
-        let pages_before = vec![(
-            ("p".to_string(), "pg".to_string()),
-            UiPage {
-                plugin: "p".into(),
-                page_id: "pg".into(),
-                order: vec!["prog".into()],
-                placeholders: ph.clone(),
-            },
-        )];
-        let snap_before = render_sidebar_with_pages_to_string(
-            30,
-            20,
-            pages_before,
-            Some(("p".to_string(), "pg".to_string())),
-        );
-        assert!(
-            snap_before.contains("prog"),
-            "initial bar placeholder must be visible, got:\n{snap_before}"
-        );
-        // bar value numeric part must be visible (may be clipped without % due to width)
-        assert!(
-            snap_before.contains("0"),
-            "initial bar value must be visible, got:\n{snap_before}"
-        );
-        let mut ph2 = HashMap::new();
-        ph2.insert(
-            "prog".to_string(),
-            Placeholder {
-                kind: PlaceholderKind::Bar,
-                value: json!(85),
-            },
-        );
-        let pages_after = vec![(
-            ("p".to_string(), "pg".to_string()),
-            UiPage {
-                plugin: "p".into(),
-                page_id: "pg".into(),
-                order: vec!["prog".into()],
-                placeholders: ph2,
-            },
-        )];
-        let snap_after = render_sidebar_with_pages_to_string(
-            30,
-            20,
-            pages_after,
-            Some(("p".to_string(), "pg".to_string())),
-        );
-        assert!(
-            snap_after.contains("85"),
-            "updated bar value must be visible without re-declaring whole page, got:\n{snap_after}"
         );
     }
 }

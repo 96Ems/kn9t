@@ -33,6 +33,9 @@ pub struct Theme {
     pub tool_focus_border: Color,
     pub input_key: Color,
     pub input_value: Color,
+    /// Background of a tool card. A theme slot rather than a constant so a
+    /// colourscheme can restyle cards without recompiling.
+    pub tool_card_bg: Color,
 }
 
 impl Default for Theme {
@@ -67,6 +70,7 @@ impl Theme {
             tool_focus_border: Color::Cyan,
             input_key: Color::Yellow,
             input_value: Color::White,
+            tool_card_bg: Color::Rgb(30, 33, 39),
         }
     }
 
@@ -94,6 +98,7 @@ impl Theme {
             tool_focus_border: Color::Blue,
             input_key: Color::Rgb(180, 100, 0),
             input_value: Color::Black,
+            tool_card_bg: Color::Rgb(240, 242, 246),
         }
     }
 
@@ -147,47 +152,171 @@ impl Theme {
     fn with_overrides(mut self, colors: HashMap<String, String>) -> Self {
         for (name, value) in colors {
             if let Some(color) = parse_color(&value) {
-                match name.as_str() {
-                    "background" | "bg" => self.bg = color,
-                    "foreground" | "fg" => self.fg = color,
-                    "muted" => self.muted = color,
-                    "primary" => self.primary = color,
-                    "error" => self.error = color,
-                    "warning" => self.warning = color,
-                    "success" => self.success = color,
-                    "user" => self.user = color,
-                    "assistant" => self.assistant = color,
-                    "tool" => self.tool = color,
-                    "diff_add" => self.diff_add = color,
-                    "diff_remove" => self.diff_remove = color,
-                    "tab_active_fg" => self.tab_active_fg = color,
-                    "tab_active_bg" => self.tab_active_bg = color,
-                    "tab_inactive_fg" => self.tab_inactive_fg = color,
-                    "tool_focus_bg" => self.tool_focus_bg = color,
-                    "tool_focus_border" => self.tool_focus_border = color,
-                    "input_key" => self.input_key = color,
-                    "input_value" => self.input_value = color,
-                    _ => {}
-                }
+                self.set(&name, color);
             }
         }
         self
     }
-}
 
-fn parse_color(s: &str) -> Option<Color> {
-    let s = s.trim();
-
-    // Hex color: #RRGGBB
-    if s.starts_with('#') && s.len() == 7 {
-        let r = u8::from_str_radix(&s[1..3], 16).ok()?;
-        let g = u8::from_str_radix(&s[3..5], 16).ok()?;
-        let b = u8::from_str_radix(&s[5..7], 16).ok()?;
-        return Some(Color::Rgb(r, g, b));
+    /// Mutable access to a colour slot by its public name.
+    ///
+    /// The single name-to-field mapping in the TUI. `[theme.colors]` in
+    /// `config.toml`, `kn9t.theme` published to Lua, and `kn9t.set_theme{}` all
+    /// route through here, so a slot cannot exist for one and not the others.
+    fn slot_mut(&mut self, name: &str) -> Option<&mut Color> {
+        Some(match name {
+            "bg" | "background" => &mut self.bg,
+            "fg" | "foreground" => &mut self.fg,
+            "muted" => &mut self.muted,
+            "primary" => &mut self.primary,
+            "error" => &mut self.error,
+            "warning" => &mut self.warning,
+            "success" => &mut self.success,
+            "user" => &mut self.user,
+            "assistant" => &mut self.assistant,
+            "tool" => &mut self.tool,
+            "diff_add" => &mut self.diff_add,
+            "diff_remove" => &mut self.diff_remove,
+            "selection" => &mut self.selection,
+            "tab_active_fg" => &mut self.tab_active_fg,
+            "tab_active_bg" => &mut self.tab_active_bg,
+            "tab_inactive_fg" => &mut self.tab_inactive_fg,
+            "tool_focus_bg" => &mut self.tool_focus_bg,
+            "tool_focus_border" => &mut self.tool_focus_border,
+            "input_key" => &mut self.input_key,
+            "input_value" => &mut self.input_value,
+            "tool_card_bg" => &mut self.tool_card_bg,
+            _ => return None,
+        })
     }
 
-    // Named colors.
-    match s.to_lowercase().as_str() {
+    /// Every colour slot name, in a stable order.
+    ///
+    /// Used to publish `kn9t.theme` wholesale: a ricer discovers the palette by
+    /// dumping the table, rather than by reading Rust source.
+    pub const NAMES: &'static [&'static str] = &[
+        "bg",
+        "fg",
+        "muted",
+        "primary",
+        "error",
+        "warning",
+        "success",
+        "user",
+        "assistant",
+        "tool",
+        "diff_add",
+        "diff_remove",
+        "selection",
+        "tab_active_fg",
+        "tab_active_bg",
+        "tab_inactive_fg",
+        "tool_focus_bg",
+        "tool_focus_border",
+        "input_key",
+        "input_value",
+        "tool_card_bg",
+    ];
+
+    /// Read a colour slot by name.
+    pub fn get(&self, name: &str) -> Option<Color> {
+        // Goes through `slot_mut` on a clone so the mapping is defined once.
+        let mut probe = self.clone();
+        probe.slot_mut(name).copied()
+    }
+
+    /// Write a colour slot by name. Returns false for an unknown slot, so the
+    /// caller can surface the typo instead of dropping it silently.
+    pub fn set(&mut self, name: &str, color: Color) -> bool {
+        match self.slot_mut(name) {
+            Some(slot) => {
+                *slot = color;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Render a colour back to a string `parse_color` accepts.
+///
+/// Needed so `kn9t.theme` is round-trippable: Lua reads `kn9t.theme.user`, uses
+/// it as a widget `fg`, and gets the same colour back.
+pub fn color_to_string(c: Color) -> String {
+    match c {
+        Color::Reset => "reset".into(),
+        Color::Black => "black".into(),
+        Color::Red => "red".into(),
+        Color::Green => "green".into(),
+        Color::Yellow => "yellow".into(),
+        Color::Blue => "blue".into(),
+        Color::Magenta => "magenta".into(),
+        Color::Cyan => "cyan".into(),
+        Color::Gray => "gray".into(),
+        Color::DarkGray => "darkgray".into(),
+        Color::LightRed => "lightred".into(),
+        Color::LightGreen => "lightgreen".into(),
+        Color::LightYellow => "lightyellow".into(),
+        Color::LightBlue => "lightblue".into(),
+        Color::LightMagenta => "lightmagenta".into(),
+        Color::LightCyan => "lightcyan".into(),
+        Color::White => "white".into(),
+        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        Color::Indexed(i) => i.to_string(),
+    }
+}
+
+/// Parse a colour written the way a user would write it in a config or in Lua.
+///
+/// This is the **single** colour parser in the TUI: `[theme.colors]` in
+/// `config.toml`, every `fg=`/`bg=`/`border_fg=` in a Lua widget, and
+/// `kn9t.theme` all go through it. A second copy is how `lightgreen` came to
+/// work in one place and silently resolve to the default in the other.
+///
+/// Accepted forms:
+/// - `#rrggbb` and the CSS-style short `#rgb`
+/// - the 16 ANSI names, with `light*` and `bright*` both accepted as spellings
+///   of the same colour, plus `gray`/`grey`
+/// - `0`-`255` for the 256-colour palette, which is what most terminal
+///   colourschemes are actually distributed as
+/// - `reset`/`default`/`none` for "whatever the terminal uses"
+///
+/// Returns `None` on anything else so the caller can report the typo instead of
+/// painting a wrong colour.
+pub fn parse_color(s: &str) -> Option<Color> {
+    let s = s.trim();
+
+    if let Some(hex) = s.strip_prefix('#') {
+        // #rgb is expanded by doubling each nibble, as in CSS: #f00 == #ff0000.
+        let expand = |c: u8| c * 17;
+        match hex.len() {
+            3 => {
+                let d = |i: usize| u8::from_str_radix(&hex[i..i + 1], 16).ok().map(expand);
+                return Some(Color::Rgb(d(0)?, d(1)?, d(2)?));
+            }
+            6 => {
+                let d = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+                return Some(Color::Rgb(d(0)?, d(2)?, d(4)?));
+            }
+            _ => return None,
+        }
+    }
+
+    // Bare number: 256-colour palette index.
+    if let Ok(idx) = s.parse::<u8>() {
+        return Some(Color::Indexed(idx));
+    }
+
+    let lower = s.to_lowercase();
+    // `light` and `bright` are the same 8 colours under two common spellings;
+    // normalising here means a colourscheme written for either works as-is.
+    let name = lower
+        .strip_prefix("bright")
+        .map(|rest| format!("light{rest}"))
+        .unwrap_or(lower);
+
+    match name.as_str() {
+        "reset" | "default" | "none" => Some(Color::Reset),
         "black" => Some(Color::Black),
         "red" => Some(Color::Red),
         "green" => Some(Color::Green),
@@ -197,7 +326,14 @@ fn parse_color(s: &str) -> Option<Color> {
         "cyan" => Some(Color::Cyan),
         "white" => Some(Color::White),
         "gray" | "grey" => Some(Color::Gray),
-        "darkgray" | "darkgrey" => Some(Color::DarkGray),
+        "darkgray" | "darkgrey" | "lightblack" => Some(Color::DarkGray),
+        "lightred" => Some(Color::LightRed),
+        "lightgreen" => Some(Color::LightGreen),
+        "lightyellow" => Some(Color::LightYellow),
+        "lightblue" => Some(Color::LightBlue),
+        "lightmagenta" => Some(Color::LightMagenta),
+        "lightcyan" => Some(Color::LightCyan),
+        "lightwhite" => Some(Color::White),
         _ => None,
     }
 }
@@ -244,9 +380,63 @@ mod tests {
     fn test_parse_color_invalid() {
         assert_eq!(parse_color(""), None);
         assert_eq!(parse_color("invalid"), None);
-        assert_eq!(parse_color("#fff"), None); // too short
-        assert_eq!(parse_color("#fffffff"), None); // too long
+        assert_eq!(parse_color("#fffffff"), None); // wrong length
         assert_eq!(parse_color("#gggggg"), None); // invalid hex
+        assert_eq!(parse_color("#gg"), None); // invalid short hex
+    }
+
+    /// The bright ANSI colours must parse: `default_tui.lua` styles its context
+    /// gauge with `lightgreen`/`lightred`, and while the parser lacked them the
+    /// built-in palette silently fell back to the theme default.
+    #[test]
+    fn parses_bright_colors_under_both_spellings() {
+        assert_eq!(parse_color("lightgreen"), Some(Color::LightGreen));
+        assert_eq!(parse_color("brightgreen"), Some(Color::LightGreen));
+        assert_eq!(parse_color("LightRed"), Some(Color::LightRed));
+        assert_eq!(parse_color("lightblack"), Some(Color::DarkGray));
+    }
+
+    /// A ricer's colourscheme is usually distributed as 256-palette indices or
+    /// short hex, so both are accepted.
+    #[test]
+    fn parses_palette_index_and_short_hex() {
+        assert_eq!(parse_color("33"), Some(Color::Indexed(33)));
+        assert_eq!(parse_color("0"), Some(Color::Indexed(0)));
+        assert_eq!(parse_color("255"), Some(Color::Indexed(255)));
+        assert_eq!(parse_color("256"), None, "out of palette range");
+        // #rgb expands by doubling nibbles, as in CSS.
+        assert_eq!(parse_color("#f00"), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(parse_color("#fff"), Some(Color::Rgb(255, 255, 255)));
+    }
+
+    /// `kn9t.theme` is published to Lua as strings and fed back as widget
+    /// colours, so the round-trip has to be lossless or a ricer's palette
+    /// silently drifts.
+    #[test]
+    fn color_strings_round_trip() {
+        for c in [
+            Color::Red,
+            Color::LightCyan,
+            Color::DarkGray,
+            Color::Rgb(18, 52, 86),
+            Color::Indexed(200),
+            Color::Reset,
+        ] {
+            assert_eq!(parse_color(&color_to_string(c)), Some(c), "{c:?}");
+        }
+    }
+
+    /// Every name in `Theme::NAMES` must be a real slot: the list is what Lua
+    /// reads to discover the palette, so a stale entry would publish a nil.
+    #[test]
+    fn every_theme_name_resolves() {
+        let mut t = Theme::dark();
+        for name in Theme::NAMES {
+            assert!(t.get(name).is_some(), "{name} has no slot");
+            assert!(t.set(name, Color::Magenta), "{name} not settable");
+            assert_eq!(t.get(name), Some(Color::Magenta));
+        }
+        assert!(!t.set("no_such_slot", Color::Red));
     }
 
     #[test]

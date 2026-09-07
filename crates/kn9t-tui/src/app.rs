@@ -29,7 +29,6 @@ use crate::session_manager::{session_matches, SessionManager};
 use crate::slash::{fuzzy_match, SlashState};
 use crate::thinking::ThinkingState;
 use crate::token_tracker::TokenTracker;
-use crate::ui::layout::LayoutState;
 use crate::ui::render::render;
 use crate::which_key::WhichKeyPanel;
 use crate::wire::SseFrame;
@@ -336,7 +335,6 @@ pub struct ToolHitArea {
 pub struct App {
     pub config: Config,
     pub client: Option<Client>,
-    pub layout: LayoutState,
     pub screen: Screen,
 
     // Global attach handle (keeps server alive).
@@ -352,7 +350,7 @@ pub struct App {
     /// Transcript: messages, live_delta, scroll.
     pub transcript: Transcript,
 
-    // Right sidebar tool toggles (UI-local, not owned by any manager).
+    /// Tools available this session, as reported by `GET /tools`.
     pub tools: Vec<ToolEntry>,
 
     // Input.
@@ -423,9 +421,6 @@ pub struct App {
 
     // 96E-23: structured UI directives (session-scoped, transport only until 96E-25).
     pub ui_directives: Vec<(String, String, String, serde_json::Value)>,
-    // 96E-25: plugin-declared pages (rendered as side panel with tab switcher).
-    pub ui_pages: std::collections::HashMap<(String, String), crate::page_state::UiPage>,
-    pub ui_page_selected: Option<(String, String)>,
     // 96E-27: collapsible subagent sub-entries
     pub subagents: Vec<crate::reducer::SubagentEntry>,
     pub attached_subagent: Option<(String, Vec<crate::wire::TranscriptMessage>)>,
@@ -434,23 +429,60 @@ pub struct App {
     keybinds: Keybinds,
     tick_ctl: TickControl,
     term_width: u16,
-    
+
+    /// Rect of the transcript as actually drawn last frame.
+    ///
+    /// Recorded during render (like `scrollbar_area`) so hit-testing follows the
+    /// real geometry — including when a Lua `render_ui()` places it anywhere.
+    pub transcript_area: Option<ratatui::layout::Rect>,
+    /// Width of the input region as actually drawn last frame.
+    ///
+    /// Feeds `input_height_for`, closing the loop between what Lua laid out and
+    /// the row count Rust publishes back as `ctx.input_height`.
+    pub input_width: Option<u16>,
+    /// `(id, rect)` for every `id="..."` widget in last frame's `render_ui()`
+    /// tree, in the same paint order as `collect_clickable_areas` walks the
+    /// tree (base layout, not floating panels — those are recorded separately
+    /// in `lua_panel_areas` since they paint on top and must be hit-tested
+    /// first).
+    pub lua_click_areas: Vec<(String, ratatui::layout::Rect)>,
+    /// Same as `lua_click_areas` but for `kn9t.register_panel` floats, which
+    /// render after (on top of) the base tree and so must be checked first.
+    pub lua_panel_click_areas: Vec<(String, ratatui::layout::Rect)>,
+
+    /// Lua key handlers, refreshed on every config (re)load.
+    pub lua_keymaps: crate::lua::keymap::KeymapRegistry,
+    /// Lua click handlers, keyed by widget `id`. See `lua::click`.
+    pub lua_clicks: crate::lua::click::ClickRegistry,
+    /// Commands registered via `kn9t.register_command`. See `lua::commands`.
+    pub lua_commands: crate::lua::commands::LuaCommandRegistry,
+
     // Render cache for transcript (avoids re-parsing markdown on every frame).
     pub render_cache: crate::render_cache::RenderCache,
+
+    // 96E-41: Lua customization runtime (optional, initialized if config file exists).
+    pub lua_runtime: Option<std::sync::Arc<crate::lua::LuaRuntime>>,
+    // Watcher handle kept alive to continue hot-reload.
+    #[allow(dead_code)]
+    lua_watcher: Option<crate::lua::WatcherHandle>,
+    /// Second watcher, only used when the config is a `tui/` directory
+    /// rather than a single `tui.lua`. Kept alive the same way.
+    #[allow(dead_code)]
+    lua_dir_watcher: Option<crate::lua::WatcherHandle>,
+
+    // 96E-43: Dynamic panel registry for Lua-registered panels.
+    pub lua_panels: crate::lua::panels::PanelRegistry,
+    // 96E-43: Input states for Lua Input widgets (id -> current value).
+    pub lua_input_states: std::collections::HashMap<String, String>,
 }
 
 impl App {
     pub fn new(config: Config, tick_ctl: TickControl) -> Self {
         let keybinds = Keybinds::new(&config.keybinds);
-        let layout = LayoutState {
-            right_enabled: config.right_sidebar,
-            ..Default::default()
-        };
 
         Self {
             config,
             client: None,
-            layout,
             screen: Screen::Welcome,
             attach_handle: None,
             session: SessionManager::new(),
@@ -469,8 +501,6 @@ impl App {
             queued_message: None,
             queued_images: Vec::new(),
             ui_directives: Vec::new(),
-            ui_pages: std::collections::HashMap::new(),
-            ui_page_selected: None,
             subagents: Vec::new(),
             attached_subagent: None,
             streaming: false,
@@ -497,8 +527,144 @@ impl App {
             keybinds,
             tick_ctl,
             term_width: 80,
+            transcript_area: None,
+            input_width: None,
+            lua_click_areas: Vec::new(),
+            lua_panel_click_areas: Vec::new(),
+            lua_keymaps: crate::lua::keymap::KeymapRegistry::new(),
+            lua_clicks: crate::lua::click::ClickRegistry::new(),
+            lua_commands: crate::lua::commands::LuaCommandRegistry::new(),
             render_cache: crate::render_cache::RenderCache::new(),
+            lua_runtime: None,
+            lua_watcher: None,
+            lua_dir_watcher: None,
+            lua_panels: crate::lua::panels::PanelRegistry::new(),
+            lua_input_states: std::collections::HashMap::new(),
         }
+    }
+
+    /// Initialize the Lua runtime and start hot-reload watcher.
+    ///
+    /// Should be called after creating App but before the main loop.
+    pub fn init_lua(&mut self, event_tx: std::sync::mpsc::Sender<Event>) {
+        use std::sync::Arc;
+
+        let Some(config_path) = crate::lua::default_config_path() else {
+            crate::log!("Lua: could not determine config path");
+            return;
+        };
+        let config_dir = crate::lua::default_config_dir();
+
+        // Ship a working UI with zero setup: the built-in Lua below is the
+        // baseline, and the user file (if any) only overrides parts of it.
+        // Nothing is written to disk — see `--export-config`.
+
+        let runtime = match crate::lua::LuaRuntime::new() {
+            Ok(rt) => Arc::new(rt),
+            Err(e) => {
+                crate::log!("Lua: failed to create runtime: {}", e);
+                return;
+            }
+        };
+
+        // Load the built-in UI first: kn9t is a self-contained binary, so the
+        // baseline interface must not depend on any file existing on disk.
+        runtime.load_builtin();
+
+        // Publish the palette and native-view list before the user's config
+        // runs, so it can reference `kn9t.theme.user` at load time.
+        runtime.install_environment(&self.config.theme);
+
+        // Then layer the user's config over it. `~/.kn9t/tui/` (a directory of
+        // numbered files) takes precedence over `~/.kn9t/tui.lua` when it
+        // actually has content — see `ConfigSource::resolve`.
+        match &config_dir {
+            Some(dir) => {
+                runtime.load_config(dir, &config_path);
+            }
+            None => {
+                runtime.load_file(&config_path);
+            }
+        }
+
+        // 96E-43: Process any panels registered during load
+        runtime.process_panels(&mut self.lua_panels);
+
+        // Apply keymaps declared at load time.
+        runtime.drain_keymaps(&mut self.lua_keymaps);
+        // Apply click handlers declared at load time.
+        runtime.drain_clicks(&mut self.lua_clicks);
+        // Apply palette/slash commands declared at load time.
+        runtime.drain_commands(&mut self.lua_commands);
+
+        // Start watcher(s) for hot-reload: the single file always (in case a
+        // user switches to it later), plus the directory when one is in use.
+        let watcher = crate::lua::spawn_watcher(config_path, runtime.clone(), event_tx.clone());
+        if watcher.is_none() {
+            crate::log!("Lua: failed to start config file watcher");
+        }
+        self.lua_watcher = watcher;
+
+        if let Some(dir) = config_dir {
+            self.lua_dir_watcher = crate::lua::spawn_dir_watcher(dir, runtime.clone(), event_tx);
+        }
+
+        self.lua_runtime = Some(runtime);
+
+        crate::log!("Lua: runtime initialized");
+    }
+
+    /// 96E-43: Process Lua panel updates (called on each frame or event).
+    pub fn process_lua_panels(&mut self) {
+        if let Some(ref runtime) = self.lua_runtime {
+            let before = self.lua_panels.len();
+            runtime.process_panels(&mut self.lua_panels);
+            let after = self.lua_panels.len();
+            if before != after {
+                crate::log!(
+                    "Lua panels: {} -> {} (visible: {})",
+                    before,
+                    after,
+                    self.lua_panels.visible().count()
+                );
+            }
+
+            // Same cadence for keymaps, so `kn9t.map` picks up on hot-reload.
+            let applied = runtime.drain_keymaps(&mut self.lua_keymaps);
+            if applied > 0 {
+                crate::log!(
+                    "Lua keymaps: {} applied ({} bound)",
+                    applied,
+                    self.lua_keymaps.len()
+                );
+            }
+
+            // Same cadence for click handlers, so `kn9t.on_click` picks up on
+            // hot-reload without needing a restart.
+            let click_applied = runtime.drain_clicks(&mut self.lua_clicks);
+            if click_applied > 0 {
+                crate::log!(
+                    "Lua click handlers: {} applied ({} bound)",
+                    click_applied,
+                    self.lua_clicks.len()
+                );
+            }
+
+            // Same cadence for palette/slash commands.
+            let cmd_applied = runtime.drain_commands(&mut self.lua_commands);
+            if cmd_applied > 0 {
+                crate::log!(
+                    "Lua commands: {} applied ({} bound)",
+                    cmd_applied,
+                    self.lua_commands.len()
+                );
+            }
+        }
+    }
+
+    /// Get the last Lua error, if any (for status line display).
+    pub fn lua_error(&self) -> Option<String> {
+        self.lua_runtime.as_ref().and_then(|rt| rt.last_error())
     }
 
     /// Connect to server and load session list + models for welcome screen.
@@ -577,8 +743,6 @@ impl App {
         self.queued_message = None;
         self.queued_images.clear();
         self.ui_directives.clear();
-        self.ui_pages.clear();
-        self.ui_page_selected = None;
         self.subagents.clear();
         self.attached_subagent = None;
 
@@ -586,7 +750,7 @@ impl App {
         self.tool_mode = false;
         self.focused_tool = None;
         self.tool_hit_areas.clear();
-        
+
         // Clear render cache (new session = new content).
         self.render_cache.clear();
     }
@@ -643,18 +807,12 @@ impl App {
             self.attached_subagent = None;
             return;
         }
-        // Find subagent's session (if known) else page_id as proxy
+        // Find the subagent's own session id; without it there is nothing to fetch.
         let session_opt = self
             .subagents
             .iter()
             .find(|e| e.call_id == call_id)
-            .and_then(|e| e.session_id.clone())
-            .or_else(|| {
-                self.subagents
-                    .iter()
-                    .find(|e| e.call_id == call_id)
-                    .and_then(|e| e.page_key.as_ref().map(|(_, pid)| pid.clone()))
-            });
+            .and_then(|e| e.session_id.clone());
         if let (Some(client), Some(sess)) = (&self.client, session_opt) {
             // Try GET /session/{id} (transcript fetch)
             if let Ok(detail) = client.get_session(&sess) {
@@ -760,6 +918,26 @@ impl App {
     }
 
     /// Enter a session (from welcome screen or session list).
+    /// Switch to an existing session by id.
+    ///
+    /// Shared by `Overlay::SessionSelect`'s Enter key and `Action::SwitchSession`
+    /// (from `kn9t.action("switch_session", id)`) so a Lua-driven session list
+    /// switches exactly the way the built-in overlay does, not a parallel path
+    /// that could drift from it.
+    pub fn switch_to_session(&mut self, session_id: &str, tx: Sender<Event>) {
+        crate::log!(
+            "SESSION SWITCH: -> {}",
+            &session_id[..8.min(session_id.len())]
+        );
+        self.reset_session_state();
+        if let Err(e) = self.enter_session(session_id, tx) {
+            self.transcript.push(Message::new(
+                "error",
+                format!("Failed to switch session: {}", e),
+            ));
+        }
+    }
+
     pub fn enter_session(
         &mut self,
         session_id: &str,
@@ -892,7 +1070,7 @@ impl App {
         let tx = event_loop.sender();
 
         let mut needs_redraw = true;
-        
+
         loop {
             // Only render when needed (skip redundant redraws on Tick when not streaming)
             if needs_redraw {
@@ -920,7 +1098,7 @@ impl App {
             // Handle event.
             match event {
                 Event::Key(key) => self.handle_key(key, &tx),
-                Event::Mouse(mouse) => self.handle_mouse(mouse),
+                Event::Mouse(mouse) => self.handle_mouse(mouse, &tx),
                 Event::Resize(_, _) => {} // Handled by ratatui
                 Event::Paste(text) => {
                     if text.is_empty() {
@@ -949,10 +1127,12 @@ impl App {
                     if self.spinner_frame % 12 == 0 {
                         self.phrase_idx = self.phrase_idx.wrapping_add(1);
                     }
-                    // Only redraw on tick if streaming.
+                    // 96E-43: Process Lua panel commands (show/hide/toggle/register)
+                    self.process_lua_panels();
+                    // Only redraw on tick if streaming OR if we have visible Lua panels.
                     // With 100ms ticks (10 FPS), we render each frame.
                     // The spinner has 10 frames, so one full cycle takes ~1 second.
-                    needs_redraw = self.streaming;
+                    needs_redraw = self.streaming || !self.lua_panels.is_empty();
                 }
                 Event::SseError(session_id, e) => {
                     // Phase 4 fix: R-TUI-230 — reconnect from last_seq instead of lying.
@@ -993,7 +1173,7 @@ impl App {
             for ev in event_loop.drain() {
                 match ev {
                     Event::Key(key) => self.handle_key(key, &tx),
-                    Event::Mouse(mouse) => self.handle_mouse(mouse),
+                    Event::Mouse(mouse) => self.handle_mouse(mouse, &tx),
                     Event::Resize(_, _) => {}
                     Event::Paste(text) => {
                         if text.is_empty() {
@@ -1118,7 +1298,19 @@ impl App {
                 KeyCode::Enter | KeyCode::Tab => {
                     // Execute selected command.
                     if let Some(cmd) = self.slash.selected_command() {
-                        self.execute_slash_command(cmd.name, tx);
+                        let cmd_name = cmd.name.clone();
+                        if cmd.is_lua {
+                            let lua_id = cmd.lua_id.clone();
+                            let args = self
+                                .input
+                                .trim_start_matches('/')
+                                .trim_start_matches(cmd_name.as_str())
+                                .trim()
+                                .to_string();
+                            self.run_lua_command(&lua_id, &args, tx);
+                        } else {
+                            self.execute_slash_command(&cmd_name, tx);
+                        }
                     }
                     self.slash.deactivate();
                     self.input.clear();
@@ -1232,10 +1424,31 @@ impl App {
             }
         }
 
+        // Lua keymaps get first refusal, so a user binding can override any
+        // built-in action. A handler returning `false` falls through to Rust.
+        if !self.lua_keymaps.is_empty() {
+            if let Some(key_str) = crate::keybind::key_event_to_string(key) {
+                if self.lua_keymaps.has(&key_str) {
+                    let consumed = self
+                        .lua_runtime
+                        .as_ref()
+                        .is_some_and(|rt| rt.dispatch_keymap(&self.lua_keymaps, &key_str));
+                    crate::log!("  -> lua keymap '{}' consumed={}", key_str, consumed);
+
+                    // Run any built-in actions the handler asked for via kn9t.action().
+                    self.run_queued_lua_actions(tx);
+
+                    if consumed {
+                        return;
+                    }
+                }
+            }
+        }
+
         // Match keybind.
         if let Some(action) = self.keybinds.match_key(key) {
             crate::log!("  -> keybind action: {:?}", action);
-            self.execute_action(action, tx);
+            self.execute_action(action, None, tx);
             return;
         }
 
@@ -1268,7 +1481,7 @@ impl App {
 
                 // Activate slash mode if typing "/" at start.
                 if c == '/' && self.input == "/" {
-                    self.slash.activate();
+                    self.slash.activate(&self.lua_commands);
                 }
             }
             KeyCode::Backspace => {
@@ -1394,58 +1607,44 @@ impl App {
                 return;
             }
 
-            match key.code {
-                KeyCode::Esc => {
-                    // On close, append comments to input if any
-                    if viewer.has_comments() {
-                        let comments = viewer.format_comments();
-                        if !self.input.is_empty() && !self.input.ends_with('\n') {
-                            self.input.push('\n');
-                        }
-                        self.input.push_str(&comments);
-                        self.cursor_col = self.input.chars().count();
-                    }
-                    self.diff_viewer = None;
+            // A Lua handler gets first refusal, so `kn9t.map` can rebind the
+            // viewer like any other key. Returning false falls through to the
+            // defaults below.
+            if let Some(key_str) = crate::keybind::key_event_to_string(key) {
+                let consumed = self
+                    .lua_runtime
+                    .clone()
+                    .is_some_and(|rt| rt.dispatch_keymap(&self.lua_keymaps, &key_str));
+                self.run_queued_lua_actions(tx);
+                if consumed {
+                    return;
                 }
-                KeyCode::Char(']') => {
-                    viewer.next_hunk();
-                    viewer.cursor_line = 0;
+            }
+
+            // Built-in defaults, expressed as the same actions Lua can bind.
+            let action = match key.code {
+                KeyCode::Esc => Some(Action::DiffClose),
+                KeyCode::Char(']') => Some(Action::DiffNextHunk),
+                KeyCode::Char('[') => Some(Action::DiffPrevHunk),
+                KeyCode::Char('u') => Some(Action::DiffToggleSplit),
+                KeyCode::Char('f') => Some(Action::DiffToggleFullscreen),
+                KeyCode::Char('j') | KeyCode::Down => Some(Action::DiffCursorDown),
+                KeyCode::Char('k') | KeyCode::Up => Some(Action::DiffCursorUp),
+                KeyCode::Char('c') | KeyCode::Enter => Some(Action::DiffComment),
+                KeyCode::Char('n') => Some(Action::DiffNextFile),
+                KeyCode::Char('p') => Some(Action::DiffPrevFile),
+                KeyCode::Char('b') => Some(Action::DiffToggleTree),
+                _ => None,
+            };
+            if let Some(action) = action {
+                self.execute_action(action, None, tx);
+            } else if let Some(ref mut viewer) = self.diff_viewer {
+                // Paging has no action form: it is a scroll amount, not a command.
+                match key.code {
+                    KeyCode::PageDown => viewer.scroll_down(10),
+                    KeyCode::PageUp => viewer.scroll_up(10),
+                    _ => {}
                 }
-                KeyCode::Char('[') => {
-                    viewer.prev_hunk();
-                    viewer.cursor_line = 0;
-                }
-                KeyCode::Char('u') => {
-                    viewer.toggle_split_mode();
-                }
-                KeyCode::Char('f') => {
-                    viewer.toggle_fullscreen();
-                }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    viewer.cursor_down();
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    viewer.cursor_up();
-                }
-                KeyCode::Char('c') | KeyCode::Enter => {
-                    viewer.start_comment();
-                }
-                KeyCode::Char('n') => {
-                    viewer.next_file();
-                }
-                KeyCode::Char('p') => {
-                    viewer.prev_file();
-                }
-                KeyCode::Char('b') => {
-                    viewer.toggle_file_tree();
-                }
-                KeyCode::PageDown => {
-                    viewer.scroll_down(10);
-                }
-                KeyCode::PageUp => {
-                    viewer.scroll_up(10);
-                }
-                _ => {}
             }
             return;
         }
@@ -1903,17 +2102,7 @@ impl App {
                         } else if let Some(session_idx) = target_idx {
                             if session_idx < self.session.sessions.len() {
                                 let new_session = self.session.sessions[session_idx].id.clone();
-                                crate::log!(
-                                    "SESSION SWITCH: -> {}",
-                                    &new_session[..8.min(new_session.len())]
-                                );
-                                self.reset_session_state();
-                                if let Err(e) = self.enter_session(&new_session, tx.clone()) {
-                                    self.transcript.push(Message::new(
-                                        "error",
-                                        format!("Failed to switch session: {}", e),
-                                    ));
-                                }
+                                self.switch_to_session(&new_session, tx.clone());
                             }
                         }
                     }
@@ -1939,10 +2128,15 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if let Some(cmd) = self.command_palette.selected_command() {
-                        let cmd_id = cmd.id;
+                        let cmd_id = cmd.id.clone();
+                        let is_lua = cmd.is_lua;
                         self.command_palette.close();
                         self.overlay = None;
-                        self.execute_palette_command(cmd_id, tx);
+                        if is_lua {
+                            self.run_lua_command(&cmd_id, "", tx);
+                        } else {
+                            self.execute_palette_command(&cmd_id, tx);
+                        }
                     }
                 }
                 _ => {}
@@ -2030,7 +2224,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char('p') => {
-                    self.command_palette.open();
+                    self.command_palette.open(&self.lua_commands);
                     self.overlay = Some(Overlay::CommandPalette);
                     return;
                 }
@@ -2055,7 +2249,19 @@ impl App {
                 }
                 KeyCode::Enter | KeyCode::Tab => {
                     if let Some(cmd) = self.slash.selected_command() {
-                        self.execute_slash_command(cmd.name, tx);
+                        let cmd_name = cmd.name.clone();
+                        if cmd.is_lua {
+                            let lua_id = cmd.lua_id.clone();
+                            let args = self
+                                .input
+                                .trim_start_matches('/')
+                                .trim_start_matches(cmd_name.as_str())
+                                .trim()
+                                .to_string();
+                            self.run_lua_command(&lua_id, &args, tx);
+                        } else {
+                            self.execute_slash_command(&cmd_name, tx);
+                        }
                     }
                     self.slash.deactivate();
                     self.input.clear();
@@ -2165,7 +2371,7 @@ impl App {
                 // Start slash command.
                 self.input.push('/');
                 self.cursor_col = 1;
-                self.slash.activate();
+                self.slash.activate(&self.lua_commands);
             }
             KeyCode::Char(c) if c == '\x08' || c == '\x7f' => {
                 // Ctrl+Backspace sends ^H (0x08) or DEL (0x7f) - delete word backward.
@@ -2238,7 +2444,47 @@ impl App {
         }
     }
 
-    fn execute_action(&mut self, action: Action, tx: &Sender<Event>) {
+    /// Drain and run every `kn9t.action(...)` call queued by a Lua handler
+    /// (keymap, click, ...) since the last drain.
+    ///
+    /// Factored out because every Lua entry point that can queue an action
+    /// (a keymap handler, a click handler) needs this exact sequence, and it
+    /// used to be copy-pasted at each call site — which is how one of the two
+    /// copies could silently drift from the other.
+    fn run_queued_lua_actions(&mut self, tx: &Sender<Event>) {
+        let queued = self
+            .lua_runtime
+            .as_ref()
+            .map(|rt| rt.drain_lua_actions())
+            .unwrap_or_default();
+        for (action, arg) in queued {
+            crate::log!("  -> lua action: {:?} arg={:?}", action, arg);
+            self.execute_action(action, arg.as_deref(), tx);
+        }
+    }
+
+    /// Run a `kn9t.register_command` handler by its registered id, then run
+    /// any `kn9t.action(...)` it queued — same as a keymap or click handler,
+    /// since a command handler is just another Lua entry point that can want
+    /// to trigger a built-in action (e.g. a `/view diff` handler setting a
+    /// Lua-local `MAIN_VIEW` AND calling `kn9t.action("open_tools")`).
+    fn run_lua_command(&mut self, id: &str, args: &str, tx: &Sender<Event>) {
+        let Some(runtime) = self.lua_runtime.clone() else {
+            return;
+        };
+        let Some(cmd) = self.lua_commands.get(id) else {
+            crate::log!("run_lua_command: unknown id '{}'", id);
+            return;
+        };
+        runtime.run_lua_command(cmd, args);
+        self.run_queued_lua_actions(tx);
+    }
+
+    /// Run a built-in action. `arg` carries the payload for the handful of
+    /// actions that need one (currently just `SwitchSession`); every other
+    /// variant ignores it. Kept as a plain parameter rather than a field on
+    /// `Action` so the enum stays `Copy` — see `keybind::Action::SwitchSession`.
+    fn execute_action(&mut self, action: Action, arg: Option<&str>, tx: &Sender<Event>) {
         match action {
             Action::Quit => self.quit = true,
             Action::Abort => {
@@ -2253,7 +2499,7 @@ impl App {
                 }
             }
             Action::Help => {
-                self.command_palette.open();
+                self.command_palette.open(&self.lua_commands);
                 self.overlay = Some(Overlay::CommandPalette);
             }
             Action::Send => self.send_prompt(),
@@ -2280,9 +2526,7 @@ impl App {
                     self.transcript.scroll_down(10);
                 }
             }
-            Action::ToggleLeft => {
-                // Left sidebar removed - sessions accessed via /session command.
-                // Open session picker instead.
+            Action::SessionPicker => {
                 self.overlay = Some(Overlay::SessionSelect {
                     selected: 0,
                     filter: String::new(),
@@ -2296,6 +2540,13 @@ impl App {
                         "error",
                         format!("Failed to create session: {}", e),
                     ));
+                }
+            }
+            Action::SwitchSession => {
+                if let Some(id) = arg {
+                    self.switch_to_session(id, tx.clone());
+                } else {
+                    crate::log!("switch_session action fired with no id");
                 }
             }
             Action::ToolMode => {
@@ -2364,6 +2615,76 @@ impl App {
             Action::CycleModelPrev => {
                 self.cycle_model_prev();
             }
+
+            // Opens the diff viewer (runs `git diff`, parses it). This is the
+            // action `{type="native", view="diff"}` needs paired with it in a
+            // Lua layout — placing the native view only draws an already-open
+            // viewer, it does not open one.
+            Action::OpenDiff => {
+                self.open_git_diff();
+            }
+
+            // Diff viewer. Each is a no-op with no viewer open, so a Lua config
+            // can bind them unconditionally without guarding on state.
+            Action::DiffNextHunk
+            | Action::DiffPrevHunk
+            | Action::DiffNextFile
+            | Action::DiffPrevFile
+            | Action::DiffCursorDown
+            | Action::DiffCursorUp
+            | Action::DiffToggleSplit
+            | Action::DiffToggleFullscreen
+            | Action::DiffToggleTree
+            | Action::DiffComment => {
+                if let Some(ref mut v) = self.diff_viewer {
+                    match action {
+                        Action::DiffNextHunk => {
+                            v.next_hunk();
+                            v.cursor_line = 0;
+                        }
+                        Action::DiffPrevHunk => {
+                            v.prev_hunk();
+                            v.cursor_line = 0;
+                        }
+                        Action::DiffNextFile => v.next_file(),
+                        Action::DiffPrevFile => v.prev_file(),
+                        Action::DiffCursorDown => v.cursor_down(),
+                        Action::DiffCursorUp => v.cursor_up(),
+                        Action::DiffToggleSplit => v.toggle_split_mode(),
+                        Action::DiffToggleFullscreen => v.toggle_fullscreen(),
+                        Action::DiffToggleTree => v.toggle_file_tree(),
+                        Action::DiffComment => v.start_comment(),
+                        _ => unreachable!("outer match restricts these variants"),
+                    }
+                }
+            }
+            Action::DiffClose => self.close_diff_viewer(),
+
+            // Overlays, so a config can bind them directly instead of only
+            // reaching them through the palette.
+            Action::OpenModels => {
+                self.overlay = Some(Overlay::ModelSelect {
+                    selected: self.model_sel.selected(),
+                    filter: String::new(),
+                });
+            }
+            Action::OpenTools => {
+                self.overlay = Some(Overlay::ToolsManager {
+                    selected: 0,
+                    filter: String::new(),
+                });
+            }
+            Action::OpenPalette => {
+                self.command_palette.open(&self.lua_commands);
+                self.overlay = Some(Overlay::CommandPalette);
+            }
+            Action::RefreshTools => {
+                if let Some(client) = self.client.take() {
+                    self.refresh_tools(&client);
+                    self.client = Some(client);
+                }
+            }
+
             // Search mode actions are handled in handle_search_key, not here.
             Action::CloseSearch
             | Action::NextMatch
@@ -2371,6 +2692,24 @@ impl App {
             | Action::ToggleRegex
             | Action::ToggleCase => {}
             _ => {}
+        }
+    }
+
+    /// Close the diff viewer, carrying any review comments into the input.
+    ///
+    /// Shared by the key path and the `diff_close` action so comments cannot be
+    /// dropped by closing one way rather than the other.
+    fn close_diff_viewer(&mut self) {
+        let Some(viewer) = self.diff_viewer.take() else {
+            return;
+        };
+        if viewer.has_comments() {
+            let comments = viewer.format_comments();
+            if !self.input.is_empty() && !self.input.ends_with('\n') {
+                self.input.push('\n');
+            }
+            self.input.push_str(&comments);
+            self.cursor_col = self.input.chars().count();
         }
     }
 
@@ -2469,7 +2808,7 @@ impl App {
         }
     }
 
-    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent, tx: &Sender<Event>) {
         // Handle diff viewer mouse events first (separate from overlay)
         if let Some(ref mut viewer) = self.diff_viewer {
             if !viewer.commenting {
@@ -2516,7 +2855,7 @@ impl App {
                 if self.handle_scrollbar_click(mouse.column, mouse.row) {
                     return;
                 }
-                self.handle_click(mouse.column, mouse.row);
+                self.handle_click(mouse.column, mouse.row, "left", tx);
             }
             MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
                 // Handle scrollbar drag
@@ -2576,8 +2915,10 @@ impl App {
     fn find_tool_at(&self, x: u16, y: u16) -> Option<String> {
         for hit in &self.tool_hit_areas {
             // Check if mouse is within the card bounds (both X and Y)
-            if y >= hit.content_y_start && y < hit.content_y_end
-                && x >= hit.x_start && x < hit.x_end
+            if y >= hit.content_y_start
+                && y < hit.content_y_end
+                && x >= hit.x_start
+                && x < hit.x_end
             {
                 return Some(hit.call_id.clone());
             }
@@ -2618,31 +2959,55 @@ impl App {
             // Convert to scroll position (inverted: top = max scroll, bottom = 0)
             let max_scroll = total.saturating_sub(visible);
             let new_scroll = ((1.0 - relative_y) * max_scroll as f64).round() as usize;
-            
+
             // Set scroll position directly
             self.transcript.set_scroll(new_scroll.min(max_scroll));
         }
     }
 
-    fn handle_click(&mut self, x: u16, y: u16) {
-        // Right sidebar: tools are now server-driven (GET /tools), not togglable locally.
-        // The previous dead `enabled` toggle (F9) has been removed — clicks here are no-ops
-        // (future: per-tool enable could be a server endpoint, but not a lying local flip).
-        let right_start = self.term_width.saturating_sub(24); // RIGHT_EXPANDED width
-        if x >= right_start {
-            // Sidebar click — refresh tools from server instead of toggling dead state.
-            let session_id = if self.session.state.session_id.is_empty() {
-                None
-            } else {
-                Some(self.session.state.session_id.as_str())
-            };
-            if let Some(entries) = self
-                .client
-                .as_ref()
-                .and_then(|c| c.get_tools(session_id).ok())
-            {
-                self.tools = entries;
+    /// Whether row `y` is outside the transcript as actually drawn last frame.
+    ///
+    /// Returns false when geometry is unknown, so clicks are never wrongly swallowed.
+    fn is_outside_transcript(&self, y: u16) -> bool {
+        self.transcript_area
+            .is_some_and(|r| y < r.y || y >= r.y + r.height)
+    }
+
+    fn handle_click(&mut self, x: u16, y: u16, button: &str, tx: &Sender<Event>) {
+        // Lua gets first refusal, and floating panels before the base layout
+        // (they paint on top, so they should be hit-tested first) — same
+        // "topmost wins, false falls through" contract as `dispatch_keymap`.
+        // Checked before the transcript-only early return below, since a
+        // Lua widget can be placed anywhere on screen (sidebar, header, ...),
+        // not just inside the transcript.
+        if let Some(runtime) = self.lua_runtime.clone() {
+            for (id, rect) in self.lua_panel_click_areas.clone() {
+                if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+                {
+                    let local_x = x - rect.x;
+                    let local_y = y - rect.y;
+                    if runtime.dispatch_click(&self.lua_clicks, &id, local_x, local_y, button) {
+                        self.run_queued_lua_actions(tx);
+                        return;
+                    }
+                }
             }
+            for (id, rect) in self.lua_click_areas.clone() {
+                if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+                {
+                    let local_x = x - rect.x;
+                    let local_y = y - rect.y;
+                    if runtime.dispatch_click(&self.lua_clicks, &id, local_x, local_y, button) {
+                        self.run_queued_lua_actions(tx);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Tool cards live in the transcript: ignore clicks outside it so a Lua
+        // panel placed over the transcript doesn't trigger stale hit areas.
+        if self.is_outside_transcript(y) {
             return;
         }
 
@@ -2778,11 +3143,10 @@ impl App {
             sessions: self.session.sessions.clone(),
             model_sel: self.model_sel.clone(),
             ui_directives: std::mem::take(&mut self.ui_directives),
-            ui_pages: std::mem::take(&mut self.ui_pages),
-            ui_page_selected: self.ui_page_selected.clone(),
             subagents: std::mem::take(&mut self.subagents),
             attached_subagent: self.attached_subagent.clone(),
             tools_need_refresh: false,
+            plugin_lua_pending: Vec::new(),
         };
         crate::reducer::reduce(&mut st, frame);
         // Copy back
@@ -2796,8 +3160,6 @@ impl App {
         self.active_interaction_id = st.active_interaction_id;
         self.overlay = st.overlay;
         self.ui_directives = st.ui_directives;
-        self.ui_pages = st.ui_pages;
-        self.ui_page_selected = st.ui_page_selected;
         self.subagents = st.subagents;
         self.attached_subagent = st.attached_subagent;
         self.session.state.session_id = st.session_id;
@@ -2810,6 +3172,14 @@ impl App {
         }
         if needs_tick_sync || was_streaming != self.streaming {
             self.tick_ctl.set_streaming(self.streaming);
+        }
+
+        // Apply plugin Lua UI operations. Deferred to here because the reducer
+        // is pure over `State` and cannot touch the Lua runtime.
+        if let Some(ref runtime) = self.lua_runtime {
+            for op in st.plugin_lua_pending {
+                runtime.apply_plugin_lua_op(&op);
+            }
         }
 
         // Queuing: if turn just ended (was_streaming && !streaming) and we have a queued message,
@@ -3652,7 +4022,7 @@ impl App {
                 self.overlay = Some(Overlay::WhichKey);
             }
             "palette" => {
-                self.command_palette.open();
+                self.command_palette.open(&self.lua_commands);
                 self.overlay = Some(Overlay::CommandPalette);
             }
             "theme" => {
@@ -3763,18 +4133,6 @@ impl App {
             }
             "diff_viewer" => {
                 self.open_git_diff();
-            }
-            "toggle_sidebar" => {
-                // Hide if visible, show if hidden/collapsed — flips right_enabled.
-                // When showing, ensure Expanded so it isn't stuck in Collapsed/Hidden state.
-                if self.layout.right_enabled
-                    && self.layout.right != crate::ui::layout::Sidebar::Hidden
-                {
-                    self.layout.right_enabled = false;
-                } else {
-                    self.layout.right_enabled = true;
-                    self.layout.right = crate::ui::layout::Sidebar::Expanded;
-                }
             }
 
             // Tools
@@ -3935,5 +4293,78 @@ impl App {
                     .push(Message::new("system", &format!("Failed to run git: {}", e)));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mouse_routing_tests {
+    use super::*;
+    use ratatui::layout::Rect;
+
+    fn app() -> App {
+        App::new(Config::default(), crate::event::TickControl::dummy())
+    }
+
+    #[test]
+    fn clicks_outside_transcript_are_ignored() {
+        let mut a = app();
+        a.transcript_area = Some(Rect::new(0, 0, 80, 10));
+
+        assert!(!a.is_outside_transcript(5), "row inside transcript");
+        assert!(a.is_outside_transcript(15), "row below transcript");
+    }
+
+    #[test]
+    fn unknown_geometry_does_not_block_clicks() {
+        // Before the first frame nothing is recorded; clicks must still work.
+        let a = app();
+        assert!(!a.is_outside_transcript(10));
+    }
+
+    /// `Action::OpenDiff` must actually populate `diff_viewer` — the bug this
+    /// pins: `{type="native", view="diff"}` only ever *draws* an existing
+    /// viewer (see `ui/render.rs`'s "diff" arm), so a Lua config that placed
+    /// the native view and flipped its own MAIN_VIEW state without ever
+    /// reaching this action got a blank pane. `diff` and `open_diff` were
+    /// slash-command-only; no `Action` reached `open_git_diff()` at all.
+    #[test]
+    fn open_diff_action_populates_the_viewer() {
+        let dir = std::env::temp_dir().join(format!(
+            "kn9t_tui_open_diff_test_{}_{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git must be on PATH for this test")
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "test"]);
+        std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-q", "-m", "initial"]);
+        std::fs::write(dir.join("a.txt"), "hello world\n").unwrap();
+
+        let mut a = app();
+        a.session.state.cwd = Some(dir.display().to_string());
+        assert!(a.diff_viewer.is_none(), "starts with no viewer open");
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        a.execute_action(Action::OpenDiff, None, &tx);
+
+        assert!(
+            a.diff_viewer.is_some(),
+            "Action::OpenDiff must populate diff_viewer, not just be a valid action name"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

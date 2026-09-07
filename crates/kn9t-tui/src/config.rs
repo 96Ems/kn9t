@@ -14,7 +14,6 @@ use crate::theme::Theme;
 pub struct Config {
     pub base_url: String,
     pub token: Option<String>,
-    pub right_sidebar: bool,
     pub theme: Theme,
     pub keybinds: HashMap<String, String>,
     pub streaming_phrases: Vec<String>,
@@ -25,7 +24,6 @@ impl Default for Config {
         Self {
             base_url: "http://127.0.0.1:7474".into(),
             token: None,
-            right_sidebar: true,
             theme: Theme::default(),
             keybinds: default_keybinds(),
             streaming_phrases: default_phrases(),
@@ -88,10 +86,6 @@ impl Config {
 
     fn apply_file(&mut self, file: ConfigFile) {
         if let Some(tui) = file.tui {
-            // left_sidebar removed - sessions accessed via /session command
-            if let Some(v) = tui.right_sidebar {
-                self.right_sidebar = v;
-            }
             if let Some(streaming) = tui.streaming {
                 if let Some(phrases) = streaming.phrases {
                     self.streaming_phrases = phrases;
@@ -149,11 +143,13 @@ struct ConfigFile {
     keybinds: Option<HashMap<String, String>>,
 }
 
+/// `[tui]` in config.toml.
+///
+/// Layout and chrome are defined in `tui.lua`, not here: the old
+/// `left_sidebar`/`right_sidebar` flags described a layout Rust no longer owns,
+/// so they were removed rather than left as no-ops.
 #[derive(Debug, Deserialize)]
 struct TuiSection {
-    #[allow(dead_code)]
-    left_sidebar: Option<bool>, // Deprecated: sessions accessed via /session
-    right_sidebar: Option<bool>,
     streaming: Option<StreamingSection>,
 }
 

@@ -19,7 +19,6 @@
 use crate::app::Overlay;
 use crate::message_handler::{Message, ToolCard};
 use crate::model_selector::ModelSelector;
-use crate::page_state::{self, PageKey, UiPage};
 use crate::session_manager::SessionEntry;
 use crate::token_tracker::{TokenCounts, TokenTracker};
 use crate::wire::SseFrame;
@@ -33,7 +32,6 @@ pub struct SubagentEntry {
     pub visibility: String, // silent|progress|full
     pub collapsed: bool,
     pub session_id: Option<String>,
-    pub page_key: Option<PageKey>,
 }
 
 impl SubagentEntry {
@@ -66,16 +64,36 @@ pub struct State {
     pub model_sel: ModelSelector,
     /// 96E-23: structured UI directives received (plugin, target, op, payload) — transport only.
     pub ui_directives: Vec<(String, String, String, serde_json::Value)>,
-    /// 96E-25: plugin-declared pages (plugin, page_id) -> UiPage for rendering.
-    pub ui_pages: std::collections::HashMap<PageKey, UiPage>,
-    /// 96E-25: selected page key for multi-page tab switcher (None = first page).
-    pub ui_page_selected: Option<PageKey>,
     /// 96E-27: collapsible subagent sub-entries nested under spawning tool calls.
     pub subagents: Vec<SubagentEntry>,
     /// 96E-27: attached subagent transcript view (call_id -> transcript preview).
     pub attached_subagent: Option<(String, Vec<crate::wire::TranscriptMessage>)>,
     /// R-PLUG2-110: set by reducer when `PluginDeclared` received; App clears after refresh.
     pub tools_need_refresh: bool,
+    /// Plugin Lua UI operations to apply after reduce.
+    ///
+    /// Queued rather than applied inline because the reducer is pure over
+    /// `State` and has no access to the Lua runtime.
+    pub plugin_lua_pending: Vec<PluginLuaOp>,
+}
+
+/// A plugin's request to change its TUI display.
+///
+/// The plugin ships Lua (`Register`) and pushes data (`SetState`); the TUI owns
+/// the widget vocabulary, so neither the source nor the state is interpreted here.
+#[derive(Debug, Clone)]
+pub enum PluginLuaOp {
+    Register {
+        plugin: String,
+        source: String,
+    },
+    SetState {
+        plugin: String,
+        state: serde_json::Value,
+    },
+    Clear {
+        plugin: String,
+    },
 }
 
 impl State {
@@ -117,11 +135,10 @@ impl Default for State {
             sessions: Vec::new(),
             model_sel: ModelSelector::new(),
             ui_directives: Vec::new(),
-            ui_pages: std::collections::HashMap::new(),
-            ui_page_selected: None,
             subagents: Vec::new(),
             attached_subagent: None,
             tools_need_refresh: false,
+            plugin_lua_pending: Vec::new(),
         }
     }
 }
@@ -237,7 +254,6 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                         visibility: visibility.clone(),
                         collapsed,
                         session_id: None,
-                        page_key: None,
                     });
                 }
             }
@@ -442,50 +458,29 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             // 96E-25: page ops are tunneled through UiDirective with target=page_id and
             // op declare_page/write_placeholder/clear_page. Update structured map.
             match op.as_str() {
-                "declare_page" => {
-                    let layout = payload.get("layout").unwrap_or(&payload);
-                    let _ =
-                        page_state::apply_declare(&mut state.ui_pages, &plugin, &target, layout);
-                    // Auto-select first page if none selected
-                    if state.ui_page_selected.is_none() {
-                        state.ui_page_selected = Some((plugin.clone(), target.clone()));
-                    }
-                    // 96E-27: link page to most recent pending subagent without a page (nested view)
-                    if let Some(entry) = state
-                        .subagents
-                        .iter_mut()
-                        .rev()
-                        .find(|e| e.page_key.is_none())
-                    {
-                        entry.page_key = Some((plugin.clone(), target.clone()));
+                // Plugin ships Lua defining `render(state)`; the TUI owns the
+                // widget vocabulary, so the source is opaque until it is loaded.
+                "register_lua" => {
+                    if let Some(src) = payload.get("source").and_then(|v| v.as_str()) {
+                        state.plugin_lua_pending.push(PluginLuaOp::Register {
+                            plugin: plugin.clone(),
+                            source: src.to_string(),
+                        });
                     }
                 }
-                "write_placeholder" => {
-                    let pid = payload
-                        .get("placeholder_id")
-                        .or_else(|| payload.get("id"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if let Some(val) = payload.get("value").cloned() {
-                        let _ = page_state::apply_write(
-                            &mut state.ui_pages,
-                            &plugin,
-                            &target,
-                            pid,
-                            val,
-                        );
+                // Cheap data update: no source re-sent, no re-registration.
+                "set_state" => {
+                    if let Some(val) = payload.get("state").cloned() {
+                        state.plugin_lua_pending.push(PluginLuaOp::SetState {
+                            plugin: plugin.clone(),
+                            state: val,
+                        });
                     }
                 }
-                "clear_page" => {
-                    let _ = page_state::apply_clear(&mut state.ui_pages, &plugin, &target);
-                    if state
-                        .ui_page_selected
-                        .as_ref()
-                        .map(|k| k.0 == plugin && k.1 == target)
-                        .unwrap_or(false)
-                    {
-                        state.ui_page_selected = state.ui_pages.keys().next().cloned();
-                    }
+                "clear" => {
+                    state.plugin_lua_pending.push(PluginLuaOp::Clear {
+                        plugin: plugin.clone(),
+                    });
                 }
                 _ => {}
             }
@@ -1357,145 +1352,145 @@ mod tests {
         assert_eq!(s.ui_directives[0].3, complex);
     }
 
-    // ── 96E-25 page lifecycle ─────────────────────────────────────────────
+    // -- plugin Lua UI ops -------------------------------------------------
 
+    /// `register_lua` must be queued verbatim: the reducer is pure over State
+    /// and cannot load Lua, so the source has to survive to the apply step.
     #[test]
-    fn page_declare_write_clear_lifecycle() {
+    fn register_lua_is_queued_with_source() {
         let mut s = State::default();
-        // Declare page via UiDirective (target=page_id, op=declare_page)
+        let src = r#"function render(st) return {type="text",content="x"} end"#;
         reduce(
             &mut s,
             SseFrame::UiDirective {
-                plugin: "my-plugin".into(),
-                target: "dash".into(),
-                op: "declare_page".into(),
-                payload: serde_json::json!({"page_id":"dash","layout":[{"placeholder_id":"status","kind":"text","default":"idle"},{"placeholder_id":"prog","kind":"bar","default":0}]}),
+                plugin: "demo".into(),
+                target: "lua".into(),
+                op: "register_lua".into(),
+                payload: serde_json::json!({"source": src}),
             },
         );
-        assert_eq!(s.ui_pages.len(), 1);
-        let key = ("my-plugin".to_string(), "dash".to_string());
-        assert!(s.ui_pages.contains_key(&key));
-        assert_eq!(s.ui_page_selected, Some(key.clone()));
-        // Cheap write: only one placeholder
+        assert_eq!(s.plugin_lua_pending.len(), 1);
+        match &s.plugin_lua_pending[0] {
+            PluginLuaOp::Register { plugin, source } => {
+                assert_eq!(plugin, "demo");
+                assert_eq!(source, src);
+            }
+            other => panic!("expected Register, got {other:?}"),
+        }
+    }
+
+    /// State is opaque JSON: the reducer must not reshape or validate it, since
+    /// only the plugin's own Lua knows what it means.
+    #[test]
+    fn set_state_is_queued_verbatim() {
+        let mut s = State::default();
+        let st = serde_json::json!({"items": [1, 2], "deep": {"ok": true}});
         reduce(
             &mut s,
             SseFrame::UiDirective {
-                plugin: "my-plugin".into(),
-                target: "dash".into(),
-                op: "write_placeholder".into(),
-                payload: serde_json::json!({"page_id":"dash","placeholder_id":"prog","value":55}),
+                plugin: "demo".into(),
+                target: "lua".into(),
+                op: "set_state".into(),
+                payload: serde_json::json!({"state": st}),
             },
         );
-        let page = s.ui_pages.get(&key).unwrap();
-        assert_eq!(
-            page.placeholders.get("prog").unwrap().value,
-            serde_json::json!(55)
-        );
-        // Status must not have changed
-        assert_eq!(
-            page.placeholders.get("status").unwrap().value,
-            serde_json::json!("idle")
-        );
-        // Clear
-        reduce(
-            &mut s,
-            SseFrame::UiDirective {
-                plugin: "my-plugin".into(),
-                target: "dash".into(),
-                op: "clear_page".into(),
-                payload: serde_json::json!({"page_id":"dash"}),
-            },
-        );
-        assert!(s.ui_pages.is_empty());
-        assert!(s.ui_page_selected.is_none());
+        match &s.plugin_lua_pending[0] {
+            PluginLuaOp::SetState { plugin, state } => {
+                assert_eq!(plugin, "demo");
+                assert_eq!(state, &st);
+            }
+            other => panic!("expected SetState, got {other:?}"),
+        }
     }
 
     #[test]
-    fn page_multiple_concurrent_dont_collide() {
+    fn clear_is_queued() {
         let mut s = State::default();
         reduce(
             &mut s,
             SseFrame::UiDirective {
-                plugin: "p1".into(),
-                target: "a".into(),
-                op: "declare_page".into(),
-                payload: serde_json::json!({"page_id":"a","layout":[{"placeholder_id":"x","kind":"text"}]}),
+                plugin: "demo".into(),
+                target: "lua".into(),
+                op: "clear".into(),
+                payload: serde_json::json!({}),
             },
         );
-        reduce(
-            &mut s,
-            SseFrame::UiDirective {
-                plugin: "p2".into(),
-                target: "b".into(),
-                op: "declare_page".into(),
-                payload: serde_json::json!({"page_id":"b","layout":[{"placeholder_id":"y","kind":"number"}]}),
-            },
-        );
-        assert_eq!(s.ui_pages.len(), 2);
-        // Both keys present, no collision despite same placeholder_id name would be different pages
-        assert!(s
-            .ui_pages
-            .contains_key(&("p1".to_string(), "a".to_string())));
-        assert!(s
-            .ui_pages
-            .contains_key(&("p2".to_string(), "b".to_string())));
-        // Write to one does not affect other
-        reduce(
-            &mut s,
-            SseFrame::UiDirective {
-                plugin: "p1".into(),
-                target: "a".into(),
-                op: "write_placeholder".into(),
-                payload: serde_json::json!({"page_id":"a","placeholder_id":"x","value":"hello"}),
-            },
-        );
-        assert_eq!(
-            s.ui_pages
-                .get(&("p2".to_string(), "b".to_string()))
-                .unwrap()
-                .placeholders
-                .get("y")
-                .unwrap()
-                .value,
-            serde_json::json!(0)
-        );
+        match &s.plugin_lua_pending[0] {
+            PluginLuaOp::Clear { plugin } => assert_eq!(plugin, "demo"),
+            other => panic!("expected Clear, got {other:?}"),
+        }
     }
 
+    /// Ops from different plugins must stay separate and ordered, so one
+    /// plugin's update cannot be attributed to another.
     #[test]
-    fn page_write_without_full_rerender_preserves_other_placeholders() {
+    fn ops_from_multiple_plugins_stay_attributed_and_ordered() {
         let mut s = State::default();
-        reduce(
-            &mut s,
-            SseFrame::UiDirective {
-                plugin: "p".into(),
-                target: "pg".into(),
-                op: "declare_page".into(),
-                payload: serde_json::json!({"page_id":"pg","layout":[{"placeholder_id":"t1","kind":"text","default":"a"},{"placeholder_id":"t2","kind":"text","default":"b"}]}),
-            },
-        );
-        let key = ("p".to_string(), "pg".to_string());
-        reduce(
-            &mut s,
-            SseFrame::UiDirective {
-                plugin: "p".into(),
-                target: "pg".into(),
-                op: "write_placeholder".into(),
-                payload: serde_json::json!({"page_id":"pg","placeholder_id":"t1","value":"new_a"}),
-            },
-        );
-        let page = s.ui_pages.get(&key).unwrap();
-        assert_eq!(
-            page.placeholders.get("t1").unwrap().value,
-            serde_json::json!("new_a")
-        );
-        assert_eq!(
-            page.placeholders.get("t2").unwrap().value,
-            serde_json::json!("b"),
-            "other placeholder must not be clobbered by cheap write"
-        );
+        for name in ["a", "b"] {
+            reduce(
+                &mut s,
+                SseFrame::UiDirective {
+                    plugin: name.into(),
+                    target: "lua".into(),
+                    op: "set_state".into(),
+                    payload: serde_json::json!({"state": {"who": name}}),
+                },
+            );
+        }
+        let names: Vec<&str> = s
+            .plugin_lua_pending
+            .iter()
+            .map(|o| match o {
+                PluginLuaOp::SetState { plugin, .. } => plugin.as_str(),
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(names, vec!["a", "b"]);
     }
 
-    // ── 96E-27 subagent collapsible + attach ──────────────────────────────────
+    /// A malformed directive must be dropped, not queued half-built.
+    #[test]
+    fn malformed_ops_are_ignored() {
+        let mut s = State::default();
+        // register_lua without source, set_state without state.
+        reduce(
+            &mut s,
+            SseFrame::UiDirective {
+                plugin: "demo".into(),
+                target: "lua".into(),
+                op: "register_lua".into(),
+                payload: serde_json::json!({}),
+            },
+        );
+        reduce(
+            &mut s,
+            SseFrame::UiDirective {
+                plugin: "demo".into(),
+                target: "lua".into(),
+                op: "set_state".into(),
+                payload: serde_json::json!({}),
+            },
+        );
+        assert!(s.plugin_lua_pending.is_empty());
+    }
+
+    /// The removed placeholder API must not silently queue anything.
+    #[test]
+    fn removed_page_ops_are_ignored() {
+        let mut s = State::default();
+        for op in ["declare_page", "write_placeholder", "clear_page"] {
+            reduce(
+                &mut s,
+                SseFrame::UiDirective {
+                    plugin: "demo".into(),
+                    target: "pg".into(),
+                    op: op.into(),
+                    payload: serde_json::json!({"layout": []}),
+                },
+            );
+        }
+        assert!(s.plugin_lua_pending.is_empty());
+    }
 
     fn spawn_call_msg(seq: u64, call_id: &str, visibility: &str) -> SseFrame {
         SseFrame::MessageAppended {
@@ -1522,11 +1517,12 @@ mod tests {
         assert_eq!(e.call_id, "c1");
         assert_eq!(e.visibility, "progress");
         assert!(e.collapsed, "progress should be collapsed by default");
-        // Must be rendered as sub-entry, not a separate panel — check subagents vector is the source for transcript rendering
-        assert_eq!(
-            s.ui_pages.len(),
-            0,
-            "no separate page panel should be created for subagent's collapsed view"
+        // Rendered as a sub-entry of the spawning tool call. Spawning a subagent
+        // must not register any plugin UI of its own; a subagent plugin that
+        // wants a display ships its own Lua like any other plugin.
+        assert!(
+            s.plugin_lua_pending.is_empty(),
+            "spawning a subagent must not create a plugin UI"
         );
     }
 

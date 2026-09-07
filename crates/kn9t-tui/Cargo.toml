@@ -20,6 +20,10 @@ base64        = "0.22"   # Base64 encoding for image data URIs
 regex = "1.13.1"
 unicode-segmentation = "1.13"  # Word/grapheme boundaries for CJK/emoji-aware navigation
 
+# 96E-41: Lua customization — in-process embedding for per-frame UI scripting
+mlua          = { version = "0.10", features = ["lua54", "vendored", "send"] }
+notify        = "8"  # File watcher for hot-reload
+
 [[bin]]
 name = "kn9t-tui"
 path = "src/main.rs"

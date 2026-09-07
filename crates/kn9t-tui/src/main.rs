@@ -13,7 +13,75 @@ use kn9t_tui::app::App;
 use kn9t_tui::config::Config;
 use kn9t_tui::event::{spawn_input_thread, spawn_tick_thread, EventLoop};
 
+/// Handle CLI flags that exit without starting the TUI.
+///
+/// Returns `Some(exit_code)` when the process should stop here.
+fn handle_cli_args() -> Option<i32> {
+    use kn9t_tui::lua::default_config::{export_config, ExportOutcome, DEFAULT_TUI_LUA};
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let has = |name: &str| args.iter().any(|a| a == name);
+
+    if has("-h") || has("--help") {
+        println!(
+            "kn9t-tui — terminal UI for kn9t\n\
+             \n\
+             USAGE:\n\
+             \x20   kn9t-tui [OPTIONS]\n\
+             \n\
+             OPTIONS:\n\
+             \x20   -h, --help           Show this help\n\
+             \x20   --print-config       Print the built-in tui.lua to stdout\n\
+             \x20   --export-config      Write the built-in tui.lua to ~/.kn9t/tui.lua\n\
+             \x20   --force              Allow --export-config to overwrite\n\
+             \n\
+             The UI is defined in Lua and embedded in this binary, so no files\n\
+             are required. To customise it, run --export-config and edit the\n\
+             result; changes hot-reload. Anything you leave out falls back to\n\
+             the built-in defaults."
+        );
+        return Some(0);
+    }
+
+    if has("--print-config") {
+        print!("{DEFAULT_TUI_LUA}");
+        return Some(0);
+    }
+
+    if has("--export-config") {
+        let Some(path) = kn9t_tui::lua::default_config_path() else {
+            eprintln!("could not determine config path (no HOME/USERPROFILE)");
+            return Some(1);
+        };
+        return match export_config(&path, has("--force")) {
+            ExportOutcome::Written => {
+                println!("Wrote {}", path.display());
+                println!("Edit it and kn9t-tui will hot-reload the changes.");
+                Some(0)
+            }
+            ExportOutcome::Exists => {
+                eprintln!(
+                    "{} already exists (use --force to overwrite)",
+                    path.display()
+                );
+                Some(1)
+            }
+            ExportOutcome::Failed(e) => {
+                eprintln!("export failed: {e}");
+                Some(1)
+            }
+        };
+    }
+
+    None
+}
+
 fn main() -> io::Result<()> {
+    // CLI flags are handled before any terminal setup.
+    if let Some(code) = handle_cli_args() {
+        std::process::exit(code);
+    }
+
     // Initialize debug log.
     kn9t_tui::log::init("kn9t-tui.log");
     kn9t_tui::log!("=== kn9t-tui starting ===");
@@ -48,6 +116,9 @@ fn main() -> io::Result<()> {
 
     // Create app.
     let mut app = App::new(config, tick_ctl);
+
+    // 96E-41: Initialize Lua runtime with hot-reload watcher.
+    app.init_lua(event_loop.sender());
 
     // Connect to server and load session list for welcome screen.
     if let Err(e) = app.connect() {
