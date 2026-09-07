@@ -36,6 +36,8 @@ pub struct Theme {
     /// Background of a tool card. A theme slot rather than a constant so a
     /// colourscheme can restyle cards without recompiling.
     pub tool_card_bg: Color,
+    /// Background for user messages to distinguish them visually.
+    pub user_msg_bg: Color,
 }
 
 impl Default for Theme {
@@ -71,6 +73,7 @@ impl Theme {
             input_key: Color::Yellow,
             input_value: Color::White,
             tool_card_bg: Color::Rgb(30, 33, 39),
+            user_msg_bg: Color::Rgb(20, 35, 45), // Subtle teal background for user messages
         }
     }
 
@@ -98,6 +101,7 @@ impl Theme {
             tool_focus_border: Color::Blue,
             input_key: Color::Rgb(180, 100, 0),
             input_value: Color::Black,
+            user_msg_bg: Color::Rgb(220, 235, 245), // Subtle light blue background for user messages
             tool_card_bg: Color::Rgb(240, 242, 246),
         }
     }
@@ -186,6 +190,7 @@ impl Theme {
             "input_key" => &mut self.input_key,
             "input_value" => &mut self.input_value,
             "tool_card_bg" => &mut self.tool_card_bg,
+            "user_msg_bg" => &mut self.user_msg_bg,
             _ => return None,
         })
     }
@@ -216,6 +221,7 @@ impl Theme {
         "input_key",
         "input_value",
         "tool_card_bg",
+        "user_msg_bg",
     ];
 
     /// Read a colour slot by name.

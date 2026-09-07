@@ -742,9 +742,18 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         };
 
         // Add role line.
+        let role_display = match msg.role.as_str() {
+            "assistant" => "kn9t".to_string(),
+            _ => msg.role.clone(),
+        };
+        let role_line_style = if msg.role == "user" {
+            role_style.bg(theme.user_msg_bg)
+        } else {
+            role_style
+        };
         lines.push(Line::from(Span::styled(
-            format!("{}{}", prefix, msg.role),
-            role_style,
+            format!("{}{}", prefix, role_display),
+            role_line_style,
         )));
 
         // Content lines — use markdown renderer for assistant, plain for user.
@@ -812,7 +821,11 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         } else {
             // Image markers [img1] etc are already inline in the text.
             // Apply search highlighting if search is active.
-            let base_style = Style::default().fg(theme.fg);
+            let base_style = if msg.role == "user" {
+                Style::default().fg(theme.fg).bg(theme.user_msg_bg)
+            } else {
+                Style::default().fg(theme.fg)
+            };
             for content_line in msg.content.lines() {
                 for wrapped in wrap_text(content_line, inner_w.saturating_sub(2)) {
                     let line_spans = if let Some(ref search) = app.search_state {
