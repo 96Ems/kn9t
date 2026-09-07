@@ -67,21 +67,23 @@ function render_status()
     put("  ", nil)
     local focused = (kn9t.state and kn9t.state.focused_plugin) or ""
     if focused ~= "" then
-        -- Plugin focused: show plugin controls
-        put("j/k", C.accent)
-        put(":nav ", C.dim)
-        put("d", C.accent)
-        put(":diff ", C.dim)
+        -- Plugin focused: generic hint only, plugin shows its own help
         put("Esc", C.accent)
-        put(":release", C.dim)
+        put(":release ", C.dim)
+        put("(", C.dim)
+        put(focused, C.value)
+        put(")", C.dim)
     else
         -- Normal mode: show global controls
         put("C-p", C.accent)
         put(":cmd ", C.dim)
         put("F1/F2", C.accent)
         put(":side ", C.dim)
-        put("F10", C.accent)
-        put(":git", C.dim)
+        local plugin_count = #((kn9t.state and kn9t.state.plugin_views) or {})
+        if plugin_count > 0 then
+            put("F10", C.accent)
+            put(":plugin", C.dim)
+        end
     end
 
     return seg

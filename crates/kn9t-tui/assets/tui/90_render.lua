@@ -27,7 +27,8 @@ local function plugin_views_in(zone)
                 end
                 local box_title
                 if is_focused then
-                    box_title = " " .. title .. " [Esc] release [d] diff [j/k] nav "
+                    -- Plugin shows its own help bar; just show how to release
+                    box_title = " " .. title .. " [Esc] release "
                 else
                     box_title = " [F10] " .. title .. " "
                 end
