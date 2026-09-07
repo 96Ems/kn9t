@@ -422,7 +422,7 @@ Final fields vary by call type — see §2.6.
 
 Payload:
 ```json
-{ "tool": "bash", "args": { "cmd": "ls" }, "cwd": "/home/user" }
+{ "session_id": "01ABC...", "tool": "bash", "args": { "cmd": "ls" }, "cwd": "/home/user" }
 ```
 Reply (`result` or `done`):
 ```json
@@ -437,7 +437,7 @@ Reply (`result` or `done`):
 
 Payload:
 ```json
-{ "tool": "bash", "args": { "cmd": "ls" }, "result": [ {"type":"text","text":"..."} ] }
+{ "session_id": "01ABC...", "tool": "bash", "args": { "cmd": "ls" }, "cwd": "/home/user", "result": [ {"type":"text","text":"..."} ] }
 ```
 Reply:
 ```json
@@ -492,8 +492,10 @@ Reply:
 
 **`get_steering`** / **`get_followup`**
 
-Payload: `null`
-
+Payload:
+```json
+{ "session_id": "01ABC...", "cwd": "/home/user/project" }
+```
 Reply:
 ```json
 { "messages": [] }

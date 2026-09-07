@@ -9,6 +9,235 @@ pointer current.
 
 ---
 
+## Session -- 2026-09-07 -- TUI: make the Lua API real, delete the pre-Lua chrome
+
+**Next session starts here:** the overlays (`render_model_select`, `render_session_select`,
+`render_tools_manager`, `render_command_palette`, ~1700 lines) and the tool-card *body*
+(`render_tool_*`, ~700 lines) are still Rust-only. The widget vocabulary can now express
+them (spans, list scroll/offset, float, padding, gauge, theme access), so the port is
+mechanical -- but `render_ui` snapshot tests should land first. `Approval`/`Interaction`
+stay Rust deliberately: they are the `POST /approve` / `POST /ui-respond` contract paths,
+and a Lua bug must not be able to swallow a denial.
+
+### What was asked
+
+Maximum modularity: end users must be able to tune and rice the TUI from `tui.lua`
+without recompiling. The review found the opposite of a customisation surface -- a
+documented API that largely did not exist.
+
+### Three documented APIs were dead
+
+Verified by reading, then each pinned by a test that fails when re-broken:
+
+1. **`render_status()` was never called.** `call_status_bar()` had zero callers outside its
+   own unit test; `render_native_view` went straight to a hardcoded `format!`. The built-in
+   config was building 60 lines of coloured status segments every frame and discarding them.
+   Now `render_status` owns the line, with the Rust version as fallback for a config that
+   defines no hook. Segments moved to the widget `TextSpan` type, so a status segment
+   supports every style a `text` node does instead of colour-only.
+2. **`kn9t.get_messages` / `kn9t.get_tools` did not exist at runtime.** `install_lazy_accessors`
+   was only ever called by its own tests, while the header of `default_tui.lua` documented
+   both. Calling them raised `attempt to call a nil value` -> `UiOutcome::Failed` -> red error
+   shell. Fixed with a `LazyStore` behind an `RwLock` plus a cheap version fingerprint
+   (message/tool counts + tail length): the store rebuilds only when the transcript changed,
+   so this could be wired into the render path without reintroducing the ~3.5 ms/frame
+   deep-copy that `StateSnapshot` exists to avoid. Pinned by
+   `store_rebuilds_only_when_version_changes`.
+3. **`kn9t.http` was an inert memory leak.** `set_http_config` was never called (so every
+   request answered "http not configured") and `drain_http_requests` was never called (so
+   `_kn9t_http_pending` grew without bound). Its whitelist named `POST /abort`, which is not
+   an endpoint -- `API.md` has `POST /session/{id}/abort`. **Deleted** (322 lines) in favour
+   of `kn9t.action(...)`, which already worked: Rust performs the I/O, Lua expresses intent.
+   That also removes an exfiltration surface from a file people copy from each other.
+
+### `lightgreen` never parsed
+
+`lua/widgets.rs` carried a second, older `parse_color` that knew ten names and `#rrggbb`.
+`default_tui.lua` styles its context gauge with `lightgreen`/`lightred`, so those resolved
+to `None` and fell back to the theme default -- the warn/danger signal was silently absent.
+There is now one parser (`theme::parse_color`) shared by `[theme.colors]`, every widget
+`fg=`/`bg=`/`border_fg=`, and `kn9t.theme`. It gained the 16 ANSI names (`light*` and
+`bright*` as synonyms), `#rgb`, 256-palette indices, and `reset`. A pre-existing test
+asserted `#fff` was invalid; that was a deliberate widening, so the test now asserts the
+new contract rather than being deleted.
+
+### The sidebar was worse than dead code
+
+`ui/layout.rs` hardcoded `RIGHT_EXPANDED = 24` while `default_tui.lua` uses 34, and
+`input_height_for` subtracted that phantom 24 columns before wrapping -- so
+`ctx.input_height`, the number Lua is told to size its input box with, was **wrong**
+whenever the sidebar differed or was hidden (F5). Now the input's real width is recorded
+during render and fed back, closing the loop. Removed with it: `Sidebar`, `LayoutState`,
+`App::layout`, `App::sidebar_area` (reset every frame and never re-recorded, so
+`is_sidebar_click` was permanently false and the click-to-refresh-tools path was dead),
+`Config::right_sidebar`, `TuiSection::left_sidebar`, `Action::ToggleRight` (no arm in
+`execute_action` -- `kn9t.action("toggle_right")` validated and then did nothing, and a
+test asserted that), and the palette's "Toggle Sidebar" (mutated dead state).
+`Action::ToggleLeft` opened the session picker, so it is now `SessionPicker`, with
+`toggle_left`/`toggle_right` kept as aliases rather than dropping users' bindings.
+
+### What Lua can now do
+
+- **Widgets:** `spans` (mixed colours on one line -- the reason the status bar had to be
+  Rust), `gauge`, `float` (popups inside `render_ui`, no second placement mechanism),
+  `spacer`, `padding`, `border` styles + `border_fg`, `align`/`title_align`, list
+  `offset`/`selected_fg`, and `math`/`linkify` text options -- which is also what finally
+  wires up `latex.rs` and `hyperlinks.rs`, 809 lines marked DONE in the docs while
+  referenced from nowhere.
+- **`kn9t.theme`** publishes the configured palette as strings that round-trip back as
+  widget colours, so a config says `fg = kn9t.theme.user` instead of fighting the theme with
+  hardcoded hex. `tool_card_bg` became a theme slot rather than a `const`.
+- **`kn9t.native_views`** lets a config discover what this binary can place, so it can
+  degrade instead of leaving a hole.
+- **`tool_mode(name)`** picks a tool card's renderer. This was a hardcoded `match` on tool
+  name, so a plugin's tool could never choose how it displayed; the built-in mapping now
+  lives in Lua.
+- **`/diff` is placeable and rebindable:** `{type="native", view="diff"}`, plus 11 diff
+  actions. Its ten hardcoded keys now route through a Lua-first dispatch with the historical
+  bindings as defaults.
+
+### `ctx_window` (TRACKING B3)
+
+`GET /models` always returned it; `wire.rs::ModelInfo` dropped it, which is why the gauge
+hardcoded 200k and read wrong on every other model. Carried through to
+`kn9t.context.ctx_window`, left nil (not zero) when unreported so Lua can tell "no data"
+from "empty".
+
+### The test that should have existed
+
+`tests/lua_api_contract.rs` (10 tests): every symbol the built-in config's header documents
+must be non-nil and callable in a booted runtime, the built-in must place
+transcript/input/status, its colours must resolve, and its status bar must produce output.
+Verified by sabotage -- reverting each fix makes the matching test fail. This one file would
+have caught all three dead APIs and the colour bug on the day they landed. `tests/` held a
+single test (`tui_no_kn9t_deps`) before this.
+
+**One correction to my own work:** a comment claimed the sandbox reset "drops every global",
+justifying the accessor reinstall in `reload()`. Sabotage showed the reload test passing
+anyway: `apply_sandbox` reuses the `Lua` state and never clears `kn9t`, so globals do
+survive. The reinstall stays (idempotent, two closures, and makes the API independent of
+sandbox internals) but the comment now says what is actually true.
+
+Verified: `cargo test -p kn9t-tui` = 274 lib + 10 contract + 9 plugin_lua_ui + 1 acceptance,
+all passing under `RUSTFLAGS=-D warnings`; `cargo fmt --check` clean;
+`scripts/fix_mojibake.py --check` clean (it flagged pre-existing damage on `lua/mod.rs:1,11`,
+now repaired).
+
+---
+
+## Session — 2026-09-06 — Config hot-reload (R-SRV-CFG-100/110) + a ctx_window accounting bug found
+
+**Next session starts here:** `ctx_window` is never reconciled with the context figure the
+TUI shows, and the compaction threshold is computed from a `bytes/4` estimate that
+systematically under-reads. See "Discovered bugs" below — B2 is the important one.
+
+### What was asked
+
+Make the Opus-5 model on the `nxp-bedrock` gateway use a 1M context, then make
+`config.toml` hot-reloadable (endpoint + file watcher) so such edits need no restart.
+
+### The config edit
+
+`~/.kn9t/config.toml` (user file, not in repo) gained a `[[model]]` block for
+`nxp-bedrock:us.anthropic.claude-opus-5` with `ctx = 1000000`. Needed because that
+gateway's `/v1/models` returns no `context_window` field, so `fetch_openai_models`
+(`config.rs:987`) falls back to a flat `128_000` for all 28 discovered models. A config
+`[[model]]` overrides a discovered one on `(provider, id)` (`config.rs:629`); verified
+resolving to `ctx=1000000 max_out=64000`.
+
+### R-SRV-CFG-100 — `POST /config/reload`
+
+Four `ServerState` fields moved from plain to `RwLock` so they can be swapped:
+`provider`, `providers`, `default_model`, `model_registry`. `tools`/`plugin_hosts` were
+already `Mutex` for the same reason (R-PLUG2-100), so this follows the existing pattern
+rather than inventing one. Read sites take snapshots (`provider_snapshot`,
+`default_model_snapshot`, `models_snapshot`, `find_model`) and never hold a guard across a
+provider call — a reload must not block on a running turn, and a turn must not block a
+reload.
+
+Two hazards the implementation had to handle, both discovered by reading `config::load`
+rather than assuming it was pure:
+
+1. **`config::load` spawns subprocesses.** Every `kind = "plugin"` provider gets a
+   `PluginHost::spawn`. The host was moved straight into `RemoteProvider` and dropped from
+   `ResolvedConfig`, so a reload had no handle to reap the previous generation — one leaked
+   process per reload. Fixed by adding `ResolvedConfig::provider_hosts` and a matching
+   `ServerState::provider_hosts`, with `shutdown()` called on the old generation *after*
+   the swap (so no window exists where a turn resolves a provider whose host is dead).
+2. **`config::load` hits the network.** One blocking `/v1/models` GET per openai provider.
+   Reload therefore costs a round-trip per provider plus a plugin respawn; acceptable for a
+   human-triggered action, and the reason the watcher debounces rather than firing per write.
+
+Scope is deliberately partial and now documented on the method, in `schema/http.json` and
+in `API.md`: `[[plugin]]`, `[policy] mode` and `[server] idle_exit_secs` are **not**
+reloaded (they have their own live paths or are startup-only). Claiming "full reload" would
+have been false.
+
+In-flight turns keep the `Arc<dyn Provider>`/`ModelSpec` they cloned at turn start;
+a reload applies from the next turn. Swapping mid-stream would tear SSE assembly.
+
+`config::pick_default_model` was extracted from `main.rs` so startup and reload share one
+selection rule instead of drifting.
+
+### R-SRV-CFG-110 — file watcher
+
+An mtime poll on an OS thread, **not `notify`**: `notify` is ~5 crates and absent from the
+DESIGN §15 budget, and its backends want an event loop (GI-5 forbids async). Poll is 2 s,
+which also serves as the debounce quiet-period — editors write in bursts
+(truncate-then-write, write-temp-then-rename), so "mtime changed → reload" fires against a
+half-written file.
+
+The decision logic is `watch::Debouncer`, a pure state machine with no clock, no
+filesystem and no `ServerState`, so it is unit-tested directly (5 tests) instead of through
+a live thread with sleeps. A missing file is deliberately *not* a change, so
+delete-then-write reloads once for the write, not for the gap. Any reload error keeps the
+previous config — a syntax error mid-edit must not degrade a running server.
+
+### Discovered bugs
+
+| # | severity | bug |
+|---|---|---|
+| B1 | medium | `crates/kn9t-core/tests/mojibake.rs` (96E-15) only detects the `§` and `—` double-encode forms. Box-drawing `──` mojibake passes it. A green mojibake test is **not** proof a file is clean — this false-clean signal caused a partial encoding repair to be believed correct. |
+| B2 | **high** | `ctx_window` and the context figure the TUI displays are never compared, and the compaction threshold uses neither directly. `plan.rs:94` compacts at `ctx_window * 0.80` against `total_est`, which is `bytes/4` (`project.rs:70`) over stored text. The TUI shows `tokens_in + cache_read` from real provider usage. Result observed live: a session at 162.2k reported tokens does not compact, because `total_est` is still under the 102.4k threshold for a 128k window. `bytes/4` under-reads real BPE, ignores cache-replayed history, and counts non-text tool results as 20. The estimator, not the window, is what governs compaction. |
+| B3 | low | `crates/kn9t-tui/assets/default_tui.lua:33` hardcodes `CONTEXT_WINDOW = 200000` with the comment "kn9t does not expose the real window yet". `GET /models` *does* return `ctx_window`; it is simply not plumbed into the Lua context. So the gauge denominator is model-independent and unrelated to the server's belief. (AGENTS.md §11: extend the response, don't compute client-side.) |
+| B4 | low | No per-family `ctx_window` table exists, though `model_max_output` (`config.rs:1025`) *does* set `max_out` per family (opus 32000 / sonnet 65536 / haiku 8192). Gateways that omit `context_window` therefore get a flat 128k for every model regardless of family. |
+
+B2 is not fixed here: it is a compaction-accounting question (which figure is authoritative,
+and should `UsageRecorded` feed the threshold instead of `est_tokens`?) that touches
+`kn9t-store` and deserves its own decision, not a patch inside a config-reload change
+(AGENTS.md §10).
+
+### Process failures this session, recorded so they are not repeated
+
+- **PowerShell corrupted four source files.** `Set-Content -Encoding UTF8` (PS 5.1) adds a
+  BOM and re-encodes already-UTF-8 text as cp1252→UTF-8, mangling every `—`, `§` and `──`
+  in `kn9t-server/src/main.rs`, `kn9t-server/tests/acceptance.rs`,
+  `kn9t-react/src/exec.rs`, `kn9t-react/tests/acceptance.rs`. A first hand-rolled byte-patch
+  made it worse (fixed only the two forms the mojibake test checks, flattened `DESIGN §12`
+  to `DESIGN 12`, left ~2300 broken sequences). Repaired properly with
+  `scripts/fix_mojibake.py`, which reverses the round-trip per character-run and only
+  applies the fix where the round-trip succeeds — so correct text is provably untouched and
+  the script is idempotent. **Rule added as AGENTS.md §8.2: never write source files with
+  PowerShell.**
+- **A wrong number was asserted repeatedly.** `128k` was offered as the explanation for a
+  `162.2k/200.0k` gauge, when nothing in the display path reads `ctx_window` at all, and a
+  wrong provider (`sg9`) was blamed mid-way. The user's contradicting evidence (passing
+  162k without compacting) was the decisive fact and should have prompted a `GET /models`
+  query at the first objection, not the fifth.
+
+### Verification
+
+`cargo test -p kn9t-server` 96 pass (incl. 3 new `srv::config_reload_*` + 5
+`watch::tests::*`), `-p kn9t-react` 27 pass, `-p kn9t-core -p kn9t-store -p kn9t-plugin`
+green. `xtask --check` clean after regenerating `API.md` + Go/Python stubs.
+`kn9t-tui` still fails to build on unrelated in-progress Lua panel work (separate session);
+the last two mojibake offenders are that session's files.
+
+Also fixed en route: 6 `HookHost::after_tool_call` impls in test code still had the old
+4-parameter signature after the trait gained `cwd: &Path`, which blocked all verification.
+
+---
+
 ## Session — 2026-09-04 — Compactor crash live: "triage reply was not JSON" (96E-17)
 
 Symptôme (logs live, sessions 01M1K1PHWD... et 01M1NVKQ...): compaction en échec répété

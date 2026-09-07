@@ -121,6 +121,17 @@ Seven ADRs written in `docs/adr/`:
 
 **Next:** E2E live compaction (session à ~80 % ctx avec le plugin compactor branché) — puis SDK Rust parity pour le RPC request/reply, puis ADR-0008 spec rewrite (R-CORE-270/R-RCT-100/R-TOOL-070/080/090/095 still SPEC-STALE; `plugins/kn9t-policy.py` fail-open + `allow`-means-`ask` left undone), puis G3 manual verification. Phase 4 + Phase 5 done: `cargo test --workspace` 437/0 (2026-09-02), `check-gi1.sh` OK, `check-schema.sh` OK, G1 green, TUI live breakage fixed (96E-18/19, see CHANGELOG), **96E-17 fail-closed + host_api RPC + TS compactor plugin** (see CHANGELOG), 7 ADRs.
 
+**2026-09-06 — config hot-reload (R-SRV-CFG-100/110):** `POST /config/reload` swaps
+providers/provider_hosts/models/default_model behind `RwLock` snapshots; a 2 s mtime-poll
+watcher (`watch::Debouncer`, pure state machine, 5 unit tests) auto-reloads `config.toml`
+with a debounce so editor write-bursts never reload a half-written file. Scope is partial
+by design: `[[plugin]]`, `[policy] mode`, `[server] idle_exit_secs` are NOT reloaded.
+`kn9t-server` 96 tests green. **Found 4 pre-existing bugs (B1–B4 above); B2 is high
+severity** — compaction is driven by a `bytes/4` estimate, not by real token usage, so a
+session can pass 162k reported tokens on a 128k-window model without ever compacting.
+Also added **AGENTS.md §8.2: never write source files with PowerShell** (it BOM-prefixes
+and cp1252-double-encodes UTF-8) plus `scripts/fix_mojibake.py` to repair the damage.
+
 ---
 
 ## 96E issue register (post-PLAN fixes)
@@ -155,7 +166,7 @@ The P1/96E batch and later live-breakage fixes are tracked here (they are not sp
 | 03 | kn9t-react, kn9t-tools | 25 / 25 | G1 | ☑ (classifier restored in `kn9t-server/src/classify.rs`, 3 classify + `tool::`/`policy::*` green) |
 | 04 | kn9t-store | 18 / 18 | G2 | ☑ |
 | 05 | kn9t-provider-core, -openai | 22 / 22 | R-PCORE/OAI/NBED-900 | ☑ |
-| 06 | kn9t-server | 13 / 13 | R-SRV-900 | ☑ |
+| 06 | kn9t-server | 15 / 15 | R-SRV-900 | ☑ (+R-SRV-CFG-100/110 config hot-reload) |
 | 07 | kn9t-tui | 2 / 27 | G3 | ▣ (most reqs have no test) |
 | 08 | kn9t-plugin | 13 / 13 | R-PLUG-900 | ☑ |
 | 08b | kn9t-plugin-sdk, kn9t-plugin (v2), internal-plugins/kn9t-tools | 12 / 12 | R-PLUG2-900 | ☑ |
@@ -163,6 +174,20 @@ The P1/96E batch and later live-breakage fixes are tracked here (they are not sp
 | 10 | bedrock-native, gemini (v2) | 0 / 8 | R-BEDN/GEM-900 | ☐ |
 
 **v1 release = stages 01–09 gates green.**
+
+---
+
+## Open bugs found 2026-09-06 (config-reload session) — not yet fixed
+
+Found while implementing R-SRV-CFG-100/110. None are regressions from that work; all are
+pre-existing. Narrative + evidence in `CHANGELOG.md` under the 2026-09-06 session.
+
+| # | severity | area | bug | status |
+|---|---|---|---|---|
+| B2 | **high** | kn9t-store | Compaction threshold compares `ctx_window * 0.80` against `total_est` = `bytes/4` (`project.rs:70`), not against real usage. Observed live: session at 162.2k reported tokens on a 128k-window model never compacts, because `total_est` stays under the 102.4k threshold. `bytes/4` under-reads BPE, ignores cache-replayed history, counts non-text tool results as 20. **Decide which figure is authoritative** (`UsageRecorded` vs `est_tokens`) before patching. | ☐ |
+| B3 | low | kn9t-tui | ~~`assets/default_tui.lua` hardcoded `CONTEXT_WINDOW = 200000`.~~ **FIXED 2026-09-07:** `ctx_window`/`max_out` were being dropped by `wire.rs::ModelInfo`; now carried through `ModelEntry` into `kn9t.context.ctx_window`, and the built-in gauge reads it (falling back to 200k only when a provider reports no window). Covered by `lua_api_contract::context_window_is_published_when_known`. | DONE |
+| B4 | low | kn9t-server | No per-family `ctx_window` fallback table, though `model_max_output` (`config.rs:1025`) does exactly that for `max_out` (opus 32000 / sonnet 65536 / haiku 8192). Gateways omitting `context_window` get a flat 128k for every model. | ☐ |
+| B1 | medium | kn9t-core | `tests/mojibake.rs` (96E-15) only detects the `§` and `—` double-encode forms; box-drawing `──` mojibake passes it. A green run is not proof a file is clean. Consider delegating to `scripts/fix_mojibake.py --check`, which is form-agnostic. | ☐ |
 
 ---
 
@@ -344,6 +369,8 @@ All 22 requirements implemented; 25 acceptance tests pass (11 pcore + 14 oai/nbe
 | R-SRV-100 | auto-title best-effort | srv::autotitle | ☑ |
 | R-SRV-110 | cost query | srv::cost_query | ☑ |
 | R-SRV-120 | budget reports both | srv::budget_reports_both | ☑ |
+| R-SRV-CFG-100 | `POST /config/reload` swaps providers+models in place; previous config kept on error | srv::config_reload_keeps_previous_on_bad_config, srv::config_reload_endpoint_routed, srv::config_reload_swaps_ctx_window | ☑ |
+| R-SRV-CFG-110 | config.toml watcher auto-reloads on change, debounced against partial writes | watch::tests::* (5) | ☑ |
 | **R-SRV-900** | **stage gate** | all above | ☑ |
 
 ### Stage 07 — kn9t-tui  (`spec/07-tui.md`)  — ▣ (G3 manual deferred, Phase 4 in progress)

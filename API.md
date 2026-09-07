@@ -486,6 +486,22 @@ Write operations require an **X-Lease** header: the holder token minted by
 
 
 ---
+### `POST /config/reload` — R-SRV-CFG-100: re-read config.toml and swap providers, models and default_model in place. Does NOT reload [[plugin]] entries (use POST /plugin/load), [policy] mode, or [server] idle_exit_secs. Takes effect from the next turn; in-flight turns keep the provider/model they started with. Old provider-plugin subprocesses are reaped. On any error the previous config is kept and 400 is returned.
+
+- **Lease required:** no
+
+**Request body:** none
+
+**Response `200`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `default_model` | string | id of the default model after reload |
+| `models` | u64 | model count after reload |
+| `providers` | u64 | provider count after reload |
+| `reloaded` | bool |  |
+
+
 ### `POST /plugin/{name}/reload` — Hot-reload a plugin by name: cancel in-flight, shutdown, respawn, re-handshake, re-register tools (R-PLUG2-100)
 
 - **Lease required:** no
@@ -648,10 +664,25 @@ All plugin communication is newline-delimited JSON (NdJSON) over stdin/stdout.
 | `chunk` | `id: u64` |  |
 | `done` | `id: u64` |  |
 | `hello` | `capabilities: string[]`, `events: string[]`, `hooks: string[]`, `name: string`, `provider: object`, `tools: object[]` |  |
-| `request` | `id: u64`, `op: string`, `payload: object` | Plugin → host API request (host_api capability). Ops: provider_complete, session_read, tool_execute, session_fork, session_prompt, tool_list. |
+| `request` | `id: u64`, `op: string`, `payload: object` | Plugin → host API request (host_api capability). Ops: provider_complete, session_read, tool_execute, session_fork, session_prompt, tool_list, ui_directive, ui_register_lua, ui_set_state, ui_clear. TUI display is plugin-supplied Lua: send the source once with ui_register_lua {source} (defines render(state) returning a widget tree), then push data with ui_set_state {state} (arbitrary JSON) and tear down with ui_clear. The host does not interpret the Lua or the state; the widget vocabulary belongs to the TUI. |
 | `result` | `id: u64` |  |
 
-### 5.4 `ModelDecl`
+### 5.4 `Content`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `text` | string |  |
+| `type` | string |  |
+
+### 5.5 `Message`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `content` | object[] |  |
+| `role` | string |  |
+| `silent` | bool |  |
+
+### 5.6 `ModelDecl`
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -659,14 +690,21 @@ All plugin communication is newline-delimited JSON (NdJSON) over stdin/stdout.
 | `id` | string |  |
 | `price` | object |  |
 
-### 5.5 `ProviderDecl`
+### 5.7 `ModelRef`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string |  |
+| `provider` | string |  |
+
+### 5.8 `ProviderDecl`
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | string |  |
 | `models` | object[] |  |
 
-### 5.6 `ToolSpec`
+### 5.9 `ToolSpec`
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -676,6 +714,15 @@ All plugin communication is newline-delimited JSON (NdJSON) over stdin/stdout.
 | `name` | string |  |
 | `parallel_safe` | bool |  |
 | `schema` | object |  |
+
+### 5.10 `Usage`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cache_read` | u64 |  |
+| `cache_write` | u64 |  |
+| `input` | u64 |  |
+| `output` | u64 |  |
 
 ### 5.5 Handshake sequence
 

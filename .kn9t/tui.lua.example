@@ -1,0 +1,283 @@
+-- ~/.kn9t/tui.lua — Lua customization for kn9t-tui
+--
+-- This file is hot-reloaded: save it and changes apply immediately,
+-- no restart required. Syntax errors are shown in the status line.
+--
+-- 96E-41 (phase 1): Foundation only. Layout scripting (96E-42),
+-- widgets (96E-43), and plugin bridge (96E-44) are separate phases.
+
+--[[ =====================================================================
+     AVAILABLE GLOBALS (safe, sandboxed)
+     =====================================================================
+     
+     Standard Lua:
+       pairs, ipairs, next, type, tostring, tonumber, select
+       string.*, table.*, math.*
+       pcall, xpcall, error, assert
+       setmetatable, getmetatable, rawget, rawset, rawequal, rawlen
+       print  -- logs to kn9t-tui.log
+       os.time, os.date, os.difftime, os.clock
+       
+     Removed (sandboxed out):
+       io, debug, package, loadfile, dofile
+       os.execute, os.exit, os.getenv, os.remove, os.rename, os.tmpname
+       load() with bytecode or reader function
+       
+     Coming in phase 4 (96E-44):
+       kn9t.http.get(url)   -- scoped to kn9t-server routes only
+       kn9t.http.post(url, body)
+       
+--]]
+
+-- Example: print startup message (visible in kn9t-tui.log)
+print("tui.lua loaded at " .. os.date("%Y-%m-%d %H:%M:%S"))
+
+-- =========================================================================
+-- PHASE 2 (96E-42): Layout customization — AVAILABLE NOW
+-- =========================================================================
+-- Define compute_layout(width, height, state) to customize panel positions.
+-- state contains:
+--   state.right_sidebar: "hidden" | "collapsed" | "expanded"
+--   state.input_height: number (lines)
+--
+-- Must return a table with these rects (all fields required):
+--   center, right, transcript, input, status
+-- Each rect: { x = number, y = number, width = number, height = number }
+--
+-- Example: Default layout (matches Rust implementation)
+--[[
+function compute_layout(width, height, state)
+    -- Right sidebar width based on state
+    local right_w = 24
+    if state.right_sidebar == "collapsed" then
+        right_w = 2
+    elseif state.right_sidebar == "hidden" then
+        right_w = 0
+    end
+    
+    local center_w = width - right_w
+    local input_h = state.input_height or 1
+    local status_h = 1
+    local transcript_h = height - input_h - status_h
+    
+    return {
+        center = { x = 0, y = 0, width = center_w, height = height },
+        right = { x = center_w, y = 0, width = right_w, height = height },
+        transcript = { x = 0, y = 0, width = center_w, height = transcript_h },
+        input = { x = 0, y = transcript_h, width = center_w, height = input_h },
+        status = { x = 0, y = height - 1, width = center_w, height = status_h },
+    }
+end
+--]]
+
+-- Example: Wider right sidebar (40 columns)
+--[[
+function compute_layout(width, height, state)
+    local right_w = 40
+    if state.right_sidebar == "collapsed" then right_w = 4 end
+    if state.right_sidebar == "hidden" then right_w = 0 end
+    
+    local center_w = width - right_w
+    local input_h = state.input_height or 1
+    
+    return {
+        center = { x = 0, y = 0, width = center_w, height = height },
+        right = { x = center_w, y = 0, width = right_w, height = height },
+        transcript = { x = 0, y = 0, width = center_w, height = height - input_h - 1 },
+        input = { x = 0, y = height - input_h - 1, width = center_w, height = input_h },
+        status = { x = 0, y = height - 1, width = center_w, height = 1 },
+    }
+end
+--]]
+
+-- Example: Centered layout with margins
+--[[
+function compute_layout(width, height, state)
+    local margin = 4
+    local center_w = width - (margin * 2)
+    local input_h = state.input_height or 1
+    
+    return {
+        center = { x = margin, y = 0, width = center_w, height = height },
+        right = { x = 0, y = 0, width = 0, height = 0 },  -- Hidden
+        transcript = { x = margin, y = 0, width = center_w, height = height - input_h - 1 },
+        input = { x = margin, y = height - input_h - 1, width = center_w, height = input_h },
+        status = { x = margin, y = height - 1, width = center_w, height = 1 },
+    }
+end
+--]]
+
+-- =========================================================================
+-- PHASE 3 (96E-43): Widget tree + dynamic panels — AVAILABLE NOW
+-- =========================================================================
+-- 
+-- WIDGET TYPES:
+--   text   - Static or dynamic text: { type="text", content="Hello", bold=true }
+--   box    - Container with border:  { type="box", title="Title", border=true, child={...} }
+--   list   - Scrollable list:        { type="list", items={"a", "b"}, selected=1 }
+--   input  - Text input:             { type="input", id="myinput", placeholder="Type here" }
+--   split  - Layout container:       { type="split", direction="horizontal", children={...} }
+--
+-- STYLING (all widgets):
+--   fg="red"       -- Named colors: black, red, green, yellow, blue, magenta, cyan, white, gray
+--   fg="#ff0000"   -- Hex RGB
+--   bold=true
+--   italic=true
+--
+-- PANEL REGISTRATION:
+--   kn9t.register_panel(id, spec)
+--   kn9t.unregister_panel(id)
+--   kn9t.show_panel(id)
+--   kn9t.hide_panel(id)
+--   kn9t.toggle_panel(id)
+--   kn9t.focus_panel(id)
+--
+-- Example: Custom status panel
+--[[
+kn9t.register_panel("my_status", {
+    position = "bottom",  -- "left", "right", "bottom", "floating"
+    height = 3,
+    visible = true,
+    
+    build = function()
+        return {
+            type = "box",
+            title = "Status",
+            border = true,
+            child = {
+                type = "text",
+                content = "Session active | " .. os.date("%H:%M:%S"),
+                fg = "cyan"
+            }
+        }
+    end,
+    
+    on_key = function(key, modifiers)
+        -- Return true if handled, false to pass through
+        if key == "q" then
+            kn9t.hide_panel("my_status")
+            return true
+        end
+        return false
+    end,
+    
+    on_focus = function()
+        print("my_status focused")
+    end,
+    
+    on_blur = function()
+        print("my_status blurred")
+    end
+})
+--]]
+
+-- Example: Split panel with list and text
+--[[
+kn9t.register_panel("files", {
+    position = "left",
+    width = 30,
+    visible = true,
+    
+    build = function()
+        return {
+            type = "split",
+            direction = "vertical",
+            children = {
+                {
+                    type = "box",
+                    title = "Files",
+                    child = {
+                        type = "list",
+                        items = { "main.rs", "lib.rs", "mod.rs" },
+                        selected = 1
+                    },
+                    size = { flex = 1 }
+                },
+                {
+                    type = "text",
+                    content = "3 files",
+                    fg = "gray",
+                    size = { fixed = 1 }
+                }
+            }
+        }
+    end
+})
+--]]
+
+-- =========================================================================
+-- PHASE 4 (96E-44): Plugin UI bridge + scoped HTTP — AVAILABLE NOW
+-- =========================================================================
+--
+-- SCOPED HTTP CLIENT:
+-- Only allowed routes (security boundary):
+--   POST /approve      — approve/deny tool calls
+--   POST /ui-respond   — respond to plugin UI interactions  
+--   POST /abort        — abort current turn
+--   GET  /session      — list sessions (read-only)
+--
+-- Example:
+--[[
+-- Approve a pending tool call
+local id, err = kn9t.http.post("/approve", { tool_use_id = "123", decision = "allow" })
+if err then print("Error: " .. err) end
+
+-- List allowed routes
+local routes = kn9t.http.allowed_routes()
+for i, r in ipairs(routes) do
+    print(r.method .. " " .. r.path)
+end
+--]]
+
+-- PLUGIN UI BRIDGE:
+-- Callbacks for plugin-declared pages (96E-24):
+--   kn9t.plugin.on_page_declared(plugin, page_id, layout)
+--   kn9t.plugin.on_page_updated(plugin, page_id, placeholder_id, value)
+--   kn9t.plugin.on_page_cleared(plugin, page_id)
+--
+-- Example: Render plugin pages as Lua panels
+--[[
+local plugin_pages = {}
+
+kn9t.plugin.on_page_declared = function(plugin, page_id, layout)
+    local panel_id = plugin .. ":" .. page_id
+    plugin_pages[panel_id] = { plugin = plugin, page_id = page_id, placeholders = {} }
+    
+    for i, item in ipairs(layout) do
+        plugin_pages[panel_id].placeholders[item.placeholder_id] = {
+            kind = item.kind,
+            value = item.value or ""
+        }
+    end
+    
+    kn9t.register_panel(panel_id, {
+        position = "right",
+        width = 30,
+        build = function()
+            local lines = {}
+            local page = plugin_pages[panel_id]
+            for ph_id, ph in pairs(page.placeholders) do
+                table.insert(lines, ph_id .. ": " .. tostring(ph.value))
+            end
+            return {
+                type = "box",
+                title = page.plugin .. "/" .. page.page_id,
+                border = true,
+                child = { type = "text", content = table.concat(lines, "\n") }
+            }
+        end
+    })
+end
+
+kn9t.plugin.on_page_updated = function(plugin, page_id, ph_id, value)
+    local panel_id = plugin .. ":" .. page_id
+    if plugin_pages[panel_id] then
+        plugin_pages[panel_id].placeholders[ph_id].value = value
+    end
+end
+
+kn9t.plugin.on_page_cleared = function(plugin, page_id)
+    kn9t.unregister_panel(plugin .. ":" .. page_id)
+    plugin_pages[plugin .. ":" .. page_id] = nil
+end
+--]]

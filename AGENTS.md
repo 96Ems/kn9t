@@ -201,6 +201,50 @@ Notes:
   reading files) are necessary but never sufficient — §6 "implemented but untested is not
   done" applies to the verification method too.
 
+### 8.2 NEVER edit source files with PowerShell — it corrupts UTF-8
+
+**CRITICAL RULE: do not use PowerShell to write, rewrite or patch a source file.** Use the
+`edit`/`write` tools, or a Python script. This is not a style preference; PowerShell 5.1
+silently corrupts every non-ASCII character in the file.
+
+`Set-Content -Encoding UTF8` (and `Out-File`, `>`, `>>`) does two damaging things:
+
+1. **prepends a UTF-8 BOM** (`EF BB BF`), which shows up as `\ufeff` before `//!` and
+   breaks the first doc-comment line, and
+2. **re-encodes text that is already UTF-8** — the bytes are decoded as cp1252 and
+   re-encoded as UTF-8, so every non-ASCII character is mangled ("mojibake").
+
+The repo is full of `—`, `§` and `──` in comments, so the blast radius is every file
+touched. Worked example — em-dash `—` is `E2 80 94`; read as cp1252 those bytes are the
+three characters `â€"`; re-encoded as UTF-8 they become `C3 A2 E2 82 AC E2 80 9D`, eight
+bytes where there were three:
+
+| character | correct bytes | after one PowerShell write |
+|---|---|---|
+| `—` U+2014 | `E2 80 94` | `C3 A2 E2 82 AC E2 80 9D` |
+| `§` U+00A7 | `C2 A7` | `C3 82 C2 A7` |
+| `─` U+2500 | `E2 94 80` | `C3 A2 E2 80 9D C2 80` |
+
+`crates/kn9t-core/tests/mojibake.rs` (96E-15) catches the `§` and `—` forms, but **it does
+not catch every variant** — box-drawing `──` passed it while the file was visibly broken.
+A clean mojibake test is not proof the file is clean.
+
+**PowerShell is fine for reading** (`Select-String`, `Get-Content`, `Get-ChildItem`) and for
+running commands. The prohibition is on *writing source files*.
+
+**If a file is already corrupted**, do not hand-patch bytes — the round-trip is
+mechanical and a partial fix (fixing only the patterns the test checks) leaves hundreds of
+broken sequences and silently degrades prose (`DESIGN §12` → `DESIGN 12`). Run:
+
+```bash
+python scripts/fix_mojibake.py --check <paths>   # report only, exit 1 if repair needed
+python scripts/fix_mojibake.py <paths>           # repair in place
+```
+
+It strips the BOM and reverses the cp1252→UTF-8 round-trip per run of characters, applying
+the fix only where the round-trip succeeds — so correct text (`—`, `§`, `──`, `café`) is
+provably left untouched and the script is idempotent.
+
 ---
 
 ## 9. When you are unsure
@@ -270,6 +314,57 @@ Instead, use **action endpoints** (`POST /session/{id}/rename`, `POST /session/{
 **The product is not released.** Every TUI limitation is feedback for API design. If the TUI
 needs something awkward, fix the API — don't ship the awkwardness.
 
+### 11.1 The TUI is Lua-owned — Rust renders, Lua decides
+
+The entire screen is defined in Lua. Rust provides native views (see
+`widgets::NATIVE_VIEWS`: `transcript`, `input`, `status`, `diff`, `welcome`) and draws them
+where Lua says; **Lua owns layout, content and styling**.
+
+The goal is that a user can rice the TUI entirely from `~/.kn9t/tui.lua`, with **no
+recompile**. When you add a rendering decision, ask where it belongs: *mechanism* (markdown
+parsing, syntax highlighting, scroll maths, diff parsing, the render cache) is Rust;
+*policy* (what is shown, where, in which colour, under which key) is Lua.
+
+* **The default UI is embedded in the binary** — `crates/kn9t-tui/assets/default_tui.lua` via
+  `include_str!` (`src/lua/default_config.rs`). The binary is self-contained: running it writes
+  nothing to disk. `--print-config` / `--export-config [--force]` expose it on request.
+* **Load order is built-in first, then `~/.kn9t/tui.lua` layered on top.** A user file only
+  defines what it overrides; hot-reload re-runs the built-in first, so deleting a user function
+  restores the default rather than leaving a stale definition.
+* **There is no Rust fallback layout.** `UiOutcome` is `Ok | Failed | NotDefined`; a broken
+  config renders `render_lua_error_shell` (red banner naming the error + transcript + input),
+  never the old Rust chrome. Silently falling back to Rust chrome hid Lua errors — do not
+  reintroduce it. When editing `default_tui.lua`, keep `assets/` and your `~/.kn9t/` copy in sync.
+* **A documented Lua symbol must exist at runtime.** `tests/lua_api_contract.rs` asserts that
+  every symbol named in the header of `default_tui.lua` is non-nil and callable in a booted
+  runtime. This test exists because three documented APIs were dead at once: `render_status()`
+  was never called, `kn9t.get_messages`/`kn9t.get_tools` were only installed by their own unit
+  tests, and `kn9t.http` was an inert leaking no-op. **A unit test proving a function works in
+  isolation says nothing about whether it is wired up.** Add to the contract test whenever you
+  add to that header.
+* **One colour parser.** `theme::parse_color` serves `[theme.colors]`, every widget colour, and
+  `kn9t.theme`. A second copy is how `lightgreen` worked in config.toml and silently resolved to
+  the theme default in Lua, killing the context gauge's warn/danger signal with no error.
+* **No second mechanism for a job Lua already does.** Lua reaches the server via
+  `kn9t.action(...)` ? Rust performs the I/O. The `kn9t.http` client was deleted for this:
+  unused mechanisms rot (its whitelist named a nonexistent `/abort`), and a config file people
+  copy from each other is the wrong place for an arbitrary HTTP client. Likewise prefer
+  `{type="float"}` in `render_ui` over growing the parallel panel-placement registry.
+* **An action name that parses must dispatch.** `parse_action` accepting a name with no arm in
+  `execute_action` gives a binding that looks right and does nothing (`toggle_right` did this
+  for months, with a test asserting the broken behaviour).
+* **Geometry flows Lua ? Rust ? Lua.** Never derive a layout number from a Rust-side model of
+  the layout. `input_height_for` used to subtract a hardcoded 24-column sidebar that no longer
+  existed, so the row count published as `ctx.input_height` disagreed with the box Lua drew.
+  Record what was actually rendered (`collect_natives`, `App::input_width`) and feed that back.
+* **Approval and interaction overlays stay in Rust.** They are the `POST /approve` /
+  `POST /ui-respond` contract paths; a Lua bug must not be able to swallow a denial or
+  fabricate an approval. Lua may style them; it may not own the decision or the transport.
+* **Publish state cheaply.** `StateSnapshot::collect` publishes bounded scalars eagerly and puts
+  heavy data behind lazy accessors. Deep-copying the transcript into Lua every frame cost
+  ~3.5 ms/frame; the snapshot is ~0.02 ms (178x). Never rebuild per-frame Lua tables from the
+  full transcript.
+
 ---
 
 ## 12. JSON serialization convention
@@ -311,3 +406,97 @@ Do **not** add a `build.rs` that regenerates on build — it would leak `preserv
 * `.git/hooks/pre-commit` — runs `check-gi1.sh` + `check-schema.sh`; a drifted `wire.rs`/`api.rs` blocks the commit
 
 `cargo build` passes even drifted; only the hook/CI blocks. If `check-schema.sh` fails, run `generate` and commit both schema and regenerated files together.
+
+### 13.1 Read `API.md` before writing code against any API
+
+`API.md` is generated from the schema and **cannot drift from it** (§13). It is the fastest
+correct answer to "what ops/endpoints/payloads exist". Consult it *before* writing a call or a
+test — do not guess a signature and let the compiler correct you. That wastes cycles and
+produces plausible-looking code built on invented APIs.
+
+For Rust-internal signatures (constructors, trait methods, field names) the schema does not
+cover, read the actual definition or an existing caller:
+
+```bash
+# an existing caller is the best template — it already compiles
+Select-String -Path "crates\<crate>\tests\*.rs" -Pattern "<Type>::|\.<method>\("
+git show HEAD:crates/<crate>/tests/<file>.rs   # if the test was replaced
+```
+
+Guessed-then-fixed APIs seen in practice: `ModelRef::new()` (real: struct literal
+`ModelRef { provider, id }`), `store.create_session()` (real: free function
+`kn9t_store::create_session(&store, &sess, cwd, &model)`), `Event::Live(LiveEvent::…)`
+(real: `Event::UiDirective { … }` directly), `Panel::position` as an enum (real: `String`).
+
+**Ops are documented in the schema description, not just in Rust.** Adding a host-API op means
+editing `schema/plugin.json` (the `Request.description` op list) and running `generate` — the
+Rust `match` arm alone leaves `API.md` silently wrong for plugin authors.
+
+---
+
+## 14. Plugin TUI display — plugins ship Lua, not widgets
+
+A plugin that wants to draw in the TUI **sends Lua source**. There is no fixed placeholder
+vocabulary and no plugin-specific Rust in the TUI.
+
+| Op | Payload | Purpose |
+|----|---------|---------|
+| `ui_register_lua` | `{source}` | Lua defining `render(state)` → widget tree. Send once; 256 KB cap. |
+| `ui_set_state` | `{state}` | Arbitrary JSON pushed to `render(state)`. Cheap; send per update. |
+| `ui_clear` | `{}` | Drop the plugin's UI. |
+
+Rules this mechanism exists to enforce:
+
+1. **No per-plugin code in `kn9t-tui`.** If a plugin needs a new visual, it ships Lua — you do
+   not add a `PlaceholderKind` variant or a `match` on plugin name. The old
+   `declare_page`/`write_placeholder` API (fixed `text|number|bar|list` kinds) was removed for
+   exactly this reason.
+2. **The host does not interpret the Lua or the state.** `kn9t-server` validates the envelope
+   and forwards a `UiDirective`; the widget vocabulary belongs to the TUI.
+3. **Plugins propose, the user's config disposes.** A plugin returns a widget tree; it does not
+   choose placement. `~/.kn9t/tui.lua` decides whether and where to draw it, so a plugin cannot
+   seize screen space or hide the transcript.
+4. **Each plugin's Lua runs in its own environment** (`set_environment`), so plugins cannot see
+   or clobber each other — or the user's config. This is **collision avoidance, not a security
+   boundary**: plugins are native executables (`Command::new`, `kn9t-plugin/src/host.rs`) and
+   already hold full OS privileges, so restricting their Lua would protect nothing. Do not
+   argue for sandboxing as a security measure here.
+5. **A broken plugin degrades visibly, never silently.** Load errors, a missing `render`, and
+   runtime errors are all captured and displayed in the plugin's own space; one broken plugin
+   must not blank the frame or block others (`crates/kn9t-tui/src/lua/plugin_ui.rs`).
+
+Implementation: `crates/kn9t-tui/src/lua/plugin_ui.rs` (registry + isolation),
+`crates/kn9t-server/src/host_api.rs` (ops), `crates/kn9t-server/tests/plugin_lua_ui.rs`
+(wire-level contract).
+
+### 14.1 Placement is a layout decision, not a plugin's choice
+
+Lua places a plugin with `{type="plugin", plugin="name"}`. The node carries *only* the name;
+the plugin's `render(state)` supplies the subtree, and the enclosing layout supplies the rect.
+
+The list of available views comes from `kn9t.state.plugin_views` (stable, sorted order), so
+**nothing is hardcoded per plugin** — a newly registered plugin appears without editing
+`tui.lua`. Placement belongs in `render_ui`, not buried in a helper: putting it inside
+`build_sidebar` would silently force every plugin into one column.
+
+A broken or absent plugin still gets its slot and the error is drawn there. Blanking the area
+would look like a layout bug and hide the cause.
+
+Note "sidebar" is now only a **Lua** concept (`build_sidebar` in `default_tui.lua`). Rust's
+native views are `transcript`, `input`, `status` — there is no Rust sidebar.
+
+### 14.2 Reference implementation: `kn9t-ask-user`
+
+`plugins/kn9t-ask-user` is the worked example. It registers its Lua lazily (the session id only
+arrives with the first tool call, not at handshake), then pushes state around each question.
+UI failures are swallowed — the answer matters more than its presentation.
+
+Its Lua is extracted verbatim into a test fixture so it cannot rot:
+
+```bash
+python scripts/extract_ask_user_lua.py   # -> crates/kn9t-tui/tests/ask_user_ui.lua
+cargo test -p kn9t-tui --test plugin_lua_ui
+```
+
+Re-run the extractor after editing `UI_LUA` in the plugin; the suite then exercises the same
+Lua the plugin actually ships, so a syntax error fails CI instead of a user's terminal.
