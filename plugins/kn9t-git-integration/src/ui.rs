@@ -323,25 +323,22 @@ bind("C-s", function()
   V.comments = {}
 end)
 
--- Remaining printable characters, so composing can type them. Skips anything
--- already bound above — those already append via the `bind` wrapper. When not
--- composing these return false, so the letters keep their host meaning.
+-- Remaining printable characters: always consume them when focused to prevent
+-- typing in the user input. When composing a comment, append to V.typing.
 local PRINTABLE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;!?/()<>-_=+*#@'\"`~$%^&|\\"
 for i = 1, #PRINTABLE do
   local ch = string.sub(PRINTABLE, i, i)
   if not BOUND[ch] then
-    bind(ch, function() return false end)
+    bind(ch, function() return true end)  -- Always consume when focused
   end
 end
 
--- Space is sent as "Space" by the TUI, not " ". Bind it separately so typing
--- comments works. The bind wrapper appends " " when V.typing is active.
+-- Space is sent as "Space" by the TUI, not " ". Always consume.
 kn9t.on_key("Space", function()
   if V.typing ~= nil then
     V.typing = V.typing .. " "
-    return true
   end
-  return false
+  return true  -- Always consume
 end)
 
 -- Clicking a file row selects it; clicking a diff row moves the cursor there.
@@ -476,14 +473,14 @@ local function status_view(repo)
   -- Filter status bar
   local filter_spans = {
     { text = " Filters: ", fg = "darkgray" },
-    { text = "[1]", fg = V.show_local and "green" or "darkgray" },
-    { text = "L ", fg = V.show_local and "white" or "darkgray" },
-    { text = "[2]", fg = V.show_remote and "lightred" or "darkgray" },
-    { text = "R ", fg = V.show_remote and "white" or "darkgray" },
-    { text = "[3]", fg = V.show_tags and "cyan" or "darkgray" },
-    { text = "T ", fg = V.show_tags and "white" or "darkgray" },
-    { text = "[4]", fg = V.show_stash and "magenta" or "darkgray" },
-    { text = "S", fg = V.show_stash and "white" or "darkgray" },
+    { text = "[1]", fg = "cyan" },
+    { text = V.show_local and "Local " or "local ", fg = V.show_local and "green" or "darkgray" },
+    { text = "[2]", fg = "cyan" },
+    { text = V.show_remote and "Remote " or "remote ", fg = V.show_remote and "lightred" or "darkgray" },
+    { text = "[3]", fg = "cyan" },
+    { text = V.show_tags and "Tags " or "tags ", fg = V.show_tags and "yellow" or "darkgray" },
+    { text = "[4]", fg = "cyan" },
+    { text = V.show_stash and "Stash" or "stash", fg = V.show_stash and "magenta" or "darkgray" },
   }
   table.insert(out, { type = "text", spans = filter_spans, size = { fixed = 1 }, wrap = false })
   
@@ -567,14 +564,14 @@ local function graph_view(repo)
   
   local header_spans = {
     { text = " Git Graph  ", fg = "cyan", bold = true },
-    { text = "[1]", fg = V.show_local and "green" or "darkgray" },
-    { text = "L ", fg = "darkgray" },
-    { text = "[2]", fg = V.show_remote and "lightred" or "darkgray" },
-    { text = "R ", fg = "darkgray" },
-    { text = "[3]", fg = V.show_tags and "cyan" or "darkgray" },
-    { text = "T ", fg = "darkgray" },
-    { text = "[4]", fg = V.show_stash and "magenta" or "darkgray" },
-    { text = "S", fg = "darkgray" },
+    { text = "[1]", fg = "cyan" },
+    { text = V.show_local and "Local " or "local ", fg = V.show_local and "green" or "darkgray" },
+    { text = "[2]", fg = "cyan" },
+    { text = V.show_remote and "Remote " or "remote ", fg = V.show_remote and "lightred" or "darkgray" },
+    { text = "[3]", fg = "cyan" },
+    { text = V.show_tags and "Tags " or "tags ", fg = V.show_tags and "yellow" or "darkgray" },
+    { text = "[4]", fg = "cyan" },
+    { text = V.show_stash and "Stash" or "stash", fg = V.show_stash and "magenta" or "darkgray" },
   }
   
   local footer_spans = {
@@ -1020,10 +1017,10 @@ diff --git a/src/main.rs b/src/main.rs
         assert_eq!(comments.len().unwrap(), 0);
     }
 
-    /// Letters must only be swallowed while composing, or the panel would break
-    /// every other binding the moment it had focus.
+    /// When focused, all printable keys must be consumed to prevent typing
+    /// in the user input. This is different from unfocused mode.
     #[test]
-    fn printable_keys_fall_through_unless_composing() {
+    fn printable_keys_consumed_when_focused() {
         let lua = lua_with_stubs();
         let kn9t: mlua::Table = lua.globals().get("kn9t").unwrap();
         let keys: mlua::Table = kn9t.get("_keys").unwrap();
@@ -1033,8 +1030,8 @@ diff --git a/src/main.rs b/src/main.rs
         let consumed: mlua::Value = f.call("o").unwrap();
         assert_eq!(
             consumed,
-            mlua::Value::Boolean(false),
-            "not composing: must fall through to the host"
+            mlua::Value::Boolean(true),
+            "focused: must consume to prevent typing in user input"
         );
     }
 
