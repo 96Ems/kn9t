@@ -20,6 +20,10 @@ pub struct FileChange {
 pub struct LogEntry {
     pub sha: String,
     pub subject: String,
+    pub author: String,
+    pub date: String,
+    pub refs: Vec<String>,
+    pub graph: String,
 }
 
 /// A git reference (branch, tag, or remote).
@@ -80,7 +84,13 @@ pub fn collect(cwd: &Path) -> Option<GitState> {
 
     let log_out = run_git(
         cwd,
-        &["log", &format!("-{LOG_LIMIT}"), "--pretty=format:%h\x1f%s"],
+        &[
+            "log",
+            "--all",
+            &format!("-{LOG_LIMIT}"),
+            "--graph",
+            "--pretty=format:%h\x1f%s\x1f%an\x1f%cr\x1f%D",
+        ],
     )
     .unwrap_or_default();
     let recent = parse_log(&log_out);
@@ -215,15 +225,65 @@ fn xy_summary(xy: &str) -> String {
 fn parse_log(out: &str) -> Vec<LogEntry> {
     out.lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(2, '\u{1f}');
+            // Graph lines start with characters like * | / \ before the commit info
+            // Find where the graph ends and commit info begins
+            let (graph, rest) = extract_graph(line);
+            
+            if rest.is_empty() {
+                // Pure graph line (merge connectors)
+                if !graph.is_empty() {
+                    return Some(LogEntry {
+                        sha: String::new(),
+                        subject: String::new(),
+                        author: String::new(),
+                        date: String::new(),
+                        refs: vec![],
+                        graph,
+                    });
+                }
+                return None;
+            }
+            
+            let mut parts = rest.splitn(5, '\u{1f}');
             let sha = parts.next()?.to_string();
             let subject = parts.next().unwrap_or("").to_string();
+            let author = parts.next().unwrap_or("").to_string();
+            let date = parts.next().unwrap_or("").to_string();
+            let refs_str = parts.next().unwrap_or("");
+            
+            let refs: Vec<String> = if refs_str.is_empty() {
+                vec![]
+            } else {
+                refs_str
+                    .split(", ")
+                    .map(|s| s.trim().to_string())
+                    .collect()
+            };
+            
             if sha.is_empty() {
                 return None;
             }
-            Some(LogEntry { sha, subject })
+            
+            Some(LogEntry { sha, subject, author, date, refs, graph })
         })
         .collect()
+}
+
+/// Extract graph characters from the beginning of a log line.
+/// Returns (graph_part, rest_of_line).
+fn extract_graph(line: &str) -> (String, &str) {
+    let graph_chars = ['*', '|', '/', '\\', ' ', '_'];
+    let mut end = 0;
+    
+    for (i, c) in line.char_indices() {
+        if graph_chars.contains(&c) {
+            end = i + c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    
+    (line[..end].to_string(), line[end..].trim_start())
 }
 
 /// Collect all refs (branches, remotes, tags).
@@ -354,27 +414,32 @@ mod tests {
 
     #[test]
     fn parse_log_splits_sha_and_subject() {
-        let out = "abc1234\u{1f}Fix the thing\ndef5678\u{1f}Add another thing\n";
+        let out = "* abc1234\u{1f}Fix the thing\u{1f}dev\u{1f}2h ago\u{1f}HEAD -> main\n* def5678\u{1f}Add another thing\u{1f}dev\u{1f}3h ago\u{1f}\n";
         let entries = parse_log(out);
-        assert_eq!(
-            entries,
-            vec![
-                LogEntry {
-                    sha: "abc1234".to_string(),
-                    subject: "Fix the thing".to_string()
-                },
-                LogEntry {
-                    sha: "def5678".to_string(),
-                    subject: "Add another thing".to_string()
-                },
-            ]
-        );
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].sha, "abc1234");
+        assert_eq!(entries[0].subject, "Fix the thing");
+        assert_eq!(entries[0].author, "dev");
+        assert_eq!(entries[0].refs, vec!["HEAD -> main"]);
+        assert_eq!(entries[0].graph, "* ");
+        assert_eq!(entries[1].sha, "def5678");
+        assert!(entries[1].refs.is_empty());
+    }
+
+    #[test]
+    fn parse_log_with_graph_merges() {
+        let out = "* abc123\u{1f}Merge\u{1f}dev\u{1f}1h ago\u{1f}\n|\\\n| * def456\u{1f}Feature\u{1f}dev\u{1f}2h ago\u{1f}origin/feature\n|/\n* ghi789\u{1f}Base\u{1f}dev\u{1f}3h ago\u{1f}\n";
+        let entries = parse_log(out);
+        // Should have commits and graph-only lines
+        assert!(entries.len() >= 3);
+        assert_eq!(entries[0].sha, "abc123");
+        assert_eq!(entries[0].graph, "* ");
     }
 
     #[test]
     fn parse_log_ignores_blank_lines() {
-        let out = "abc1234\u{1f}One\n\ndef5678\u{1f}Two\n";
-        let entries = parse_log(out);
+        let out = "* abc1234\u{1f}One\u{1f}dev\u{1f}1h ago\u{1f}\n\n* def5678\u{1f}Two\u{1f}dev\u{1f}2h ago\u{1f}\n";
+        let entries: Vec<_> = parse_log(out).into_iter().filter(|e| !e.sha.is_empty()).collect();
         assert_eq!(entries.len(), 2);
     }
 

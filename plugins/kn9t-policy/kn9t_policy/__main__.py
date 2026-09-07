@@ -412,26 +412,22 @@ def run():
     global session_id
     
     load_grants()
+    ui_registered = False
     
     # Handshake
     hello = read_msg()
     if not hello or hello.get("t") != "hello":
         return
     
-    session_id = hello.get("session")
-    log(f"Connected to kn9t {hello.get('kn9t', '?')}, session={session_id}")
+    log(f"Connected to kn9t {hello.get('kn9t', '?')}")
     
     write_msg({
         "t": "hello",
         "name": "kn9t-policy",
         "capabilities": [],
-        "hooks": ["before_tool_call"],
+        "hooks": ["before_tool_call", "get_steering"],
         "tools": [],
     })
-    
-    # Register UI
-    register_ui()
-    send_ui_state()
     
     # Main loop
     while True:
@@ -447,6 +443,18 @@ def run():
         elif t == "hook" and msg.get("hook") == "before_tool_call":
             hook_id = msg.get("id", 0)
             payload = msg.get("payload", {})
+            
+            # Get session_id from hook payload (first time we see it)
+            hook_session = payload.get("session_id")
+            if hook_session and not session_id:
+                session_id = hook_session
+                log(f"Got session_id: {session_id}")
+            
+            # Register UI on first hook (now we have session_id)
+            if session_id and not ui_registered:
+                register_ui()
+                send_ui_state()
+                ui_registered = True
             
             tool = payload.get("tool", "")
             args = payload.get("args", {})

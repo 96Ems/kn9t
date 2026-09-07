@@ -36,6 +36,10 @@ pub fn state_to_json(
             "recent": s.recent.iter().map(|l| serde_json::json!({
                 "sha": l.sha,
                 "subject": l.subject,
+                "author": l.author,
+                "date": l.date,
+                "refs": l.refs,
+                "graph": l.graph,
             })).collect::<Vec<_>>(),
             "refs": s.refs.iter().map(|r| serde_json::json!({
                 "name": r.name,
@@ -89,7 +93,7 @@ fn diff_file_to_json(f: &DiffFile) -> serde_json::Value {
 pub const LUA_SOURCE: &str = r##"
 -- View state. Survives `ui_set_state`, which only replaces repo data.
 V = {
-  mode = "status",   -- "status" | "diff"
+  mode = "status",   -- "status" | "diff" | "graph"
   split = false,     -- side-by-side vs unified, diff mode only
   tree = true,       -- show the file list
   file = 1,          -- 1-based index into state.diff
@@ -98,6 +102,17 @@ V = {
   comments = {},     -- { {path=, line=, text=} }
   typing = nil,      -- in-progress comment text, nil when not composing
   height = 20,       -- last known viewport height, for paging
+  -- Git graph filters
+  show_local = true,
+  show_remote = true,
+  show_tags = false,
+  show_stash = false,
+  -- Graph navigation
+  graph_cursor = 1,
+  graph_scroll = 0,
+  -- Refs panel
+  refs_cursor = 1,
+  show_refs = false,
 }
 
 local LAST = nil  -- most recent state, so handlers can see repo data
@@ -218,9 +233,51 @@ end)
 bind("u", function() V.split = not V.split end)
 bind("b", function() V.tree = not V.tree end)
 bind("d", function()
-  V.mode = (V.mode == "diff") and "status" or "diff"
+  if V.mode == "diff" then
+    V.mode = "status"
+  else
+    V.mode = "diff"
+  end
   V.cursor = 1
   V.scroll = 0
+end)
+
+-- Toggle graph view
+bind("g", function()
+  if V.mode == "graph" then
+    V.mode = "status"
+  else
+    V.mode = "graph"
+    V.graph_cursor = 1
+    V.graph_scroll = 0
+  end
+end)
+
+-- Toggle refs panel
+bind("r", function()
+  V.show_refs = not V.show_refs
+end)
+
+-- Filter toggles (in graph mode)
+bind("1", function()
+  if V.mode == "graph" or V.mode == "status" then
+    V.show_local = not V.show_local
+  end
+end)
+bind("2", function()
+  if V.mode == "graph" or V.mode == "status" then
+    V.show_remote = not V.show_remote
+  end
+end)
+bind("3", function()
+  if V.mode == "graph" or V.mode == "status" then
+    V.show_tags = not V.show_tags
+  end
+end)
+bind("4", function()
+  if V.mode == "graph" or V.mode == "status" then
+    V.show_stash = not V.show_stash
+  end
 end)
 
 -- Comment capture. `c` opens composition; printable keys then accumulate via
@@ -327,45 +384,222 @@ local function line_bg(kind)
   return nil
 end
 
+-- Graph character styling
+local function graph_char_color(ch)
+  if ch == "*" then return "yellow" end
+  if ch == "|" then return "blue" end
+  if ch == "/" or ch == "\\" then return "magenta" end
+  return "darkgray"
+end
+
+-- Render colored graph prefix
+local function graph_spans(graph_str)
+  local spans = {}
+  for i = 1, #graph_str do
+    local ch = string.sub(graph_str, i, i)
+    table.insert(spans, { text = ch, fg = graph_char_color(ch) })
+  end
+  return spans
+end
+
+-- Ref badge color
+local function ref_color(ref_str)
+  if string.find(ref_str, "HEAD") then return "yellow" end
+  if string.find(ref_str, "origin/") then return "lightred" end
+  if string.find(ref_str, "tag:") then return "cyan" end
+  return "green"
+end
+
+-- Refs sidebar
+local function refs_panel(repo)
+  local items = {}
+  for i, r in ipairs(repo.refs or {}) do
+    local dominated = false
+    if r.kind == "local" and not V.show_local then dominated = true end
+    if r.kind == "remote" and not V.show_remote then dominated = true end
+    if r.kind == "tag" and not V.show_tags then dominated = true end
+    if not dominated then
+      local col = "gray"
+      if r.kind == "local" then col = r.is_current and "green" or "white" end
+      if r.kind == "remote" then col = "lightred" end
+      if r.kind == "tag" then col = "cyan" end
+      table.insert(items, { spans = {
+        { text = "  ", fg = col },
+        { text = r.name, fg = col, bold = r.is_current },
+      }})
+    end
+  end
+  if V.show_stash then
+    for _, s in ipairs(repo.stashes or {}) do
+      table.insert(items, { spans = {
+        { text = "  ", fg = "magenta" },
+        { text = s, fg = "magenta" },
+      }})
+    end
+  end
+  return {
+    type = "list",
+    id = "refs",
+    items = items,
+    size = { fixed = 28 },
+  }
+end
+
 local function status_view(repo)
   local out = {}
   local branch = repo.branch or "?"
   local ab = ""
-  if (repo.ahead or 0) > 0 then ab = ab .. " +" .. repo.ahead end
-  if (repo.behind or 0) > 0 then ab = ab .. " -" .. repo.behind end
-  table.insert(out, { type = "text", content = branch .. ab, fg = "cyan", bold = true,
+  if (repo.ahead or 0) > 0 then ab = ab .. " ↑" .. repo.ahead end
+  if (repo.behind or 0) > 0 then ab = ab .. " ↓" .. repo.behind end
+  table.insert(out, { type = "text", content = " " .. branch .. ab, fg = "cyan", bold = true,
                       size = { fixed = 1 }, wrap = false })
 
   local changes = repo.changes or {}
   if #changes == 0 then
-    table.insert(out, { type = "text", content = "(clean)", fg = "darkgray",
+    table.insert(out, { type = "text", content = "  (clean)", fg = "darkgray",
                         size = { fixed = 1 }, wrap = false })
   else
+    table.insert(out, { type = "text", content = string.format("  %d change(s)", #changes), 
+                        fg = "yellow", size = { fixed = 1 }, wrap = false })
     for _, c in ipairs(changes) do
       local col = "yellow"
       if c.status == "?" then col = "green"
-      elseif c.status == "D" then col = "lightred" end
-      table.insert(out, { type = "text", content = c.status .. " " .. c.path, fg = col,
+      elseif c.status == "D" then col = "lightred"
+      elseif c.status == "A" then col = "green" end
+      table.insert(out, { type = "text", content = "  " .. c.status .. " " .. c.path, fg = col,
                           size = { fixed = 1 }, wrap = false })
     end
   end
 
   table.insert(out, { type = "text", content = "", size = { fixed = 1 } })
-  table.insert(out, { type = "text", content = "recent:", fg = "darkgray",
+  
+  -- Filter status bar
+  local filter_spans = {
+    { text = " Filters: ", fg = "darkgray" },
+    { text = "[1]", fg = V.show_local and "green" or "darkgray" },
+    { text = "L ", fg = V.show_local and "white" or "darkgray" },
+    { text = "[2]", fg = V.show_remote and "lightred" or "darkgray" },
+    { text = "R ", fg = V.show_remote and "white" or "darkgray" },
+    { text = "[3]", fg = V.show_tags and "cyan" or "darkgray" },
+    { text = "T ", fg = V.show_tags and "white" or "darkgray" },
+    { text = "[4]", fg = V.show_stash and "magenta" or "darkgray" },
+    { text = "S", fg = V.show_stash and "white" or "darkgray" },
+  }
+  table.insert(out, { type = "text", spans = filter_spans, size = { fixed = 1 }, wrap = false })
+  
+  table.insert(out, { type = "text", content = "", size = { fixed = 1 } })
+  table.insert(out, { type = "text", content = " Recent commits:", fg = "darkgray",
                       size = { fixed = 1 }, wrap = false })
-  for _, l in ipairs(repo.recent or {}) do
-    table.insert(out, { type = "text", content = l.sha .. " " .. l.subject, fg = "gray",
-                        size = { fixed = 1 }, wrap = false })
+  
+  -- Show graph preview (recent commits with graph)
+  for i, l in ipairs(repo.recent or {}) do
+    if i > 8 then break end
+    if l.sha == "" then
+      -- Graph-only line (merge connector)
+      table.insert(out, { type = "text", spans = graph_spans("  " .. l.graph), 
+                          size = { fixed = 1 }, wrap = false })
+    else
+      local spans = { { text = "  ", fg = "darkgray" } }
+      for _, s in ipairs(graph_spans(l.graph)) do table.insert(spans, s) end
+      table.insert(spans, { text = l.sha .. " ", fg = "yellow" })
+      table.insert(spans, { text = l.subject, fg = "white" })
+      for _, ref in ipairs(l.refs or {}) do
+        if ref ~= "" then
+          table.insert(spans, { text = " (" .. ref .. ")", fg = ref_color(ref) })
+        end
+      end
+      table.insert(out, { type = "text", spans = spans, size = { fixed = 1 }, wrap = false })
+    end
   end
 
   -- Help bar at bottom
   table.insert(out, { type = "spacer", size = { flex = 1 } })
   table.insert(out, { type = "text", spans = {
     { text = "[d]", fg = "cyan" }, { text = " diff  ", fg = "darkgray" },
+    { text = "[g]", fg = "cyan" }, { text = " graph  ", fg = "darkgray" },
+    { text = "[r]", fg = "cyan" }, { text = " refs  ", fg = "darkgray" },
     { text = "[Esc]", fg = "cyan" }, { text = " close", fg = "darkgray" },
   }, size = { fixed = 1 }, wrap = false })
 
+  if V.show_refs then
+    return {
+      type = "split", direction = "horizontal",
+      children = {
+        refs_panel(repo),
+        { type = "split", direction = "vertical", children = out },
+      },
+    }
+  end
   return { type = "split", direction = "vertical", children = out }
+end
+
+-- Full graph view
+local function graph_view(repo)
+  local items = {}
+  local recent = repo.recent or {}
+  
+  for i, l in ipairs(recent) do
+    local mark = (i == V.graph_cursor) and ">" or " "
+    
+    if l.sha == "" then
+      local spans = { { text = mark, fg = "yellow" } }
+      for _, s in ipairs(graph_spans(l.graph)) do table.insert(spans, s) end
+      table.insert(items, { spans = spans })
+    else
+      local spans = { { text = mark, fg = "yellow", bold = i == V.graph_cursor } }
+      for _, s in ipairs(graph_spans(l.graph)) do table.insert(spans, s) end
+      table.insert(spans, { text = l.sha, fg = "yellow", bold = true })
+      table.insert(spans, { text = " " })
+      for _, ref in ipairs(l.refs or {}) do
+        if ref ~= "" then
+          table.insert(spans, { text = "[" .. ref .. "] ", fg = ref_color(ref) })
+        end
+      end
+      table.insert(spans, { text = l.subject, fg = "white" })
+      if l.author ~= "" then
+        table.insert(spans, { text = " - " .. l.author .. ", " .. l.date, fg = "darkgray" })
+      end
+      table.insert(items, { spans = spans })
+    end
+  end
+  
+  local graph_list = { type = "list", id = "graph", items = items, offset = V.graph_scroll }
+  
+  local header_spans = {
+    { text = " Git Graph  ", fg = "cyan", bold = true },
+    { text = "[1]", fg = V.show_local and "green" or "darkgray" },
+    { text = "L ", fg = "darkgray" },
+    { text = "[2]", fg = V.show_remote and "lightred" or "darkgray" },
+    { text = "R ", fg = "darkgray" },
+    { text = "[3]", fg = V.show_tags and "cyan" or "darkgray" },
+    { text = "T ", fg = "darkgray" },
+    { text = "[4]", fg = V.show_stash and "magenta" or "darkgray" },
+    { text = "S", fg = "darkgray" },
+  }
+  
+  local footer_spans = {
+    { text = "[j/k]", fg = "cyan" }, { text = " nav  ", fg = "darkgray" },
+    { text = "[g]", fg = "cyan" }, { text = " close  ", fg = "darkgray" },
+    { text = "[d]", fg = "cyan" }, { text = " diff  ", fg = "darkgray" },
+    { text = "[r]", fg = "cyan" }, { text = " refs", fg = "darkgray" },
+  }
+  
+  local children = {
+    { type = "text", spans = header_spans, size = { fixed = 1 }, wrap = false },
+    graph_list,
+    { type = "text", spans = footer_spans, size = { fixed = 1 }, wrap = false },
+  }
+  
+  if V.show_refs then
+    return {
+      type = "split", direction = "horizontal",
+      children = {
+        refs_panel(repo),
+        { type = "split", direction = "vertical", children = children },
+      },
+    }
+  end
+  return { type = "split", direction = "vertical", children = children }
 end
 
 local function file_list()
@@ -514,6 +748,8 @@ function render(state)
   end
   if V.mode == "diff" then
     return diff_view()
+  elseif V.mode == "graph" then
+    return graph_view(state.repo)
   end
   return status_view(state.repo)
 end
@@ -537,6 +773,10 @@ mod tests {
             recent: vec![LogEntry {
                 sha: "abc1234".to_string(),
                 subject: "fix".to_string(),
+                author: "dev".to_string(),
+                date: "2 hours ago".to_string(),
+                refs: vec!["HEAD -> main".to_string()],
+                graph: "* ".to_string(),
             }],
             refs: vec![],
             stashes: vec![],
