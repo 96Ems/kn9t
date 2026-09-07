@@ -78,7 +78,7 @@ fn fresh_state() -> (Arc<ServerState>, tempfile::TempDir) {
     let spec = model_spec();
     let mut state = ServerState::new(store, token, Default::default(), Vec::new())
         .with_default_model(spec.clone());
-    state.model_registry = vec![spec];
+    state.set_models(vec![spec]);
     let state = Arc::new(state);
     (state, tmp)
 }
@@ -512,7 +512,7 @@ mod srv {
         let mut state = ServerState::new(store, token, Default::default(), Vec::new())
             .with_default_model(spec.clone())
             .with_lease_idle(Duration::from_millis(150));
-        state.model_registry = vec![spec];
+        state.set_models(vec![spec]);
         let state = Arc::new(state);
         let h = start(state);
         let _tmp = tmp;
@@ -1026,7 +1026,7 @@ mod srv {
         let mut state = ServerState::new(store, token, Default::default(), Vec::new())
             .with_default_model(spec.clone())
             .with_idle_exit(Duration::from_millis(300));
-        state.model_registry = vec![spec];
+        state.set_models(vec![spec]);
         let h = ServerHandle::spawn(Arc::new(state)).unwrap();
         let auth = format!("Bearer {}", h.state.token);
 
@@ -2117,6 +2117,7 @@ mod srv {
             &self,
             _tool: &str,
             _args: &serde_json::Value,
+            _cwd: &std::path::Path,
             result: Vec<kn9t_core::Content>,
         ) -> Vec<kn9t_core::Content> {
             result
@@ -2179,6 +2180,7 @@ mod srv {
             &self,
             _tool: &str,
             _args: &serde_json::Value,
+            _cwd: &std::path::Path,
             result: Vec<kn9t_core::Content>,
         ) -> Vec<kn9t_core::Content> {
             result
@@ -2311,7 +2313,7 @@ mod srv {
             }))
             .with_default_model(model_spec())
             .with_provider(provider);
-        state.model_registry = vec![model_spec()];
+        state.set_models(vec![model_spec()]);
         let state = Arc::new(state);
         let h = start(state.clone());
         let id = make_session(&h);
@@ -2437,7 +2439,7 @@ mod srv {
             }))
             .with_default_model(model_spec())
             .with_provider(provider);
-        state.model_registry = vec![model_spec()];
+        state.set_models(vec![model_spec()]);
         let state = Arc::new(state);
         let h = start(state.clone());
         let id = make_session(&h);
@@ -2676,7 +2678,7 @@ mod srv {
             }))
             .with_default_model(model_spec())
             .with_provider(provider);
-        state.model_registry = vec![model_spec()];
+        state.set_models(vec![model_spec()]);
         let state = Arc::new(state);
         let h = start(state.clone());
         let sid = make_session(&h);
@@ -2810,7 +2812,7 @@ mod srv {
                 cmd: "rm -rf /tmp/legacy".into(),
                 calls: Arc::new(Mutex::new(0)),
             }));
-        state2.model_registry = vec![model_spec()];
+        state2.set_models(vec![model_spec()]);
         let state2 = Arc::new(state2);
         let h2 = start(state2.clone());
         let sid2 = make_session(&h2);
@@ -2981,7 +2983,7 @@ mod srv {
             }))
             .with_default_model(model_spec())
             .with_provider(provider);
-        state.model_registry = vec![model_spec()];
+        state.set_models(vec![model_spec()]);
         let state = Arc::new(state);
         let h = start(state.clone());
         let sid = make_session(&h);
@@ -3303,7 +3305,7 @@ mod srv {
             vec![bin.to_string_lossy().into_owned()],
             vec![],
         );
-        state.model_registry = vec![model_spec()];
+        state.set_models(vec![model_spec()]);
         let state = Arc::new(state);
         let h = start(state);
 
@@ -3470,7 +3472,7 @@ mod srv {
         .with_provider(Arc::new(StubProvider {
             text: "hello from stub".into(),
         }));
-        state.model_registry = vec![spec.clone()];
+        state.set_models(vec![spec.clone()]);
         let state = Arc::new(state);
         {
             // Approver must not block the test on interactive approval.
@@ -3627,7 +3629,7 @@ mod srv {
         .with_provider(Arc::new(StubProvider {
             text: "child says hi".into(),
         }));
-        state.model_registry = vec![spec.clone()];
+        state.set_models(vec![spec.clone()]);
         {
             *state.approver.write().unwrap() = Arc::new(AllowAllApprover);
         }
@@ -3880,7 +3882,7 @@ mod srv {
         //   [assistant:tool_use] -> [user:steer] -> [tool:tool_result]
         // FIX: steer must be buffered and appended AFTER tool_result:
         //   [assistant:tool_use] -> [tool:tool_result] -> [user:steer]
-        
+
         let tool_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let call_count = Arc::new(Mutex::new(0u32));
 
@@ -3896,11 +3898,10 @@ mod srv {
 
         let (store, _tmp) = temp_store();
         let token = kn9t_server::auth::generate_token();
-        let mut state =
-            ServerState::new(store.clone(), token.clone(), tools, Vec::new())
-                .with_default_model(model_spec())
-                .with_provider(provider);
-        state.model_registry = vec![model_spec()];
+        let mut state = ServerState::new(store.clone(), token.clone(), tools, Vec::new())
+            .with_default_model(model_spec())
+            .with_provider(provider);
+        state.set_models(vec![model_spec()]);
         let state = Arc::new(state);
 
         let h = start(state.clone());
@@ -3937,7 +3938,8 @@ mod srv {
             serde_json::json!({ "text": "change direction" }),
         );
         assert_eq!(
-            r_steer.status, 200,
+            r_steer.status,
+            200,
             "steer must be accepted, got {}: {}",
             r_steer.status,
             String::from_utf8_lossy(&r_steer.body)
@@ -3960,15 +3962,113 @@ mod srv {
                 &[&id],
             )
             .unwrap();
-        
+
         // The critical invariant: no user message between assistant (tool_use) and tool (tool_result)
         let has_corruption = roles.windows(3).any(|w| w == ["assistant", "user", "tool"]);
-        
+
         assert!(
             !has_corruption,
             "BUG: transcript corrupted - user message between tool_use and tool_result. Got {:?}",
             roles
         );
+
+        h.handle.shutdown();
+    }
+
+    // ── R-SRV-CFG-100: config hot-reload ─────────────────────────────────────
+
+    /// The endpoint keeps the previous config when the file cannot be resolved,
+    /// rather than degrading the server to zero providers.
+    ///
+    /// `KN9T_HOME` is process-global, so this points it at an empty temp dir (which
+    /// resolves to zero providers = an error) and asserts the live state survives.
+    /// Serialised against other env users by running the whole check in one test.
+    #[test]
+    fn config_reload_keeps_previous_on_bad_config() {
+        let (state, _tmp) = fresh_state();
+        let before_models = state.models_snapshot().len();
+        let before_default = state.default_model_snapshot().map(|m| m.r#ref.id);
+        assert_eq!(before_models, 1, "fixture should start with one model");
+
+        // Point KN9T_HOME at a dir with no config.toml at all.
+        let empty = tempfile::tempdir().unwrap();
+        let prev = std::env::var("KN9T_HOME").ok();
+        std::env::set_var("KN9T_HOME", empty.path());
+
+        let result = state.reload_config();
+
+        match prev {
+            Some(p) => std::env::set_var("KN9T_HOME", p),
+            None => std::env::remove_var("KN9T_HOME"),
+        }
+
+        assert!(
+            result.is_err(),
+            "a config with no providers must be rejected, got {result:?}"
+        );
+        // The live config is untouched.
+        assert_eq!(state.models_snapshot().len(), before_models);
+        assert_eq!(
+            state.default_model_snapshot().map(|m| m.r#ref.id),
+            before_default
+        );
+    }
+
+    /// POST /config/reload is routed and authenticated, and reports the failure as a
+    /// 400 with the previous config still serving.
+    #[test]
+    fn config_reload_endpoint_routed() {
+        let (h, _tmp) = harness();
+
+        // Unauthenticated is rejected (route is behind auth like every other POST).
+        let r = request(h.port, "POST", "/config/reload", &[], b"");
+        assert_eq!(r.status, 401, "expected auth challenge, got {}", r.status);
+
+        // Authenticated: reaches the handler (not a 404), so the route exists.
+        let empty = tempfile::tempdir().unwrap();
+        let prev = std::env::var("KN9T_HOME").ok();
+        std::env::set_var("KN9T_HOME", empty.path());
+        let r = req_auth(&h, "POST", "/config/reload", &[], serde_json::Value::Null);
+        match prev {
+            Some(p) => std::env::set_var("KN9T_HOME", p),
+            None => std::env::remove_var("KN9T_HOME"),
+        }
+        assert_ne!(r.status, 404, "route not registered");
+        assert_eq!(r.status, 400, "bad config should be 400, got {}", r.status);
+        assert_eq!(
+            r.json()["error"].as_str(),
+            Some("reload_failed"),
+            "expected reload_failed code, got {}",
+            r.json()
+        );
+
+        // Still serving the old registry.
+        let r = req_auth(&h, "GET", "/models", &[], serde_json::Value::Null);
+        assert_eq!(r.status, 200);
+        assert_eq!(r.json()["models"].as_array().unwrap().len(), 1);
+
+        h.handle.shutdown();
+    }
+
+    /// The registry is swappable at runtime and `GET /models` reflects the new
+    /// ctx_window immediately — the mechanism behind editing `ctx` in config.toml.
+    #[test]
+    fn config_reload_swaps_ctx_window() {
+        let (h, _tmp) = harness();
+
+        let r = req_auth(&h, "GET", "/models", &[], serde_json::Value::Null);
+        let original_ctx = r.json()["models"][0]["ctx_window"].as_u64().unwrap();
+
+        // Swap in the same model with a 1M context, as a config edit would.
+        let mut spec = model_spec();
+        spec.ctx_window = 1_000_000;
+        h.handle.state.set_models(vec![spec]);
+
+        let r = req_auth(&h, "GET", "/models", &[], serde_json::Value::Null);
+        let new_ctx = r.json()["models"][0]["ctx_window"].as_u64().unwrap();
+
+        assert_ne!(original_ctx, new_ctx);
+        assert_eq!(new_ctx, 1_000_000, "GET /models must serve the swapped ctx");
 
         h.handle.shutdown();
     }

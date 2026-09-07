@@ -276,6 +276,12 @@ fn default_min_tokens() -> u32 {
 #[derive(Default)]
 pub struct ResolvedConfig {
     pub providers: Vec<(String, Arc<dyn kn9t_core::Provider>)>,
+    /// Plugin hosts spawned for `kind = "plugin"` providers, by provider name.
+    ///
+    /// R-SRV-CFG-100: `resolve` spawns a subprocess per provider plugin. Without a
+    /// handle here the old process could not be reaped on reload and every reload
+    /// would leak one. The `Arc` is shared with the `RemoteProvider` wrapping it.
+    pub provider_hosts: Vec<(String, Arc<kn9t_plugin::PluginHost>)>,
     pub models: Vec<ModelSpec>,
     /// The model id that should be the server default (first model if unspecified).
     pub default_model_id: Option<String>,
@@ -343,7 +349,9 @@ fn format_toml_error(path: &Path, text: &str, err: toml::de::Error) -> String {
                 msg.push_str("╭─ Suggestion ─────────────────────────────────────────────────╮\n");
                 msg.push_str("│ Windows paths require escaped backslashes in TOML strings.  │\n");
                 msg.push_str("│ Use one of these formats:                                   │\n");
-                msg.push_str("│   • Double backslashes:  \"C:\\\\Users\\\\...\"                   │\n");
+                msg.push_str(
+                    "│   • Double backslashes:  \"C:\\\\Users\\\\...\"                   │\n",
+                );
                 msg.push_str("│   • Forward slashes:     \"C:/Users/...\"                     │\n");
                 msg.push_str("│   • Literal string:      'C:\\Users\\...'  (single quotes)   │\n");
                 msg.push_str("╰───────────────────────────────────────────────────────────────╯");
@@ -373,6 +381,7 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
     // Build provider map: name → (HttpQuirks, Arc<dyn Provider>)
     let mut provider_quirks: HashMap<String, HttpQuirks> = HashMap::new();
     let mut providers: Vec<(String, Arc<dyn kn9t_core::Provider>)> = Vec::new();
+    let mut provider_hosts: Vec<(String, Arc<kn9t_plugin::PluginHost>)> = Vec::new();
     // Models auto-discovered from plugins and OpenAI endpoints.
     let mut auto_models: Vec<ModelSpec> = Vec::new();
 
@@ -551,10 +560,9 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                             }
                         }
 
-                        let remote = kn9t_plugin::RemoteProvider::new(
-                            std::sync::Arc::new(host),
-                            name.clone(),
-                        );
+                        let host = std::sync::Arc::new(host);
+                        provider_hosts.push((name.clone(), host.clone()));
+                        let remote = kn9t_plugin::RemoteProvider::new(host, name.clone());
                         providers.push((
                             name.clone(),
                             Arc::new(remote) as Arc<dyn kn9t_core::Provider>,
@@ -701,12 +709,43 @@ fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
 
     Ok(ResolvedConfig {
         providers,
+        provider_hosts,
         models,
         default_model_id,
         idle_exit,
         policy_mode,
         plugins,
     })
+}
+
+/// Pick the default model: explicit `default_model` > first "small" model (haiku,
+/// mini, flash) > first model. Titling uses the default, so a cheap model is
+/// preferred to avoid burning tokens on it.
+///
+/// Shared by startup (`main.rs`) and hot-reload (`ServerState::reload_config`) so the
+/// two cannot drift.
+pub fn pick_default_model(resolved: &ResolvedConfig) -> Option<ModelSpec> {
+    resolved
+        .default_model_id
+        .as_ref()
+        .and_then(|id| resolved.models.iter().find(|m| &m.r#ref.id == id).cloned())
+        .or_else(|| {
+            resolved
+                .models
+                .iter()
+                .find(|m| is_small_model(&m.r#ref.id))
+                .cloned()
+        })
+        .or_else(|| resolved.models.first().cloned())
+}
+
+/// True if the model ID suggests a small/cheap model (haiku, mini, flash).
+fn is_small_model(id: &str) -> bool {
+    let id_lower = id.to_lowercase();
+    id_lower.contains("haiku")
+        || id_lower.contains("mini")
+        || id_lower.contains("flash")
+        || id_lower.contains("small")
 }
 
 /// R-SRV-CFG-010: resolve `[provider.X.headers]` — same `env:VAR` syntax as api_key.

@@ -38,7 +38,7 @@ pub mod state;
 pub mod system_prompt;
 pub mod tools;
 pub mod turn;
-pub mod ui_pages;
+pub mod watch;
 
 use std::io;
 use std::net::{SocketAddr, TcpListener};

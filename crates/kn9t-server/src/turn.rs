@@ -47,9 +47,10 @@ impl HookHost for ServerHookHost {
         &self,
         tool: &str,
         args: &serde_json::Value,
+        cwd: &std::path::Path,
         result: Vec<Content>,
     ) -> Vec<Content> {
-        self.inner.after_tool_call(tool, args, result)
+        self.inner.after_tool_call(tool, args, cwd, result)
     }
 
     fn before_request(
@@ -333,10 +334,11 @@ pub(crate) fn compose_loop(
     } else if hosts.is_empty() {
         Arc::new(kn9t_core::NoopHookHost)
     } else {
-        // Set the bus and session on each plugin host
+        // Set the bus, session, and cwd on each plugin host
         for host in &hosts {
             host.set_bus(sink.clone());
             host.set_session(&session.0);
+            host.set_cwd(&state.cwd);
         }
         Arc::new(ComposedHookHost::new(hosts.clone()))
     };
@@ -353,10 +355,12 @@ pub(crate) fn compose_loop(
         tools = tools.filter_names(&names);
     }
 
-    // Get the provider for this model.
+    // Get the provider for this model. Cloned out of the lock: the turn owns this
+    // `Arc` for its whole lifetime, so a concurrent config reload cannot swap the
+    // provider mid-stream (R-SRV-CFG-100).
     let provider = state
         .get_provider(&model.r#ref.provider)
-        .or_else(|| state.provider.clone())
+        .or_else(|| state.provider_snapshot())
         .ok_or_else(|| format!("no provider for {}", model.r#ref.provider))?;
 
     Ok((
@@ -388,7 +392,7 @@ pub(crate) fn run_session_turn(
     let model = state
         .store
         .get_model_spec_for_session(&session.0)
-        .or_else(|| state.default_model.clone())
+        .or_else(|| state.default_model_snapshot())
         .ok_or_else(|| "no model available for session".to_string())?;
     state.store.register_model_spec(model.clone());
 
@@ -514,7 +518,7 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
     );
     let model = session_model.or_else(|| {
         crate::log!("[spawn_turn] using default model");
-        state.default_model.clone()
+        state.default_model_snapshot()
     });
     let Some(model) = model else {
         crate::log!("[spawn_turn] no model available");
@@ -584,7 +588,7 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
 /// the name, and record a `UsageKind::Title` usage row. Any failure is swallowed.
 pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
     crate::log!("[autotitle] checking session={}", session.0);
-    
+
     // Already named? A name (at creation or via API) suppresses auto-titling.
     let name: Option<String> = state
         .store
@@ -617,28 +621,35 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
     // Auto-title with a lightweight model from the session's provider. Prefer haiku
     // or a non-thinking variant to avoid expensive/slow title generation.
     let session_model = state.store.get_model_spec_for_session(&session.0);
-    let provider_name = session_model
+    let default_model = state.default_model_snapshot();
+    // Owned: these used to borrow `&str` out of `state.default_model`, which is now
+    // behind a lock and cannot lend a reference past the guard.
+    let provider_name: Option<String> = session_model
         .as_ref()
-        .map(|m| m.r#ref.provider.as_str())
-        .or_else(|| state.default_model.as_ref().map(|m| m.r#ref.provider.as_str()));
-    
+        .map(|m| m.r#ref.provider.clone())
+        .or_else(|| default_model.as_ref().map(|m| m.r#ref.provider.clone()));
+
     let Some(provider_name) = provider_name else {
         crate::log!("[autotitle] no provider available");
         return;
     };
-    
+
     // Find a cheap model from the same provider (prefer haiku, avoid thinking models)
     let model = state
         .store
-        .find_title_model(provider_name)
+        .find_title_model(&provider_name)
         .or_else(|| session_model.clone())
-        .or_else(|| state.default_model.clone());
-    
-    let (Some(provider), Some(model)) = (state.provider.clone(), model) else {
+        .or_else(|| default_model.clone());
+
+    let (Some(provider), Some(model)) = (state.provider_snapshot(), model) else {
         crate::log!("[autotitle] no provider or model available");
         return;
     };
-    crate::log!("[autotitle] using model {}:{}", model.r#ref.provider, model.r#ref.id);
+    crate::log!(
+        "[autotitle] using model {}:{}",
+        model.r#ref.provider,
+        model.r#ref.id
+    );
 
     // Gather a short transcript excerpt to title from (first user message text).
     let excerpt: String = state

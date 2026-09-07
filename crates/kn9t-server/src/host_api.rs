@@ -39,17 +39,14 @@ impl ServerHostApi {
         if let Some(id) = payload.get("model").and_then(|v| v.as_str()) {
             return self
                 .state
-                .model_registry
-                .iter()
-                .find(|m| m.r#ref.id == id)
-                .cloned()
+                .find_model(id)
                 .ok_or_else(|| format!("model {id:?} not in registry"));
         }
         let session = self.require_session(payload.get("session").and_then(|v| v.as_str()))?;
         self.state
             .store
             .get_model_spec_for_session(session)
-            .or_else(|| self.state.default_model.clone())
+            .or_else(|| self.state.default_model_snapshot())
             .ok_or_else(|| "no model available".to_string())
     }
 
@@ -108,11 +105,7 @@ impl ServerHostApi {
         let parent = SessionId(session.to_string());
 
         let model: Option<ModelSpec> = if let Some(id) = model_id {
-            self.state
-                .model_registry
-                .iter()
-                .find(|m| m.r#ref.id == id)
-                .cloned()
+            self.state.find_model(id)
         } else {
             self.state.store.get_model_spec_for_session(session)
         };
@@ -279,7 +272,7 @@ impl ServerHostApi {
         let provider = self
             .state
             .get_provider(&model.r#ref.provider)
-            .or_else(|| self.state.provider.clone())
+            .or_else(|| self.state.provider_snapshot())
             .ok_or_else(|| format!("no provider for {}", model.r#ref.provider))?;
 
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
@@ -376,89 +369,83 @@ impl ServerHostApi {
         Ok(json!({"ok": true}))
     }
 
-    /// 96E-24 — `ui_declare_page {page_id, layout}` — declare a templated page,
-    /// then `ui_write_placeholder` cheaply and `ui_clear_page` teardown.
-    fn ui_declare_page(
+    /// `ui_register_lua {source}` — register the plugin's TUI code.
+    ///
+    /// The plugin ships Lua defining `render(state)`, which returns a widget
+    /// tree. Sent once (cheap to re-send on change); state updates go through
+    /// `ui_set_state`, so the source is not re-transmitted per update.
+    ///
+    /// The server does not parse the Lua: it is opaque here and only meaningful
+    /// to the TUI, which owns the widget vocabulary.
+    fn ui_register_lua(
         &self,
         session: Option<&str>,
         payload: &Value,
         plugin: &str,
     ) -> Result<Value, String> {
         let session = self.require_session(session)?;
-        let page_id = payload
-            .get("page_id")
+        let source = payload
+            .get("source")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "ui_declare_page requires \"page_id\"".to_string())?;
-        let layout = payload
-            .get("layout")
-            .ok_or_else(|| "ui_declare_page requires \"layout\"".to_string())?;
-        self.state
-            .ui_pages
-            .declare(plugin, session, page_id, layout)?;
-        // Forward to TUI as a structured UiDirective (same bus, session-scoped)
-        let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
-        sink.emit(kn9t_core::LiveEvent::UiDirective {
-            plugin: plugin.to_string(),
-            target: page_id.to_string(),
-            op: "declare_page".to_string(),
-            payload: json!({"page_id": page_id, "layout": layout}),
-        });
-        Ok(json!({"ok": true, "page_id": page_id}))
-    }
+            .ok_or_else(|| "ui_register_lua requires \"source\"".to_string())?;
 
-    fn ui_write_placeholder(
-        &self,
-        session: Option<&str>,
-        payload: &Value,
-        plugin: &str,
-    ) -> Result<Value, String> {
-        let session = self.require_session(session)?;
-        let page_id = payload
-            .get("page_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "ui_write_placeholder requires \"page_id\"".to_string())?;
-        let placeholder_id = payload
-            .get("placeholder_id")
-            .or_else(|| payload.get("id"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "ui_write_placeholder requires \"placeholder_id\"".to_string())?;
-        let value = payload
-            .get("value")
-            .cloned()
-            .ok_or_else(|| "ui_write_placeholder requires \"value\"".to_string())?;
-        self.state
-            .ui_pages
-            .write(plugin, session, page_id, placeholder_id, value.clone())?;
+        // Guard against a runaway plugin shipping megabytes of source: this
+        // crosses the wire and is held per plugin.
+        const MAX_SOURCE: usize = 256 * 1024;
+        if source.len() > MAX_SOURCE {
+            return Err(format!(
+                "ui_register_lua source too large: {} bytes (max {})",
+                source.len(),
+                MAX_SOURCE
+            ));
+        }
+
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
         sink.emit(kn9t_core::LiveEvent::UiDirective {
             plugin: plugin.to_string(),
-            target: page_id.to_string(),
-            op: "write_placeholder".to_string(),
-            payload: json!({"page_id": page_id, "placeholder_id": placeholder_id, "value": value}),
+            target: "lua".to_string(),
+            op: "register_lua".to_string(),
+            payload: json!({"source": source}),
         });
         Ok(json!({"ok": true}))
     }
 
-    fn ui_clear_page(
+    /// `ui_set_state {state}` — push new state for the plugin's `render(state)`.
+    ///
+    /// Arbitrary JSON: the plugin's own Lua decides how to display it, so there
+    /// is no fixed placeholder vocabulary to conform to.
+    fn ui_set_state(
         &self,
         session: Option<&str>,
         payload: &Value,
         plugin: &str,
     ) -> Result<Value, String> {
         let session = self.require_session(session)?;
-        let page_id = payload
-            .get("page_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "ui_clear_page requires \"page_id\"".to_string())?;
-        self.state.ui_pages.clear(plugin, session, page_id)?;
+        let state = payload
+            .get("state")
+            .cloned()
+            .ok_or_else(|| "ui_set_state requires \"state\"".to_string())?;
+
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
         sink.emit(kn9t_core::LiveEvent::UiDirective {
             plugin: plugin.to_string(),
-            target: page_id.to_string(),
-            op: "clear_page".to_string(),
-            payload: json!({"page_id": page_id}),
+            target: "lua".to_string(),
+            op: "set_state".to_string(),
+            payload: json!({"state": state}),
         });
-        // Also host-side teardown already done via clear(); TUI will drop its rendering.
+        Ok(json!({"ok": true}))
+    }
+
+    /// `ui_clear` — drop the plugin's UI entirely.
+    fn ui_clear(&self, session: Option<&str>, plugin: &str) -> Result<Value, String> {
+        let session = self.require_session(session)?;
+        let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
+        sink.emit(kn9t_core::LiveEvent::UiDirective {
+            plugin: plugin.to_string(),
+            target: "lua".to_string(),
+            op: "clear".to_string(),
+            payload: json!({}),
+        });
         Ok(json!({"ok": true}))
     }
 
@@ -554,9 +541,9 @@ impl HostApi for ServerHostApi {
             "tool_list" => self.tool_list(session, payload),
             "interaction_request" => self.interaction_request(session, payload, plugin),
             "ui_directive" | "ui_push" => self.ui_directive(session, payload, plugin),
-            "ui_declare_page" => self.ui_declare_page(session, payload, plugin),
-            "ui_write_placeholder" => self.ui_write_placeholder(session, payload, plugin),
-            "ui_clear_page" => self.ui_clear_page(session, payload, plugin),
+            "ui_register_lua" => self.ui_register_lua(session, payload, plugin),
+            "ui_set_state" => self.ui_set_state(session, payload, plugin),
+            "ui_clear" => self.ui_clear(session, plugin),
             other => Err(format!("unknown host API op {other:?}")),
         }
     }

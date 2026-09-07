@@ -33,7 +33,7 @@ pub fn create(state: &Arc<ServerState>, req: api::CreateSessionReq) -> JsonResp 
             id: m.id,
         }
     } else {
-        match state.default_model.as_ref() {
+        match state.default_model_snapshot() {
             Some(s) => s.r#ref.clone(),
             None => {
                 return JsonResp::error(400, "bad_model", "no model supplied and no server default")
@@ -186,7 +186,6 @@ pub fn delete(state: &Arc<ServerState>, id: &str) -> JsonResp {
     match state.store.delete_session(&sid) {
         Ok(()) => {
             state.buses.drop_session(id);
-            state.ui_pages.clear_session(id);
             JsonResp::ok(serde_json::json!({ "deleted": id }))
         }
         Err(e) => JsonResp::error(400, "delete_failed", &e.0),
@@ -603,15 +602,14 @@ pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
     // Build a summary message. Prefer provider summarization if a provider is
     // available; otherwise use a deterministic local summary so the endpoint
     // is testable offline.
+    let default_model = state.default_model_snapshot();
     let summary = if let (Some(provider), Some(model)) = (
-        state.provider.clone().or_else(|| {
-            state
-                .default_model
+        state.provider_snapshot().or_else(|| {
+            default_model
                 .as_ref()
                 .and_then(|m| state.get_provider(&m.r#ref.provider))
         }),
-        state
-            .default_model
+        default_model
             .clone()
             .or_else(|| state.store.get_model_spec_for_session(id)),
     ) {

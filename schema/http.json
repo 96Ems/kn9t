@@ -393,6 +393,13 @@
     },
     {
       "method": "POST",
+      "path": "/config/reload",
+      "lease": false,
+      "description": "R-SRV-CFG-100: re-read config.toml and swap providers, models and default_model in place. Does NOT reload [[plugin]] entries (use POST /plugin/load), [policy] mode, or [server] idle_exit_secs. Takes effect from the next turn; in-flight turns keep the provider/model they started with. Old provider-plugin subprocesses are reaped. On any error the previous config is kept and 400 is returned.",
+      "response": { "type": "object", "properties": { "reloaded": { "type": "boolean" }, "providers": { "type": "integer", "description": "provider count after reload" }, "models": { "type": "integer", "description": "model count after reload" }, "default_model": { "type": "string", "description": "id of the default model after reload" } }, "required": ["reloaded", "providers", "models"] }
+    },
+    {
+      "method": "POST",
       "path": "/plugin/{name}/reload",
       "lease": false,
       "description": "Hot-reload a plugin by name: cancel in-flight, shutdown, respawn, re-handshake, re-register tools (R-PLUG2-100)",

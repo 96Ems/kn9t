@@ -39,6 +39,7 @@ fn run() -> std::io::Result<()> {
         eprintln!("\n[kn9t] Configuration error:\n{e}\n");
         config::ResolvedConfig {
             providers: Vec::new(),
+            provider_hosts: Vec::new(),
             models: Vec::new(),
             default_model_id: None,
             idle_exit: None,
@@ -108,19 +109,8 @@ fn run() -> std::io::Result<()> {
     state = state.with_providers(resolved.providers.clone());
 
     // Default model: explicit config > first "small" model (haiku) > first model.
-    // Titling uses the default, so prefer a cheap model to avoid burning tokens.
-    let default_spec = resolved
-        .default_model_id
-        .as_ref()
-        .and_then(|id| resolved.models.iter().find(|m| &m.r#ref.id == id).cloned())
-        .or_else(|| {
-            resolved
-                .models
-                .iter()
-                .find(|m| is_small_model(&m.r#ref.id))
-                .cloned()
-        })
-        .or_else(|| resolved.models.first().cloned());
+    // Shared with hot-reload via config::pick_default_model.
+    let default_spec = config::pick_default_model(&resolved);
 
     if let Some(spec) = &default_spec {
         kn9t_server::log!("default model: {}:{}", spec.r#ref.provider, spec.r#ref.id);
@@ -134,7 +124,11 @@ fn run() -> std::io::Result<()> {
         }
         state = state.with_default_model(spec.clone());
     }
-    state.model_registry = resolved.models.clone();
+    state.set_models(resolved.models.clone());
+    *state
+        .provider_hosts
+        .lock()
+        .expect("provider_hosts poisoned") = resolved.provider_hosts.clone();
 
     // Register all models with the store so get_model_spec_for_session can find them.
     for spec in &resolved.models {
@@ -144,6 +138,13 @@ fn run() -> std::io::Result<()> {
     let state = Arc::new(state);
     state.install_host_api();
     state.install_declare_callbacks();
+
+    // ── Config watcher ────────────────────────────────────────────────────────
+    // Auto-reload on config.toml edits. Zero-dep mtime poll on an OS thread rather
+    // than `notify` (~5 crates, not in the DESIGN §15 budget, and its backends want
+    // an event loop — GI-5 forbids async). A 2s poll is imperceptible for a file a
+    // human edits by hand.
+    kn9t_server::watch::spawn_config_watcher(state.clone(), cfg_path.clone());
 
     // ── Bind + start ──────────────────────────────────────────────────────────
     let handle = ServerHandle::spawn(state)?;
@@ -155,14 +156,4 @@ fn run() -> std::io::Result<()> {
     let _ = std::fs::remove_file(auth::port_path());
     kn9t_server::log!("idle-exit");
     Ok(())
-}
-
-/// Returns true if the model ID suggests a small/cheap model (haiku, mini, flash).
-/// Used to auto-select a default for titling when no explicit default is configured.
-fn is_small_model(id: &str) -> bool {
-    let id_lower = id.to_lowercase();
-    id_lower.contains("haiku")
-        || id_lower.contains("mini")
-        || id_lower.contains("flash")
-        || id_lower.contains("small")
 }

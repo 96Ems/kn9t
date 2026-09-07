@@ -53,13 +53,11 @@ pub fn load(state: &Arc<ServerState>, body: LoadPluginReq) -> Reply {
     if body.from_config {
         // Load new plugins from config.toml.
         match state.load_plugins_from_config() {
-            Ok(loaded) if loaded.is_empty() => {
-                JsonResp::ok(serde_json::json!({
-                    "loaded": [],
-                    "message": "no new plugins found in config"
-                }))
-                .into()
-            }
+            Ok(loaded) if loaded.is_empty() => JsonResp::ok(serde_json::json!({
+                "loaded": [],
+                "message": "no new plugins found in config"
+            }))
+            .into(),
             Ok(loaded) => {
                 let plugins: Vec<serde_json::Value> = loaded
                     .iter()
@@ -91,11 +89,7 @@ pub fn load(state: &Arc<ServerState>, body: LoadPluginReq) -> Reply {
             }
         };
 
-        let env: Vec<(String, String)> = body
-            .env
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+        let env: Vec<(String, String)> = body.env.unwrap_or_default().into_iter().collect();
 
         match state.load_plugin(cmd, env) {
             Ok((name, tools)) => JsonResp::ok(serde_json::json!({
@@ -103,9 +97,7 @@ pub fn load(state: &Arc<ServerState>, body: LoadPluginReq) -> Reply {
                 "tools": tools
             }))
             .into(),
-            Err(e) if e.contains("already loaded") => {
-                JsonResp::error(409, "conflict", &e).into()
-            }
+            Err(e) if e.contains("already loaded") => JsonResp::error(409, "conflict", &e).into(),
             Err(e) => JsonResp::error(500, "load_failed", &e).into(),
         }
     }

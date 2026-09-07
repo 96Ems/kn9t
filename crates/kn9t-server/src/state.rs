@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use kn9t_core::{Approver, Cancel, Decision, ModelSpec, Provider, ToolCall, ToolRegistry};
@@ -22,7 +22,6 @@ use crate::bus::SessionBuses;
 use crate::interaction::InteractionRegistry;
 use crate::lease::{LeaseMap, DEFAULT_LEASE_IDLE};
 use crate::policy::{ApprovalCache, ApprovalRegistry, InteractiveApprover, NonInteractiveApprover};
-use crate::ui_pages::UiPageRegistry;
 
 /// Grace period after last client disconnects before the server exits.
 /// Short enough to feel immediate, long enough to survive a TUI restart.
@@ -140,11 +139,15 @@ pub struct ServerState {
     pub stop_requested: AtomicBool,
     /// Provider used for auto-titling and running turns. `None` disables both
     /// (routes still function; a `prompt` without a provider is a no-op turn).
-    pub provider: Option<Arc<dyn Provider>>,
-    /// All providers by name, for model switching.
-    pub providers: std::collections::HashMap<String, Arc<dyn Provider>>,
-    /// Default model spec for new sessions and titling.
-    pub default_model: Option<ModelSpec>,
+    ///
+    /// `RwLock` for config hot-reload (R-SRV-CFG-100): `POST /config/reload` swaps
+    /// providers and models in place. Reads are per-turn, writes only on reload.
+    /// Never hold the guard across a provider call — clone the `Arc` out first.
+    pub provider: RwLock<Option<Arc<dyn Provider>>>,
+    /// All providers by name, for model switching. `RwLock` for hot-reload.
+    pub providers: RwLock<std::collections::HashMap<String, Arc<dyn Provider>>>,
+    /// Default model spec for new sessions and titling. `RwLock` for hot-reload.
+    pub default_model: RwLock<Option<ModelSpec>>,
     /// ADR-0008 -- turns a policy plugin's `Ask` into a `Decision`. Not a decider: the
     /// judgement already happened in the plugin. `RwLock` so a non-interactive run can swap
     /// in the deny-on-ask adapter at startup.
@@ -155,8 +158,6 @@ pub struct ServerState {
     pub approval_cache: Arc<ApprovalCache>,
     /// 96E-28 — generic client→host interaction registry (opaque JSON payloads).
     pub interaction_registry: Arc<InteractionRegistry>,
-    /// 96E-24 — templated page primitive (plugin/session scoped, host-validated).
-    pub ui_pages: Arc<UiPageRegistry>,
     /// Working directory root (server process cwd), used for the tool context when
     /// a session does not pin its own.
     pub cwd: PathBuf,
@@ -164,7 +165,8 @@ pub struct ServerState {
     /// R-NBED-040 / R-SRV-120). `None` where unavailable.
     pub provider_reported_budget: Mutex<Option<f64>>,
     /// All model specs loaded from config (GET /models registry, DESIGN §8.2).
-    pub model_registry: Vec<ModelSpec>,
+    /// `RwLock` for config hot-reload (R-SRV-CFG-100).
+    pub model_registry: RwLock<Vec<ModelSpec>>,
     /// Tools registry — populated from external auto-discovered plugins in
     /// `~/.kn9t/plugins/` plus pinned `[[plugin]]` entries (R-PLUG2-110, ADR-0004).
     /// Wrapped in a Mutex for hot-reload (R-PLUG2-100): `POST /plugin/{name}/reload`
@@ -176,6 +178,10 @@ pub struct ServerState {
     /// Spawn recipe per plugin declared name — used to respawn on reload (R-PLUG2-100).
     /// `cmd` is the exact argv (binary + args) and `env` the injected vars.
     pub plugin_spawn: Mutex<HashMap<String, (Vec<String>, Vec<(String, String)>)>>,
+    /// Plugin hosts backing `kind = "plugin"` providers, by provider name.
+    /// R-SRV-CFG-100: kept so `reload_config` can shut down the old subprocess
+    /// before replacing it, instead of leaking one process per reload.
+    pub provider_hosts: Mutex<Vec<(String, Arc<PluginHost>)>>,
     /// Per-session cancellation handles for `abort` (R-SRV-060). A running turn registers
     /// its `Cancel` here; `abort` fires it.
     ///
@@ -217,7 +223,6 @@ impl ServerState {
         let approval_registry = Arc::new(ApprovalRegistry::new());
         let approval_cache = Arc::new(ApprovalCache::new(crate::config::global_config_path()));
         let interaction_registry = Arc::new(InteractionRegistry::new());
-        let ui_pages = Arc::new(UiPageRegistry::new());
         let approver: Arc<dyn Approver> = Arc::new(InteractiveApprover::with_cache(
             approval_registry.clone(),
             approval_cache.clone(),
@@ -240,20 +245,20 @@ impl ServerState {
             idle: IdleTracker::new(DEFAULT_IDLE_EXIT),
             token,
             stop_requested: AtomicBool::new(false),
-            provider: None,
-            providers: std::collections::HashMap::new(),
-            default_model: None,
+            provider: RwLock::new(None),
+            providers: RwLock::new(std::collections::HashMap::new()),
+            default_model: RwLock::new(None),
             approver: std::sync::RwLock::new(approver),
             approval_registry,
             approval_cache,
             interaction_registry,
-            ui_pages,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             provider_reported_budget: Mutex::new(None),
-            model_registry: Vec::new(),
+            model_registry: RwLock::new(Vec::new()),
             tools: Mutex::new(tools),
             plugin_hosts: Mutex::new(plugin_hosts),
             plugin_spawn: Mutex::new(HashMap::new()),
+            provider_hosts: Mutex::new(Vec::new()),
             aborts: Mutex::new(HashMap::new()),
             hooks_override: Mutex::new(None),
             pending_reactivation: Mutex::new(HashMap::new()),
@@ -265,14 +270,20 @@ impl ServerState {
     /// The message will be drained by `get_steering()` during the turn, ensuring
     /// it appears AFTER tool_results in the transcript.
     pub fn queue_steering(&self, session: &str, msg: kn9t_core::Message) {
-        let mut map = self.pending_steering.lock().expect("pending_steering poisoned");
+        let mut map = self
+            .pending_steering
+            .lock()
+            .expect("pending_steering poisoned");
         map.entry(session.to_owned()).or_default().push(msg);
     }
 
     /// Drain all pending steering messages for the given session. Called by
     /// the HookHost wrapper's `get_steering()` implementation.
     pub fn drain_steering(&self, session: &str) -> Vec<kn9t_core::Message> {
-        let mut map = self.pending_steering.lock().expect("pending_steering poisoned");
+        let mut map = self
+            .pending_steering
+            .lock()
+            .expect("pending_steering poisoned");
         map.remove(session).unwrap_or_default()
     }
 
@@ -562,9 +573,9 @@ impl ServerState {
             // Check if already loaded.
             {
                 let spawn = self.plugin_spawn.lock().expect("spawn poisoned");
-                let already_loaded = spawn.values().any(|(existing_cmd, _)| {
-                    !existing_cmd.is_empty() && existing_cmd[0] == cmd[0]
-                });
+                let already_loaded = spawn
+                    .values()
+                    .any(|(existing_cmd, _)| !existing_cmd.is_empty() && existing_cmd[0] == cmd[0]);
                 if already_loaded {
                     continue;
                 }
@@ -588,6 +599,97 @@ impl ServerState {
         Ok(loaded)
     }
 
+    /// R-SRV-CFG-100 — re-read `config.toml` and swap providers + models in place.
+    ///
+    /// Returns `(providers, models)` counts on success.
+    ///
+    /// **Scope.** Swaps `providers`, `provider_hosts`, `model_registry` and
+    /// `default_model` only. It deliberately does NOT reload:
+    ///
+    /// * `[[plugin]]` — tool plugins have their own lifecycle
+    ///   (`POST /plugin/load`, `POST /plugin/{name}/reload`, R-PLUG2-100);
+    /// * `[policy] mode` — read live per call via `config::get_policy_state`;
+    /// * `[server] idle_exit_secs` — `IdleTracker` is built once at startup.
+    ///
+    /// Two hazards it must respect:
+    ///
+    /// 1. **Provider plugins are subprocesses.** `config::load` spawns one per
+    ///    `kind = "plugin"` provider. The previous generation is shut down here,
+    ///    after the swap, or every reload would leak a process.
+    /// 2. **In-flight turns hold their own `Arc<dyn Provider>` and `ModelSpec`**,
+    ///    cloned out of the locks at turn start. A reload therefore never disturbs a
+    ///    running turn — it takes effect from the next turn. This is deliberate:
+    ///    mutating a turn's provider mid-stream would tear the SSE assembly.
+    ///
+    /// Sessions that pinned a model keep their pin; the spec is re-resolved from the
+    /// new registry by `register_model_spec` below, so an edited `ctx` reaches them —
+    /// which matters because `plan_request` compacts at `ctx_window * 0.80`
+    /// (`kn9t-store/src/plan.rs`), so a stale `ctx_window` silently mis-times
+    /// compaction.
+    ///
+    /// Cost: re-runs `config::load`, which re-fetches `/v1/models` for every
+    /// `kind = "openai"` provider and respawns every provider plugin.
+    pub fn reload_config(self: &Arc<Self>) -> Result<(usize, usize), String> {
+        let path = crate::config::global_config_path();
+        let resolved = crate::config::load(&path)?;
+
+        if resolved.providers.is_empty() {
+            return Err("config resolved to zero providers; keeping current config".into());
+        }
+
+        let old_hosts: Vec<(String, Arc<PluginHost>)> = {
+            let hosts = self.provider_hosts.lock().expect("provider_hosts poisoned");
+            hosts.clone()
+        };
+
+        let n_providers = resolved.providers.len();
+        let n_models = resolved.models.len();
+
+        // Re-register every spec with the store so sessions pinning a model pick up
+        // edited ctx/max_out/price. `register_model_spec` overwrites by key.
+        for spec in &resolved.models {
+            self.store.register_model_spec(spec.clone());
+        }
+
+        let default_spec = crate::config::pick_default_model(&resolved);
+
+        // Swap. Order matters: providers before default_model, so a turn that reads
+        // default_model can always resolve its provider by name.
+        *self.providers.write().expect("providers poisoned") =
+            resolved.providers.iter().cloned().collect();
+
+        if let Some(spec) = &default_spec {
+            if let Some((_, p)) = resolved
+                .providers
+                .iter()
+                .find(|(name, _)| name == &spec.r#ref.provider)
+            {
+                *self.provider.write().expect("provider poisoned") = Some(p.clone());
+            }
+            *self.default_model.write().expect("default_model poisoned") = Some(spec.clone());
+            crate::log!(
+                "config-reload: default model {}:{} (ctx {})",
+                spec.r#ref.provider,
+                spec.r#ref.id,
+                spec.ctx_window
+            );
+        }
+
+        self.set_models(resolved.models);
+
+        *self.provider_hosts.lock().expect("provider_hosts poisoned") = resolved.provider_hosts;
+
+        // Reap the previous generation of provider-plugin subprocesses. Done last so
+        // no window exists where a turn could resolve a provider whose host is dead.
+        for (name, host) in old_hosts {
+            crate::log!("config-reload: shutting down old provider plugin {name:?}");
+            host.shutdown();
+        }
+
+        crate::log!("config-reload: {n_providers} provider(s), {n_models} model(s)");
+        Ok((n_providers, n_models))
+    }
+
     pub fn with_lease_idle(mut self, d: Duration) -> Self {
         self.leases = LeaseMap::new(d);
         self
@@ -609,8 +711,8 @@ impl ServerState {
         self.idle = IdleTracker::new(d);
         self
     }
-    pub fn with_provider(mut self, p: Arc<dyn Provider>) -> Self {
-        self.provider = Some(p);
+    pub fn with_provider(self, p: Arc<dyn Provider>) -> Self {
+        *self.provider.write().expect("provider poisoned") = Some(p);
         self
     }
     pub fn with_approver(self, a: Arc<dyn Approver>) -> Self {
@@ -634,16 +736,60 @@ impl ServerState {
             Arc::new(NonInteractiveApprover::new(cache.clone()))
         }
     }
-    pub fn with_providers(mut self, providers: Vec<(String, Arc<dyn Provider>)>) -> Self {
-        self.providers = providers.into_iter().collect();
+    pub fn with_providers(self, providers: Vec<(String, Arc<dyn Provider>)>) -> Self {
+        *self.providers.write().expect("providers poisoned") = providers.into_iter().collect();
         self
     }
     pub fn get_provider(&self, name: &str) -> Option<Arc<dyn Provider>> {
-        self.providers.get(name).cloned()
+        self.providers
+            .read()
+            .expect("providers poisoned")
+            .get(name)
+            .cloned()
     }
-    pub fn with_default_model(mut self, m: ModelSpec) -> Self {
-        self.default_model = Some(m);
+    pub fn with_default_model(self, m: ModelSpec) -> Self {
+        *self.default_model.write().expect("default_model poisoned") = Some(m);
         self
+    }
+
+    /// Snapshot the titling/fallback provider. Clones the `Arc` out so no guard is
+    /// held across a provider call (hot-reload writers must not block on a turn).
+    pub fn provider_snapshot(&self) -> Option<Arc<dyn Provider>> {
+        self.provider.read().expect("provider poisoned").clone()
+    }
+
+    /// Snapshot the default model spec.
+    pub fn default_model_snapshot(&self) -> Option<ModelSpec> {
+        self.default_model
+            .read()
+            .expect("default_model poisoned")
+            .clone()
+    }
+
+    /// Look up a model spec by bare id in the registry.
+    pub fn find_model(&self, id: &str) -> Option<ModelSpec> {
+        self.model_registry
+            .read()
+            .expect("model_registry poisoned")
+            .iter()
+            .find(|m| m.r#ref.id == id)
+            .cloned()
+    }
+
+    /// Snapshot the whole model registry.
+    pub fn models_snapshot(&self) -> Vec<ModelSpec> {
+        self.model_registry
+            .read()
+            .expect("model_registry poisoned")
+            .clone()
+    }
+
+    /// Replace the model registry wholesale (hot-reload).
+    pub fn set_models(&self, models: Vec<ModelSpec>) {
+        *self
+            .model_registry
+            .write()
+            .expect("model_registry poisoned") = models;
     }
     pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
         self.cwd = cwd;

@@ -229,14 +229,19 @@ fn route(
         }))
         .into(),
 
+        // ── config hot-reload (R-SRV-CFG-100) ──
+        (Method::Post, ["config", "reload"]) => routes::config::reload(state),
+
         // ── plugin hot-reload (R-PLUG2-100) ──
         (Method::Post, ["plugin", name, "reload"]) => routes::plugin::reload(state, name),
 
         // ── plugin hot-load (new plugin without restart) ──
-        (Method::Post, ["plugin", "load"]) => match parse_json::<routes::plugin::LoadPluginReq>(req) {
-            Ok(body) => routes::plugin::load(state, body),
-            Err(e) => e.into(),
-        },
+        (Method::Post, ["plugin", "load"]) => {
+            match parse_json::<routes::plugin::LoadPluginReq>(req) {
+                Ok(body) => routes::plugin::load(state, body),
+                Err(e) => e.into(),
+            }
+        }
 
         // ── 96E-28 generic interaction ──
         (Method::Post, ["ui-respond"]) => match parse_json::<api::UiRespondReq>(req) {

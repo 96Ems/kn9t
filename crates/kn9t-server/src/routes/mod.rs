@@ -3,6 +3,7 @@
 //! `crate::sse` because it hijacks the socket.
 
 pub mod blob;
+pub mod config;
 pub mod cost;
 pub mod interaction;
 pub mod models;
