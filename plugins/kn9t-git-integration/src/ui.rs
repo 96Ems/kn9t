@@ -93,7 +93,7 @@ fn diff_file_to_json(f: &DiffFile) -> serde_json::Value {
 pub const LUA_SOURCE: &str = r##"
 -- View state. Survives `ui_set_state`, which only replaces repo data.
 V = {
-  mode = "status",   -- "status" | "diff" | "graph"
+  mode = "status",   -- "status" | "diff" | "graph" | "commit"
   split = false,     -- side-by-side vs unified, diff mode only
   tree = true,       -- show the file list
   file = 1,          -- 1-based index into state.diff
@@ -113,6 +113,11 @@ V = {
   -- Refs panel
   refs_cursor = 1,
   show_refs = false,
+  -- Commit view (when viewing a specific commit's diff)
+  commit_sha = nil,    -- sha of commit being viewed
+  commit_file = 1,     -- file index in commit diff
+  commit_cursor = 1,   -- line cursor in commit diff
+  commit_scroll = 0,
 }
 
 local LAST = nil  -- most recent state, so handlers can see repo data
@@ -120,6 +125,44 @@ local LAST = nil  -- most recent state, so handlers can see repo data
 local function files()
   if LAST == nil or LAST.diff == nil then return {} end
   return LAST.diff
+end
+
+-- Get commits from recent log (filtering out graph-only lines)
+local function commits()
+  if LAST == nil or LAST.repo == nil or LAST.repo.recent == nil then return {} end
+  local out = {}
+  for _, l in ipairs(LAST.repo.recent) do
+    if l.sha and l.sha ~= "" then
+      table.insert(out, l)
+    end
+  end
+  return out
+end
+
+-- Get commit diff files (if viewing a specific commit)
+local function commit_files()
+  if LAST == nil or LAST.commit_diff == nil then return {} end
+  return LAST.commit_diff
+end
+
+local function cur_commit_file()
+  local f = commit_files()
+  if #f == 0 then return nil end
+  if V.commit_file > #f then V.commit_file = #f end
+  if V.commit_file < 1 then V.commit_file = 1 end
+  return f[V.commit_file]
+end
+
+-- Clamp graph cursor
+local function clamp_graph_cursor()
+  local c = commits()
+  if V.graph_cursor < 1 then V.graph_cursor = 1 end
+  if #c > 0 and V.graph_cursor > #c then V.graph_cursor = #c end
+  -- Scroll adjustment
+  local view = math.max(1, V.height - 3)
+  if V.graph_cursor <= V.graph_scroll then V.graph_scroll = V.graph_cursor - 1 end
+  if V.graph_cursor > V.graph_scroll + view then V.graph_scroll = V.graph_cursor - view end
+  if V.graph_scroll < 0 then V.graph_scroll = 0 end
 end
 
 local function cur_file()
@@ -185,26 +228,97 @@ local function bind(key, fn)
   end)
 end
 
-bind("j", function() V.cursor = V.cursor + 1; clamp_cursor(#rows(cur_file())) end)
-bind("k", function() V.cursor = V.cursor - 1; clamp_cursor(#rows(cur_file())) end)
-bind("Down", function() V.cursor = V.cursor + 1; clamp_cursor(#rows(cur_file())) end)
-bind("Up", function() V.cursor = V.cursor - 1; clamp_cursor(#rows(cur_file())) end)
+bind("j", function()
+  if V.mode == "graph" then
+    V.graph_cursor = V.graph_cursor + 1
+    clamp_graph_cursor()
+  elseif V.mode == "commit" then
+    V.commit_cursor = V.commit_cursor + 1
+    clamp_cursor(#rows(cur_commit_file()))
+  else
+    V.cursor = V.cursor + 1
+    clamp_cursor(#rows(cur_file()))
+  end
+end)
+bind("k", function()
+  if V.mode == "graph" then
+    V.graph_cursor = V.graph_cursor - 1
+    clamp_graph_cursor()
+  elseif V.mode == "commit" then
+    V.commit_cursor = V.commit_cursor - 1
+    clamp_cursor(#rows(cur_commit_file()))
+  else
+    V.cursor = V.cursor - 1
+    clamp_cursor(#rows(cur_file()))
+  end
+end)
+bind("Down", function()
+  if V.mode == "graph" then
+    V.graph_cursor = V.graph_cursor + 1
+    clamp_graph_cursor()
+  elseif V.mode == "commit" then
+    V.commit_cursor = V.commit_cursor + 1
+    clamp_cursor(#rows(cur_commit_file()))
+  else
+    V.cursor = V.cursor + 1
+    clamp_cursor(#rows(cur_file()))
+  end
+end)
+bind("Up", function()
+  if V.mode == "graph" then
+    V.graph_cursor = V.graph_cursor - 1
+    clamp_graph_cursor()
+  elseif V.mode == "commit" then
+    V.commit_cursor = V.commit_cursor - 1
+    clamp_cursor(#rows(cur_commit_file()))
+  else
+    V.cursor = V.cursor - 1
+    clamp_cursor(#rows(cur_file()))
+  end
+end)
 
 bind("PageDown", function()
-  V.cursor = V.cursor + math.max(1, V.height - 2)
-  clamp_cursor(#rows(cur_file()))
+  local step = math.max(1, V.height - 2)
+  if V.mode == "graph" then
+    V.graph_cursor = V.graph_cursor + step
+    clamp_graph_cursor()
+  elseif V.mode == "commit" then
+    V.commit_cursor = V.commit_cursor + step
+    clamp_cursor(#rows(cur_commit_file()))
+  else
+    V.cursor = V.cursor + step
+    clamp_cursor(#rows(cur_file()))
+  end
 end)
 bind("PageUp", function()
-  V.cursor = V.cursor - math.max(1, V.height - 2)
-  clamp_cursor(#rows(cur_file()))
+  local step = math.max(1, V.height - 2)
+  if V.mode == "graph" then
+    V.graph_cursor = V.graph_cursor - step
+    clamp_graph_cursor()
+  elseif V.mode == "commit" then
+    V.commit_cursor = V.commit_cursor - step
+    clamp_cursor(#rows(cur_commit_file()))
+  else
+    V.cursor = V.cursor - step
+    clamp_cursor(#rows(cur_file()))
+  end
 end)
 
 bind("n", function()
-  local f = files()
-  if V.file < #f then V.file = V.file + 1; V.cursor = 1; V.scroll = 0 end
+  if V.mode == "commit" then
+    local f = commit_files()
+    if V.commit_file < #f then V.commit_file = V.commit_file + 1; V.commit_cursor = 1; V.commit_scroll = 0 end
+  else
+    local f = files()
+    if V.file < #f then V.file = V.file + 1; V.cursor = 1; V.scroll = 0 end
+  end
 end)
 bind("p", function()
-  if V.file > 1 then V.file = V.file - 1; V.cursor = 1; V.scroll = 0 end
+  if V.mode == "commit" then
+    if V.commit_file > 1 then V.commit_file = V.commit_file - 1; V.commit_cursor = 1; V.commit_scroll = 0 end
+  else
+    if V.file > 1 then V.file = V.file - 1; V.cursor = 1; V.scroll = 0 end
+  end
 end)
 
 -- Next/previous hunk header, falling through to the next/previous file when
@@ -235,6 +349,8 @@ bind("b", function() V.tree = not V.tree end)
 bind("d", function()
   if V.mode == "diff" then
     V.mode = "status"
+  elseif V.mode == "commit" then
+    V.mode = "graph"  -- back to graph from commit view
   else
     V.mode = "diff"
   end
@@ -246,11 +362,45 @@ end)
 bind("g", function()
   if V.mode == "graph" then
     V.mode = "status"
+  elseif V.mode == "commit" then
+    V.mode = "graph"  -- back to graph from commit view
   else
     V.mode = "graph"
     V.graph_cursor = 1
     V.graph_scroll = 0
   end
+end)
+
+-- Enter: view commit diff in graph mode, or select in other modes
+bind("Enter", function()
+  if V.mode == "graph" then
+    local c = commits()
+    if #c > 0 and V.graph_cursor <= #c then
+      local commit = c[V.graph_cursor]
+      if commit and commit.sha and commit.sha ~= "" then
+        V.commit_sha = commit.sha
+        V.commit_file = 1
+        V.commit_cursor = 1
+        V.commit_scroll = 0
+        V.mode = "commit"
+      end
+    end
+    return true
+  end
+  return true
+end)
+
+-- Escape/Backspace: go back from commit view to graph
+bind("Backspace", function()
+  if V.typing ~= nil then
+    V.typing = string.sub(V.typing, 1, -2)
+    return true
+  end
+  if V.mode == "commit" then
+    V.mode = "graph"
+    return true
+  end
+  return true
 end)
 
 -- Toggle refs panel
@@ -576,6 +726,7 @@ local function graph_view(repo)
   
   local footer_spans = {
     { text = "[j/k]", fg = "cyan" }, { text = " nav  ", fg = "darkgray" },
+    { text = "[Enter]", fg = "cyan" }, { text = " view  ", fg = "darkgray" },
     { text = "[g]", fg = "cyan" }, { text = " close  ", fg = "darkgray" },
     { text = "[d]", fg = "cyan" }, { text = " diff  ", fg = "darkgray" },
     { text = "[r]", fg = "cyan" }, { text = " refs", fg = "darkgray" },
@@ -597,6 +748,90 @@ local function graph_view(repo)
     }
   end
   return { type = "split", direction = "vertical", children = children }
+end
+
+-- Commit detail view: show commit info and its diff
+local function commit_view(repo)
+  -- Find the selected commit
+  local commit = nil
+  for _, l in ipairs(repo.recent or {}) do
+    if l.sha == V.commit_sha then
+      commit = l
+      break
+    end
+  end
+  
+  if commit == nil then
+    return { type = "text", content = "Commit not found: " .. (V.commit_sha or "nil"), fg = "lightred" }
+  end
+  
+  local out = {}
+  
+  -- Header with commit info
+  table.insert(out, { type = "text", spans = {
+    { text = " Commit ", fg = "cyan", bold = true },
+    { text = commit.sha, fg = "yellow", bold = true },
+  }, size = { fixed = 1 }, wrap = false })
+  
+  table.insert(out, { type = "text", spans = {
+    { text = " Author: ", fg = "darkgray" },
+    { text = commit.author or "?", fg = "white" },
+    { text = "  ", fg = "darkgray" },
+    { text = commit.date or "", fg = "darkgray" },
+  }, size = { fixed = 1 }, wrap = false })
+  
+  -- Refs/branches
+  local refs = commit.refs or {}
+  if #refs > 0 then
+    local ref_spans = { { text = " Refs: ", fg = "darkgray" } }
+    for i, ref in ipairs(refs) do
+      if ref ~= "" then
+        if i > 1 then table.insert(ref_spans, { text = ", ", fg = "darkgray" }) end
+        table.insert(ref_spans, { text = ref, fg = ref_color(ref) })
+      end
+    end
+    table.insert(out, { type = "text", spans = ref_spans, size = { fixed = 1 }, wrap = false })
+  end
+  
+  table.insert(out, { type = "text", content = "", size = { fixed = 1 } })
+  table.insert(out, { type = "text", spans = {
+    { text = " ", fg = "white" },
+    { text = commit.subject, fg = "white", bold = true },
+  }, size = { fixed = 1 }, wrap = false })
+  
+  table.insert(out, { type = "text", content = "", size = { fixed = 1 } })
+  
+  -- Show diff if available (commit_diff from Rust)
+  local cdiff = commit_files()
+  if #cdiff > 0 then
+    table.insert(out, { type = "text", content = string.format(" Changed files: %d", #cdiff), 
+                        fg = "darkgray", size = { fixed = 1 }, wrap = false })
+    
+    for _, f in ipairs(cdiff) do
+      local col = "yellow"
+      if f.status == "A" then col = "green"
+      elseif f.status == "D" then col = "lightred" end
+      table.insert(out, { type = "text", spans = {
+        { text = "  " .. f.status .. " ", fg = col },
+        { text = f.path .. " ", fg = "white" },
+        { text = "+" .. (f.additions or 0), fg = "green" },
+        { text = " -" .. (f.deletions or 0), fg = "lightred" },
+      }, size = { fixed = 1 }, wrap = false })
+    end
+  else
+    table.insert(out, { type = "text", content = " (diff not loaded - use git show " .. commit.sha .. ")", 
+                        fg = "darkgray", size = { fixed = 1 }, wrap = false })
+  end
+  
+  -- Help bar
+  table.insert(out, { type = "spacer", size = { flex = 1 } })
+  table.insert(out, { type = "text", spans = {
+    { text = "[Backspace]", fg = "cyan" }, { text = " back  ", fg = "darkgray" },
+    { text = "[g]", fg = "cyan" }, { text = " graph  ", fg = "darkgray" },
+    { text = "[d]", fg = "cyan" }, { text = " working diff", fg = "darkgray" },
+  }, size = { fixed = 1 }, wrap = false })
+  
+  return { type = "split", direction = "vertical", children = out }
 end
 
 local function file_list()
@@ -747,6 +982,8 @@ function render(state)
     return diff_view()
   elseif V.mode == "graph" then
     return graph_view(state.repo)
+  elseif V.mode == "commit" then
+    return commit_view(state.repo)
   end
   return status_view(state.repo)
 end
