@@ -38,6 +38,8 @@ pub struct Theme {
     pub tool_card_bg: Color,
     /// Background for user messages to distinguish them visually.
     pub user_msg_bg: Color,
+    /// Current theme mode: "light" or "dark" (for toggling).
+    pub mode: String,
 }
 
 impl Default for Theme {
@@ -74,6 +76,7 @@ impl Theme {
             input_value: Color::White,
             tool_card_bg: Color::Rgb(30, 33, 39),
             user_msg_bg: Color::Rgb(20, 35, 45), // Subtle teal background for user messages
+            mode: "dark".into(),
         }
     }
 
@@ -103,11 +106,12 @@ impl Theme {
             input_value: Color::Black,
             user_msg_bg: Color::Rgb(220, 235, 245), // Subtle light blue background for user messages
             tool_card_bg: Color::Rgb(240, 242, 246),
+            mode: "light".into(),
         }
     }
 
     pub fn from_config(section: ThemeSection) -> Self {
-        let base = match section.mode.as_deref() {
+        let mut theme = match section.mode.as_deref() {
             Some("light") => Self::light(),
             Some("dark") => Self::dark(),
             Some("auto") | None => Self::auto_detect(),
@@ -115,10 +119,9 @@ impl Theme {
         };
 
         if let Some(colors) = section.colors {
-            base.with_overrides(colors)
-        } else {
-            base
+            theme = theme.with_overrides(colors);
         }
+        theme
     }
 
     /// Auto-detect light/dark mode from terminal environment.
@@ -151,6 +154,23 @@ impl Theme {
 
         // Default to dark theme (most common for developer terminals)
         Self::dark()
+    }
+
+    /// Get the current theme mode ("light" or "dark").
+    pub fn get_mode(&self) -> &str {
+        &self.mode
+    }
+
+    /// Toggle between light and dark mode.
+    pub fn toggle_mode(&mut self) {
+        let new_theme = match self.mode.as_str() {
+            "dark" => Self::light(),
+            _ => Self::dark(),
+        };
+
+        // Copy over color overrides from current theme
+        // (user's customizations should persist when toggling)
+        *self = new_theme;
     }
 
     fn with_overrides(mut self, colors: HashMap<String, String>) -> Self {

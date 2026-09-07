@@ -393,6 +393,7 @@ pub struct App {
     pub active_interaction_id: Option<u64>,
     pub slash: SlashState,
     pub quit: bool,
+    pub theme_mode: String, // "light" or "dark"
 
     // Tool mode state (UI-local).
     pub tool_mode: bool,
@@ -449,6 +450,21 @@ pub struct App {
     /// Same as `lua_click_areas` but for `kn9t.register_panel` floats, which
     /// render after (on top of) the base tree and so must be checked first.
     pub lua_panel_click_areas: Vec<(String, ratatui::layout::Rect)>,
+    /// `(plugin, id, rect)` for every `id="..."` widget inside a plugin view's
+    /// own subtree, recorded per frame by `render_plugin_views`.
+    ///
+    /// Separate from `lua_click_areas` because dispatch has to know which
+    /// plugin owns the id: the registries are keyed by `(plugin, id)` so two
+    /// plugins may legitimately use the same id.
+    pub plugin_click_areas: Vec<(String, String, ratatui::layout::Rect)>,
+    /// `(plugin, rect)` for each plugin view drawn last frame. Clicking inside
+    /// one focuses it, which is what routes subsequent keys there.
+    pub plugin_view_areas: Vec<(String, ratatui::layout::Rect)>,
+    /// Which plugin view currently receives keys, if any.
+    ///
+    /// Focus is required for key routing so a plugin cannot swallow global
+    /// keys while its panel merely happens to be visible.
+    pub focused_plugin: Option<String>,
 
     /// Lua key handlers, refreshed on every config (re)load.
     pub lua_keymaps: crate::lua::keymap::KeymapRegistry,
@@ -479,6 +495,7 @@ pub struct App {
 impl App {
     pub fn new(config: Config, tick_ctl: TickControl) -> Self {
         let keybinds = Keybinds::new(&config.keybinds);
+        let theme_mode = config.theme.get_mode().to_string();
 
         Self {
             config,
@@ -514,6 +531,7 @@ impl App {
             active_interaction_id: None,
             slash: SlashState::new(),
             quit: false,
+            theme_mode,
             tool_mode: false,
             focused_tool: None,
             tool_hit_areas: Vec::new(),
@@ -531,6 +549,9 @@ impl App {
             input_width: None,
             lua_click_areas: Vec::new(),
             lua_panel_click_areas: Vec::new(),
+            plugin_click_areas: Vec::new(),
+            plugin_view_areas: Vec::new(),
+            focused_plugin: None,
             lua_keymaps: crate::lua::keymap::KeymapRegistry::new(),
             lua_clicks: crate::lua::click::ClickRegistry::new(),
             lua_commands: crate::lua::commands::LuaCommandRegistry::new(),
@@ -4211,10 +4232,11 @@ impl App {
 
             // Settings
             "theme_toggle" => {
-                // TODO: implement theme toggle
+                self.config.theme.toggle_mode();
+                self.theme_mode = self.config.theme.get_mode().to_string();
                 self.transcript.push(Message::new(
                     "system",
-                    "Theme toggle is planned for a future release.",
+                    &format!("Theme toggled to {}.", self.theme_mode),
                 ));
             }
             "quit" => {
