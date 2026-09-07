@@ -217,6 +217,8 @@ impl WidgetStyle {
 pub struct TextSpan {
     pub text: String,
     pub style: WidgetStyle,
+    /// File path for syntax highlighting (extension is extracted automatically).
+    pub syntax: Option<String>,
 }
 
 /// Horizontal alignment of a `text` widget's content.
@@ -325,6 +327,7 @@ fn parse_spans(table: &Table, fallback: &WidgetStyle) -> LuaResult<Vec<TextSpan>
                 Ok(Value::String(s)) => out.push(TextSpan {
                     text: s.to_str()?.to_string(),
                     style: fallback.clone(),
+                    syntax: None,
                 }),
                 Ok(Value::Table(t)) => {
                     let text: String = t.get("text").unwrap_or_default();
@@ -337,7 +340,8 @@ fn parse_spans(table: &Table, fallback: &WidgetStyle) -> LuaResult<Vec<TextSpan>
                     if style.bg.is_none() {
                         style.bg = fallback.bg;
                     }
-                    out.push(TextSpan { text, style });
+                    let syntax: Option<String> = t.get("syntax").ok();
+                    out.push(TextSpan { text, style, syntax });
                 }
                 _ => {}
             }
@@ -349,6 +353,7 @@ fn parse_spans(table: &Table, fallback: &WidgetStyle) -> LuaResult<Vec<TextSpan>
     Ok(vec![TextSpan {
         text: content,
         style: fallback.clone(),
+        syntax: None,
     }])
 }
 
@@ -506,6 +511,7 @@ fn parse_list_widget(table: &Table) -> LuaResult<Widget> {
                 Ok(Value::String(s)) => items.push(vec![TextSpan {
                     text: s.to_str()?.to_string(),
                     style: style.clone(),
+                    syntax: None,
                 }]),
                 // A table item is a styled row: either {text=...} or {spans=...}.
                 Ok(Value::Table(t)) => items.push(parse_spans(&t, &style)?),
@@ -684,7 +690,7 @@ pub fn parse_status_spans(table: &Table) -> Vec<TextSpan> {
                 .ok()
                 .and_then(|s| crate::theme::parse_color(&s));
         }
-        out.push(TextSpan { text, style });
+        out.push(TextSpan { text, style, syntax: None });
     }
     out
 }
@@ -695,13 +701,30 @@ fn join_spans(spans: &[TextSpan]) -> String {
 }
 
 /// Convert one span run into a single ratatui line.
+///
+/// When a span has `syntax` set (a file path), extracts the extension and
+/// applies syntax highlighting while preserving background color.
 fn spans_to_line(spans: &[TextSpan], theme: &Theme) -> Line<'static> {
-    Line::from(
-        spans
-            .iter()
-            .map(|s| Span::styled(s.text.clone(), s.style.to_ratatui_style(theme)))
-            .collect::<Vec<_>>(),
-    )
+    let mut out: Vec<Span<'static>> = Vec::new();
+    for s in spans {
+        if let Some(ref path) = s.syntax {
+            // Extract language from file path extension
+            let lang = std::path::Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str());
+            let highlighted = crate::syntax::highlight_code_inline(&s.text, lang, theme);
+            // Preserve background if set
+            for mut hl_span in highlighted {
+                if let Some(bg) = s.style.bg {
+                    hl_span.style = hl_span.style.bg(bg);
+                }
+                out.push(hl_span);
+            }
+        } else {
+            out.push(Span::styled(s.text.clone(), s.style.to_ratatui_style(theme)));
+        }
+    }
+    Line::from(out)
 }
 
 /// Convert a span run into lines, splitting on embedded newlines.

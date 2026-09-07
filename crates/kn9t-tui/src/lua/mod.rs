@@ -525,7 +525,12 @@ impl LuaRuntime {
     pub fn drain_keymaps(&self, registry: &mut keymap::KeymapRegistry) -> usize {
         let state = self.inner.read().unwrap();
         match keymap::drain_pending_maps(&state.lua, registry) {
-            Ok(n) => n,
+            Ok(n) => {
+                if n > 0 {
+                    crate::log!("Lua keymaps: {} applied ({} total bound)", n, registry.len());
+                }
+                n
+            }
             Err(e) => {
                 crate::log!("Failed to drain Lua keymaps: {}", e);
                 0
@@ -838,6 +843,7 @@ impl LuaRuntime {
                 vec![widgets::TextSpan {
                     text: s.to_string(),
                     style: widgets::WidgetStyle::default(),
+                    syntax: None,
                 }]
             }),
             Ok(Value::Table(t)) => {

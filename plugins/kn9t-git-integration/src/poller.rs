@@ -78,28 +78,13 @@ fn run(host: HostApiClient, cwd: PathBuf) {
         // idempotent re-sending is the only thing that self-heals. The cost is
         // ~12 KB over a local pipe every few seconds, and the host's
         // `register()` replaces the entry rather than accumulating.
-        //
-        // Two views: "files" in sidebar for navigation, "diff" in main for content.
-        let reg_files = host
+        let registered = host
             .call(
                 "ui_register_lua",
                 serde_json::json!({
-                    "id": "files",
-                    "source": ui::LUA_FILES,
-                    "placement": "sidebar",
-                    "title": "Git",
-                }),
-            )
-            .is_ok();
-
-        let reg_diff = host
-            .call(
-                "ui_register_lua",
-                serde_json::json!({
-                    "id": "diff",
-                    "source": ui::LUA_DIFF,
+                    "source": ui::LUA_SOURCE,
                     "placement": "main",
-                    "title": "Diff",
+                    "title": "Git",
                     "rows": 30,
                 }),
             )
@@ -115,18 +100,14 @@ fn run(host: HostApiClient, cwd: PathBuf) {
         tick = tick.wrapping_add(1);
 
         let payload = ui::state_to_json(state.as_ref(), &files);
-        // Push the same state to both views.
-        let push_files = host
-            .call("ui_set_state", serde_json::json!({ "id": "files", "state": payload }))
-            .is_ok();
-        let push_diff = host
-            .call("ui_set_state", serde_json::json!({ "id": "diff", "state": payload }))
+        let pushed = host
+            .call("ui_set_state", serde_json::json!({ "state": payload }))
             .is_ok();
 
-        // Only a failure of *all* counts as "the session is gone": a transient
-        // error on one of them would otherwise creep toward the give-up
+        // Only a failure of *both* counts as "the session is gone": a transient
+        // error on one of the two would otherwise creep toward the give-up
         // threshold during a perfectly healthy session.
-        if reg_files || reg_diff || push_files || push_diff {
+        if registered || pushed {
             consecutive_failures = 0;
         } else {
             consecutive_failures += 1;

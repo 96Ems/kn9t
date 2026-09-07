@@ -566,9 +566,16 @@ impl App {
         };
         let config_dir = crate::lua::default_config_dir();
 
+        // Ensure the tui/ directory has config files, copying defaults if empty.
+        // This makes the config immediately editable by the user.
+        if let Some(ref dir) = config_dir {
+            if let Err(e) = crate::lua::default_config::ensure_tui_config(dir) {
+                crate::log!("Lua: failed to initialize tui config: {}", e);
+            }
+        }
+
         // Ship a working UI with zero setup: the built-in Lua below is the
         // baseline, and the user file (if any) only overrides parts of it.
-        // Nothing is written to disk — see `--export-config`.
 
         let runtime = match crate::lua::LuaRuntime::new() {
             Ok(rt) => Arc::new(rt),
@@ -578,24 +585,14 @@ impl App {
             }
         };
 
-        // Load the built-in UI first: kn9t is a self-contained binary, so the
-        // baseline interface must not depend on any file existing on disk.
-        runtime.load_builtin();
-
-        // Publish the palette and native-view list before the user's config
+        // Publish the palette and native-view list before the config
         // runs, so it can reference `kn9t.theme.user` at load time.
         runtime.install_environment(&self.config.theme);
 
-        // Then layer the user's config over it. `~/.kn9t/tui/` (a directory of
-        // numbered files) takes precedence over `~/.kn9t/tui.lua` when it
-        // actually has content — see `ConfigSource::resolve`.
-        match &config_dir {
-            Some(dir) => {
-                runtime.load_config(dir, &config_path);
-            }
-            None => {
-                runtime.load_file(&config_path);
-            }
+        // Load the user's config from `~/.kn9t/tui/`. The directory was
+        // populated with defaults by ensure_tui_config above if empty.
+        if let Some(dir) = &config_dir {
+            runtime.load_dir(dir);
         }
 
         // 96E-43: Process any panels registered during load

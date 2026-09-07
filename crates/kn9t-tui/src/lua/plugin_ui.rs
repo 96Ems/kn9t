@@ -143,6 +143,9 @@ struct PluginUi {
     /// What the plugin asked for, layout-wise. Surfaced to Lua so a config can
     /// route by zone instead of by plugin name.
     placement: PluginPlacement,
+    /// Hash of the Lua source, so re-registering with identical source skips
+    /// re-execution and preserves view state (V).
+    source_hash: u64,
 }
 
 /// All plugin-supplied UIs, keyed by `plugin` name.
@@ -163,6 +166,10 @@ impl PluginUiRegistry {
     ///
     /// A load failure is recorded rather than returned: one broken plugin must
     /// not abort the frame or block other plugins from registering.
+    ///
+    /// If the source is identical to the previously registered source (same hash),
+    /// we skip re-execution to preserve view state (`V`). This allows plugins to
+    /// idempotently re-register every poll without resetting cursor/mode/etc.
     pub fn register(
         &mut self,
         lua: &Lua,
@@ -170,6 +177,25 @@ impl PluginUiRegistry {
         source: &str,
         placement: PluginPlacement,
     ) {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        source.hash(&mut hasher);
+        let new_hash = hasher.finish();
+
+        crate::log!(
+            "plugin_ui register: plugin={} placement={:?}",
+            plugin,
+            placement.zone
+        );
+
+        // If source unchanged, just update placement (in case it changed) and return.
+        if let Some(existing) = self.uis.get_mut(plugin) {
+            if existing.source_hash == new_hash {
+                existing.placement = placement;
+                return;
+            }
+        }
+
         // A re-register is a hot-reload: the new chunk rebinds what it wants, so
         // anything left from the previous version would be a stale closure over
         // an env nothing else references.
@@ -219,6 +245,7 @@ impl PluginUiRegistry {
                 state,
                 error,
                 placement,
+                source_hash: new_hash,
             },
         );
     }
@@ -329,6 +356,7 @@ impl PluginUiRegistry {
                     state: value,
                     error: Some("awaiting ui_register_lua".to_string()),
                     placement: PluginPlacement::default(),
+                    source_hash: 0,
                 },
             );
         }

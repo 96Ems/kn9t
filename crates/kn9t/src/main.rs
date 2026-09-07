@@ -25,6 +25,7 @@ mod cmd_sessions;
 mod cmd_status;
 mod cmd_stop;
 mod cmd_tools;
+mod cmd_tui;
 mod http;
 
 use std::env;
@@ -189,6 +190,7 @@ fn print_help() {
     println!("    --no-build                       Skip auto-build; copy existing only");
     println!("    --force                          Overwrite existing plugins");
     println!("    --rebuild                        Force rebuild (implies --force)");
+    println!("  kn9t tui reset [--force]          Reset TUI config to defaults");
     println!("  kn9t help | --help | -h           Show this help");
     println!("  kn9t --version | -V | version     Show version");
     println!();
@@ -395,6 +397,11 @@ fn main() {
             "install-plugins" => {
                 // Does NOT require server — local-only operation.
                 cmd_install_plugins::run(&args[2..]);
+                return;
+            }
+            "tui" => {
+                // Does NOT require server — local-only operation.
+                cmd_tui::run(&args[2..]);
                 return;
             }
             "help" => {
