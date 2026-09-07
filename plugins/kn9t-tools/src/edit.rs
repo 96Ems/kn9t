@@ -235,7 +235,8 @@ impl PluginTool for Edit {
             name: "edit".into(),
             description: "Replace text in a file. Supports exact and fuzzy matching \
                 (handles smart quotes, dashes, special spaces). The file must have been \
-                read first ('read' tool) and must not have been modified since. \
+                observed first — via 'read', or a 'bash' command naming the file — and \
+                must not have been modified since. \
                 Line endings (CRLF/LF) are preserved."
                 .into(),
             schema: json!({
@@ -293,12 +294,12 @@ impl PluginTool for Edit {
                     .unwrap_or(SystemTime::UNIX_EPOCH);
                 if current_mtime > *tracked_mtime {
                     return ToolOutput::error(
-                        "file was modified since last read — re-read it before editing",
+                        "file was modified since it was last observed — re-read it before editing",
                     );
                 }
             } else {
                 return ToolOutput::error(
-                    "file has not been read — use 'read' before 'edit'",
+                    "file has not been read — use 'read' (or a 'bash' command naming the file) before 'edit'",
                 );
             }
         }

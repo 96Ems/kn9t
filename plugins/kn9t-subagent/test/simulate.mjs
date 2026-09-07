@@ -1,7 +1,7 @@
 // Simulated-host harness for kn9t-subagent. Two scenarios:
 //  1. default (recursion allowed): a hook arrives WHILE the plugin awaits an
 //     api_result — it must be served inline (event pump), proving re-entrancy;
-//  2. KN9T_SUBAGENT_RECURSION=deny: the child toolset excludes spawn_session.
+//  2. KN9T_SUBAGENT_RECURSION=deny: the child toolset excludes subagent.
 import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
 
@@ -39,19 +39,19 @@ async function scenario1_reentrancy() {
   const { proc, send, waitFor, got, kill } = launch();
   send({ t: "hello", proto: 1, kn9t: "0.1.0-test" });
   const hello = await waitFor((m) => m.t === "hello" && m.name, "plugin hello");
-  assert.equal(hello.tools[0].name, "spawn_session");
+  assert.equal(hello.tools[0].name, "subagent");
   console.log("✓ hello:", hello.name);
 
-  // The agent calls spawn_session on the PARENT session.
+  // The agent calls subagent on the PARENT session.
   send({
     t: "hook",
     id: 42,
     hook: "tool_call",
-    payload: { tool: "spawn_session", args: { task: "check the diff" }, session: "parent-001" },
+    payload: { tool: "subagent", args: { task: "check the diff" }, session: "parent-001" },
   });
 
   // Serve requests; on session_prompt, FIRST throw a nested tool_call at the
-  // plugin (the CHILD calling spawn_session) — it must be served inline.
+  // plugin (the CHILD calling subagent) — it must be served inline.
   const seen = { fork: 0, prompt: 0, nFork: 0, nPrompt: 0 };
   let outerPromptId = 0;
   const deadline = Date.now() + 15000;
@@ -70,12 +70,12 @@ async function scenario1_reentrancy() {
         assert.equal(req.payload.session, "child-900");
         assert.equal(req.payload.tools, undefined, "recursion allowed → inherit toolset");
         assert.ok(req.payload.text.includes("sub-agent session"), "child task directive");
-        // Re-entrancy: the child calls spawn_session WHILE we owe the prompt reply.
+        // Re-entrancy: the child calls subagent WHILE we owe the prompt reply.
         send({
           t: "hook",
           id: 77,
           hook: "tool_call",
-          payload: { tool: "spawn_session", args: { task: "say hi" }, session: "child-900" },
+          payload: { tool: "subagent", args: { task: "say hi" }, session: "child-900" },
         });
         // The nested spawn will be served before we reply — wait for its fork.
       } else if (req.op === "session_fork" && seen.fork > 0 && seen.prompt > 0) {
@@ -142,7 +142,7 @@ async function scenario2_recursion_denied() {
     t: "hook",
     id: 9,
     hook: "tool_call",
-    payload: { tool: "spawn_session", args: { task: "list files" }, session: "parent-002" },
+    payload: { tool: "subagent", args: { task: "list files" }, session: "parent-002" },
   });
 
   const seen = { list: 0, fork: 0, prompt: 0 };
@@ -158,7 +158,7 @@ async function scenario2_recursion_denied() {
           t: "api_result",
           id: req.id,
           ok: true,
-          result: { tools: ["bash", "read", "spawn_session", "mcp_list_servers"] },
+          result: { tools: ["bash", "read", "subagent", "mcp_list_servers"] },
         });
       } else if (req.op === "session_fork") {
         seen.fork++;
@@ -168,8 +168,8 @@ async function scenario2_recursion_denied() {
         assert.ok(Array.isArray(req.payload.tools), "deny → explicit toolset");
         assert.ok(req.payload.tools.includes("bash"), "regular tools inherited");
         assert.ok(
-          !req.payload.tools.includes("spawn_session"),
-          `deny → spawn_session excluded, got ${JSON.stringify(req.payload.tools)}`
+          !req.payload.tools.includes("subagent"),
+          `deny → subagent excluded, got ${JSON.stringify(req.payload.tools)}`
         );
         send({
           t: "api_result",
@@ -186,7 +186,7 @@ async function scenario2_recursion_denied() {
     if (done) {
       assert.ok(!done.is_error, `tool error: ${JSON.stringify(done.content)}`);
       assert.equal(seen.list, 1, "tool_list consulted");
-      console.log("✓ scenario 2 (recursion denied): child toolset excludes spawn_session");
+      console.log("✓ scenario 2 (recursion denied): child toolset excludes subagent");
       kill();
       return;
     }

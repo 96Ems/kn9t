@@ -5,7 +5,7 @@
 use kn9t_plugin_sdk::{ctx::ToolCallCtx, traits::{PluginTool, ToolOutput}, wire::{DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec}};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
@@ -15,6 +15,25 @@ pub static READ_MAP: OnceLock<Arc<Mutex<HashMap<PathBuf, ([u8; 32], SystemTime)>
 
 pub fn read_map() -> Arc<Mutex<HashMap<PathBuf, ([u8; 32], SystemTime)>>> {
     Arc::clone(READ_MAP.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))))
+}
+
+/// Record a path as read, hashing its current bytes.
+///
+/// Any tool that puts a file's content in front of the model satisfies the same
+/// precondition as `read`, so it must be able to register the path — otherwise
+/// `edit` demands a redundant `read` round-trip for content the model already has.
+/// Returns false when the path is unreadable (not a file, permission denied), in
+/// which case nothing is recorded and the stale guard still applies.
+pub fn track_as_read(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else { return false };
+    let mtime = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    read_map()
+        .lock()
+        .unwrap()
+        .insert(path.to_path_buf(), (sha256(&bytes), mtime));
+    true
 }
 
 pub struct Read;

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Pilot plugin proving the session-based sub-agent primitives: exposes a spawn_session tool that forks a real kn9t session (fork_reason=subagent) and runs a synchronous turn on it via the host_api ops (session_fork + session_prompt). A sub-agent is just a spawned session — no special concept.",
+  "description": "Pilot plugin proving the session-based sub-agent primitives: exposes a subagent tool that forks a real kn9t session (fork_reason=subagent) and runs a synchronous turn on it via the host_api ops (session_fork + session_prompt). A sub-agent is just a spawned session — no special concept.",
   "scripts": {
     "build": "tsc",
     "start": "node dist/main.js",

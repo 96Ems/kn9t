@@ -10,12 +10,61 @@ use kn9t_plugin_sdk::{
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crate::read::track_as_read;
+
 pub struct Bash;
+
+/// Split a command line into tokens, honouring single/double quotes so that
+/// `Get-Content "C:\path with spaces\a.rs"` yields one path token.
+fn tokenize(cmd: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in cmd.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => cur.push(c),
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if c.is_whitespace() || c == ';' || c == '|' || c == ',' => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            None => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Register every existing file named in the command as observed.
+///
+/// A `Get-Content`/`cat`/`Select-String` puts a file's content in the transcript
+/// exactly like the `read` tool does, so forcing a follow-up `read` before `edit`
+/// only burns a round-trip. Recording (hash, mtime) *after* the command has run
+/// keeps the guard's real job intact: it still fires when a third party changes
+/// the file between this observation and the write.
+fn track_paths_in(cmd: &str) {
+    const MAX_TRACKED: usize = 32;
+    let mut tracked = 0;
+    for tok in tokenize(cmd) {
+        if tracked >= MAX_TRACKED {
+            break;
+        }
+        let p = Path::new(&tok);
+        if p.is_file() && track_as_read(p) {
+            tracked += 1;
+        }
+    }
+}
 
 /// Drain a channel receiver, waiting up to `timeout` for the sender to close.
 /// Returns all collected lines.
@@ -52,11 +101,15 @@ impl PluginTool for Bash {
              Use PowerShell syntax: `Get-ChildItem` not `ls`, `Get-Content` not `cat`, \
              `Remove-Item` not `rm`, `$env:TEMP` for temp folder, backslash `\\` in paths. \
              For file writes use `-Encoding UTF8` (e.g. `Set-Content -Encoding UTF8`). \
-             Streams stdout lines as progress. Cancelled calls kill the process."
+             Streams stdout lines as progress. Cancelled calls kill the process. \
+             Existing files named in the command are registered as observed, so a \
+             following `edit`/`write` needs no separate `read`."
         } else {
             "Run a shell command (sh on Unix). \
              Use POSIX syntax. $TMPDIR or /tmp for temp files. \
-             Streams stdout lines as progress. Cancelled calls kill the process."
+             Streams stdout lines as progress. Cancelled calls kill the process. \
+             Existing files named in the command are registered as observed, so a \
+             following `edit`/`write` needs no separate `read`."
         };
         
         ToolSpec {
@@ -216,6 +269,12 @@ impl PluginTool for Bash {
         let stdout_lines = drain_with_timeout(rx, drain_timeout);
         let stderr_lines = drain_with_timeout(srx, drain_timeout);
 
+        // Files named in the command have now been observed (or produced) — record
+        // them so `edit`/`write` don't demand a redundant `read` of content the
+        // model already has. Done after the child exits so the recorded hash/mtime
+        // reflect the post-command state.
+        track_paths_in(&cmd);
+
         let mut output = stdout_lines.join("\n");
         if !stderr_lines.is_empty() {
             if !output.is_empty() { output.push('\n'); }
@@ -236,5 +295,52 @@ impl PluginTool for Bash {
                 ToolOutput::error(exit_msg)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokenize_keeps_quoted_path_whole() {
+        let toks = tokenize(r#"Get-Content "C:\a b\c.rs""#);
+        assert_eq!(toks, vec!["Get-Content", r"C:\a b\c.rs"]);
+    }
+
+    #[test]
+    fn tokenize_splits_on_pipe_and_semicolon() {
+        let toks = tokenize("Set-Location x; Get-Content a.rs | Select-Object");
+        assert_eq!(
+            toks,
+            vec!["Set-Location", "x", "Get-Content", "a.rs", "Select-Object"]
+        );
+    }
+
+    #[test]
+    fn bash_reading_a_file_satisfies_the_edit_guard() {
+        let dir = std::env::temp_dir().join("kn9t_bash_track");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("tracked.txt");
+        std::fs::write(&file, b"hello\n").unwrap();
+
+        let map = crate::read::read_map();
+        map.lock().unwrap().remove(&file);
+        assert!(!map.lock().unwrap().contains_key(&file));
+
+        track_paths_in(&format!("Get-Content \"{}\"", file.display()));
+
+        assert!(
+            map.lock().unwrap().contains_key(&file),
+            "a bash command naming the file must register it, so edit needs no extra read"
+        );
+        std::fs::remove_file(&file).ok();
+    }
+
+    #[test]
+    fn tokens_that_are_not_files_are_ignored() {
+        let before = crate::read::read_map().lock().unwrap().len();
+        track_paths_in("Get-ChildItem -Recurse -Filter *.rs");
+        assert_eq!(crate::read::read_map().lock().unwrap().len(), before);
     }
 }

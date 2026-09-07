@@ -96,11 +96,13 @@ type AfterToolCallPayload struct {
 	SessionID string          `json:"session_id"`
 	Tool      string          `json:"tool"`
 	Args      json.RawMessage `json:"args"`
+	Cwd       string          `json:"cwd"`
 	Result    json.RawMessage `json:"result"`
 }
 
 type GetSteeringPayload struct {
 	SessionID string `json:"session_id"`
+	Cwd       string `json:"cwd"`
 }
 
 type ReadArgs struct {
@@ -344,8 +346,14 @@ func (p *Plugin) handleGetSteering(id uint64, payload json.RawMessage) {
 		sid = "_default"
 	}
 
+	// Use cwd from payload if available, otherwise fall back to startup cwd
+	workspaceRoot := p.workspaceRoot
+	if data.Cwd != "" {
+		workspaceRoot = data.Cwd
+	}
+
 	// Ensure global + project AGENTS.md are queued for this session.
-	p.ensureInitial(sid)
+	p.ensureInitialWithCwd(sid, workspaceRoot)
 
 	// Drain the pending queue and build steering messages.
 	messages := p.buildSteeringMessages(sid)
@@ -390,10 +398,16 @@ func (p *Plugin) extractPaths(tool string, argsRaw json.RawMessage) []string {
 // ── AGENTS.md discovery ──────────────────────────────────────────────────────
 
 // ensureInitial queues the global and project AGENTS.md for a session if they
-// have not been injected yet (checked via KV).
+// have not been injected yet (checked via KV). Uses the startup workspaceRoot.
 func (p *Plugin) ensureInitial(sessionID string) {
+	p.ensureInitialWithCwd(sessionID, p.workspaceRoot)
+}
+
+// ensureInitialWithCwd queues the global and project AGENTS.md for a session,
+// using the provided cwd as the project root.
+func (p *Plugin) ensureInitialWithCwd(sessionID, workspaceRoot string) {
 	p.queueIfNew(sessionID, filepath.Join(p.globalConfig, "AGENTS.md"), "global")
-	p.queueIfNew(sessionID, filepath.Join(p.workspaceRoot, "AGENTS.md"), "project")
+	p.queueIfNew(sessionID, filepath.Join(workspaceRoot, "AGENTS.md"), "project")
 }
 
 func (p *Plugin) discoverFromPath(sessionID, filePath string) {

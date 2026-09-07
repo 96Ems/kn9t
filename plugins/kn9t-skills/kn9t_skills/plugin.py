@@ -123,7 +123,7 @@ class Plugin:
             return cls(config, {})
         
         skills = discover_skills(config.paths)
-        print(f"Discovered {len(skills)} skill(s)", file=sys.stderr)
+        print(f"Discovered {len(skills)} skill(s) at startup", file=sys.stderr)
         
         return cls(config, skills)
 
@@ -133,6 +133,44 @@ class Plugin:
             if session_id not in self._sessions:
                 self._sessions[session_id] = SessionState()
             return self._sessions[session_id]
+
+    def _discover_project_skills(self, cwd: str) -> None:
+        """Discover skills from the project's cwd.
+        
+        Searches common skill directory conventions relative to cwd.
+        Only discovers skills not already in self.skills (avoids duplicates).
+        """
+        from pathlib import Path
+        from kn9t_skills.skill import discover_skills
+        
+        cwd_path = Path(cwd)
+        if not cwd_path.exists():
+            return
+        
+        # Project-local skill paths
+        project_paths = [
+            cwd_path / ".kn9t" / "skills",
+            cwd_path / ".agents" / "skills",
+            cwd_path / ".agents" / "skill",
+            cwd_path / ".skills",
+            cwd_path / ".skill",
+            cwd_path / "skills",
+            cwd_path / "skill",
+        ]
+        
+        # Filter to paths that exist
+        existing_paths = [p for p in project_paths if p.exists()]
+        if not existing_paths:
+            return
+        
+        print(f"Discovering project skills from {cwd}", file=sys.stderr)
+        project_skills = discover_skills(existing_paths)
+        
+        # Merge into self.skills (don't overwrite existing)
+        for name, skill in project_skills.items():
+            if name not in self.skills:
+                self.skills[name] = skill
+                print(f"Discovered project skill: {name}", file=sys.stderr)
 
     def run(self) -> None:
         """Main loop: read stdin, dispatch, write stdout."""
@@ -224,8 +262,9 @@ class Plugin:
                 self._send_error(hook_id, f"Unknown tool: {tool_name}")
                 
         elif hook_name == "get_steering":
-            session_id = payload.get("session", "_default")
-            self._handle_get_steering(hook_id, session_id)
+            session_id = payload.get("session_id") or payload.get("session", "_default")
+            cwd = payload.get("cwd")
+            self._handle_get_steering(hook_id, session_id, cwd)
         else:
             self._write_message({"t": "result", "id": hook_id})
 
@@ -340,15 +379,21 @@ class Plugin:
         except Exception as e:
             self._send_error(hook_id, f"Failed to read {path}: {e}")
 
-    def _handle_get_steering(self, hook_id: int, session_id: str) -> None:
+    def _handle_get_steering(self, hook_id: int, session_id: str, cwd: str | None) -> None:
         """Handle get_steering hook.
         
         Injects:
         1. Skill catalog (once per session, on first call)
         2. Pending skill instructions (when skills are activated)
+        
+        Uses `cwd` from the payload to discover project-local skills.
         """
         session = self._get_session(session_id)
         messages = []
+        
+        # Discover project-local skills from cwd on first call
+        if cwd and not session.catalog_injected:
+            self._discover_project_skills(cwd)
         
         if not session.catalog_injected and self.skills:
             catalog = self._build_catalog()

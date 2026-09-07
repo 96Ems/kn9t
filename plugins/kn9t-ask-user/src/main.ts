@@ -143,6 +143,141 @@ function err(text: string): ToolResult {
 
 // ── Question execution ───────────────────────────────────────────────────────
 
+// ── TUI display (plugin-supplied Lua) ────────────────────────────────────────
+//
+// The TUI owns no ask-user-specific code. This plugin ships the Lua that draws
+// its own status, sends it once after the handshake, then pushes state as
+// questions come and go.
+//
+// `render(state)` returns a widget tree; the user's `tui.lua` decides where it
+// goes, so this cannot claim screen space or hide the transcript.
+
+const UI_LUA = `
+local function bar(done, total, width)
+    if total <= 0 then return "" end
+    local filled = math.floor((done / total) * width + 0.5)
+    return string.rep("#", filled) .. string.rep(".", width - filled)
+end
+
+function render(s)
+    s = s or {}
+
+    -- Idle: one dim line, so the panel does not draw attention when unused.
+    if not s.pending then
+        local n = s.answered or 0
+        return {
+            type = "text",
+            fg = "#585b70",
+            content = n > 0 and (n .. " answered") or "idle",
+        }
+    end
+
+    local rows = {}
+
+    -- The question itself, wrapped by the host renderer.
+    table.insert(rows, {
+        type = "text",
+        wrap = true,
+        fg = "#cdd6f4",
+        content = s.question or "(waiting)",
+        size = { flex = 1 },
+    })
+
+    -- Sequences show progress; a single question does not need it.
+    if s.total and s.total > 1 then
+        local done = (s.index or 1) - 1
+        table.insert(rows, {
+            type = "text",
+            fg = "#89b4fa",
+            size = { fixed = 1 },
+            content = string.format("%d/%d %s", s.index or 1, s.total,
+                                    bar(done, s.total, 10)),
+        })
+    end
+
+    -- Options as a list so the shape matches what the user is choosing from.
+    if s.options and #s.options > 0 then
+        local items = {}
+        for _, o in ipairs(s.options) do table.insert(items, o) end
+        table.insert(rows, {
+            type = "list",
+            items = items,
+            size = { fixed = math.min(#items, 4) },
+        })
+    end
+
+    table.insert(rows, {
+        type = "text",
+        fg = "#f9e2af",
+        size = { fixed = 1 },
+        content = s.kind and ("[" .. s.kind .. "]") or "",
+    })
+
+    return { type = "split", direction = "vertical", children = rows }
+end
+`;
+
+/** Answered-question counter, shown when idle. */
+let answered = 0;
+
+/** Sessions whose UI Lua has already been sent. */
+const uiRegistered = new Set<string>();
+
+/**
+ * Send the Lua once per session.
+ *
+ * Lazy because the session id only arrives with the first tool call — there is
+ * no session at handshake time.
+ */
+function registerUi(session: string): void {
+  if (!session || uiRegistered.has(session)) return;
+  uiRegistered.add(session);
+  try {
+    hostRequest("ui_register_lua", { session, source: UI_LUA });
+  } catch {
+    // Ignore: display is not worth failing a question over.
+  }
+}
+
+/**
+ * Push display state. Best-effort: a UI failure must never fail the tool, since
+ * the answer matters more than its presentation.
+ */
+function setUiState(session: string, state: Record<string, unknown>): void {
+  try {
+    hostRequest("ui_set_state", { session, state });
+  } catch {
+    // Ignore: display is not worth failing a question over.
+  }
+}
+
+/** Describe the current question to the UI. */
+function uiAsking(
+  session: string,
+  kind: string,
+  question: string,
+  options?: QuestionOption[],
+  index?: number,
+  total?: number,
+): void {
+  registerUi(session);
+  setUiState(session, {
+    pending: true,
+    kind,
+    question,
+    options: options?.map((o) => o.label),
+    index,
+    total,
+    answered,
+  });
+}
+
+/** Return the UI to idle after a question resolves. */
+function uiIdle(session: string): void {
+  answered += 1;
+  setUiState(session, { pending: false, answered });
+}
+
 function executeQuestion(spec: QuestionSpec, session: string): ToolResult {
   switch (spec.type) {
     case "text":
@@ -169,7 +304,9 @@ function executeText(q: TextQuestion, session: string): ToolResult {
   if (q.placeholder) payload.placeholder = q.placeholder;
   if (q.default) payload.default = q.default;
 
+  uiAsking(session, "text", q.question);
   const r = hostRequest("interaction_request", { session, payload });
+  uiIdle(session);
   if (!r.ok) return err(`interaction_request: ${r.error}`);
 
   const answer = r.result?.payload as Record<string, unknown> | undefined;
@@ -188,7 +325,9 @@ function executeChoice(q: ChoiceQuestion, session: string): ToolResult {
   if (q.header) payload.header = q.header;
   if (q.allow_custom) payload.allow_custom = true;
 
+  uiAsking(session, "choice", q.question, q.options);
   const r = hostRequest("interaction_request", { session, payload });
+  uiIdle(session);
   if (!r.ok) return err(`interaction_request: ${r.error}`);
 
   const answer = r.result?.payload as Record<string, unknown> | undefined;
@@ -211,7 +350,9 @@ function executeMulti(q: MultiQuestion, session: string): ToolResult {
   if (q.min !== undefined) payload.min = q.min;
   if (q.max !== undefined) payload.max = q.max;
 
+  uiAsking(session, "multi", q.question, q.options);
   const r = hostRequest("interaction_request", { session, payload });
+  uiIdle(session);
   if (!r.ok) return err(`interaction_request: ${r.error}`);
 
   const answer = r.result?.payload as Record<string, unknown> | undefined;
@@ -232,7 +373,12 @@ function executeConfirm(q: ConfirmQuestion, session: string): ToolResult {
   if (q.header) payload.header = q.header;
   if (q.default !== undefined) payload.default = q.default;
 
+  uiAsking(session, "confirm", q.question, [
+    { label: "Yes" },
+    { label: "No" },
+  ]);
   const r = hostRequest("interaction_request", { session, payload });
+  uiIdle(session);
   if (!r.ok) return err(`interaction_request: ${r.error}`);
 
   const answer = r.result?.payload as Record<string, unknown> | undefined;
@@ -244,18 +390,29 @@ function executeConfirm(q: ConfirmQuestion, session: string): ToolResult {
 
 function executeSequence(q: SequenceQuestion, session: string): ToolResult {
   const results: string[] = [];
-  
-  for (let i = 0; i < q.questions.length; i++) {
+  const total = q.questions.length;
+
+  for (let i = 0; i < total; i++) {
     const subQ = q.questions[i];
+    // Show sequence position before the sub-question overwrites the state, so
+    // the panel reports "3/5" rather than looking like five separate questions.
+    uiAsking(
+      session,
+      subQ.type ?? "text",
+      (subQ as { question?: string }).question ?? "",
+      (subQ as { options?: QuestionOption[] }).options,
+      i + 1,
+      total,
+    );
     const result = executeQuestion(subQ, session);
-    
+
     if (result.is_error) {
       return result; // Propagate error
     }
     
     const text = result.content[0]?.text ?? "";
     if (text.includes("cancelled")) {
-      return ok(`Sequence cancelled at question ${i + 1}/${q.questions.length}`);
+      return ok(`Sequence cancelled at question ${i + 1}/${total}`);
     }
     
     results.push(`Q${i + 1}: ${text}`);

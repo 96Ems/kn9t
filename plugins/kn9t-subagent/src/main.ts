@@ -3,7 +3,7 @@
  *
  * A "sub-agent" is NOT a kn9t concept: it is a forked session running a turn
  * (fork_reason=subagent, budget captured in the ForkSnapshot). This plugin
- * exposes a `spawn_session` tool that the main agent can call:
+ * exposes a `subagent` tool that the main agent can call:
  *
  *   1. session_fork   {copy_events:true, budget_usd, model} → child session
  *                     (inherits the parent transcript → full context)
@@ -70,20 +70,20 @@ const replies = new Map<number, ApiResult>();
 /** Default spend cap per spawned session when the caller gives none — the
  *  recursion safety net (a chain of children sharing one budget dies out). */
 const DEFAULT_BUDGET_USD = 0.5;
-const SPAWN_TOOL = "spawn_session";
+const SPAWN_TOOL = "subagent";
 
 /**
  * Recursion policy — an END-USER/plugin choice, not a host rule:
  * `KN9T_SUBAGENT_RECURSION` env (inherited by the plugin process):
  *   - unset or "allow" (default): a sub-agent may spawn sub-agents
- *     (the child inherits the full toolset, spawn_session included);
+ *     (the child inherits the full toolset, subagent included);
  *   - "deny": the child's toolset is computed via `tool_list` minus
- *     spawn_session — a sub-agent cannot spawn further sub-agents.
+ *     subagent — a sub-agent cannot spawn further sub-agents.
  */
 const RECURSION_ALLOWED =
   (process.env["KN9T_SUBAGENT_RECURSION"] ?? "allow").toLowerCase() !== "deny";
 
-/** Child toolset when recursion is denied: everything minus spawn_session. */
+/** Child toolset when recursion is denied: everything minus subagent. */
 function noSpawnToolset(session: string): Array<string> | undefined {
   const r = hostRequest("tool_list", { session });
   if (!r.ok || !Array.isArray(r.result?.["tools"])) return undefined;
@@ -92,7 +92,7 @@ function noSpawnToolset(session: string): Array<string> | undefined {
 
 /**
  * Event pump: read lines until the reply for `awaitId` arrives. Incoming
- * hooks are dispatched INLINE (recursive spawn_session is served while we
+ * hooks are dispatched INLINE (recursive subagent is served while we
  * wait — this is what makes re-entrancy/deadlock-free recursion possible);
  * api_results are buffered by id so a reply for an outer request is never
  * lost to an inner pump.
@@ -136,7 +136,7 @@ function textBlocks(content: unknown): string {
 }
 
 /**
- * Handle one `spawn_session` tool call: fork a child session and run the task
+ * Handle one `subagent` tool call: fork a child session and run the task
  * synchronously inside it. The result returns to the calling agent together
  * with the child session id (so it can be inspected afterwards).
  *
@@ -150,7 +150,7 @@ function spawnSession(args: Record<string, unknown>, session: string): {
 } {
   const task = typeof args["task"] === "string" ? args["task"] : null;
   if (!task) {
-    return { content: [{ type: "text", text: "spawn_session requires \"task\"" }], is_error: true };
+    return { content: [{ type: "text", text: "subagent requires \"task\"" }], is_error: true };
   }
   const model = typeof args["model"] === "string" ? args["model"] : undefined;
   const budget = typeof args["budget_usd"] === "number" ? args["budget_usd"] : DEFAULT_BUDGET_USD;
@@ -190,7 +190,7 @@ function handleHook(id: number, payload: Record<string, unknown>): void {
   const name = String(payload["tool"] ?? ""); // canonical tool_call field (SDK contract)
   const args = (payload["args"] as Record<string, unknown>) ?? {};
   const session = String(payload["session"] ?? ""); // added by the host (96E-17)
-  if (name === "spawn_session") {
+  if (name === "subagent") {
     const out = spawnSession(args, session);
     writeMsg({ t: "result", id, content: out.content, is_error: out.is_error });
   } else {

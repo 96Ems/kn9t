@@ -17,7 +17,8 @@ impl PluginTool for Write {
         ToolSpec {
             name: "write".into(),
             description: "Write content to a file. For existing files, the file must have been \
-                read first ('read' tool) and must not have been modified since. \
+                observed first — via 'read', or a 'bash' command naming the file — and must \
+                not have been modified since. \
                 New files are created directly. Line endings are preserved for existing files."
                 .into(),
             schema: json!({
@@ -67,12 +68,12 @@ impl PluginTool for Write {
                     .unwrap_or(SystemTime::UNIX_EPOCH);
                 if current_mtime > *tracked_mtime {
                     return ToolOutput::error(
-                        "file was modified since last read — re-read it before writing",
+                        "file was modified since it was last observed — re-read it before writing",
                     );
                 }
             } else {
                 return ToolOutput::error(
-                    "file exists but has not been read — use 'read' before 'write' on existing files",
+                    "file exists but has not been read — use 'read' (or a 'bash' command naming the file) before 'write'",
                 );
             }
         }
