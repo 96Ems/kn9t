@@ -2054,7 +2054,7 @@ fn render_tools_manager(
     #[derive(Clone)]
     enum ToolRow<'a> {
         PluginHeader(&'a str),
-        Tool(#[allow(dead_code)] usize, &'a crate::app::ToolEntry),
+        Tool(&'a crate::app::ToolEntry),
     }
 
     let mut rows: Vec<ToolRow> = Vec::new();
@@ -2062,7 +2062,7 @@ fn render_tools_manager(
     let mut selectable_idx = 0usize;
     let mut selected_row_idx: Option<usize> = None;
 
-    for (orig_idx, tool) in &filtered {
+    for (_orig_idx, tool) in &filtered {
         let plugin = tool.plugin.as_deref().unwrap_or("builtin");
         if current_plugin != Some(plugin) {
             current_plugin = Some(plugin);
@@ -2071,7 +2071,7 @@ fn render_tools_manager(
         if selectable_idx == selected {
             selected_row_idx = Some(rows.len());
         }
-        rows.push(ToolRow::Tool(*orig_idx, tool));
+        rows.push(ToolRow::Tool(tool));
         selectable_idx += 1;
     }
 
@@ -2172,7 +2172,7 @@ fn render_tools_manager(
                 }
                 y += 1;
             }
-            ToolRow::Tool(_, tool) => {
+            ToolRow::Tool(tool) => {
                 let is_selected = tool_display_idx == selected;
                 let (fg, bg) = if is_selected {
                     (theme.bg, theme.primary)
