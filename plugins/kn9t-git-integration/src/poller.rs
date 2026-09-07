@@ -60,23 +60,25 @@ pub fn get_diff_target(cwd: &PathBuf) -> DiffTarget {
     target
 }
 
-/// Start the background poller for one repository, if one is not already
-/// running for it. Returns immediately either way.
+/// Start the background poller for a session, if one is not already running.
 ///
-/// Guarded per-`cwd` (not globally) so a host juggling multiple sessions in
-/// different repositories gets one poller each, not one poller pinned to
-/// whichever repo happened to bootstrap first.
+/// Guarded per-`session_id` so each TUI session gets its own poller, even if
+/// they share the same cwd. This fixes the bug where only the first session
+/// would see the git panel.
 ///
 /// Called from a hook that fires every turn, so this is deliberately cheap and
 /// idempotent: the common case is "already running, do nothing".
-pub fn ensure_started(host: HostApiClient, cwd: PathBuf) {
+pub fn ensure_started(host: HostApiClient, cwd: PathBuf, session_id: Option<String>) {
     use std::collections::HashSet;
-    static STARTED: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+    static STARTED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+    // Use session_id if available, otherwise fall back to cwd string
+    let key = session_id.unwrap_or_else(|| cwd.to_string_lossy().to_string());
 
     let mut guard = STARTED.lock().unwrap();
     let set = guard.get_or_insert_with(HashSet::new);
-    if !set.insert(cwd.clone()) {
-        return; // Already running for this cwd.
+    if !set.insert(key) {
+        return; // Already running for this session.
     }
     drop(guard);
 

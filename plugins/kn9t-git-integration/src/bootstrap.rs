@@ -39,7 +39,7 @@ impl PluginHook for Bootstrap {
         // nothing to poll, and guessing `std::env::current_dir()` would attach
         // the panel to whatever directory the *plugin process* started in.
         if let Some(cwd) = ctx.cwd.clone() {
-            poller::ensure_started(ctx.host.clone(), cwd);
+            poller::ensure_started(ctx.host.clone(), cwd, ctx.session_id.clone());
         }
         json!({ "messages": [] })
     }
