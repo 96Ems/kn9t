@@ -61,6 +61,33 @@ pub struct StateSnapshot {
     /// Lets a config discover plugin views without hardcoding names, so a
     /// newly loaded plugin appears without editing `tui.lua`.
     pub plugin_views: Vec<String>,
+    /// Same views with their declared placement, so a config can route by zone
+    /// (`"sidebar"`/`"main"`/`"status"`) instead of matching plugin names.
+    ///
+    /// Kept alongside `plugin_views` rather than replacing it: the bare-name
+    /// list is the simple case (draw everything somewhere) and a config that
+    /// only needs that should not have to destructure entries.
+    pub plugin_view_specs: Vec<PluginViewSpec>,
+    /// Which plugin view currently has keyboard focus, empty when none.
+    ///
+    /// Published so a config can render focus affordances (a highlighted border
+    /// on the focused panel) instead of guessing where keys are going.
+    pub focused_plugin: String,
+}
+
+/// One plugin view as Lua sees it: its id plus whatever layout it asked for.
+#[derive(Debug, Clone, Default)]
+pub struct PluginViewSpec {
+    /// Plugin name — the id to pass to `{type="plugin", plugin=...}`.
+    pub name: String,
+    /// `"sidebar"` | `"main"` | `"status"`, or empty when unspecified.
+    pub placement: String,
+    /// Display title; falls back to `name` when the plugin gave none, so a
+    /// config can always render a heading without a nil check.
+    pub title: String,
+    /// Preferred size, 0 when unspecified.
+    pub rows: u16,
+    pub cols: u16,
 }
 
 /// A tool call reduced to what a sidebar needs. No args, no output.
@@ -139,6 +166,25 @@ impl StateSnapshot {
                 .as_ref()
                 .map(|rt| rt.plugin_view_names())
                 .unwrap_or_default(),
+            plugin_view_specs: app
+                .lua_runtime
+                .as_ref()
+                .map(|rt| {
+                    rt.plugin_views()
+                        .into_iter()
+                        .map(|(name, p)| PluginViewSpec {
+                            // Title defaults to the name so Lua never has to
+                            // handle a missing heading.
+                            title: p.title.clone().unwrap_or_else(|| name.clone()),
+                            placement: p.zone.clone().unwrap_or_default(),
+                            rows: p.rows.unwrap_or(0),
+                            cols: p.cols.unwrap_or(0),
+                            name,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            focused_plugin: app.focused_plugin.clone().unwrap_or_default(),
         }
     }
 }
@@ -214,6 +260,21 @@ pub fn update_state(lua: &Lua, snap: &StateSnapshot) -> LuaResult<()> {
         views.set(i + 1, name.as_str())?;
     }
     state.set("plugin_views", views)?;
+
+    // Structured form: `{ {name=, placement=, title=, rows=, cols=}, ... }`.
+    let specs = lua.create_table()?;
+    for (i, spec) in snap.plugin_view_specs.iter().enumerate() {
+        let t = lua.create_table()?;
+        t.set("name", spec.name.as_str())?;
+        t.set("placement", spec.placement.as_str())?;
+        t.set("title", spec.title.as_str())?;
+        t.set("rows", spec.rows)?;
+        t.set("cols", spec.cols)?;
+        specs.set(i + 1, t)?;
+    }
+    state.set("plugin_view_specs", specs)?;
+
+    state.set("focused_plugin", snap.focused_plugin.as_str())?;
 
     kn9t.set("state", state)?;
     globals.set("kn9t", kn9t)?;
@@ -507,20 +568,22 @@ mod tests {
     #[test]
     fn publishes_sessions_with_is_current_flag() {
         let lua = Lua::new();
-        let mut snap = StateSnapshot::default();
-        snap.session_id = "sess-b".into();
-        snap.sessions = vec![
-            SessionSummary {
-                id: "sess-a".into(),
-                name: "first".into(),
-                is_current: false,
-            },
-            SessionSummary {
-                id: "sess-b".into(),
-                name: "second".into(),
-                is_current: true,
-            },
-        ];
+        let snap = StateSnapshot {
+            session_id: "sess-b".into(),
+            sessions: vec![
+                SessionSummary {
+                    id: "sess-a".into(),
+                    name: "first".into(),
+                    is_current: false,
+                },
+                SessionSummary {
+                    id: "sess-b".into(),
+                    name: "second".into(),
+                    is_current: true,
+                },
+            ],
+            ..Default::default()
+        };
 
         update_state(&lua, &snap).unwrap();
 
@@ -559,10 +622,12 @@ mod tests {
     #[test]
     fn publishes_scalars_without_message_bodies() {
         let lua = Lua::new();
-        let mut snap = StateSnapshot::default();
-        snap.session_id = "abc".into();
-        snap.total_input = 4200;
-        snap.message_count = 137;
+        let snap = StateSnapshot {
+            session_id: "abc".into(),
+            total_input: 4200,
+            message_count: 137,
+            ..Default::default()
+        };
 
         update_state(&lua, &snap).unwrap();
 

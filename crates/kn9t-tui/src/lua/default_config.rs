@@ -305,6 +305,7 @@ mod tests {
         rt.apply_plugin_lua_op(&PluginLuaOp::Register {
             plugin: "demo".into(),
             source: source.into(),
+            placement: Default::default(),
         });
         rt.apply_plugin_lua_op(&PluginLuaOp::SetState {
             plugin: "demo".into(),
@@ -315,10 +316,178 @@ mod tests {
 
     /// Publish state including the plugin list, as a real frame would.
     fn publish(rt: &crate::lua::LuaRuntime) {
-        let mut snap = crate::lua::state::StateSnapshot::default();
-        snap.plugin_views = rt.plugin_view_names();
+        publish_focused(rt, "");
+    }
+
+    /// Same, with `focused_plugin` set — the signal the built-in layout uses to
+    /// decide how much room a view gets.
+    fn publish_focused(rt: &crate::lua::LuaRuntime, focused: &str) {
+        let snap = crate::lua::state::StateSnapshot {
+            plugin_views: rt.plugin_view_names(),
+            plugin_view_specs: rt
+                .plugin_views()
+                .into_iter()
+                .map(|(name, p)| crate::lua::state::PluginViewSpec {
+                    title: p.title.clone().unwrap_or_else(|| name.clone()),
+                    placement: p.zone.clone().unwrap_or_default(),
+                    rows: p.rows.unwrap_or(0),
+                    cols: p.cols.unwrap_or(0),
+                    name,
+                })
+                .collect(),
+            focused_plugin: focused.to_string(),
+            ..Default::default()
+        };
         rt.update_state(&snap);
         rt.update_context(&crate::lua::context::ContextStats::default());
+    }
+
+    /// An interactive view is unusable in a status-sized strip, so focusing it
+    /// must actually enlarge its slot. Without this the diff panel would render
+    /// into 8 rows and be unreviewable.
+    #[test]
+    fn focusing_a_plugin_enlarges_its_slot() {
+        use crate::lua::widgets::{collect_plugin_slots, UiOutcome};
+        use ratatui::layout::Rect;
+
+        let rt = runtime_with_plugin(
+            r#"function render(s) return {type="text", content="x"} end"#,
+            serde_json::json!({}),
+        );
+        let area = Rect::new(0, 0, 120, 40);
+
+        let slot_height = |rt: &crate::lua::LuaRuntime| {
+            let root = match rt.build_ui_outcome(area.width, area.height) {
+                UiOutcome::Ok(w) => w,
+                other => panic!("built-in did not build: {other:?}"),
+            };
+            let mut slots = Vec::new();
+            collect_plugin_slots(&root, area, &mut slots);
+            assert_eq!(slots.len(), 1, "expected one slot, got {slots:?}");
+            slots[0].1.height
+        };
+
+        publish_focused(&rt, "");
+        let unfocused = slot_height(&rt);
+
+        // `invalidate_ui` because focus is not part of the render fingerprint;
+        // without it the cached tree from the previous build would be reused.
+        publish_focused(&rt, "demo");
+        rt.invalidate_ui();
+        let focused = slot_height(&rt);
+
+        assert!(
+            focused > unfocused,
+            "focused slot ({focused}) must be taller than unfocused ({unfocused})"
+        );
+        assert!(
+            focused <= area.height,
+            "focused slot ({focused}) must still fit in {area:?}"
+        );
+    }
+
+    /// A plugin declaring `placement="main"` must land in the centre column, not
+    /// the sidebar strip — that routing is the whole point of the placement
+    /// hint, and it is what lets a full-size review panel exist without the
+    /// config naming the plugin that provides it.
+    #[test]
+    fn placement_routes_a_view_to_the_main_column() {
+        use crate::lua::widgets::{collect_plugin_slots, UiOutcome};
+        use crate::reducer::{PluginLuaOp, PluginPlacement};
+        use ratatui::layout::Rect;
+
+        let area = Rect::new(0, 0, 120, 40);
+
+        let slot_for = |zone: Option<&str>| {
+            let rt = crate::lua::LuaRuntime::new().unwrap();
+            rt.load_builtin();
+            rt.apply_plugin_lua_op(&PluginLuaOp::Register {
+                plugin: "demo".into(),
+                source: r#"function render(s) return {type="text", content="x"} end"#.into(),
+                placement: PluginPlacement {
+                    zone: zone.map(String::from),
+                    title: Some("Demo".into()),
+                    rows: None,
+                    cols: None,
+                },
+            });
+            publish_focused(&rt, "");
+            let root = match rt.build_ui_outcome(area.width, area.height) {
+                UiOutcome::Ok(w) => w,
+                other => panic!("built-in did not build: {other:?}"),
+            };
+            let mut slots = Vec::new();
+            collect_plugin_slots(&root, area, &mut slots);
+            assert_eq!(slots.len(), 1, "expected one slot, got {slots:?}");
+            slots[0].1
+        };
+
+        let sidebar = slot_for(Some("sidebar"));
+        let main = slot_for(Some("main"));
+        // An unplaced view must still appear — defaulting to the sidebar beats
+        // silently rendering nowhere.
+        let unplaced = slot_for(None);
+
+        assert_eq!(
+            unplaced.x, sidebar.x,
+            "an unplaced view defaults to the sidebar zone"
+        );
+        assert!(
+            main.x < sidebar.x,
+            "main-zone slot ({main:?}) must sit left of the sidebar strip ({sidebar:?})"
+        );
+        assert!(
+            main.width > sidebar.width,
+            "main-zone slot ({main:?}) must be wider than a sidebar slot ({sidebar:?})"
+        );
+    }
+
+    /// A plugin's declared `rows` must be honoured when focused, so a panel that
+    /// needs room can ask for it instead of the config guessing per plugin.
+    #[test]
+    fn declared_rows_are_used_when_focused() {
+        use crate::lua::widgets::{collect_plugin_slots, UiOutcome};
+        use crate::reducer::{PluginLuaOp, PluginPlacement};
+        use ratatui::layout::Rect;
+
+        let area = Rect::new(0, 0, 120, 40);
+        let rt = crate::lua::LuaRuntime::new().unwrap();
+        rt.load_builtin();
+        rt.apply_plugin_lua_op(&PluginLuaOp::Register {
+            plugin: "demo".into(),
+            source: r#"function render(s) return {type="text", content="x"} end"#.into(),
+            placement: PluginPlacement {
+                zone: Some("sidebar".into()),
+                title: None,
+                rows: Some(17),
+                cols: None,
+            },
+        });
+
+        let height_now = |focused: &str| {
+            publish_focused(&rt, focused);
+            rt.invalidate_ui();
+            let root = match rt.build_ui_outcome(area.width, area.height) {
+                UiOutcome::Ok(w) => w,
+                other => panic!("built-in did not build: {other:?}"),
+            };
+            let mut slots = Vec::new();
+            collect_plugin_slots(&root, area, &mut slots);
+            assert_eq!(slots.len(), 1);
+            slots[0].1.height
+        };
+
+        let unfocused = height_now("");
+        let focused = height_now("demo");
+        assert!(focused > unfocused, "focus must enlarge the slot");
+        // `collect_plugin_slots` reports the rect the plugin's own tree gets,
+        // which is *inside* the framing box — so a declared 17 rows becomes 15
+        // of content once the border takes one row top and bottom. Asserting the
+        // inner number keeps this honest about what the plugin can draw in.
+        assert_eq!(
+            focused, 15,
+            "the plugin asked for 17 rows; 2 go to the box border"
+        );
     }
 
     /// The whole point of the mechanism: a plugin ships Lua, and the built-in
@@ -456,6 +625,7 @@ mod tests {
             rt.apply_plugin_lua_op(&PluginLuaOp::Register {
                 plugin: name.into(),
                 source: r#"function render(s) return {type="text", content="x"} end"#.into(),
+                placement: Default::default(),
             });
         }
         publish(&rt);
