@@ -694,6 +694,7 @@ impl kn9t_core::HookHost for PanicHooks {
         &self,
         _tool: &str,
         _args: &serde_json::Value,
+        _cwd: &std::path::Path,
         _result: Vec<Content>,
     ) -> Vec<Content> {
         panic!("boom");
@@ -1165,6 +1166,7 @@ fn p1_96e6_parallel_safe_after_tool_call_must_run() {
             &self,
             tool: &str,
             _args: &serde_json::Value,
+            _cwd: &std::path::Path,
             _result: Vec<Content>,
         ) -> Vec<Content> {
             self.calls.lock().unwrap().push(tool.to_string());
@@ -1348,6 +1350,7 @@ fn p1_96e8_malformed_json_never_reaches_tool() {
             &self,
             _tool: &str,
             _args: &serde_json::Value,
+            _cwd: &std::path::Path,
             result: Vec<Content>,
         ) -> Vec<Content> {
             result
@@ -1550,6 +1553,7 @@ fn p1_96e8_malformed_json_parallel_safe_also_blocked() {
             &self,
             _t: &str,
             _a: &serde_json::Value,
+            _cwd: &std::path::Path,
             r: Vec<Content>,
         ) -> Vec<Content> {
             r
@@ -1693,6 +1697,7 @@ fn p1_96e6_sequential_after_tool_call_still_runs() {
             &self,
             _tool: &str,
             _args: &serde_json::Value,
+            _cwd: &std::path::Path,
             _result: Vec<Content>,
         ) -> Vec<Content> {
             vec![Content::Text {

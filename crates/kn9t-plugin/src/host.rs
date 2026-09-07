@@ -37,6 +37,7 @@ use std::time::Duration;
 thread_local! {
     static TL_SESSION: RefCell<Option<String>> = RefCell::new(None);
     static TL_BUS: RefCell<Option<Arc<dyn EventSink>>> = RefCell::new(None);
+    static TL_CWD: RefCell<Option<PathBuf>> = RefCell::new(None);
 }
 
 /// Per-call channel registration. Shared between main thread and reader thread.
@@ -497,6 +498,17 @@ impl PluginHost {
         TL_SESSION.with(|c| c.borrow().clone())
     }
 
+    /// Set the current working directory. Called by the server before each turn.
+    /// All hook payloads that need cwd will include this. Thread-local for isolation.
+    pub fn set_cwd(&self, cwd: &Path) {
+        TL_CWD.with(|c| *c.borrow_mut() = Some(cwd.to_path_buf()));
+    }
+
+    /// Get the current working directory (if set) — thread-local.
+    pub fn cwd(&self) -> Option<PathBuf> {
+        TL_CWD.with(|c| c.borrow().clone())
+    }
+
     /// Spawn a plugin subprocess at `binary`, perform the hello/hello handshake,
     /// and return a live `PluginHost`. This is the production entry point (R-PLUG-040).
     ///
@@ -865,12 +877,16 @@ impl PluginHost {
 
     // ── public hook methods ───────────────────────────────────────────────────
 
-    pub fn before_tool_call(&self, tool: &str, args: &Value, _cwd: &Path) -> HookVeto {
+    pub fn before_tool_call(&self, tool: &str, args: &Value, cwd: &Path) -> HookVeto {
         if !self.has_hook(HookName::BeforeToolCall) {
             return HookVeto::Allow;
         }
-        let payload =
-            serde_json::json!({ "session_id": self.session_id(), "tool": tool, "args": args });
+        let payload = serde_json::json!({
+            "session_id": self.session_id(),
+            "tool": tool,
+            "args": args,
+            "cwd": cwd
+        });
         let timeout = default_timeout(HookName::BeforeToolCall);
         match self.call_hook_raw(HookName::BeforeToolCall, payload, timeout) {
             Ok(body) => parse_veto(&body),
@@ -881,7 +897,13 @@ impl PluginHost {
         }
     }
 
-    pub fn after_tool_call(&self, tool: &str, args: &Value, result: Vec<Content>) -> Vec<Content> {
+    pub fn after_tool_call(
+        &self,
+        tool: &str,
+        args: &Value,
+        cwd: &Path,
+        result: Vec<Content>,
+    ) -> Vec<Content> {
         if !self.has_hook(HookName::AfterToolCall) {
             return result;
         }
@@ -890,6 +912,7 @@ impl PluginHost {
             "session_id": self.session_id(),
             "tool": tool,
             "args": args,
+            "cwd": cwd,
             "result": result_val
         });
         let timeout = default_timeout(HookName::AfterToolCall);
@@ -972,7 +995,10 @@ impl PluginHost {
         if !self.has_hook(HookName::GetSteering) {
             return Vec::new();
         }
-        let payload = serde_json::json!({ "session_id": self.session_id() });
+        let payload = serde_json::json!({
+            "session_id": self.session_id(),
+            "cwd": self.cwd()
+        });
         let timeout = default_timeout(HookName::GetSteering);
         match self.call_hook_raw(HookName::GetSteering, payload, timeout) {
             Ok(body) => parse_messages_list(&body),
@@ -987,7 +1013,10 @@ impl PluginHost {
         if !self.has_hook(HookName::GetFollowup) {
             return Vec::new();
         }
-        let payload = serde_json::json!({ "session_id": self.session_id() });
+        let payload = serde_json::json!({
+            "session_id": self.session_id(),
+            "cwd": self.cwd()
+        });
         let timeout = default_timeout(HookName::GetFollowup);
         match self.call_hook_raw(HookName::GetFollowup, payload, timeout) {
             Ok(body) => parse_messages_list(&body),

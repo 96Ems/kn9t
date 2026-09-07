@@ -76,6 +76,11 @@ impl ReactLoop {
         if let Some(m) = params.reactivation_reminder.take() {
             reminders.push(m);
         }
+        // First turn of a run: collect initial steering (skills catalog, AGENTS.md, etc.)
+        // BEFORE the first provider call so the agent sees them immediately.
+        if turn == 1 {
+            reminders.extend(self.collect_steering());
+        }
         let mut trunc_n: u32 = 0;
         let mut replans: u32 = 0;
 

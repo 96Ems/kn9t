@@ -324,6 +324,7 @@ mod plug {
             let result = host.after_tool_call(
                 "bash",
                 &json!({}),
+                std::path::Path::new("/tmp"),
                 vec![Content::Text {
                     text: "hi".to_string(),
                 }],
@@ -459,7 +460,12 @@ mod plug {
             let original = vec![Content::Text {
                 text: "original".to_string(),
             }];
-            let result = composed.after_tool_call("bash", &json!({}), original);
+            let result = composed.after_tool_call(
+                "bash",
+                &json!({}),
+                std::path::Path::new("/tmp"),
+                original,
+            );
             // A replaced → "from_a"; B kept it → still "from_a"
             assert_eq!(result.len(), 1);
             match &result[0] {

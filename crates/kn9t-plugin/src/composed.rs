@@ -55,10 +55,11 @@ impl HookHost for ComposedHookHost {
         &self,
         tool: &str,
         args: &serde_json::Value,
+        cwd: &Path,
         mut result: Vec<Content>,
     ) -> Vec<Content> {
         for plugin in &self.plugins {
-            result = plugin.after_tool_call(tool, args, result);
+            result = plugin.after_tool_call(tool, args, cwd, result);
         }
         result
     }

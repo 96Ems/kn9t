@@ -103,12 +103,13 @@ impl ReactLoop {
         &self,
         tool: &str,
         args: &serde_json::Value,
+        cwd: &std::path::Path,
         result: Vec<kn9t_provider_core::Content>,
     ) -> Vec<kn9t_provider_core::Content> {
         let hooks = self.hooks.clone();
         let orig = result.clone();
         match catch_unwind(AssertUnwindSafe(|| {
-            hooks.after_tool_call(tool, args, result)
+            hooks.after_tool_call(tool, args, cwd, result)
         })) {
             Ok(v) => v,
             Err(_) => {

@@ -438,6 +438,13 @@ impl KvClient {
 /// `session_prompt`, `tool_list`, `interaction_request`, `ui_*` etc. are all
 /// dispatched through this client. See `crates/kn9t-server/src/host_api.rs`
 /// for the op catalogue. The host replies with `HostMsg::ApiResult`.
+///
+/// `Clone` is cheap (every field is an `Arc` or a small `Option<String>`) and
+/// is what lets a tool's `execute()` hand a copy to a background thread it
+/// spawns — the constructor is `pub(crate)`, so cloning an existing client is
+/// the only way plugin code can get one outside a live dispatch (there is no
+/// session-start hook, and `PluginHook::call` receives no `ctx` at all).
+#[derive(Clone)]
 pub struct HostApiClient {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pending: Arc<Mutex<HashMap<u64, mpsc::SyncSender<ApiReply>>>>,
@@ -547,6 +554,12 @@ pub struct ToolCallCtx {
     /// Plugin → host API client (host_api capability, 96E-17). Auto-injects
     /// the current session so callers don't need to thread it manually.
     pub host: HostApiClient,
+    /// Working directory of the session, as the host's `tool_call` payload
+    /// reported it. Previously dropped before reaching `execute()` — only
+    /// `args` (the LLM's own tool arguments) crossed this boundary, so a
+    /// tool had no way to know the session's cwd unless the LLM happened to
+    /// pass one as an argument.
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 // ── ProviderCallCtx ──────────────────────────────────────────────────────────

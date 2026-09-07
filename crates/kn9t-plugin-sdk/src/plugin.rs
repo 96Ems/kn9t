@@ -321,7 +321,7 @@ impl Runner {
     }
 
     fn dispatch_tool(self: &Arc<Self>, id: u64, payload: Value) {
-        // Plugin protocol: {"tool": "<name>", "args": {...}, "session_id": "..."}
+        // Plugin protocol: {"tool": "<name>", "args": {...}, "session_id": "...", "cwd": "..."}
         let name = payload.get("tool").and_then(|n| n.as_str()).unwrap_or("");
         let args = payload.get("args").cloned().unwrap_or(Value::Null);
         let session = payload
@@ -329,6 +329,10 @@ impl Runner {
             .or_else(|| payload.get("session"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let cwd = payload
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(std::path::PathBuf::from);
 
         let tool = self.tools.iter().find(|t| t.spec().name == name);
         let tool = match tool {
@@ -352,6 +356,7 @@ impl Runner {
             progress: ProgressSender { id, writer },
             kv: self.make_kv_client(),
             host: self.make_host_client(session),
+            cwd,
         };
 
         let output = tool.execute(&args, &ctx);

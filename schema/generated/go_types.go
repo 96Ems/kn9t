@@ -74,11 +74,30 @@ type UiRespondReq struct {
 }
 
 // Plugin protocol definitions (schema/plugin.json).
+// Content.
+type Content struct {
+	Text *string `json:"text,omitempty"`
+	Type string `json:"type"`
+}
+
+// Message.
+type Message struct {
+	Content []map[string]any `json:"content"`
+	Role string `json:"role"`
+	Silent *bool `json:"silent,omitempty"`
+}
+
 // ModelDecl.
 type ModelDecl struct {
 	CtxWindow uint64 `json:"ctx_window"`
 	ID string `json:"id"`
 	Price *map[string]any `json:"price,omitempty"`
+}
+
+// ModelRef.
+type ModelRef struct {
+	ID string `json:"id"`
+	Provider string `json:"provider"`
 }
 
 // ProviderDecl.
@@ -95,5 +114,13 @@ type ToolSpec struct {
 	Name string `json:"name"`
 	ParallelSafe *bool `json:"parallel_safe,omitempty"`
 	Schema map[string]any `json:"schema"`
+}
+
+// Usage.
+type Usage struct {
+	CacheRead uint64 `json:"cache_read"`
+	CacheWrite uint64 `json:"cache_write"`
+	Input uint64 `json:"input"`
+	Output uint64 `json:"output"`
 }
 

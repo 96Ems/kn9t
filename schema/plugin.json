@@ -58,7 +58,7 @@
     "Done": { "type": "object", "properties": { "t": { "const": "done" }, "id": { "type": "integer" } }, "required": ["t", "id"] },
     "Request": {
       "type": "object",
-      "description": "Plugin → host API request (host_api capability). Ops: provider_complete, session_read, tool_execute, session_fork, session_prompt, tool_list.",
+      "description": "Plugin → host API request (host_api capability). Ops: provider_complete, session_read, tool_execute, session_fork, session_prompt, tool_list, ui_directive, ui_register_lua, ui_set_state, ui_clear. TUI display is plugin-supplied Lua: send the source once with ui_register_lua {source} (defines render(state) returning a widget tree), then push data with ui_set_state {state} (arbitrary JSON) and tear down with ui_clear. The host does not interpret the Lua or the state; the widget vocabulary belongs to the TUI.",
       "properties": {
         "t": { "const": "request" },
         "id": { "type": "integer" },
@@ -67,6 +67,92 @@
       },
       "required": ["t", "id", "op", "payload"],
       "additionalProperties": false
+    }
+  },
+  "hook_payloads": {
+    "before_tool_call": {
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string", "description": "Session ID" },
+        "tool": { "type": "string", "description": "Tool name" },
+        "args": { "type": "object", "description": "Tool arguments" },
+        "cwd": { "type": "string", "description": "Working directory of the session" }
+      },
+      "required": ["session_id", "tool", "args", "cwd"]
+    },
+    "after_tool_call": {
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string" },
+        "tool": { "type": "string" },
+        "args": { "type": "object" },
+        "cwd": { "type": "string", "description": "Working directory of the session" },
+        "result": { "type": "array", "items": { "$ref": "#/definitions/Content" } }
+      },
+      "required": ["session_id", "tool", "args", "cwd", "result"]
+    },
+    "before_request": {
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string" },
+        "messages": { "type": "array", "items": { "$ref": "#/definitions/Message" } },
+        "model": { "$ref": "#/definitions/ModelRef" },
+        "system": { "type": "string" }
+      },
+      "required": ["session_id", "messages", "model"]
+    },
+    "should_stop_after_turn": {
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string" },
+        "stop": { "type": "string", "enum": ["end_turn", "max_tokens", "stop_sequence", "tool_use"] },
+        "usage": { "$ref": "#/definitions/Usage" },
+        "turn": { "type": "integer" }
+      },
+      "required": ["session_id", "stop", "usage", "turn"]
+    },
+    "prepare_next_turn": {
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string" },
+        "stop": { "type": "string", "enum": ["end_turn", "max_tokens", "stop_sequence", "tool_use"] },
+        "usage": { "$ref": "#/definitions/Usage" }
+      },
+      "required": ["session_id", "stop", "usage"]
+    },
+    "get_steering": {
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string", "description": "Session ID" },
+        "cwd": { "type": "string", "description": "Working directory of the session" }
+      },
+      "required": ["session_id", "cwd"]
+    },
+    "get_followup": {
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string", "description": "Session ID" },
+        "cwd": { "type": "string", "description": "Working directory of the session" }
+      },
+      "required": ["session_id", "cwd"]
+    },
+    "get_api_key": {
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string" },
+        "provider": { "type": "string" }
+      },
+      "required": ["session_id", "provider"]
+    },
+    "tool_call": {
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string" },
+        "tool": { "type": "string" },
+        "args": { "type": "object" },
+        "cwd": { "type": "string", "description": "Working directory of the session" }
+      },
+      "required": ["session_id", "tool", "args", "cwd"]
     }
   },
   "definitions": {
@@ -111,6 +197,41 @@
         "price": { "type": "object", "properties": { "input": { "type": "number" }, "output": { "type": "number" }, "cache_read": { "type": "number" }, "cache_write": { "type": "number" } } }
       },
       "required": ["id", "ctx_window"]
+    },
+    "Content": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string" },
+        "text": { "type": "string" }
+      },
+      "required": ["type"]
+    },
+    "Message": {
+      "type": "object",
+      "properties": {
+        "role": { "type": "string", "enum": ["user", "assistant"] },
+        "content": { "type": "array", "items": { "$ref": "#/definitions/Content" } },
+        "silent": { "type": "boolean", "default": false }
+      },
+      "required": ["role", "content"]
+    },
+    "ModelRef": {
+      "type": "object",
+      "properties": {
+        "provider": { "type": "string" },
+        "id": { "type": "string" }
+      },
+      "required": ["provider", "id"]
+    },
+    "Usage": {
+      "type": "object",
+      "properties": {
+        "input": { "type": "integer" },
+        "output": { "type": "integer" },
+        "cache_read": { "type": "integer" },
+        "cache_write": { "type": "integer" }
+      },
+      "required": ["input", "output", "cache_read", "cache_write"]
     }
   }
 }

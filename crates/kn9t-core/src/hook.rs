@@ -61,6 +61,7 @@ pub trait HookHost: Send + Sync {
         &self,
         tool: &str,
         args: &serde_json::Value,
+        cwd: &Path,
         result: Vec<Content>,
     ) -> Vec<Content>;
     fn before_request(
@@ -89,6 +90,7 @@ impl HookHost for NoopHookHost {
         &self,
         _tool: &str,
         _args: &serde_json::Value,
+        _cwd: &Path,
         result: Vec<Content>,
     ) -> Vec<Content> {
         result

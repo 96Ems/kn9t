@@ -100,12 +100,34 @@ class UiRespondReq:
 # Plugin protocol definitions (schema/plugin.json).
 
 @dataclass
+class Content:
+    """Plugin protocol definition."""
+
+    text: Optional[str] = None
+    type: str
+
+@dataclass
+class Message:
+    """Plugin protocol definition."""
+
+    content: List[Dict[str, Any]]
+    role: str
+    silent: Optional[bool] = None
+
+@dataclass
 class ModelDecl:
     """Plugin protocol definition."""
 
     ctx_window: int
     id: str
     price: Optional[Dict[str, Any]] = None
+
+@dataclass
+class ModelRef:
+    """Plugin protocol definition."""
+
+    id: str
+    provider: str
 
 @dataclass
 class ProviderDecl:
@@ -124,4 +146,13 @@ class ToolSpec:
     name: str
     parallel_safe: Optional[bool] = None
     schema: Dict[str, Any]
+
+@dataclass
+class Usage:
+    """Plugin protocol definition."""
+
+    cache_read: int
+    cache_write: int
+    input: int
+    output: int
 

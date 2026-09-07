@@ -381,7 +381,7 @@ impl ReactLoop {
         for (i, name, args, id, h) in handles {
             let content = match h.join() {
                 Ok((inner, is_error)) => {
-                    let patched = self.hook_after_tool_call(&name, &args, inner);
+                    let patched = self.hook_after_tool_call(&name, &args, &params.cwd, inner);
                     Content::ToolResult {
                         id,
                         content: patched,
@@ -437,7 +437,7 @@ impl ReactLoop {
                     is_error,
                 });
                 // after_tool_call (pipeline, keep original on failure).
-                let patched = self.hook_after_tool_call(&call.name, args, inner);
+                let patched = self.hook_after_tool_call(&call.name, args, &params.cwd, inner);
                 Content::ToolResult {
                     id: call.id.clone(),
                     content: patched,
@@ -713,6 +713,7 @@ mod tests {
                 &self,
                 _t: &str,
                 _a: &serde_json::Value,
+                _cwd: &std::path::Path,
                 r: Vec<Content>,
             ) -> Vec<Content> {
                 r
