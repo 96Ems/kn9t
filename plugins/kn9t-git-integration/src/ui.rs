@@ -675,7 +675,7 @@ diff --git a/src/main.rs b/src/main.rs
         let w = render_with(&lua, &serde_json::Value::Null);
         assert_eq!(w.get::<String>("type").unwrap(), "text");
 
-        let json = state_to_json(Some(&sample_state()), &[]);
+        let json = state_to_json(Some(&sample_state()), &[], &default_target());
         let w = render_with(&lua, &json);
         assert_eq!(w.get::<String>("type").unwrap(), "split");
     }
@@ -685,7 +685,7 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn d_toggles_into_diff_mode() {
         let lua = lua_with_stubs();
-        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF));
+        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target());
 
         render_with(&lua, &json); // publish state to LAST
         assert_eq!(view_state(&lua).get::<String>("mode").unwrap(), "status");
@@ -699,7 +699,7 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn cursor_moves_and_clamps_at_both_ends() {
         let lua = lua_with_stubs();
-        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF));
+        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target());
         render_with(&lua, &json);
         press(&lua, "d");
 
@@ -723,7 +723,7 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn u_and_b_toggle_split_and_tree() {
         let lua = lua_with_stubs();
-        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF));
+        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target());
         render_with(&lua, &json);
         press(&lua, "d");
 
@@ -743,7 +743,7 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn comment_flow_anchors_to_the_correct_line_and_sends() {
         let lua = lua_with_stubs();
-        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF));
+        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target());
         render_with(&lua, &json);
         press(&lua, "d");
 
@@ -802,7 +802,7 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn incoming_state_does_not_reset_view_state() {
         let lua = lua_with_stubs();
-        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF));
+        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target());
         render_with(&lua, &json);
         press(&lua, "d");
         press(&lua, "j");
@@ -829,7 +829,7 @@ diff --git a/b.rs b/b.rs
 +y
 "
         );
-        let json = state_to_json(Some(&sample_state()), &diff::parse(&two));
+        let json = state_to_json(Some(&sample_state()), &diff::parse(&two), &default_target());
         render_with(&lua, &json);
         press(&lua, "d");
 
@@ -844,7 +844,7 @@ diff --git a/b.rs b/b.rs
     #[test]
     fn diff_mode_with_no_changes_renders_a_message() {
         let lua = lua_with_stubs();
-        let json = state_to_json(Some(&sample_state()), &[]);
+        let json = state_to_json(Some(&sample_state()), &[], &default_target());
         render_with(&lua, &json);
         press(&lua, "d");
         let w = render_with(&lua, &json);

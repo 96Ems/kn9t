@@ -56,7 +56,8 @@ pub fn set_diff_target(cwd: &PathBuf, target: DiffTarget) {
 /// Get the current diff target for a repository.
 pub fn get_diff_target(cwd: &PathBuf) -> DiffTarget {
     let state = get_or_create_state(cwd);
-    state.lock().unwrap().diff_target.clone()
+    let target = state.lock().unwrap().diff_target.clone();
+    target
 }
 
 /// Start the background poller for one repository, if one is not already
