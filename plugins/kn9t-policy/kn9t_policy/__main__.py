@@ -1,150 +1,425 @@
 #!/usr/bin/env python3
-"""kn9t-policy: User-configurable tool approval plugin.
+"""kn9t-policy: Interactive tool approval plugin with TUI.
 
-This plugin intercepts tool calls via before_tool_call hook and decides
-whether to allow, deny, or pass through to interactive approval.
+Modes:
+- normal: Use policy rules (ALLOW/DENY/ASK patterns)
+- yolo: Allow everything (no prompts)
+- ask_all: Ask for every tool call
 
-Policy rules are loaded from ~/.kn9t/policy.py which users can edit.
-
-Usage: python -m kn9t_policy
+Grants: User-defined patterns that are always allowed.
 """
 
 import json
 import sys
-import importlib.util
-from pathlib import Path
-
-# ── Default policy (created at ~/.kn9t/policy.py if missing) ──────────────────
-
-DEFAULT_POLICY = '''
-"""User-editable policy rules for kn9t tool approval.
-
-Edit this file to customize which tool calls are auto-allowed or denied.
-
-The `check(tool, args, cwd)` function is called for every tool call.
-Return: "allow", "deny", "ask", or {"action": "deny", "reason": "..."}
-"""
-
 import re
 import fnmatch
+from pathlib import Path
+from typing import Optional
+from dataclasses import dataclass, field, asdict
 
-def split_commands(cmd):
-    """Split shell command into parts (handles ; && || |)."""
-    return [p.strip() for p in re.split(r"\\s*(?:;|&&|\\|\\||\\|)\\s*", cmd) if p.strip()]
+# ══════════════════════════════════════════════════════════════════════════════
+# State
+# ══════════════════════════════════════════════════════════════════════════════
 
-def matches(value, patterns):
-    """Check if value matches any fnmatch pattern."""
+@dataclass
+class Decision:
+    tool: str
+    cmd: str  # For bash, the command; for others, tool name
+    result: str  # "allow", "deny", "ask"
+    reason: str = ""
+
+@dataclass
+class State:
+    mode: str = "normal"  # "normal", "yolo", "ask_all"
+    grants: list = field(default_factory=list)  # User-added always-allow patterns
+    recent: list = field(default_factory=list)  # Last N decisions
+    cursor: int = 0  # For grant list navigation
+    adding: bool = False  # True when typing new grant
+    input_buf: str = ""  # Input buffer for new grant
+
+MAX_RECENT = 10
+state = State()
+session_id: Optional[str] = None
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Persistence
+# ══════════════════════════════════════════════════════════════════════════════
+
+def grants_path() -> Path:
+    return Path.home() / ".kn9t" / "grants.json"
+
+def load_grants():
+    p = grants_path()
+    if p.exists():
+        try:
+            data = json.loads(p.read_text())
+            state.grants = data.get("grants", [])
+            state.mode = data.get("mode", "normal")
+        except Exception as e:
+            log(f"grants load error: {e}")
+
+def save_grants():
+    p = grants_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"grants": state.grants, "mode": state.mode}, indent=2))
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Policy rules (built-in)
+# ══════════════════════════════════════════════════════════════════════════════
+
+ALLOW = [
+    # Read-only commands
+    "ls *", "dir *", "pwd", "cd *", "tree *",
+    "cat *", "head *", "tail *", "less *", "more *",
+    "grep *", "rg *", "find *", "fd *", "which *", "where *",
+    "echo *", "printf *",
+    # Git read-only
+    "git status*", "git log*", "git diff*", "git show*", "git branch*",
+    "git remote*", "git stash list*",
+    # Build tools (safe)
+    "cargo check*", "cargo test*", "cargo build*", "cargo clippy*",
+    "npm test*", "npm run*", "pnpm test*", "bun test*",
+    "python -c *", "python --version*",
+]
+
+DENY = [
+    "rm -rf /*", "rm -rf /", "rm -rf ~*",
+    "sudo *", "su *",
+    "shutdown*", "reboot*", "poweroff*",
+    "mkfs*", "dd*of=/dev/*",
+]
+
+ASK = [
+    # Git destructive
+    "git checkout*", "git reset*", "git clean*",
+    "git rebase*", "git merge*", "git push*",
+    "git stash drop*", "git stash pop*", "git stash clear*",
+    "git branch -D*", "git branch -d*",
+    # File deletion
+    "rm *", "rmdir *", "del *", "Remove-Item*",
+    # Publishing
+    "npm publish*", "cargo publish*",
+]
+
+def matches(value: str, patterns: list) -> bool:
     return any(fnmatch.fnmatch(value, p) for p in patterns)
 
-# Safe commands (read-only, no side effects)
-ALLOW = [
-    # Navigation & listing
-    "cd *", "pwd", "ls *", "dir *", "tree *",
-    # File reading
-    "cat *", "head *", "tail *", "less *", "more *", "bat *",
-    # Search & find
-    "grep *", "rg *", "ag *", "find *", "fd *", "locate *",
-    "which *", "where *", "type *", "whereis *",
-    # Echo & test
-    "echo *", "printf *", "test *", "[*",
-    # Git read-only (NOT checkout, reset, clean, push, rebase)
-    "git status*", "git log*", "git diff*", "git show*", "git branch*",
-    "git remote*", "git stash list*", "git tag*", "git describe*",
-    # Rust
-    "cargo check*", "cargo test*", "cargo build*", "cargo clippy*",
-    "cargo fmt --check*", "rustc --version*", "rustup show*",
-    # Python read-only
-    "python --version*", "python3 --version*", "python -c *",
-    "pip list*", "pip show*", "pip freeze*", "pip --version*",
-    "uv pip list*", "uv pip show*",
-    # Node read-only
-    "node --version*", "npm list*", "npm view*", "npm --version*",
-    "bun --version*", "pnpm list*",
-    # System info
-    "uname *", "hostname", "whoami", "id", "env", "printenv*",
-    "date", "uptime", "df *", "du *", "free *", "ps *", "top -bn1*",
-    # PowerShell read-only
-    "Get-ChildItem*", "Get-Content*", "Get-Location", "Set-Location*",
-    "Get-Process*", "Get-Service*", "Get-Item*", "Test-Path*",
-]
+def split_commands(cmd: str) -> list:
+    return [p.strip() for p in re.split(r"\s*(?:;|&&|\|\||\|)\s*", cmd) if p.strip()]
 
-# Dangerous commands (hard deny, never allow)
-DENY = ["sudo *", "su *", "shutdown*", "reboot*", "mkfs*", "rm -rf /*"]
+def extract_inner(part: str) -> str:
+    """Extract inner command from wrappers like cmd.exe /c '...'"""
+    m = re.match(r'cmd\.exe\s+/c\s+["\']?([^"\']+)["\']?', part, re.I)
+    return m.group(1) if m else part
 
-# Destructive git commands that need prompt (not in ALLOW = ask)
-# git checkout, git reset, git clean, git push, git rebase, git merge
+# ══════════════════════════════════════════════════════════════════════════════
+# Policy check
+# ══════════════════════════════════════════════════════════════════════════════
 
-
-# Tools that are always allowed (fnmatch patterns)
-ALLOW_TOOLS = [
-    "read", "write", "edit", "glob", "grep",  # file ops
-    "mcp_*",  # MCP tools
-]
-
-def check(tool, args, cwd):
-    if tool == "bash":
-        cmd = args.get("cmd", "")
-        for part in split_commands(cmd):
-            if matches(part, DENY):
-                return {"action": "deny", "reason": f"Blocked: {part}"}
-            if not matches(part, ALLOW):
-                return "ask"
-        return "allow"
+def check(tool: str, args: dict, cwd: str) -> dict:
+    """Check tool call against policy. Returns {action, reason}."""
     
-    # Tools in allow list (supports wildcards)
-    if matches(tool, ALLOW_TOOLS):
-        return "allow"
+    # Mode overrides
+    if state.mode == "yolo":
+        return {"action": "allow", "reason": "YOLO mode"}
+    if state.mode == "ask_all":
+        return {"action": "ask", "reason": "Ask-all mode"}
     
-    return "ask"  # unknown tools need approval
+    # Only check bash commands in detail
+    if tool != "bash":
+        return {"action": "allow", "reason": "Non-bash tool"}
+    
+    cmd = args.get("cmd", args.get("command", ""))
+    
+    for part in split_commands(cmd):
+        inner = extract_inner(part)
+        
+        # Check user grants first (highest priority)
+        if matches(inner, state.grants):
+            return {"action": "allow", "reason": f"Granted: {inner}"}
+        
+        # Check built-in DENY
+        if matches(inner, DENY):
+            return {"action": "deny", "reason": f"Blocked: {inner}"}
+        
+        # Check built-in ASK
+        if matches(inner, ASK):
+            return {"action": "ask", "reason": f"Destructive: {inner}"}
+        
+        # Check built-in ALLOW
+        if matches(inner, ALLOW):
+            continue  # This part is allowed, check next
+        
+        # Unknown command: ask
+        return {"action": "ask", "reason": f"Unknown: {inner}"}
+    
+    return {"action": "allow", "reason": "All parts allowed"}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UI
+# ══════════════════════════════════════════════════════════════════════════════
+
+UI_LUA = r'''
+-- Policy plugin UI
+local V = { cursor = 0, adding = false, input = "" }
+
+function on_state(s)
+    V.mode = s.mode or "normal"
+    V.grants = s.grants or {}
+    V.recent = s.recent or {}
+    V.cursor = s.cursor or 0
+    V.adding = s.adding or false
+    V.input = s.input_buf or ""
+end
+
+function on_key(key)
+    if V.adding then
+        if key == "Escape" then
+            kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "cancel_add" } })
+        elseif key == "Enter" then
+            kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "confirm_add" } })
+        elseif key == "Backspace" then
+            kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "input_backspace" } })
+        elseif #key == 1 or key == "Space" then
+            local ch = (key == "Space") and " " or key
+            kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "input_char", ch = ch } })
+        end
+        return true
+    end
+    
+    if key == "m" then
+        kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "cycle_mode" } })
+        return true
+    elseif key == "a" then
+        kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "start_add" } })
+        return true
+    elseif key == "d" or key == "x" then
+        kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "delete_grant" } })
+        return true
+    elseif key == "j" or key == "Down" then
+        kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "cursor_down" } })
+        return true
+    elseif key == "k" or key == "Up" then
+        kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "cursor_up" } })
+        return true
+    end
+    return false
+end
+
+function render(s)
+    on_state(s)
+    local out = {}
+    local C = {
+        accent = "cyan",
+        dim = "darkgray",
+        normal = "green",
+        yolo = "yellow",
+        ask_all = "magenta",
+        allow = "green",
+        deny = "lightred",
+        ask = "yellow",
+    }
+    
+    -- Mode selector
+    local mode_spans = {}
+    table.insert(mode_spans, { text = "Mode: ", fg = C.dim })
+    for _, m in ipairs({"normal", "yolo", "ask_all"}) do
+        if V.mode == m then
+            table.insert(mode_spans, { text = "[", fg = C[m] })
+            table.insert(mode_spans, { text = m, fg = C[m], bold = true })
+            table.insert(mode_spans, { text = "] ", fg = C[m] })
+        else
+            table.insert(mode_spans, { text = m .. " ", fg = C.dim })
+        end
+    end
+    table.insert(out, { type = "text", spans = mode_spans, size = { fixed = 1 } })
+    
+    -- Separator
+    table.insert(out, { type = "text", content = string.rep("─", 40), fg = C.dim, size = { fixed = 1 } })
+    
+    -- Recent decisions
+    table.insert(out, { type = "text", content = "Recent:", fg = C.dim, size = { fixed = 1 } })
+    if #V.recent == 0 then
+        table.insert(out, { type = "text", content = "  (none)", fg = C.dim, size = { fixed = 1 } })
+    else
+        for i = #V.recent, 1, -1 do
+            local d = V.recent[i]
+            local icon = "✓"
+            local col = C.allow
+            if d.result == "deny" then icon = "✗"; col = C.deny
+            elseif d.result == "ask" then icon = "?"; col = C.ask end
+            local spans = {
+                { text = icon .. " ", fg = col },
+                { text = d.cmd, fg = "white" },
+            }
+            if d.reason ~= "" then
+                table.insert(spans, { text = " (" .. d.reason .. ")", fg = C.dim })
+            end
+            table.insert(out, { type = "text", spans = spans, size = { fixed = 1 } })
+        end
+    end
+    
+    -- Separator
+    table.insert(out, { type = "text", content = string.rep("─", 40), fg = C.dim, size = { fixed = 1 } })
+    
+    -- Grants list
+    table.insert(out, { type = "text", content = "Grants (always allow):", fg = C.dim, size = { fixed = 1 } })
+    if #V.grants == 0 and not V.adding then
+        table.insert(out, { type = "text", content = "  (none) - press 'a' to add", fg = C.dim, size = { fixed = 1 } })
+    else
+        for i, g in ipairs(V.grants) do
+            local prefix = (i - 1 == V.cursor) and "> " or "  "
+            local fg = (i - 1 == V.cursor) and C.accent or "white"
+            table.insert(out, { type = "text", content = prefix .. g, fg = fg, size = { fixed = 1 } })
+        end
+    end
+    
+    -- Input line for adding
+    if V.adding then
+        local spans = {
+            { text = "  + ", fg = C.accent },
+            { text = V.input, fg = "white" },
+            { text = "█", fg = C.accent },
+        }
+        table.insert(out, { type = "text", spans = spans, size = { fixed = 1 } })
+    end
+    
+    -- Spacer
+    table.insert(out, { type = "spacer", size = { flex = 1 } })
+    
+    -- Help bar
+    local help_spans = {}
+    if V.adding then
+        table.insert(help_spans, { text = "[Enter]", fg = C.accent })
+        table.insert(help_spans, { text = " save  ", fg = C.dim })
+        table.insert(help_spans, { text = "[Esc]", fg = C.accent })
+        table.insert(help_spans, { text = " cancel", fg = C.dim })
+    else
+        table.insert(help_spans, { text = "[m]", fg = C.accent })
+        table.insert(help_spans, { text = " mode  ", fg = C.dim })
+        table.insert(help_spans, { text = "[a]", fg = C.accent })
+        table.insert(help_spans, { text = " add  ", fg = C.dim })
+        table.insert(help_spans, { text = "[d]", fg = C.accent })
+        table.insert(help_spans, { text = " del  ", fg = C.dim })
+        table.insert(help_spans, { text = "[j/k]", fg = C.accent })
+        table.insert(help_spans, { text = " nav", fg = C.dim })
+    end
+    table.insert(out, { type = "text", spans = help_spans, size = { fixed = 1 } })
+    
+    return { type = "split", direction = "vertical", children = out }
+end
 '''
 
+def send_ui_state():
+    """Push current state to TUI."""
+    if not session_id:
+        return
+    write_msg({
+        "t": "host_api",
+        "session": session_id,
+        "op": "ui_set_state",
+        "payload": {
+            "mode": state.mode,
+            "grants": state.grants,
+            "recent": [asdict(d) for d in state.recent[-MAX_RECENT:]],
+            "cursor": state.cursor,
+            "adding": state.adding,
+            "input_buf": state.input_buf,
+        }
+    })
 
-# ── Plugin implementation ─────────────────────────────────────────────────────
+def register_ui():
+    """Register Lua UI with TUI."""
+    if not session_id:
+        return
+    write_msg({
+        "t": "host_api",
+        "session": session_id,
+        "op": "ui_register_lua",
+        "payload": {
+            "source": UI_LUA,
+            "placement": "main",
+            "title": "Policy",
+        }
+    })
 
-def load_policy():
-    """Load policy from ~/.kn9t/policy.py or create default."""
-    policy_path = Path.home() / ".kn9t" / "policy.py"
-    
-    if not policy_path.exists():
-        policy_path.parent.mkdir(parents=True, exist_ok=True)
-        policy_path.write_text(DEFAULT_POLICY)
-        print(f"Created {policy_path}", file=sys.stderr)
-    
-    try:
-        spec = importlib.util.spec_from_file_location("policy", policy_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        if hasattr(module, "check"):
-            print(f"Loaded {policy_path}", file=sys.stderr)
-            return module.check
-    except Exception as e:
-        print(f"Policy load error: {e}", file=sys.stderr)
-    
-    return None
+# ══════════════════════════════════════════════════════════════════════════════
+# Message handling
+# ══════════════════════════════════════════════════════════════════════════════
 
+def handle_plugin_msg(msg: dict):
+    """Handle messages from TUI (user interactions)."""
+    t = msg.get("t", "")
+    
+    if t == "cycle_mode":
+        modes = ["normal", "yolo", "ask_all"]
+        idx = modes.index(state.mode) if state.mode in modes else 0
+        state.mode = modes[(idx + 1) % len(modes)]
+        save_grants()
+        
+    elif t == "start_add":
+        state.adding = True
+        state.input_buf = ""
+        
+    elif t == "cancel_add":
+        state.adding = False
+        state.input_buf = ""
+        
+    elif t == "confirm_add":
+        if state.input_buf.strip():
+            state.grants.append(state.input_buf.strip())
+            save_grants()
+        state.adding = False
+        state.input_buf = ""
+        state.cursor = len(state.grants) - 1
+        
+    elif t == "input_char":
+        state.input_buf += msg.get("ch", "")
+        
+    elif t == "input_backspace":
+        state.input_buf = state.input_buf[:-1]
+        
+    elif t == "delete_grant":
+        if state.grants and 0 <= state.cursor < len(state.grants):
+            del state.grants[state.cursor]
+            state.cursor = max(0, min(state.cursor, len(state.grants) - 1))
+            save_grants()
+            
+    elif t == "cursor_up":
+        state.cursor = max(0, state.cursor - 1)
+        
+    elif t == "cursor_down":
+        state.cursor = min(len(state.grants) - 1, state.cursor + 1) if state.grants else 0
+    
+    send_ui_state()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Protocol
+# ══════════════════════════════════════════════════════════════════════════════
+
+def log(msg: str):
+    print(msg, file=sys.stderr)
 
 def read_msg():
-    """Read JSON line from stdin."""
     line = sys.stdin.readline()
     return json.loads(line) if line else None
 
-
 def write_msg(msg):
-    """Write JSON line to stdout."""
     sys.stdout.write(json.dumps(msg, separators=(",", ":")) + "\n")
     sys.stdout.flush()
 
-
 def run():
-    """Main plugin loop."""
-    check_fn = load_policy()
+    global session_id
+    
+    load_grants()
     
     # Handshake
     hello = read_msg()
     if not hello or hello.get("t") != "hello":
         return
     
-    print(f"Connected to kn9t {hello.get('kn9t', '?')}", file=sys.stderr)
+    session_id = hello.get("session")
+    log(f"Connected to kn9t {hello.get('kn9t', '?')}, session={session_id}")
     
     write_msg({
         "t": "hello",
@@ -154,16 +429,22 @@ def run():
         "tools": [],
     })
     
+    # Register UI
+    register_ui()
+    send_ui_state()
+    
     # Main loop
     while True:
         msg = read_msg()
         if not msg:
             break
         
-        if msg.get("t") == "shutdown":
+        t = msg.get("t", "")
+        
+        if t == "shutdown":
             break
         
-        if msg.get("t") == "hook" and msg.get("hook") == "before_tool_call":
+        elif t == "hook" and msg.get("hook") == "before_tool_call":
             hook_id = msg.get("id", 0)
             payload = msg.get("payload", {})
             
@@ -171,28 +452,28 @@ def run():
             args = payload.get("args", {})
             cwd = payload.get("cwd", "")
             
-            # Run policy
-            result = {"action": "allow"}
-            if check_fn:
-                try:
-                    r = check_fn(tool, args, cwd)
-                    if r == "allow":
-                        result = {"action": "allow"}
-                    elif r == "deny":
-                        result = {"action": "deny", "reason": "Denied by policy"}
-                    elif r == "ask":
-                        result = {"action": "ask", "reason": "Approval required"}
-                    elif isinstance(r, dict):
-                        result = r  # pass through {action, reason}
-                except Exception as e:
-                    print(f"Policy error: {e}", file=sys.stderr)
-                    result = {"action": "deny", "reason": f"Policy error: {e}"}
+            # Check policy
+            result = check(tool, args, cwd)
             
+            # Record decision
+            cmd = args.get("cmd", args.get("command", tool))[:50]  # Truncate
+            state.recent.append(Decision(
+                tool=tool,
+                cmd=cmd,
+                result=result["action"],
+                reason=result.get("reason", "")[:30]
+            ))
+            if len(state.recent) > MAX_RECENT:
+                state.recent = state.recent[-MAX_RECENT:]
+            
+            send_ui_state()
             write_msg({"t": "result", "id": hook_id, **result})
         
-        elif msg.get("t") == "hook":
-            # Other hooks: allow
+        elif t == "hook":
             write_msg({"t": "result", "id": msg.get("id", 0), "action": "allow"})
+        
+        elif t == "plugin_msg":
+            handle_plugin_msg(msg.get("msg", {}))
 
 
 if __name__ == "__main__":

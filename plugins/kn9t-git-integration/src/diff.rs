@@ -82,25 +82,85 @@ pub struct DiffFile {
     pub deletions: usize,
 }
 
+/// Diff target specifier.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum DiffTarget {
+    /// Working tree vs HEAD (default).
+    #[default]
+    WorkingTree,
+    /// Staged changes (index vs HEAD).
+    Staged,
+    /// Working tree vs a specific ref (branch, tag, or commit).
+    Ref(String),
+    /// Compare two refs: base..head.
+    RefRange { base: String, head: String },
+}
+
+impl DiffTarget {
+    pub fn label(&self) -> String {
+        match self {
+            DiffTarget::WorkingTree => "HEAD".to_string(),
+            DiffTarget::Staged => "staged".to_string(),
+            DiffTarget::Ref(r) => r.clone(),
+            DiffTarget::RefRange { base, head } => format!("{base}..{head}"),
+        }
+    }
+}
+
 /// Collect the working-tree diff for `cwd`.
 ///
 /// `HEAD` with no argument covers tracked modifications; untracked files are
 /// absent by design (they have no diff to show, and the status list already
 /// reports them).
 pub fn collect(cwd: &Path) -> Vec<DiffFile> {
-    // `--no-color` so escape codes never reach the parser, `-U3` to pin context
-    // regardless of the user's diff.context config — the panel's layout assumes
-    // a known amount of surrounding context.
-    let Some(out) = super::git::run_git_raw(
-        cwd,
-        &[
+    collect_with_target(cwd, &DiffTarget::WorkingTree)
+}
+
+/// Collect diff with a specific target.
+pub fn collect_with_target(cwd: &Path, target: &DiffTarget) -> Vec<DiffFile> {
+    let args = match target {
+        DiffTarget::WorkingTree => vec![
             "diff",
             "--no-color",
             "--no-ext-diff",
             "-U3",
             "HEAD",
         ],
-    ) else {
+        DiffTarget::Staged => vec![
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "-U3",
+            "--cached",
+        ],
+        DiffTarget::Ref(r) => vec![
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "-U3",
+            r.as_str(),
+        ],
+        DiffTarget::RefRange { base, head } => {
+            let range = format!("{base}..{head}");
+            return collect_range(cwd, &range);
+        }
+    };
+
+    let Some(out) = super::git::run_git_raw(cwd, &args) else {
+        return Vec::new();
+    };
+    parse(&out)
+}
+
+fn collect_range(cwd: &Path, range: &str) -> Vec<DiffFile> {
+    let args = vec![
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "-U3",
+        range,
+    ];
+    let Some(out) = super::git::run_git_raw(cwd, &args) else {
         return Vec::new();
     };
     parse(&out)

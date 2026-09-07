@@ -10,7 +10,7 @@
 //! { type = "plugin", plugin = "kn9t-git-integration" }
 //! ```
 
-use crate::diff::DiffFile;
+use crate::diff::{DiffFile, DiffTarget};
 use crate::git::GitState;
 
 /// JSON pushed via `ui_set_state`.
@@ -18,7 +18,11 @@ use crate::git::GitState;
 /// `repo` is `null` (not an empty object) when `cwd` is not a git repository,
 /// so the Lua side can render a distinct message instead of an
 /// empty-but-misleadingly-"clean" status.
-pub fn state_to_json(state: Option<&GitState>, files: &[DiffFile]) -> serde_json::Value {
+pub fn state_to_json(
+    state: Option<&GitState>,
+    files: &[DiffFile],
+    diff_target: &DiffTarget,
+) -> serde_json::Value {
     let repo = match state {
         None => serde_json::Value::Null,
         Some(s) => serde_json::json!({
@@ -33,12 +37,19 @@ pub fn state_to_json(state: Option<&GitState>, files: &[DiffFile]) -> serde_json
                 "sha": l.sha,
                 "subject": l.subject,
             })).collect::<Vec<_>>(),
+            "refs": s.refs.iter().map(|r| serde_json::json!({
+                "name": r.name,
+                "kind": r.kind.tag(),
+                "is_current": r.is_current,
+            })).collect::<Vec<_>>(),
+            "stashes": s.stashes,
         }),
     };
 
     serde_json::json!({
         "repo": repo,
         "diff": files.iter().map(diff_file_to_json).collect::<Vec<_>>(),
+        "diff_target": diff_target.label(),
     })
 }
 
@@ -527,6 +538,8 @@ mod tests {
                 sha: "abc1234".to_string(),
                 subject: "fix".to_string(),
             }],
+            refs: vec![],
+            stashes: vec![],
         }
     }
 
@@ -541,16 +554,20 @@ diff --git a/src/main.rs b/src/main.rs
 +new two
 ";
 
+    fn default_target() -> DiffTarget {
+        DiffTarget::WorkingTree
+    }
+
     #[test]
     fn not_a_repo_serializes_repo_as_null() {
-        let json = state_to_json(None, &[]);
+        let json = state_to_json(None, &[], &default_target());
         assert_eq!(json["repo"], serde_json::Value::Null);
         assert_eq!(json["diff"].as_array().unwrap().len(), 0);
     }
 
     #[test]
     fn state_to_json_round_trips_fields() {
-        let json = state_to_json(Some(&sample_state()), &[]);
+        let json = state_to_json(Some(&sample_state()), &[], &default_target());
         assert_eq!(json["repo"]["branch"], "main");
         assert_eq!(json["repo"]["ahead"], 2);
         assert_eq!(json["repo"]["changes"][0]["status"], "M");
@@ -562,7 +579,7 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn diff_json_carries_per_line_numbers() {
         let files = diff::parse(SAMPLE_DIFF);
-        let json = state_to_json(Some(&sample_state()), &files);
+        let json = state_to_json(Some(&sample_state()), &files, &default_target());
         let lines = &json["diff"][0]["hunks"][0]["lines"];
 
         assert_eq!(lines[0]["kind"], "ctx");

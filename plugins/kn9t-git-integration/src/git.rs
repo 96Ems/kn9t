@@ -22,6 +22,31 @@ pub struct LogEntry {
     pub subject: String,
 }
 
+/// A git reference (branch, tag, or remote).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitRef {
+    pub name: String,
+    pub kind: RefKind,
+    pub is_current: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefKind {
+    LocalBranch,
+    RemoteBranch,
+    Tag,
+}
+
+impl RefKind {
+    pub fn tag(&self) -> &'static str {
+        match self {
+            RefKind::LocalBranch => "local",
+            RefKind::RemoteBranch => "remote",
+            RefKind::Tag => "tag",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitState {
     /// `None` when `cwd` is not inside a git repository at all — distinct
@@ -33,6 +58,8 @@ pub struct GitState {
     pub behind: u32,
     pub changes: Vec<FileChange>,
     pub recent: Vec<LogEntry>,
+    pub refs: Vec<GitRef>,
+    pub stashes: Vec<String>,
 }
 
 /// How many `git log` entries to keep. Bounded so the sidebar (and the
@@ -58,12 +85,17 @@ pub fn collect(cwd: &Path) -> Option<GitState> {
     .unwrap_or_default();
     let recent = parse_log(&log_out);
 
+    let refs = collect_refs(cwd, branch.as_deref());
+    let stashes = collect_stashes(cwd);
+
     Some(GitState {
         branch,
         ahead,
         behind,
         changes,
         recent,
+        refs,
+        stashes,
     })
 }
 
@@ -191,6 +223,62 @@ fn parse_log(out: &str) -> Vec<LogEntry> {
             }
             Some(LogEntry { sha, subject })
         })
+        .collect()
+}
+
+/// Collect all refs (branches, remotes, tags).
+fn collect_refs(cwd: &Path, current_branch: Option<&str>) -> Vec<GitRef> {
+    let mut refs = Vec::new();
+
+    // Local branches
+    if let Some(out) = run_git(cwd, &["branch", "--format=%(refname:short)"]) {
+        for name in out.lines() {
+            if !name.is_empty() {
+                refs.push(GitRef {
+                    name: name.to_string(),
+                    kind: RefKind::LocalBranch,
+                    is_current: current_branch == Some(name),
+                });
+            }
+        }
+    }
+
+    // Remote branches
+    if let Some(out) = run_git(cwd, &["branch", "-r", "--format=%(refname:short)"]) {
+        for name in out.lines() {
+            if !name.is_empty() && !name.contains("HEAD") {
+                refs.push(GitRef {
+                    name: name.to_string(),
+                    kind: RefKind::RemoteBranch,
+                    is_current: false,
+                });
+            }
+        }
+    }
+
+    // Tags
+    if let Some(out) = run_git(cwd, &["tag", "--sort=-creatordate"]) {
+        for name in out.lines().take(20) {
+            if !name.is_empty() {
+                refs.push(GitRef {
+                    name: name.to_string(),
+                    kind: RefKind::Tag,
+                    is_current: false,
+                });
+            }
+        }
+    }
+
+    refs
+}
+
+/// Collect stash entries.
+fn collect_stashes(cwd: &Path) -> Vec<String> {
+    run_git(cwd, &["stash", "list", "--format=%gd: %s"])
+        .unwrap_or_default()
+        .lines()
+        .take(10)
+        .map(|s| s.to_string())
         .collect()
 }
 
