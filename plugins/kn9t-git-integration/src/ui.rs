@@ -258,13 +258,23 @@ end)
 -- Remaining printable characters, so composing can type them. Skips anything
 -- already bound above — those already append via the `bind` wrapper. When not
 -- composing these return false, so the letters keep their host meaning.
-local PRINTABLE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,:;!?/()<>-_=+*#@'\"`~$%^&|\\"
+local PRINTABLE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;!?/()<>-_=+*#@'\"`~$%^&|\\"
 for i = 1, #PRINTABLE do
   local ch = string.sub(PRINTABLE, i, i)
   if not BOUND[ch] then
     bind(ch, function() return false end)
   end
 end
+
+-- Space is sent as "Space" by the TUI, not " ". Bind it separately so typing
+-- comments works. The bind wrapper appends " " when V.typing is active.
+kn9t.on_key("Space", function()
+  if V.typing ~= nil then
+    V.typing = V.typing .. " "
+    return true
+  end
+  return false
+end)
 
 -- Clicking a file row selects it; clicking a diff row moves the cursor there.
 kn9t.on_click("files", function(x, y)

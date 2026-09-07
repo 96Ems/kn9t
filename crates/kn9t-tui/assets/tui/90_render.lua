@@ -6,6 +6,7 @@ local RIGHT_WIDTH   = TUI.SIDEBAR_WIDTH or 34
 local PLUGIN_COL_W  = TUI.PLUGIN_COL_WIDTH or 34
 
 -- Build plugin views for a given placement zone
+-- For "main" zone: only show if focused OR TUI.show.main_plugins is true
 local function plugin_views_in(zone)
     local specs = (kn9t.state and kn9t.state.plugin_view_specs) or {}
     local focused = (kn9t.state and kn9t.state.focused_plugin) or ""
@@ -14,20 +15,26 @@ local function plugin_views_in(zone)
         local placed = (spec.placement ~= "" and spec.placement) or "sidebar"
         if placed == zone then
             local is_focused = (spec.name == focused)
-            local title = (spec.title ~= "" and spec.title) or spec.name
-            local rows = TUI.PLUGIN_VIEW_ROWS or 8
-            if is_focused then
-                rows = (spec.rows > 0 and spec.rows) or (TUI.PLUGIN_VIEW_ROWS_FOCUSED or 24)
+            
+            -- Main plugins only appear when focused (unless show.main_plugins)
+            if zone == "main" and not is_focused and not TUI.show.main_plugins then
+                -- skip: hidden until focused
+            else
+                local title = (spec.title ~= "" and spec.title) or spec.name
+                local rows = TUI.PLUGIN_VIEW_ROWS or 8
+                if is_focused then
+                    rows = (spec.rows > 0 and spec.rows) or (TUI.PLUGIN_VIEW_ROWS_FOCUSED or 24)
+                end
+                table.insert(out, {
+                    type = "box",
+                    title = is_focused and (" " .. title .. " - Esc to release ")
+                                        or (" " .. title .. " "),
+                    border = true,
+                    border_fg = is_focused and "cyan" or nil,
+                    size = { fixed = rows },
+                    child = { type = "plugin", plugin = spec.name },
+                })
             end
-            table.insert(out, {
-                type = "box",
-                title = is_focused and (" " .. title .. " - Esc to release ")
-                                    or (" " .. title .. " "),
-                border = true,
-                border_fg = is_focused and "cyan" or nil,
-                size = { fixed = rows },
-                child = { type = "plugin", plugin = spec.name },
-            })
         end
     end
     return out

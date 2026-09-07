@@ -6,6 +6,7 @@
 TUI.show = {
     left_sidebar  = true,
     right_sidebar = true,
+    main_plugins  = false,  -- only show main plugins when focused
 }
 
 -- Which native/plugin view occupies the main pane.

@@ -25,6 +25,12 @@ kn9t.map("F8", function() kn9t.action("scroll_bottom") end)
 kn9t.map("C-g", TUI.focus_cycle)
 kn9t.map("F10", TUI.focus_cycle)
 
+-- Toggle main plugin visibility (show even when unfocused)
+kn9t.map("F9", function()
+    TUI.show.main_plugins = not TUI.show.main_plugins
+    kn9t.invalidate()
+end)
+
 -- Tool display modes
 local TOOL_MODES = {
     edit  = "diff",
