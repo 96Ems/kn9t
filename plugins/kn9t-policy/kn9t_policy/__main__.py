@@ -310,33 +310,43 @@ function render(s)
 end
 '''
 
+_request_id = 0
+
 def send_ui_state():
     """Push current state to TUI."""
+    global _request_id
     if not session_id:
         return
+    _request_id += 1
     write_msg({
-        "t": "host_api",
-        "session": session_id,
+        "t": "request",
+        "id": _request_id,
         "op": "ui_set_state",
         "payload": {
-            "mode": state.mode,
-            "grants": state.grants,
-            "recent": [asdict(d) for d in state.recent[-MAX_RECENT:]],
-            "cursor": state.cursor,
-            "adding": state.adding,
-            "input_buf": state.input_buf,
+            "session": session_id,
+            "state": {
+                "mode": state.mode,
+                "grants": state.grants,
+                "recent": [asdict(d) for d in state.recent[-MAX_RECENT:]],
+                "cursor": state.cursor,
+                "adding": state.adding,
+                "input_buf": state.input_buf,
+            }
         }
     })
 
 def register_ui():
     """Register Lua UI with TUI."""
+    global _request_id
     if not session_id:
         return
+    _request_id += 1
     write_msg({
-        "t": "host_api",
-        "session": session_id,
+        "t": "request",
+        "id": _request_id,
         "op": "ui_register_lua",
         "payload": {
+            "session": session_id,
             "source": UI_LUA,
             "placement": "main",
             "title": "Policy",
