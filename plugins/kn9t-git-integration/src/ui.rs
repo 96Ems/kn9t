@@ -346,6 +346,14 @@ local function status_view(repo)
     table.insert(out, { type = "text", content = l.sha .. " " .. l.subject, fg = "gray",
                         size = { fixed = 1 }, wrap = false })
   end
+
+  -- Help bar at bottom
+  table.insert(out, { type = "spacer", size = { flex = 1 } })
+  table.insert(out, { type = "text", spans = {
+    { text = "[d]", fg = "cyan" }, { text = " diff  ", fg = "darkgray" },
+    { text = "[Esc]", fg = "cyan" }, { text = " close", fg = "darkgray" },
+  }, size = { fixed = 1 }, wrap = false })
+
   return { type = "split", direction = "vertical", children = out }
 end
 
@@ -464,12 +472,23 @@ local function diff_view()
       fg = "magenta", size = { fixed = 1 }, wrap = false,
     })
   else
-    local help = "j/k:move  n/p:file  [/]:hunk  u:split  b:tree  c/click:comment  d:status"
+    local spans = {}
     if #V.comments > 0 then
-      help = string.format("C-s:send %d  |  %s", #V.comments, help)
+      table.insert(spans, { text = "[C-s]", fg = "cyan" })
+      table.insert(spans, { text = string.format(" send %d  ", #V.comments), fg = "yellow" })
     end
+    table.insert(spans, { text = "[j/k]", fg = "cyan" })
+    table.insert(spans, { text = " nav  ", fg = "darkgray" })
+    table.insert(spans, { text = "[n/p]", fg = "cyan" })
+    table.insert(spans, { text = " file  ", fg = "darkgray" })
+    table.insert(spans, { text = "[d]", fg = "cyan" })
+    table.insert(spans, { text = " status  ", fg = "darkgray" })
+    table.insert(spans, { text = "[c]", fg = "cyan" })
+    table.insert(spans, { text = " comment  ", fg = "darkgray" })
+    table.insert(spans, { text = "[Esc]", fg = "cyan" })
+    table.insert(spans, { text = " close", fg = "darkgray" })
     table.insert(children, {
-      type = "text", content = help, fg = "darkgray",
+      type = "text", spans = spans,
       size = { fixed = 1 }, wrap = false,
     })
   end
