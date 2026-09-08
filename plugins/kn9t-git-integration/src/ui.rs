@@ -613,6 +613,8 @@ bind("Enter", function()
         V.commit_cursor = 1
         V.commit_scroll = 0
         V.mode = "commit"
+        -- Request diff from Rust by writing to tmp file
+        kn9t.write_file("/tmp/kn9t-commit-sha", commit.sha)
       end
     end
     return true
@@ -637,6 +639,9 @@ bind("Backspace", function()
   end
   if V.mode == "commit" then
     V.mode = "graph"
+    V.commit_sha = nil
+    -- Clear the diff request
+    kn9t.write_file("/tmp/kn9t-commit-sha", "")
     return true
   end
   return true

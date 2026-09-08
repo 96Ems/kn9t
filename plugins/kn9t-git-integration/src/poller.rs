@@ -89,13 +89,13 @@ pub fn ensure_started(host: HostApiClient, cwd: PathBuf, session_id: Option<Stri
 
 fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
     const MAX_CONSECUTIVE_FAILURES: u32 = 10;
-    const MAX_COMMIT_DIFFS: usize = 5;  // Only show diffs for last N commits to avoid overload
     let mut consecutive_failures = 0u32;
 
     let mut tick = 0u32;
     let mut files: Vec<diff::DiffFile> = Vec::new();
-    let mut commit_diffs: HashMap<String, Vec<diff::DiffFile>> = HashMap::new();
     let mut last_target = DiffTarget::default();
+    let mut last_requested_sha: Option<String> = None;
+    let mut commit_diffs: HashMap<String, Vec<diff::DiffFile>> = HashMap::new();
 
     loop {
         let registered = host
@@ -128,30 +128,33 @@ fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
         // when target changes, or on force refresh.
         if tick % DIFF_EVERY == 0 || target_changed || force_refresh {
             files = diff::collect_with_target(&cwd, &current_target);
-            
-            // Compute diffs for recent commits
-            commit_diffs.clear();
-            if let Some(s) = state.as_ref() {
-                for (i, commit) in s.recent.iter().enumerate() {
-                    if i >= MAX_COMMIT_DIFFS {
-                        break;
-                    }
-                    if !commit.sha.is_empty() {
-                        if let Ok(diff_output) = std::process::Command::new("git")
-                            .current_dir(&cwd)
-                            .arg("show")
-                            .arg(&commit.sha)
-                            .output()
-                        {
-                            if let Ok(text) = String::from_utf8(diff_output.stdout) {
-                                let commit_files = diff::parse(&text);
-                                commit_diffs.insert(commit.sha.clone(), commit_files);
-                            }
-                        }
+        }
+        
+        // Check if Lua requested a commit diff via tmp file
+        if let Ok(sha) = std::fs::read_to_string(std::path::Path::new("/tmp/kn9t-commit-sha")) {
+            let sha = sha.trim().to_string();
+            if last_requested_sha.as_ref() != Some(&sha) {
+                last_requested_sha = Some(sha.clone());
+                commit_diffs.clear();
+                
+                // Load the diff for this commit
+                if let Ok(diff_output) = std::process::Command::new("git")
+                    .current_dir(&cwd)
+                    .args(["show", "--format=", &sha])
+                    .output()
+                {
+                    if let Ok(text) = String::from_utf8(diff_output.stdout) {
+                        let commit_files = diff::parse(&text);
+                        commit_diffs.insert(sha, commit_files);
                     }
                 }
             }
+        } else if last_requested_sha.is_some() {
+            // File removed - clear the cached diff
+            commit_diffs.clear();
+            last_requested_sha = None;
         }
+        
         tick = tick.wrapping_add(1);
 
         let payload = ui::state_to_json(state.as_ref(), &files, &current_target, &commit_diffs);
