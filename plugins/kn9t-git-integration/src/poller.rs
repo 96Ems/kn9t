@@ -2,6 +2,8 @@
 //! hook — see `bootstrap.rs` for why a lifecycle hook rather than a tool call.
 
 use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -11,6 +13,32 @@ use kn9t_plugin_sdk::ctx::HostApiClient;
 use crate::diff::{self, DiffTarget};
 use crate::git;
 use crate::ui;
+
+fn log_message(msg: &str) {
+    // Try to write to ~/.kn9t/git-integration.log
+    if let Ok(home) = std::env::var("HOME") {
+        let log_path = PathBuf::from(home).join(".kn9t/git-integration.log");
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            let _ = writeln!(file, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg);
+        }
+    } else if let Ok(temp) = std::env::var("TEMP") {
+        // Windows fallback
+        let log_path = PathBuf::from(temp).join("kn9t-git-integration.log");
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            let _ = writeln!(file, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg);
+        }
+    }
+    // Also stderr
+    eprintln!("{}", msg);
+}
 
 /// How often to re-poll while a session is open. Status is cheap
 /// (`--porcelain=v2` on a typical repo is a few ms), so this can be short
@@ -88,7 +116,7 @@ pub fn ensure_started(host: HostApiClient, cwd: PathBuf, session_id: Option<Stri
 }
 
 fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
-    eprintln!("[git-poller] Starting poller for: {}", cwd.display());
+    log_message(&format!("[git-poller] Starting poller for: {}", cwd.display()));
     const MAX_CONSECUTIVE_FAILURES: u32 = 10;
     let mut consecutive_failures = 0u32;
 
@@ -132,11 +160,19 @@ fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
         }
         
         // Check if Lua requested a commit diff via tmp file
-        match std::fs::read_to_string("/tmp/kn9t-commit-sha") {
+        let tmp_path = if let Ok(temp) = std::env::var("TEMP") {
+            PathBuf::from(temp).join("kn9t-commit-sha")
+        } else if let Ok(home) = std::env::var("HOME") {
+            PathBuf::from(home).join(".kn9t/kn9t-commit-sha")
+        } else {
+            PathBuf::from("/tmp/kn9t-commit-sha")
+        };
+        
+        match std::fs::read_to_string(&tmp_path) {
             Ok(content) => {
                 let sha = content.trim().to_string();
                 if !sha.is_empty() && last_requested_sha.as_ref() != Some(&sha) {
-                    eprintln!("[git-poller] Loading diff for commit: {}", sha);
+                    log_message(&format!("[git-poller] Loading diff for commit: {}", sha));
                     last_requested_sha = Some(sha.clone());
                     commit_diffs.clear();
                     
@@ -146,28 +182,28 @@ fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
                         .output()
                     {
                         Ok(output) => {
-                            eprintln!("[git-poller] git show exit code: {}", output.status);
+                            log_message(&format!("[git-poller] git show exit code: {}", output.status));
                             match String::from_utf8(output.stdout) {
                                 Ok(text) => {
-                                    eprintln!("[git-poller] Diff output: {} bytes", text.len());
+                                    log_message(&format!("[git-poller] Diff output: {} bytes", text.len()));
                                     let commit_files = diff::parse(&text);
-                                    eprintln!("[git-poller] Parsed {} files", commit_files.len());
+                                    log_message(&format!("[git-poller] Parsed {} files", commit_files.len()));
                                     commit_diffs.insert(sha, commit_files);
                                 }
                                 Err(e) => {
-                                    eprintln!("[git-poller] UTF-8 decode error: {}", e);
+                                    log_message(&format!("[git-poller] UTF-8 decode error: {}", e));
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("[git-poller] git show failed: {}", e);
+                            log_message(&format!("[git-poller] git show failed: {}", e));
                         }
                     }
                 }
             }
-            Err(_) => {
+            Err(e) => {
                 if last_requested_sha.is_some() {
-                    eprintln!("[git-poller] Tmp file cleared, clearing diff cache");
+                    log_message(&format!("[git-poller] Tmp file cleared ({:?}), clearing diff cache", e));
                     commit_diffs.clear();
                     last_requested_sha = None;
                 }
