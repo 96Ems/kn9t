@@ -160,21 +160,46 @@ local function all_commits()
   return commits()
 end
 
--- Get filtered commits (by search query)
+-- Get filtered commits (by search query and ref filters)
 local function filtered_commits()
   local all = commits()
-  if V.graph_search == nil or V.graph_search == "" then
-    return all
-  end
-  local query = string.lower(V.graph_search)
   local out = {}
+  
   for _, c in ipairs(all) do
-    local match = string.find(string.lower(c.sha or ""), query, 1, true)
-      or string.find(string.lower(c.subject or ""), query, 1, true)
-      or string.find(string.lower(c.author or ""), query, 1, true)
-    if match then
+    -- Apply search filter
+    if V.graph_search and V.graph_search ~= "" then
+      local query = string.lower(V.graph_search)
+      local match = string.find(string.lower(c.sha or ""), query, 1, true)
+        or string.find(string.lower(c.subject or ""), query, 1, true)
+        or string.find(string.lower(c.author or ""), query, 1, true)
+      if not match then
+        goto continue
+      end
+    end
+    
+    -- Apply ref filters (only hide commits that ONLY have filtered-out refs)
+    local has_visible_ref = false
+    if not c.refs or #c.refs == 0 then
+      -- No refs - always visible
+      has_visible_ref = true
+    else
+      for _, ref in ipairs(c.refs) do
+        local is_local = not string.find(ref, "origin/")
+        local is_remote = string.find(ref, "origin/") ~= nil
+        local is_tag = string.find(ref, "tag:") ~= nil
+        
+        if is_local and V.show_local then has_visible_ref = true end
+        if is_remote and V.show_remote then has_visible_ref = true end
+        if is_tag and V.show_tags then has_visible_ref = true end
+        -- stashes are rare in refs, skip for now
+      end
+    end
+    
+    if has_visible_ref then
       table.insert(out, c)
     end
+    
+    ::continue::
   end
   return out
 end

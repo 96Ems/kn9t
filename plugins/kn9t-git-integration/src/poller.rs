@@ -88,6 +88,7 @@ pub fn ensure_started(host: HostApiClient, cwd: PathBuf, session_id: Option<Stri
 }
 
 fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
+    eprintln!("[git-poller] Starting poller for: {}", cwd.display());
     const MAX_CONSECUTIVE_FAILURES: u32 = 10;
     let mut consecutive_failures = 0u32;
 
@@ -131,28 +132,46 @@ fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
         }
         
         // Check if Lua requested a commit diff via tmp file
-        if let Ok(sha) = std::fs::read_to_string(std::path::Path::new("/tmp/kn9t-commit-sha")) {
-            let sha = sha.trim().to_string();
-            if last_requested_sha.as_ref() != Some(&sha) {
-                last_requested_sha = Some(sha.clone());
-                commit_diffs.clear();
-                
-                // Load the diff for this commit
-                if let Ok(diff_output) = std::process::Command::new("git")
-                    .current_dir(&cwd)
-                    .args(["show", "--format=", &sha])
-                    .output()
-                {
-                    if let Ok(text) = String::from_utf8(diff_output.stdout) {
-                        let commit_files = diff::parse(&text);
-                        commit_diffs.insert(sha, commit_files);
+        match std::fs::read_to_string("/tmp/kn9t-commit-sha") {
+            Ok(content) => {
+                let sha = content.trim().to_string();
+                if !sha.is_empty() && last_requested_sha.as_ref() != Some(&sha) {
+                    eprintln!("[git-poller] Loading diff for commit: {}", sha);
+                    last_requested_sha = Some(sha.clone());
+                    commit_diffs.clear();
+                    
+                    match std::process::Command::new("git")
+                        .current_dir(&cwd)
+                        .args(["show", "--format=", &sha])
+                        .output()
+                    {
+                        Ok(output) => {
+                            eprintln!("[git-poller] git show exit code: {}", output.status);
+                            match String::from_utf8(output.stdout) {
+                                Ok(text) => {
+                                    eprintln!("[git-poller] Diff output: {} bytes", text.len());
+                                    let commit_files = diff::parse(&text);
+                                    eprintln!("[git-poller] Parsed {} files", commit_files.len());
+                                    commit_diffs.insert(sha, commit_files);
+                                }
+                                Err(e) => {
+                                    eprintln!("[git-poller] UTF-8 decode error: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[git-poller] git show failed: {}", e);
+                        }
                     }
                 }
             }
-        } else if last_requested_sha.is_some() {
-            // File removed - clear the cached diff
-            commit_diffs.clear();
-            last_requested_sha = None;
+            Err(_) => {
+                if last_requested_sha.is_some() {
+                    eprintln!("[git-poller] Tmp file cleared, clearing diff cache");
+                    commit_diffs.clear();
+                    last_requested_sha = None;
+                }
+            }
         }
         
         tick = tick.wrapping_add(1);
