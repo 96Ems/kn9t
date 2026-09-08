@@ -1001,9 +1001,6 @@ local function commit_view(repo)
   
   return { type = "split", direction = "vertical", children = children }
 end
-  
-  return { type = "split", direction = "vertical", children = out }
-end
 
 local function file_list()
   local items = {}
