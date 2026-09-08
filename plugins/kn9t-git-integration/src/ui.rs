@@ -638,13 +638,9 @@ bind("Enter", function()
         V.commit_cursor = 1
         V.commit_scroll = 0
         V.mode = "commit"
-        -- Signal Rust to load diff via tmp file (works cross-platform)
+        -- Signal Rust to load diff via tmp file (kn9t.write_file provided by host)
         local tmp_dir = os.getenv("TEMP") or os.getenv("TMP") or "/tmp"
-        local f = io.open(tmp_dir .. "/kn9t-commit-sha", "w")
-        if f then
-          f:write(commit.sha)
-          f:close()
-        end
+        kn9t.write_file(tmp_dir .. "/kn9t-commit-sha", commit.sha)
       end
     end
     return true
@@ -672,11 +668,7 @@ bind("Backspace", function()
     V.commit_sha = nil
     -- Clear the diff request
     local tmp_dir = os.getenv("TEMP") or os.getenv("TMP") or "/tmp"
-    local f = io.open(tmp_dir .. "/kn9t-commit-sha", "w")
-    if f then
-      f:write("")
-      f:close()
-    end
+    kn9t.write_file(tmp_dir .. "/kn9t-commit-sha", "")
     return true
   end
   return true
@@ -1463,6 +1455,13 @@ diff --git a/src/main.rs b/src/main.rs
         kn9t.set(
             "log",
             lua.create_function(|_, _: String| Ok(())).unwrap(),
+        )
+        .unwrap();
+
+        // Stub for write_file (test only - host provides real one)
+        kn9t.set(
+            "write_file",
+            lua.create_function(|_, (_path, _content): (String, String)| Ok(())).unwrap(),
         )
         .unwrap();
 
