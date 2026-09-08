@@ -41,6 +41,16 @@ impl Client {
         }
     }
 
+    /// Clone the base URL for use in spawned threads.
+    pub fn base_url_clone(&self) -> String {
+        self.base_url.clone()
+    }
+
+    /// Clone the token for use in spawned threads.
+    pub fn token_clone(&self) -> Option<String> {
+        self.token.clone()
+    }
+
     fn request(&self, method: &str, path: &str) -> ureq::Request {
         let url = format!("{}{}", self.base_url, path);
         let req = match method {
@@ -434,6 +444,26 @@ impl Client {
         let req = UiRespondReq { id, payload };
         self.request("POST", "/ui-respond")
             .send_json(&req)
+            .map_err(|e| ClientError::Http(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Notify a plugin of a UI interaction (e.g., user clicked a commit).
+    /// The plugin must subscribe to "ui_interaction" events to receive this.
+    pub fn notify_plugin(
+        &self,
+        plugin: &str,
+        session_id: &str,
+        event: &str,
+        data: &serde_json::Value,
+    ) -> Result<(), ClientError> {
+        let payload = serde_json::json!({
+            "session_id": session_id,
+            "event": event,
+            "data": data,
+        });
+        self.request("POST", &format!("/plugin/{}/ui_event", plugin))
+            .send_json(&payload)
             .map_err(|e| ClientError::Http(e.to_string()))?;
         Ok(())
     }

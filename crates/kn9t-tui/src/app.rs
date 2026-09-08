@@ -1279,7 +1279,7 @@ impl App {
                 if let Some(key_str) = crate::keybind::key_event_to_string(key) {
                     if runtime.plugin_has_key(&plugin, &key_str) {
                         let consumed = runtime.dispatch_plugin_key(&plugin, &key_str);
-                        self.apply_plugin_effects(&runtime);
+                        self.apply_plugin_effects(&runtime, tx);
                         if consumed {
                             crate::log!("  -> plugin '{}' consumed {}", plugin, key_str);
                             return;
@@ -2432,7 +2432,7 @@ impl App {
     /// Always invalidates the UI cache — a handler ran, so the view's Lua-local
     /// state almost certainly changed, and the render fingerprint cannot see
     /// inside a plugin's environment to notice.
-    fn apply_plugin_effects(&mut self, runtime: &std::sync::Arc<crate::lua::LuaRuntime>) {
+    fn apply_plugin_effects(&mut self, runtime: &std::sync::Arc<crate::lua::LuaRuntime>, tx: &Sender<Event>) {
         use crate::lua::plugin_ui::PluginEffect;
         for effect in runtime.drain_plugin_effects() {
             match effect {
@@ -2443,6 +2443,24 @@ impl App {
                     }
                     self.input.push_str(&text);
                     self.cursor_col = self.input.chars().count();
+                }
+                PluginEffect::NotifyPlugin { plugin, event, data } => {
+                    crate::log!("plugin {} notify: event={}", plugin, event);
+                    // Send to the server via HTTP POST, which will forward to the plugin
+                    let session_id = self.session.state.session_id.clone();
+                    if !session_id.is_empty() {
+                        if let Some(client) = &self.client {
+                            // Fire and forget in a thread to avoid blocking
+                            let client_base = client.base_url_clone();
+                            let token = client.token_clone();
+                            std::thread::spawn(move || {
+                                let c = crate::client::Client::new(&client_base, token.as_deref());
+                                if let Err(e) = c.notify_plugin(&plugin, &session_id, &event, &data) {
+                                    crate::log!("[notify] failed to send to plugin: {}", e);
+                                }
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -2931,7 +2949,7 @@ impl App {
                     let local_x = x - rect.x;
                     let local_y = y - rect.y;
                     if runtime.dispatch_plugin_click(&plugin, &id, local_x, local_y, button) {
-                        self.apply_plugin_effects(&runtime);
+                        self.apply_plugin_effects(&runtime, tx);
                         return;
                     }
                 }

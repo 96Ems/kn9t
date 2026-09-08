@@ -90,6 +90,22 @@ pub fn get_diff_target(cwd: &PathBuf) -> DiffTarget {
     target
 }
 
+/// Request loading a commit diff. Called from the event sink.
+pub fn request_commit_diff(cwd: &PathBuf, sha: String) {
+    let state = get_or_create_state(cwd);
+    let mut s = state.lock().unwrap();
+    s.show_commit = Some(sha);
+    s.force_refresh = true;
+}
+
+/// Clear the requested commit diff. Called from the event sink.
+pub fn clear_commit_diff(cwd: &PathBuf) {
+    let state = get_or_create_state(cwd);
+    let mut s = state.lock().unwrap();
+    s.show_commit = None;
+    s.force_refresh = true;
+}
+
 /// Start the background poller for a session, if one is not already running.
 ///
 /// Guarded per-`session_id` so each TUI session gets its own poller, even if
@@ -160,51 +176,43 @@ fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
             files = diff::collect_with_target(&cwd, &current_target);
         }
         
-        // Check if Lua requested a commit diff via tmp file
-        let tmp_path = if let Ok(temp) = std::env::var("TEMP") {
-            PathBuf::from(temp).join("kn9t-commit-sha")
-        } else if let Ok(home) = std::env::var("HOME") {
-            PathBuf::from(home).join(".kn9t/kn9t-commit-sha")
-        } else {
-            PathBuf::from("/tmp/kn9t-commit-sha")
+        // Check if a commit diff was requested (via event sink or fallback tmp file)
+        let requested_sha = {
+            let s = shared_state.lock().unwrap();
+            s.show_commit.clone()
         };
         
-        let requested_sha = std::fs::read_to_string(&tmp_path)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        
-        log_message(&format!("[git-poller] Requested sha from tmp: '{}'", requested_sha));
-        
-        if !requested_sha.is_empty() && last_requested_sha.as_ref() != Some(&requested_sha) {
-            log_message(&format!("[git-poller] Loading diff for commit: {}", requested_sha));
-            last_requested_sha = Some(requested_sha.clone());
-            commit_diffs.clear();
-            
-            match std::process::Command::new("git")
-                .current_dir(&cwd)
-                .args(["show", "--format=", &requested_sha])
-                .output()
-            {
-                Ok(output) => {
-                    log_message(&format!("[git-poller] git show exit code: {}", output.status));
-                    match String::from_utf8(output.stdout) {
-                        Ok(text) => {
-                            log_message(&format!("[git-poller] Diff output: {} bytes", text.len()));
-                            let commit_files = diff::parse(&text);
-                            log_message(&format!("[git-poller] Parsed {} files", commit_files.len()));
-                            commit_diffs.insert(requested_sha.clone(), commit_files);
-                        }
-                        Err(e) => {
-                            log_message(&format!("[git-poller] UTF-8 decode error: {}", e));
+        if let Some(ref sha) = requested_sha {
+            if last_requested_sha.as_ref() != Some(sha) {
+                log_message(&format!("[git-poller] Loading diff for commit: {}", sha));
+                last_requested_sha = Some(sha.clone());
+                commit_diffs.clear();
+                
+                match std::process::Command::new("git")
+                    .current_dir(&cwd)
+                    .args(["show", "--format=", sha])
+                    .output()
+                {
+                    Ok(output) => {
+                        log_message(&format!("[git-poller] git show exit code: {}", output.status));
+                        match String::from_utf8(output.stdout) {
+                            Ok(text) => {
+                                log_message(&format!("[git-poller] Diff output: {} bytes", text.len()));
+                                let commit_files = diff::parse(&text);
+                                log_message(&format!("[git-poller] Parsed {} files", commit_files.len()));
+                                commit_diffs.insert(sha.clone(), commit_files);
+                            }
+                            Err(e) => {
+                                log_message(&format!("[git-poller] UTF-8 decode error: {}", e));
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    log_message(&format!("[git-poller] git show failed: {}", e));
+                    Err(e) => {
+                        log_message(&format!("[git-poller] git show failed: {}", e));
+                    }
                 }
             }
-        } else if requested_sha.is_empty() && last_requested_sha.is_some() {
+        } else if last_requested_sha.is_some() {
             log_message("[git-poller] Clearing requested commit diff");
             commit_diffs.clear();
             last_requested_sha = None;

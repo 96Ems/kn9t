@@ -781,37 +781,78 @@ receive key events or UI interactions. Design your UI to be self-contained:
 | `spacer` | `size` |
 | `box` | `title`, `border`, `child` |
 
-### Communicating Back to Plugin (Advanced)
+### Communicating Back to Plugin via `kn9t.notify()`
 
-Since there's no direct channel from TUI to plugin, use file-based IPC if needed:
+Plugins can receive UI interactions via `kn9t.notify()`. This sends an event
+through the server to your plugin process.
+
+**Step 1: Subscribe to `ui_interaction` events in your plugin's Hello:**
+
+```json
+{
+  "t": "hello",
+  "name": "my-plugin",
+  "version": "0.1.0",
+  "subscriptions": ["ui_interaction"]
+}
+```
+
+**Step 2: Call `kn9t.notify()` from Lua key handlers:**
 
 ```lua
--- In Lua key handler
 kn9t.on_key("Enter", function()
-    if V.selected then
-        -- Write selection to temp file
-        kn9t.write_file("/tmp/my-plugin-action.json", 
-            '{"action": "select", "item": "' .. V.items[V.cursor + 1] .. '"}')
+    if V.cursor >= 0 and V.cursor < #V.items then
+        kn9t.notify({
+            event = "select",
+            item = V.items[V.cursor + 1],
+            index = V.cursor
+        })
     end
+    return true
+end)
+
+kn9t.on_key("d", function()
+    kn9t.notify({ event = "delete", index = V.cursor })
     return true
 end)
 ```
 
-```python
-# In plugin, poll the file
-import os, json, time
+**Step 3: Handle the event in your plugin's main loop:**
 
-def check_actions():
-    path = "/tmp/my-plugin-action.json"
-    if os.path.exists(path):
-        with open(path) as f:
-            action = json.load(f)
-        os.remove(path)
-        return action
-    return None
+```python
+# Plugin receives:
+# {"t": "event", "kind": "ui_interaction", "plugin": "my-plugin",
+#  "session_id": "01ABC...", "event": "select", "data": {"item": "...", "index": 0}}
+
+elif msg.get("t") == "event" and msg.get("kind") == "ui_interaction":
+    event = msg.get("event")
+    data = msg.get("data", {})
+    
+    if event == "select":
+        handle_selection(data.get("item"))
+    elif event == "delete":
+        handle_delete(data.get("index"))
+    
+    # Update UI state after handling
+    push_state()
 ```
 
-**Note:** This is a workaround. For simple UIs, keep all logic in Lua.
+**Flow:**
+
+```
+Lua key handler                    Server                      Plugin
+      │                              │                            │
+      │── kn9t.notify({event}) ─────>│                            │
+      │                              │── POST /plugin/X/ui_event ─>│
+      │                              │                            │
+      │                              │<── ui_set_state ───────────│
+      │<── state update ─────────────│                            │
+```
+
+**Important:**
+- The `event` field is required in the notify payload
+- The plugin must be subscribed to `ui_interaction` events
+- After handling, push updated state via `ui_set_state` to refresh the UI
 
 ---
 

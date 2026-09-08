@@ -158,7 +158,6 @@ def check(tool: str, args: dict, cwd: str) -> dict:
 UI_LUA = r'''
 -- Policy plugin UI
 local V = { cursor = 0, adding = false, input = "" }
-local MODES = { "normal", "yolo", "ask_all" }
 
 function on_state(s)
     V.mode = s.mode or "normal"
@@ -167,21 +166,14 @@ function on_state(s)
     -- Don't override cursor/adding/input from state - those are local UI state
 end
 
--- Cycle through modes: normal -> yolo -> ask_all -> normal
-local function cycle_mode()
-    for i, m in ipairs(MODES) do
-        if V.mode == m then
-            V.mode = MODES[(i % #MODES) + 1]
-            return
-        end
-    end
-    V.mode = "normal"
-end
-
 -- Register key handlers using kn9t.on_key
+-- Actions that persist (mode, grants) use kn9t.notify() to send to Python
+-- Navigation (cursor) stays local in V
+
 kn9t.on_key("m", function()
     if V.adding then return false end
-    cycle_mode()
+    -- Notify Python to cycle mode (persists to config)
+    kn9t.notify({ event = "cycle_mode" })
     return true
 end)
 
@@ -200,12 +192,9 @@ kn9t.on_key("d", function()
         V.input = V.input .. "d"
         return true
     end
-    -- Delete grant at cursor
+    -- Notify Python to delete grant (persists to config)
     if V.cursor >= 0 and V.cursor < #V.grants then
-        table.remove(V.grants, V.cursor + 1)
-        if V.cursor >= #V.grants and V.cursor > 0 then
-            V.cursor = V.cursor - 1
-        end
+        kn9t.notify({ event = "delete_grant", index = V.cursor })
     end
     return true
 end)
@@ -217,10 +206,7 @@ kn9t.on_key("x", function()
     end
     -- Same as d
     if V.cursor >= 0 and V.cursor < #V.grants then
-        table.remove(V.grants, V.cursor + 1)
-        if V.cursor >= #V.grants and V.cursor > 0 then
-            V.cursor = V.cursor - 1
-        end
+        kn9t.notify({ event = "delete_grant", index = V.cursor })
     end
     return true
 end)
@@ -274,7 +260,8 @@ end)
 
 kn9t.on_key("Enter", function()
     if V.adding and V.input ~= "" then
-        table.insert(V.grants, V.input)
+        -- Notify Python to add grant (persists to config)
+        kn9t.notify({ event = "add_grant", pattern = V.input })
         V.adding = false
         V.input = ""
         return true
@@ -544,6 +531,7 @@ def run():
         "capabilities": [],
         "hooks": ["before_tool_call", "get_steering"],
         "tools": [],
+        "subscriptions": ["ui_interaction"],
     })
     
     # Main loop
@@ -597,8 +585,40 @@ def run():
         elif t == "hook":
             write_msg({"t": "result", "id": msg.get("id", 0), "action": "allow"})
         
-        elif t == "plugin_msg":
-            handle_plugin_msg(msg.get("msg", {}))
+        elif t == "event" and msg.get("kind") == "ui_interaction":
+            handle_ui_event(msg)
+
+
+def handle_ui_event(msg: dict):
+    """Handle UI interaction events from kn9t.notify() calls."""
+    event = msg.get("event", "")
+    data = msg.get("data", {})
+    
+    log(f"UI event: {event} data={data}")
+    
+    if event == "cycle_mode":
+        modes = ["normal", "yolo", "ask_all"]
+        try:
+            idx = modes.index(state.mode)
+            state.mode = modes[(idx + 1) % len(modes)]
+        except ValueError:
+            state.mode = "normal"
+        save_grants()
+        send_ui_state()
+    
+    elif event == "add_grant":
+        pattern = data.get("pattern", "")
+        if pattern and pattern not in state.grants:
+            state.grants.append(pattern)
+            save_grants()
+            send_ui_state()
+    
+    elif event == "delete_grant":
+        index = data.get("index", -1)
+        if 0 <= index < len(state.grants):
+            state.grants.pop(index)
+            save_grants()
+            send_ui_state()
 
 
 if __name__ == "__main__":

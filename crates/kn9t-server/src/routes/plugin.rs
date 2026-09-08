@@ -2,6 +2,7 @@
 //!
 //! - `POST /plugin/{name}/reload` — hot-reload an existing plugin (R-PLUG2-100).
 //! - `POST /plugin/load` — hot-load a new plugin without server restart.
+//! - `POST /plugin/{name}/ui_event` — forward a UI interaction to a plugin.
 //!
 //! Reload steps, per `spec/08b-plugin-redesign.md` R-PLUG2-100:
 //! 1. `cancel` for every in-flight call on that plugin.
@@ -17,6 +18,15 @@ use std::sync::Arc;
 
 use crate::http_util::{JsonResp, Reply};
 use crate::state::ServerState;
+
+/// Request body for POST /plugin/{name}/ui_event.
+#[derive(serde::Deserialize)]
+pub struct UiEventReq {
+    pub session_id: String,
+    pub event: String,
+    #[serde(default)]
+    pub data: serde_json::Value,
+}
 
 /// POST /plugin/{name}/reload
 pub fn reload(state: &Arc<ServerState>, name: &str) -> Reply {
@@ -100,5 +110,23 @@ pub fn load(state: &Arc<ServerState>, body: LoadPluginReq) -> Reply {
             Err(e) if e.contains("already loaded") => JsonResp::error(409, "conflict", &e).into(),
             Err(e) => JsonResp::error(500, "load_failed", &e).into(),
         }
+    }
+}
+
+/// POST /plugin/{name}/ui_event — forward a UI interaction to a plugin.
+/// The plugin receives this via HostMsg::Event if it subscribed to "ui_interaction".
+pub fn ui_event(state: &Arc<ServerState>, plugin_name: &str, body: UiEventReq) -> Reply {
+    let payload = serde_json::json!({
+        "kind": "ui_interaction",
+        "plugin": plugin_name,
+        "session_id": body.session_id,
+        "event": body.event,
+        "data": body.data,
+    });
+
+    match state.send_plugin_event(plugin_name, payload) {
+        Ok(()) => JsonResp::ok(serde_json::json!({ "sent": true })).into(),
+        Err(e) if e.contains("not found") => JsonResp::error(404, "not_found", &e).into(),
+        Err(e) => JsonResp::error(500, "send_failed", &e).into(),
     }
 }

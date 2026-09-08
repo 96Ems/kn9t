@@ -66,10 +66,17 @@ const QUEUE_KEY: &str = "_kn9t_plugin_queue";
 ///
 /// Queued rather than applied inline: Lua callbacks run with no access to
 /// `&mut App`, exactly like `kn9t.action` in `keymap.rs`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PluginEffect {
     /// Append text to the user's input box.
     InsertInput { plugin: String, text: String },
+    /// Notify the plugin backend (Rust process) of a UI interaction.
+    /// The plugin receives this via HostMsg::Event if it subscribed to "ui_interaction".
+    NotifyPlugin {
+        plugin: String,
+        event: String,
+        data: serde_json::Value,
+    },
 }
 
 /// Fetch (creating if absent) `globals[key][plugin]`.
@@ -123,12 +130,61 @@ pub fn drain_effects(lua: &Lua) -> Vec<PluginEffect> {
         if op == "insert_input" {
             let text: String = entry.get("text").unwrap_or_default();
             out.push(PluginEffect::InsertInput { plugin, text });
+        } else if op == "notify_plugin" {
+            let event: String = entry.get("event").unwrap_or_default();
+            let data: LuaValue = entry.get("data").unwrap_or(LuaValue::Nil);
+            let data_json = lua_to_json(&data);
+            out.push(PluginEffect::NotifyPlugin { plugin, event, data: data_json });
         }
     }
     for i in 1..=len {
         let _ = queue.set(i, LuaValue::Nil);
     }
     out
+}
+
+/// Convert a Lua value to serde_json::Value.
+fn lua_to_json(v: &LuaValue) -> serde_json::Value {
+    match v {
+        LuaValue::Nil => serde_json::Value::Null,
+        LuaValue::Boolean(b) => serde_json::Value::Bool(*b),
+        LuaValue::Integer(i) => serde_json::Value::Number((*i).into()),
+        LuaValue::Number(n) => serde_json::Number::from_f64(*n)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        LuaValue::String(s) => {
+            let str_val = s.to_str().map(|s| s.to_string()).unwrap_or_default();
+            serde_json::Value::String(str_val)
+        }
+        LuaValue::Table(t) => {
+            // Check if it's an array (sequential integer keys starting at 1)
+            let len = t.len().unwrap_or(0);
+            if len > 0 {
+                let mut arr = Vec::new();
+                let mut is_array = true;
+                for i in 1..=len {
+                    if let Ok(val) = t.get::<LuaValue>(i) {
+                        arr.push(lua_to_json(&val));
+                    } else {
+                        is_array = false;
+                        break;
+                    }
+                }
+                if is_array {
+                    return serde_json::Value::Array(arr);
+                }
+            }
+            // Otherwise treat as object
+            let mut map = serde_json::Map::new();
+            if let Ok(pairs) = t.clone().pairs::<String, LuaValue>().collect::<Result<Vec<_>, _>>() {
+                for (k, val) in pairs {
+                    map.insert(k, lua_to_json(&val));
+                }
+            }
+            serde_json::Value::Object(map)
+        }
+        _ => serde_json::Value::Null,
+    }
 }
 
 /// One plugin's registered UI.
@@ -321,6 +377,23 @@ impl PluginUiRegistry {
             Ok(())
         })?;
         kn9t.set("insert_input", insert_input)?;
+
+        // kn9t.notify(data) — send an event to the plugin backend (Rust process).
+        // The plugin must subscribe to "ui_interaction" events in its Hello.
+        // `data` should be a table with at least an `event` field.
+        let owner = plugin.to_string();
+        let notify = lua.create_function(move |lua, data: Table| {
+            let queue = host_queue(lua)?;
+            let entry = lua.create_table()?;
+            entry.set("plugin", owner.as_str())?;
+            entry.set("op", "notify_plugin")?;
+            let event: String = data.get("event").unwrap_or_default();
+            entry.set("event", event)?;
+            entry.set("data", data)?;
+            queue.push(entry)?;
+            Ok(())
+        })?;
+        kn9t.set("notify", notify)?;
 
         env.set("kn9t", kn9t)?;
 
@@ -925,6 +998,38 @@ mod tests {
             }]
         );
         assert!(drain_effects(&lua).is_empty(), "queue is consumed");
+    }
+
+    /// kn9t.notify queues a NotifyPlugin effect that forwards to the backend.
+    #[test]
+    fn notify_queues_a_notify_plugin_effect() {
+        let lua = lua();
+        let mut reg = PluginUiRegistry::new();
+        reg.register_plain(
+            &lua,
+            "demo",
+            r#"
+                kn9t.on_key("n", function()
+                    kn9t.notify({ event = "test_event", sha = "abc123" })
+                    return true
+                end)
+                function render(s) return { type = "text", content = "x" } end
+            "#,
+        );
+
+        assert!(drain_effects(&lua).is_empty(), "nothing queued yet");
+        reg.dispatch_key(&lua, "demo", "n");
+
+        let effects = drain_effects(&lua);
+        assert_eq!(effects.len(), 1, "expected one effect, got {:?}", effects);
+        match &effects[0] {
+            PluginEffect::NotifyPlugin { plugin, event, data } => {
+                assert_eq!(plugin, "demo");
+                assert_eq!(event, "test_event");
+                assert_eq!(data.get("sha").and_then(|v| v.as_str()), Some("abc123"));
+            }
+            other => panic!("expected NotifyPlugin, got {:?}", other),
+        }
     }
 
     /// A plugin cannot forge another plugin's name on an effect: the owner is

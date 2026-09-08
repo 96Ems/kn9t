@@ -869,6 +869,23 @@ impl ServerState {
         self.buses.broadcast_all(event);
     }
 
+    /// Send an event to a specific plugin by name.
+    /// Used by POST /plugin/{name}/ui_event to forward UI interactions.
+    pub fn send_plugin_event(&self, plugin_name: &str, payload: serde_json::Value) -> Result<(), String> {
+        let hosts = self.plugin_hosts.lock().expect("hosts poisoned");
+        for host in hosts.iter() {
+            if host.name() == plugin_name {
+                let event = kn9t_core::Event::PluginNotification { payload };
+                if host.send_event(&event) {
+                    return Ok(());
+                } else {
+                    return Err(format!("plugin '{}' unsubscribed from events", plugin_name));
+                }
+            }
+        }
+        Err(format!("plugin '{}' not found", plugin_name))
+    }
+
     /// R-PLUG2-110: install the `on_declare` callback on every plugin host.
     /// Must be called after `Arc::new(state)`.
     pub fn install_declare_callbacks(self: &Arc<Self>) {

@@ -243,6 +243,14 @@ fn route(
             }
         }
 
+        // ── plugin UI event (TUI → Plugin communication) ──
+        (Method::Post, ["plugin", name, "ui_event"]) => {
+            match parse_json::<routes::plugin::UiEventReq>(req) {
+                Ok(body) => routes::plugin::ui_event(state, name, body),
+                Err(e) => e.into(),
+            }
+        }
+
         // ── 96E-28 generic interaction ──
         (Method::Post, ["ui-respond"]) => match parse_json::<api::UiRespondReq>(req) {
             Ok(body) => routes::interaction::respond(state, body).into(),

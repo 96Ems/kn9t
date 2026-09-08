@@ -30,6 +30,7 @@
 
 mod bootstrap;
 mod diff;
+mod event_sink;
 mod git;
 mod poller;
 mod tool;
@@ -39,5 +40,6 @@ fn main() {
     kn9t_plugin_sdk::Plugin::new("kn9t-git-integration")
         .hook(bootstrap::Bootstrap)
         .tool(tool::RequestCommitDiff)
+        .event_sink(event_sink::GitEventSink::new())
         .run();
 }

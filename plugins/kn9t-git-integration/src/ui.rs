@@ -638,7 +638,8 @@ bind("Enter", function()
         V.commit_cursor = 1
         V.commit_scroll = 0
         V.mode = "commit"
-        -- TODO: Signal Rust to load diff (requires kn9t.write_file from host or alternate mechanism)
+        -- Signal Rust to load the commit diff via ui_event
+        kn9t.notify({ event = "request_commit_diff", sha = commit.sha })
       end
     end
     return true
@@ -664,7 +665,8 @@ bind("Backspace", function()
   if V.mode == "commit" then
     V.mode = "graph"
     V.commit_sha = nil
-    -- TODO: Clear the diff request
+    -- Signal Rust to clear the commit diff request
+    kn9t.notify({ event = "clear_commit_diff" })
     return true
   end
   return true
@@ -748,6 +750,8 @@ kn9t.on_click("graph", function(x, y)
       V.commit_cursor = 1
       V.commit_scroll = 0
       V.mode = "commit"
+      -- Signal Rust to load the commit diff via ui_event
+      kn9t.notify({ event = "request_commit_diff", sha = commit.sha })
     end
   end
 end)
@@ -1465,6 +1469,20 @@ diff --git a/src/main.rs b/src/main.rs
         )
         .unwrap();
 
+        // Stub for notify - records calls for testing
+        kn9t.set("_notified", lua.create_table().unwrap()).unwrap();
+        kn9t.set(
+            "notify",
+            lua.create_function(|lua, data: mlua::Table| {
+                let kn9t: mlua::Table = lua.globals().get("kn9t")?;
+                let notified: mlua::Table = kn9t.get("_notified")?;
+                notified.push(data)?;
+                Ok(())
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
         lua.globals().set("kn9t", kn9t).unwrap();
         lua.load(LUA_SOURCE).exec().expect("LUA_SOURCE must parse");
         lua
@@ -1699,5 +1717,91 @@ diff --git a/b.rs b/b.rs
                 mlua::Value::Table(t)
             }
         }
+    }
+
+    fn get_notified(lua: &mlua::Lua) -> Vec<(String, Option<String>)> {
+        let kn9t: mlua::Table = lua.globals().get("kn9t").unwrap();
+        let notified: mlua::Table = kn9t.get("_notified").unwrap();
+        let mut out = Vec::new();
+        for i in 1..=notified.len().unwrap_or(0) {
+            if let Ok(entry) = notified.get::<mlua::Table>(i) {
+                let event: String = entry.get("event").unwrap_or_default();
+                let sha: Option<String> = entry.get("sha").ok();
+                out.push((event, sha));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn enter_in_graph_mode_calls_notify_with_commit_sha() {
+        let lua = lua_with_stubs();
+        let json = state_to_json(Some(&sample_state()), &[], &default_target(), &no_commit_diffs());
+        render_with(&lua, &json);
+
+        // Switch to graph mode
+        press(&lua, "g");
+        assert_eq!(view_state(&lua).get::<String>("mode").unwrap(), "graph");
+
+        // Press Enter to view the commit
+        press(&lua, "Enter");
+
+        // Should have switched to commit mode
+        assert_eq!(view_state(&lua).get::<String>("mode").unwrap(), "commit");
+
+        // Should have called kn9t.notify with request_commit_diff
+        let notified = get_notified(&lua);
+        assert_eq!(notified.len(), 1, "expected one notify call, got {:?}", notified);
+        assert_eq!(notified[0].0, "request_commit_diff");
+        assert_eq!(notified[0].1, Some("abc1234".to_string()));
+    }
+
+    #[test]
+    fn backspace_in_commit_mode_calls_notify_to_clear() {
+        let lua = lua_with_stubs();
+        let json = state_to_json(Some(&sample_state()), &[], &default_target(), &no_commit_diffs());
+        render_with(&lua, &json);
+
+        // Go to graph mode then commit mode
+        press(&lua, "g");
+        press(&lua, "Enter");
+        assert_eq!(view_state(&lua).get::<String>("mode").unwrap(), "commit");
+
+        // Clear notified list to only catch the backspace
+        let kn9t: mlua::Table = lua.globals().get("kn9t").unwrap();
+        kn9t.set("_notified", lua.create_table().unwrap()).unwrap();
+
+        // Press Backspace to go back
+        press(&lua, "Backspace");
+        assert_eq!(view_state(&lua).get::<String>("mode").unwrap(), "graph");
+
+        // Should have called kn9t.notify with clear_commit_diff
+        let notified = get_notified(&lua);
+        assert_eq!(notified.len(), 1, "expected one notify call, got {:?}", notified);
+        assert_eq!(notified[0].0, "clear_commit_diff");
+    }
+
+    #[test]
+    fn click_on_graph_row_calls_notify() {
+        let lua = lua_with_stubs();
+        let json = state_to_json(Some(&sample_state()), &[], &default_target(), &no_commit_diffs());
+        render_with(&lua, &json);
+
+        // Switch to graph mode
+        press(&lua, "g");
+
+        // Clear notified
+        let kn9t: mlua::Table = lua.globals().get("kn9t").unwrap();
+        kn9t.set("_notified", lua.create_table().unwrap()).unwrap();
+
+        // Click on the first commit row
+        let clicks: mlua::Table = kn9t.get("_clicks").unwrap();
+        let f: mlua::Function = clicks.get("graph").unwrap();
+        f.call::<mlua::Value>((0, 0, "left")).unwrap();
+
+        // Should have called kn9t.notify
+        let notified = get_notified(&lua);
+        assert_eq!(notified.len(), 1, "expected one notify call from click, got {:?}", notified);
+        assert_eq!(notified[0].0, "request_commit_diff");
     }
 }
