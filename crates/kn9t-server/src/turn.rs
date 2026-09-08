@@ -666,8 +666,18 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
         .or_else(|| session_model.clone())
         .or_else(|| default_model.clone());
 
-    let (Some(provider), Some(model)) = (state.provider_snapshot(), model) else {
-        crate::log!("[autotitle] no provider or model available");
+    let Some(model) = model else {
+        crate::log!("[autotitle] no model available");
+        return;
+    };
+
+    // Use the provider matching the model, not the default provider
+    let provider = state
+        .get_provider(&model.r#ref.provider)
+        .or_else(|| state.provider_snapshot());
+
+    let Some(provider) = provider else {
+        crate::log!("[autotitle] no provider for {}", model.r#ref.provider);
         return;
     };
     crate::log!(
