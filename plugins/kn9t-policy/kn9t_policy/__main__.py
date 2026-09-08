@@ -250,10 +250,10 @@ kn9t.on_key("Up", function()
 end)
 
 kn9t.on_key("Escape", function()
+    -- Always release focus, even when adding (use Backspace to cancel input)
     if V.adding then
         V.adding = false
         V.input = ""
-        return true
     end
     return false  -- Let Esc release focus
 end)
@@ -386,8 +386,8 @@ function render(s)
     if V.adding then
         table.insert(help_spans, { text = "[Enter]", fg = C.accent })
         table.insert(help_spans, { text = " save  ", fg = C.dim })
-        table.insert(help_spans, { text = "[Esc]", fg = C.accent })
-        table.insert(help_spans, { text = " cancel", fg = C.dim })
+        table.insert(help_spans, { text = "[Bksp]", fg = C.accent })
+        table.insert(help_spans, { text = " clear", fg = C.dim })
     else
         table.insert(help_spans, { text = "[m]", fg = C.accent })
         table.insert(help_spans, { text = " mode  ", fg = C.dim })
@@ -395,7 +395,7 @@ function render(s)
         table.insert(help_spans, { text = " add  ", fg = C.dim })
         table.insert(help_spans, { text = "[d]", fg = C.accent })
         table.insert(help_spans, { text = " del  ", fg = C.dim })
-        table.insert(help_spans, { text = "[j/k]", fg = C.accent })
+        table.insert(help_spans, { text = "[↑↓]", fg = C.accent })
         table.insert(help_spans, { text = " nav", fg = C.dim })
     end
     table.insert(out, { type = "text", spans = help_spans, size = { fixed = 1 } })

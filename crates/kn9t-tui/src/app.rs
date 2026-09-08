@@ -2432,12 +2432,11 @@ impl App {
     /// Always invalidates the UI cache — a handler ran, so the view's Lua-local
     /// state almost certainly changed, and the render fingerprint cannot see
     /// inside a plugin's environment to notice.
-    fn apply_plugin_effects(&mut self, runtime: &std::sync::Arc<crate::lua::LuaRuntime>, tx: &Sender<Event>) {
+    fn apply_plugin_effects(&mut self, runtime: &std::sync::Arc<crate::lua::LuaRuntime>, _tx: &Sender<Event>) {
         use crate::lua::plugin_ui::PluginEffect;
         for effect in runtime.drain_plugin_effects() {
             match effect {
-                PluginEffect::InsertInput { plugin, text } => {
-                    crate::log!("plugin {} inserted {} chars into input", plugin, text.len());
+                PluginEffect::InsertInput { text, .. } => {
                     if !self.input.is_empty() && !self.input.ends_with('\n') {
                         self.input.push('\n');
                     }
@@ -2445,19 +2444,14 @@ impl App {
                     self.cursor_col = self.input.chars().count();
                 }
                 PluginEffect::NotifyPlugin { plugin, event, data } => {
-                    crate::log!("plugin {} notify: event={}", plugin, event);
-                    // Send to the server via HTTP POST, which will forward to the plugin
                     let session_id = self.session.state.session_id.clone();
                     if !session_id.is_empty() {
                         if let Some(client) = &self.client {
-                            // Fire and forget in a thread to avoid blocking
                             let client_base = client.base_url_clone();
                             let token = client.token_clone();
                             std::thread::spawn(move || {
                                 let c = crate::client::Client::new(&client_base, token.as_deref());
-                                if let Err(e) = c.notify_plugin(&plugin, &session_id, &event, &data) {
-                                    crate::log!("[notify] failed to send to plugin: {}", e);
-                                }
+                                let _ = c.notify_plugin(&plugin, &session_id, &event, &data);
                             });
                         }
                     }

@@ -1532,6 +1532,7 @@ mod tests {
                 spans: vec![TextSpan {
                     text: "# Title".to_string(),
                     style: WidgetStyle::default(),
+                    syntax: None,
                 }],
                 style: WidgetStyle::default(),
                 wrap: true,

@@ -2,8 +2,6 @@
 //! hook — see `bootstrap.rs` for why a lifecycle hook rather than a tool call.
 
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,34 +10,7 @@ use kn9t_plugin_sdk::ctx::HostApiClient;
 
 use crate::diff::{self, DiffTarget};
 use crate::git;
-use crate::tool;
 use crate::ui;
-
-fn log_message(msg: &str) {
-    // Try to write to ~/.kn9t/git-integration.log
-    if let Ok(home) = std::env::var("HOME") {
-        let log_path = PathBuf::from(home).join(".kn9t/git-integration.log");
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-        {
-            let _ = writeln!(file, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg);
-        }
-    } else if let Ok(temp) = std::env::var("TEMP") {
-        // Windows fallback
-        let log_path = PathBuf::from(temp).join("kn9t-git-integration.log");
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-        {
-            let _ = writeln!(file, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg);
-        }
-    }
-    // Also stderr
-    eprintln!("{}", msg);
-}
 
 /// How often to re-poll while a session is open. Status is cheap
 /// (`--porcelain=v2` on a typical repo is a few ms), so this can be short
@@ -66,6 +37,22 @@ type SharedState = Arc<Mutex<PollerState>>;
 /// Global registry of poller states per cwd.
 static POLLER_STATES: Mutex<Option<HashMap<PathBuf, SharedState>>> = Mutex::new(None);
 
+/// Global mapping of session_id → cwd for event routing.
+static SESSION_CWDS: Mutex<Option<HashMap<String, PathBuf>>> = Mutex::new(None);
+
+/// Register a session_id → cwd mapping.
+pub fn register_session_cwd(session_id: &str, cwd: PathBuf) {
+    let mut guard = SESSION_CWDS.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    map.insert(session_id.to_string(), cwd);
+}
+
+/// Get the cwd for a session_id.
+pub fn get_session_cwd(session_id: &str) -> Option<PathBuf> {
+    let guard = SESSION_CWDS.lock().unwrap();
+    guard.as_ref().and_then(|map| map.get(session_id).cloned())
+}
+
 /// Get or create a shared state for a cwd.
 fn get_or_create_state(cwd: &PathBuf) -> SharedState {
     let mut guard = POLLER_STATES.lock().unwrap();
@@ -89,6 +76,8 @@ pub fn get_diff_target(cwd: &PathBuf) -> DiffTarget {
     let target = state.lock().unwrap().diff_target.clone();
     target
 }
+
+
 
 /// Request loading a commit diff. Called from the event sink.
 pub fn request_commit_diff(cwd: &PathBuf, sha: String) {
@@ -118,6 +107,11 @@ pub fn ensure_started(host: HostApiClient, cwd: PathBuf, session_id: Option<Stri
     use std::collections::HashSet;
     static STARTED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
+    // Register session_id → cwd mapping for event routing
+    if let Some(ref sid) = session_id {
+        register_session_cwd(sid, cwd.clone());
+    }
+
     // Use session_id if available, otherwise fall back to cwd string
     let key = session_id.unwrap_or_else(|| cwd.to_string_lossy().to_string());
 
@@ -133,7 +127,6 @@ pub fn ensure_started(host: HostApiClient, cwd: PathBuf, session_id: Option<Stri
 }
 
 fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
-    log_message(&format!("[git-poller] Starting poller for: {}", cwd.display()));
     const MAX_CONSECUTIVE_FAILURES: u32 = 10;
     let mut consecutive_failures = 0u32;
 
@@ -158,7 +151,6 @@ fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
 
         let state = git::collect(&cwd);
 
-        // Check if we need to refresh (target changed or force refresh)
         let (current_target, force_refresh) = {
             let mut s = shared_state.lock().unwrap();
             let target = s.diff_target.clone();
@@ -170,54 +162,36 @@ fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
         let target_changed = current_target != last_target;
         last_target = current_target.clone();
 
-        // Refresh the diff on the first pass, every DIFF_EVERY ticks,
-        // when target changes, or on force refresh.
         if tick % DIFF_EVERY == 0 || target_changed || force_refresh {
             files = diff::collect_with_target(&cwd, &current_target);
         }
-        
-        // Check if a commit diff was requested (via event sink or fallback tmp file)
+
         let requested_sha = {
             let s = shared_state.lock().unwrap();
             s.show_commit.clone()
         };
-        
+
         if let Some(ref sha) = requested_sha {
             if last_requested_sha.as_ref() != Some(sha) {
-                log_message(&format!("[git-poller] Loading diff for commit: {}", sha));
                 last_requested_sha = Some(sha.clone());
                 commit_diffs.clear();
-                
-                match std::process::Command::new("git")
+
+                if let Ok(output) = std::process::Command::new("git")
                     .current_dir(&cwd)
                     .args(["show", "--format=", sha])
                     .output()
                 {
-                    Ok(output) => {
-                        log_message(&format!("[git-poller] git show exit code: {}", output.status));
-                        match String::from_utf8(output.stdout) {
-                            Ok(text) => {
-                                log_message(&format!("[git-poller] Diff output: {} bytes", text.len()));
-                                let commit_files = diff::parse(&text);
-                                log_message(&format!("[git-poller] Parsed {} files", commit_files.len()));
-                                commit_diffs.insert(sha.clone(), commit_files);
-                            }
-                            Err(e) => {
-                                log_message(&format!("[git-poller] UTF-8 decode error: {}", e));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log_message(&format!("[git-poller] git show failed: {}", e));
+                    if let Ok(text) = String::from_utf8(output.stdout) {
+                        let commit_files = diff::parse(&text);
+                        commit_diffs.insert(sha.clone(), commit_files);
                     }
                 }
             }
         } else if last_requested_sha.is_some() {
-            log_message("[git-poller] Clearing requested commit diff");
             commit_diffs.clear();
             last_requested_sha = None;
         }
-        
+
         tick = tick.wrapping_add(1);
 
         let payload = ui::state_to_json(state.as_ref(), &files, &current_target, &commit_diffs);

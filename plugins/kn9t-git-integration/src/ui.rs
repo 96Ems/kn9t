@@ -460,25 +460,6 @@ bind("g", function()
   end
 end)
 
--- Enter: view commit diff in graph mode, or select in other modes
-bind("Enter", function()
-  if V.mode == "graph" then
-    local c = commits()
-    if #c > 0 and V.graph_cursor <= #c then
-      local commit = c[V.graph_cursor]
-      if commit and commit.sha and commit.sha ~= "" then
-        V.commit_sha = commit.sha
-        V.commit_file = 1
-        V.commit_cursor = 1
-        V.commit_scroll = 0
-        V.mode = "commit"
-      end
-    end
-    return true
-  end
-  return true
-end)
-
 -- Escape/Backspace: go back from commit view to graph
 bind("Backspace", function()
   if V.typing ~= nil then
