@@ -416,27 +416,13 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             // in the tools panel, and announcing every keystroke would be noise.
             state.tools_need_refresh = true;
         }
-        SseFrame::Compacted {
-            replaced, summary, ..
-        } => {
+        SseFrame::Compacted { summary, .. } => {
+            // Just show the summary as an assistant message.
+            // "Compaction started..." was already shown when the user triggered it.
             let (text, _, _, _) = extract_message_content(&summary.content);
-            let summary_text = if text.is_empty() {
-                "Conversation compacted.".to_string()
-            } else {
-                text
-            };
-            state.transcript.push(Message::new(
-                "system",
-                format!(
-                    "Compacted {}..{}: {}",
-                    replaced.start,
-                    replaced.end,
-                    summary_text.clone()
-                ),
-            ));
-            state
-                .transcript
-                .push(Message::new(&summary.role, summary_text));
+            if !text.is_empty() {
+                state.transcript.push(Message::new(&summary.role, text));
+            }
         }
         SseFrame::Error { message } => {
             state.turn_phase = "failed".into();
@@ -790,17 +776,11 @@ mod tests {
             },
         );
         assert_eq!(s.last_seq, 3);
-        // Compacted should push two messages (system note + summary)
-        assert!(s
-            .transcript
-            .messages()
-            .iter()
-            .any(|m| m.content.contains("Compacted")));
-        assert!(s
-            .transcript
-            .messages()
-            .iter()
-            .any(|m| m.content == "summary"));
+        // Compacted should push the summary as an assistant message (no header/prefix)
+        let msgs = s.transcript.messages();
+        let summary_msg = msgs.iter().find(|m| m.content == "summary");
+        assert!(summary_msg.is_some(), "should have the summary message");
+        assert_eq!(summary_msg.unwrap().role, "assistant");
     }
 
     #[test]
@@ -1295,7 +1275,7 @@ mod tests {
     }
 
     #[test]
-    fn compacted_empty_summary_fallback() {
+    fn compacted_empty_summary_adds_nothing() {
         let mut s = State::default();
         let empty = WireMessage {
             id: "e".into(),
@@ -1303,6 +1283,7 @@ mod tests {
             content: vec![],
             silent: false,
         };
+        let before = s.transcript.message_count();
         reduce(
             &mut s,
             SseFrame::Compacted {
@@ -1311,11 +1292,8 @@ mod tests {
                 summary: empty,
             },
         );
-        assert!(s
-            .transcript
-            .messages()
-            .iter()
-            .any(|m| m.content.contains("Conversation compacted")));
+        // Empty summary adds no message — "Compaction started..." was already shown
+        assert_eq!(s.transcript.message_count(), before);
     }
 
     #[test]

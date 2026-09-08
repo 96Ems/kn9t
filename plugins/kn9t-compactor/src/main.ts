@@ -78,6 +78,39 @@ function hostRequest(op: string, payload: unknown): ApiResult {
   }
 }
 
+/** Send a request without waiting — returns the request ID. */
+function hostRequestAsync(op: string, payload: unknown): number {
+  const id = requestId++;
+  writeMsg({ t: "request", id, op, payload });
+  return id;
+}
+
+/** 
+ * Wait for multiple api_results by ID. Calls onResult for each as they arrive.
+ * Returns a map of id → result when all are received.
+ */
+function awaitResults(
+  ids: number[],
+  onResult?: (id: number, result: ApiResult) => void
+): Map<number, ApiResult> {
+  const pending = new Set(ids);
+  const results = new Map<number, ApiResult>();
+  
+  while (pending.size > 0) {
+    const line = reader.readLine();
+    if (line === null) throw new Error("host closed stdin");
+    const msg = JSON.parse(line) as ApiResult;
+    if (msg.t === "api_result" && pending.has(msg.id)) {
+      pending.delete(msg.id);
+      results.set(msg.id, msg);
+      if (onResult) onResult(msg.id, msg);
+    }
+    // Ignore other messages (forward compatibility)
+  }
+  
+  return results;
+}
+
 // ── UI state for live compaction viewer ──────────────────────────────────────
 
 interface CompactorState {
@@ -86,6 +119,7 @@ interface CompactorState {
   messages_count: number;
   tool_calls_count: number;
   decisions: Array<{ id: string; action: string; name?: string }>;
+  triage_done: boolean;
   summary_preview: string;
   error?: string;
   [key: string]: unknown;
@@ -100,6 +134,7 @@ function render(state)
   local tool_calls_count = state.tool_calls_count or 0
   local decisions = state.decisions or {}
   local summary_preview = state.summary_preview or ""
+  local triage_done = state.triage_done or false
   local short_id = session_id:sub(1, 8)
   
   -- Status styling
@@ -109,15 +144,15 @@ function render(state)
   if status == "reading" then
     status_color = "blue"
     status_icon = "◔"
-    status_text = "reading transcript"
+    status_text = "reading"
   elseif status == "triage" then
     status_color = "yellow"
     status_icon = "↻"
-    status_text = "planning (triage)"
+    status_text = "triage"
   elseif status == "triage_retry" then
     status_color = "yellow"
     status_icon = "↻"
-    status_text = "planning (retry)"
+    status_text = "triage (retry)"
   elseif status == "summary" then
     status_color = "cyan"
     status_icon = "↻"
@@ -125,84 +160,83 @@ function render(state)
   elseif status == "complete" then
     status_color = "green"
     status_icon = "✓"
-    status_text = "compacted"
+    status_text = "done"
   elseif status == "error" then
     status_color = "red"
     status_icon = "✕"
     status_text = "failed"
   end
   
-  -- Build header
+  local items = {}
+  
+  -- Header with status
   local header = status_icon .. " " .. status_text
   if short_id ~= "" then
-    header = header .. "  │  " .. short_id
+    header = header .. "  " .. short_id
   end
+  table.insert(items, { text = header, fg = status_color })
   
-  -- Build info line
-  local info = ""
+  -- Info line
   if messages_count > 0 then
-    info = tostring(messages_count) .. " messages"
+    local info = tostring(messages_count) .. " msgs"
     if tool_calls_count > 0 then
-      info = info .. ", " .. tostring(tool_calls_count) .. " tool calls"
+      info = info .. ", " .. tostring(tool_calls_count) .. " tools"
     end
-  end
-  
-  -- Build decisions list
-  local items = {}
-  if info ~= "" then
     table.insert(items, { text = info, fg = "gray" })
   end
   
-  -- Show decisions once available
-  local keep_count = 0
-  local summarize_count = 0
-  local drop_count = 0
-  for _, d in ipairs(decisions) do
-    if d.action == "keep" then keep_count = keep_count + 1
-    elseif d.action == "summarize" then summarize_count = summarize_count + 1
-    elseif d.action == "drop" then drop_count = drop_count + 1
+  -- Triage section (always shown once we have decisions)
+  if #decisions > 0 or triage_done then
+    table.insert(items, { text = "─── Triage ───", fg = "gray" })
+    
+    local keep_count = 0
+    local summarize_count = 0
+    local drop_count = 0
+    for _, d in ipairs(decisions) do
+      if d.action == "keep" then keep_count = keep_count + 1
+      elseif d.action == "summarize" then summarize_count = summarize_count + 1
+      elseif d.action == "drop" then drop_count = drop_count + 1
+      end
+    end
+    
+    if #decisions > 0 then
+      local counts = {}
+      if keep_count > 0 then table.insert(counts, "✓" .. keep_count) end
+      if summarize_count > 0 then table.insert(counts, "≈" .. summarize_count) end
+      if drop_count > 0 then table.insert(counts, "✕" .. drop_count) end
+      table.insert(items, { text = table.concat(counts, " "), fg = "white" })
+      
+      -- Show ALL decisions (scrollable list)
+      for _, d in ipairs(decisions) do
+        local icon = "○"
+        local color = "gray"
+        if d.action == "keep" then
+          icon = "✓"
+          color = "green"
+        elseif d.action == "summarize" then
+          icon = "≈"
+          color = "yellow"
+        elseif d.action == "drop" then
+          icon = "✕"
+          color = "red"
+        end
+        local name = d.name or d.id:sub(1,12)
+        table.insert(items, { text = " " .. icon .. " " .. name, fg = color })
+      end
     end
   end
   
-  if #decisions > 0 then
-    local decision_line = ""
-    if keep_count > 0 then decision_line = decision_line .. "✓ keep:" .. keep_count .. " " end
-    if summarize_count > 0 then decision_line = decision_line .. "≈ summarize:" .. summarize_count .. " " end
-    if drop_count > 0 then decision_line = decision_line .. "✕ drop:" .. drop_count end
-    table.insert(items, { text = decision_line, fg = "white" })
-  end
-  
-  -- Show individual decisions (limited)
-  local shown = 0
-  for _, d in ipairs(decisions) do
-    if shown >= 5 then
-      table.insert(items, { text = "  ... and " .. (#decisions - shown) .. " more", fg = "gray" })
-      break
+  -- Summary section (shown during/after summary phase)
+  if status == "summary" or status == "complete" or summary_preview ~= "" then
+    table.insert(items, { text = "─── Summary ───", fg = "gray" })
+    if summary_preview ~= "" then
+      -- Show full summary, wrapped
+      for line in summary_preview:gmatch("[^\\n]+") do
+        table.insert(items, { text = line, fg = "cyan" })
+      end
+    elseif status == "summary" then
+      table.insert(items, { text = "generating...", fg = "cyan" })
     end
-    local icon = "○"
-    local color = "gray"
-    if d.action == "keep" then
-      icon = "✓"
-      color = "green"
-    elseif d.action == "summarize" then
-      icon = "≈"
-      color = "yellow"
-    elseif d.action == "drop" then
-      icon = "✕"
-      color = "red"
-    end
-    local line = "  " .. icon .. " " .. (d.name or d.id:sub(1,12))
-    table.insert(items, { text = line, fg = color })
-    shown = shown + 1
-  end
-  
-  -- Show summary preview
-  if summary_preview ~= "" then
-    local preview = summary_preview
-    if #preview > 60 then
-      preview = preview:sub(1, 57) .. "..."
-    end
-    table.insert(items, { text = "📝 " .. preview, fg = "cyan" })
   end
   
   -- Error message
@@ -217,20 +251,8 @@ function render(state)
     border_fg = status_color,
     padding = { 0, 1 },
     child = {
-      type = "split",
-      direction = "vertical",
-      children = {
-        {
-          type = "text",
-          content = header,
-          fg = status_color,
-        },
-        {
-          type = "list",
-          items = items,
-        },
-      },
-      sizes = { 1, "fill" },
+      type = "list",
+      items = items,
     },
   }
 end
@@ -267,11 +289,10 @@ const TRIAGE_SYSTEM =
 
 const SUMMARY_SYSTEM =
   "You are the summarizer of a coding agent. Write a concise but complete summary of " +
-  "the conversation that replaces the old messages: decisions, file paths, open tasks. " +
-  "Tool results marked KEEP are preserved verbatim by the host and must NOT be repeated " +
-  "in your summary. You have one tool, submit_summary. Call it exactly once with your " +
-  "summary text. Do not reply with prose — the summary is delivered only through the " +
-  "submit_summary tool call.";
+  "the conversation that will replace the old messages. Include: key decisions made, " +
+  "file paths modified, current state, and next steps. Be thorough but concise. " +
+  "You have one tool, submit_summary. Call it exactly once with your summary text. " +
+  "Do not reply with prose — the summary is delivered only through the submit_summary tool call.";
 
 /**
  * Tool the triage pass forces the model to call. The `schema` is the JSON
@@ -346,6 +367,33 @@ function textOf(content: Array<Record<string, unknown>>): string {
   return content.filter(isText).map((b) => b.text).join("\n");
 }
 
+/** Format messages as a readable transcript for the summary pass. */
+function formatTranscript(messages: MessageWire[]): string {
+  const lines: string[] = [];
+  for (const m of messages) {
+    const role = m.role.toUpperCase();
+    for (const block of m.content) {
+      const t = block["type"];
+      if (t === "text") {
+        const text = String(block["text"] ?? "");
+        // Truncate very long text blocks
+        const truncated = text.length > 2000 ? text.slice(0, 2000) + "..." : text;
+        lines.push(`[${role}] ${truncated}`);
+      } else if (t === "tool_call") {
+        const name = String(block["name"] ?? "");
+        const args = String(block["args_json"] ?? "").slice(0, 500);
+        lines.push(`[${role}] Tool call: ${name}(${args})`);
+      } else if (t === "tool_result") {
+        const id = String(block["id"] ?? "");
+        const content = Array.isArray(block["content"]) ? block["content"] : [];
+        const preview = textOf(content as Array<Record<string, unknown>>).slice(0, 1000);
+        lines.push(`[TOOL RESULT ${id}] ${preview}`);
+      }
+    }
+  }
+  return lines.join("\n\n");
+}
+
 /** Build the per-CallId inventory text + maps for the triage pass. */
 function inventory(messages: MessageWire[]): {
   text: string;
@@ -409,7 +457,48 @@ function toolCallArgs(
   return null;
 }
 
-// The real program: takes the hook payload, runs the two-pass agent turn.
+/** Parse triage result, validate IDs, return decisions or null if retry needed. */
+function parseTriageResult(
+  content: Array<Record<string, unknown>>,
+  knownIds: string[]
+): { decisions: Decision[]; resumeActions: string[]; needsRetry: boolean; invalidIds: string[] } {
+  const args = toolCallArgs(content, "submit_triage");
+  if (!args) {
+    return { decisions: [], resumeActions: [], needsRetry: true, invalidIds: [] };
+  }
+  
+  const rawDecisions = Array.isArray(args["decisions"]) ? (args["decisions"] as Array<Record<string, unknown>>) : [];
+  const candidate = rawDecisions
+    .filter((d) => typeof d["id"] === "string")
+    .map((d) => ({
+      id: String(d["id"]),
+      action: d["action"] === "summarize" || d["action"] === "drop" ? (d["action"] as Decision["action"]) : "keep" as Decision["action"],
+      note: typeof d["note"] === "string" ? String(d["note"]) : undefined,
+    }));
+  
+  const valid = candidate.filter((d) => knownIds.includes(d.id));
+  const invalid = candidate.filter((d) => !knownIds.includes(d.id));
+  const resumeActions = Array.isArray(args["resume_actions"])
+    ? (args["resume_actions"] as unknown[]).filter((a): a is string => typeof a === "string")
+    : [];
+  
+  if (invalid.length > 0) {
+    return { decisions: valid, resumeActions, needsRetry: true, invalidIds: invalid.map(d => d.id) };
+  }
+  
+  return { decisions: valid, resumeActions, needsRetry: false, invalidIds: [] };
+}
+
+/** Parse summary result. */
+function parseSummaryResult(content: Array<Record<string, unknown>>): string {
+  const args = toolCallArgs(content, "submit_summary");
+  if (args && typeof args["summary"] === "string" && args["summary"].trim().length > 0) {
+    return String(args["summary"]);
+  }
+  return "(compaction summary unavailable — model did not call submit_summary)";
+}
+
+// The real program: takes the hook payload, runs triage + summary in PARALLEL.
 function compactProgram(hookPayload: Record<string, unknown>) {
   return Effect.gen(function* (_) {
     const session = String(hookPayload["session"] ?? "");
@@ -425,6 +514,7 @@ function compactProgram(hookPayload: Record<string, unknown>) {
       messages_count: 0,
       tool_calls_count: 0,
       decisions: [],
+      triage_done: false,
       summary_preview: "",
     };
     
@@ -469,120 +559,139 @@ function compactProgram(hookPayload: Record<string, unknown>) {
       }
     }
 
+    // Prepare messages for both passes
     const triageUser =
       `Transcript inventory (ids you may cite):\n${inv.text}\n\n` +
       `Cite ONLY ids from the list above. Call submit_triage with your plan.`;
+    const triageMsgs = [
+      { id: "sys-triage", role: "system", silent: true, content: [{ type: "text", text: TRIAGE_SYSTEM }] },
+      { id: "usr-triage", role: "user", silent: true, content: [{ type: "text", text: triageUser }] },
+    ];
+    
+    const transcript = formatTranscript(messages);
+    const summaryMsgs = [
+      { id: "sys-summary", role: "system", silent: true, content: [{ type: "text", text: SUMMARY_SYSTEM }] },
+      { id: "usr-summary", role: "user", silent: true, content: [{ type: "text", text: `Summarize this conversation:\n\n${transcript}` }] },
+    ];
 
-    // 2. Triage pass — the model MUST deliver its plan via the submit_triage
-    // tool call (schema-validated by the provider). One correction shot covers
-    // both failure modes: the model answered without calling the tool, or it
-    // cited ids not in the inventory. Only after the shot is spent do we fall
-    // back (empty plan) rather than abort the whole compaction.
+    // 2. Launch BOTH triage and summary in parallel!
     state.status = "triage";
     uiSetState(session, state);
     
+    const triageReqId = hostRequestAsync("provider_complete", { session, messages: triageMsgs, tools: [TRIAGE_TOOL] });
+    const summaryReqId = hostRequestAsync("provider_complete", { session, messages: summaryMsgs, tools: [SUMMARY_TOOL] });
+    
     let decisions: Decision[] = [];
     let resumeActions: string[] = [];
-    let correction = "";
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt === 1) {
-        state.status = "triage_retry";
+    let summaryText = "";
+    let triageResult: ApiResult | null = null;
+    let summaryResult: ApiResult | null = null;
+    
+    // Wait for both results, updating UI as each arrives
+    const results = awaitResults([triageReqId, summaryReqId], (id, result) => {
+      if (id === triageReqId) {
+        triageResult = result;
+        if (result.ok) {
+          const content = ((result.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
+          const parsed = parseTriageResult(content, knownIds);
+          decisions = parsed.decisions;
+          resumeActions = parsed.resumeActions;
+          
+          state.decisions = decisions.map(d => ({
+            id: d.id,
+            action: d.action,
+            name: toolNameById.get(d.id),
+          }));
+          state.triage_done = true;
+          
+          // If triage needs retry due to invalid IDs, we'll handle it after
+          if (parsed.needsRetry && parsed.invalidIds.length > 0) {
+            state.status = "triage_retry";
+          }
+        }
         uiSetState(session, state);
       }
       
-      const msgs = [
-        { id: "sys-triage", role: "system", silent: false, content: [{ type: "text", text: TRIAGE_SYSTEM }] },
-        { id: "usr-triage", role: "user", silent: false, content: [{ type: "text", text: triageUser + correction }] },
-      ];
-      const r = hostRequest("provider_complete", { session, messages: msgs, tools: [TRIAGE_TOOL] });
-      if (!r.ok) {
-        state.status = "error";
-        state.error = `provider(triage): ${r.error}`;
-        uiSetState(session, state);
-        return yield* _(Effect.fail(new Error(`provider(triage): ${r.error}`)));
-      }
-      const content = ((r.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
-      const args = toolCallArgs(content, "submit_triage");
-      if (!args) {
-        if (attempt === 0) {
-          correction = "\n\nYou did not call submit_triage. Call submit_triage exactly once with the plan.";
-          continue;
+      if (id === summaryReqId) {
+        summaryResult = result;
+        if (result.ok) {
+          const content = ((result.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
+          summaryText = parseSummaryResult(content);
+          state.summary_preview = summaryText;
+          state.status = "summary"; // Show we got the summary
         }
-        // Correction shot spent and still no tool call: fall back to an empty
-        // plan so the host can still compact rather than fail the whole turn.
-        decisions = [];
-        resumeActions = [];
-        break;
+        uiSetState(session, state);
       }
-      const rawDecisions = Array.isArray(args["decisions"]) ? (args["decisions"] as Array<Record<string, unknown>>) : [];
-      const candidate = rawDecisions
-        .filter((d) => typeof d["id"] === "string")
-        .map((d) => ({
-          id: String(d["id"]),
-          action: d["action"] === "summarize" || d["action"] === "drop" ? (d["action"] as Decision["action"]) : "keep" as Decision["action"],
-          note: typeof d["note"] === "string" ? String(d["note"]) : undefined,
-        }));
-      const valid = candidate.filter((d) => knownIds.includes(d.id));
-      const invalid = candidate.filter((d) => !knownIds.includes(d.id));
-      const resumeOf = () =>
-        Array.isArray(args["resume_actions"])
-          ? (args["resume_actions"] as unknown[]).filter((a): a is string => typeof a === "string")
-          : [];
-      if (invalid.length === 0) {
-        decisions = valid;
-        resumeActions = resumeOf();
-        break;
-      }
-      if (attempt === 1) {
-        // One correction shot used; keep only the valid decisions.
-        decisions = valid;
-        resumeActions = resumeOf();
-        break;
-      }
-      // First attempt cited unknown ids: spend the correction shot listing the
-      // only ids that are allowed.
-      correction = "\n\nYour previous submit_triage call cited unknown ids. Cite only:\n" + knownIds.join(", ");
-    }
-
-    // Update UI with decisions
-    state.decisions = decisions.map(d => ({
-      id: d.id,
-      action: d.action,
-      name: toolNameById.get(d.id),
-    }));
-    uiSetState(session, state);
-
-    // 3. Summary pass — the model MUST deliver its summary via submit_summary.
-    // This must NOT round-trip full tool outputs back into the LLM's context
-    // (96E-17: summarize_tool_result never requires full output to leave the
-    // host). We send only previews + decisions; kept results are copied
-    // verbatim host-side, summarized ones use the triage note.
-    state.status = "summary";
-    uiSetState(session, state);
+    });
     
-    const summaryMsgs = [
-      { id: "sys-summary", role: "system", silent: false, content: [{ type: "text", text: SUMMARY_SYSTEM }] },
-      { id: "usr-summary", role: "user", silent: false, content: [{ type: "text", text: `Decisions:\n${JSON.stringify(decisions)}\n\nInventory:\n${inv.text}` }] },
-    ];
-    const s = hostRequest("provider_complete", { session, messages: summaryMsgs, tools: [SUMMARY_TOOL] });
-    if (!s.ok) {
+    // Check for errors
+    triageResult = results.get(triageReqId) ?? null;
+    summaryResult = results.get(summaryReqId) ?? null;
+    
+    if (!triageResult?.ok) {
       state.status = "error";
-      state.error = `provider(summary): ${s.error}`;
+      state.error = `provider(triage): ${triageResult?.error ?? "unknown"}`;
       uiSetState(session, state);
-      return yield* _(Effect.fail(new Error(`provider(summary): ${s.error}`)));
+      return yield* _(Effect.fail(new Error(state.error)));
     }
-    const sContent = ((s.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
-    const sArgs = toolCallArgs(sContent, "submit_summary");
-    const summaryText =
-      sArgs && typeof sArgs["summary"] === "string" && sArgs["summary"].trim().length > 0
-        ? String(sArgs["summary"])
-        : "(compaction summary unavailable — model did not call submit_summary)";
+    
+    if (!summaryResult?.ok) {
+      state.status = "error";
+      state.error = `provider(summary): ${summaryResult?.error ?? "unknown"}`;
+      uiSetState(session, state);
+      return yield* _(Effect.fail(new Error(state.error)));
+    }
+    
+    // Re-parse triage to check if retry is needed
+    const triageContent = ((triageResult.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
+    const triageParsed = parseTriageResult(triageContent, knownIds);
+    
+    // If triage needs retry (no tool call or invalid IDs), do ONE sync retry
+    if (triageParsed.needsRetry) {
+      state.status = "triage_retry";
+      uiSetState(session, state);
+      
+      let correction = "";
+      if (triageParsed.invalidIds.length > 0) {
+        correction = "\n\nYour previous submit_triage call cited unknown ids. Cite only:\n" + knownIds.join(", ");
+      } else {
+        correction = "\n\nYou did not call submit_triage. Call submit_triage exactly once with the plan.";
+      }
+      
+      const retryMsgs = [
+        { id: "sys-triage", role: "system", silent: true, content: [{ type: "text", text: TRIAGE_SYSTEM }] },
+        { id: "usr-triage", role: "user", silent: true, content: [{ type: "text", text: triageUser + correction }] },
+      ];
+      
+      const retryResult = hostRequest("provider_complete", { session, messages: retryMsgs, tools: [TRIAGE_TOOL] });
+      if (retryResult.ok) {
+        const retryContent = ((retryResult.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
+        const retryParsed = parseTriageResult(retryContent, knownIds);
+        decisions = retryParsed.decisions;
+        resumeActions = retryParsed.resumeActions;
+        
+        state.decisions = decisions.map(d => ({
+          id: d.id,
+          action: d.action,
+          name: toolNameById.get(d.id),
+        }));
+        state.triage_done = true;
+        uiSetState(session, state);
+      }
+      // If retry also fails, we keep whatever valid decisions we got
+    } else {
+      decisions = triageParsed.decisions;
+      resumeActions = triageParsed.resumeActions;
+    }
 
-    // Update UI with summary preview
-    state.summary_preview = summaryText.slice(0, 100);
-    uiSetState(session, state);
+    // Ensure we have the summary text
+    if (!summaryText) {
+      const summaryContent = ((summaryResult.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
+      summaryText = parseSummaryResult(summaryContent);
+      state.summary_preview = summaryText;
+    }
 
-    // 4. Assemble the plan: summary message embeds kept tool results VERBATIM.
+    // 3. Assemble the plan: summary message embeds kept tool results VERBATIM.
     const kept = decisions.filter((d) => d.action === "keep");
     const content: Array<Record<string, unknown>> = [{ type: "text", text: summaryText }];
     for (const m of messages) {
