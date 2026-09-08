@@ -216,7 +216,7 @@ silently corrupts every non-ASCII character in the file.
 
 The repo is full of `—`, `§` and `──` in comments, so the blast radius is every file
 touched. Worked example — em-dash `—` is `E2 80 94`; read as cp1252 those bytes are the
-three characters `â€"`; re-encoded as UTF-8 they become `C3 A2 E2 82 AC E2 80 9D`, eight
+three characters (mojibake); re-encoded as UTF-8 they become `C3 A2 E2 82 AC E2 80 9D`, eight
 bytes where there were three:
 
 | character | correct bytes | after one PowerShell write |
