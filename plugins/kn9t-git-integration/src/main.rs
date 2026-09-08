@@ -32,10 +32,12 @@ mod bootstrap;
 mod diff;
 mod git;
 mod poller;
+mod tool;
 mod ui;
 
 fn main() {
     kn9t_plugin_sdk::Plugin::new("kn9t-git-integration")
         .hook(bootstrap::Bootstrap)
+        .tool(tool::RequestCommitDiff)
         .run();
 }

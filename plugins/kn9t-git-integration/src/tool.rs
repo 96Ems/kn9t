@@ -53,7 +53,7 @@ impl PluginTool for RequestCommitDiff {
             parallel_safe: true,
             hidden: true,
             effects: vec![],
-            policy: None,
+            policy: kn9t_plugin_sdk::wire::ToolPolicy::default(),
         }
     }
 
