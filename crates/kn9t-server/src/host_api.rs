@@ -58,6 +58,21 @@ impl ServerHostApi {
         )
     }
 
+    /// Get the working directory for a session from the database.
+    /// Falls back to the server's cwd if the session is not found.
+    fn session_cwd(&self, session: &str) -> std::path::PathBuf {
+        self.state
+            .store
+            .query_one(
+                "SELECT cwd FROM sessions WHERE id=?1",
+                &[&session],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| self.state.cwd.clone())
+    }
+
     /// `session_read` — projected messages in `[start, end]` (default: whole
     /// transcript). Reply: `{"messages":[{"seq":..,"role":..,"content":[...]}]}`.
     fn session_read(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
@@ -123,7 +138,9 @@ impl ServerHostApi {
             )
             .map(|h| h.max(0) as u64)
             .unwrap_or(0);
-        let cwd = self.state.cwd.to_string_lossy().to_string();
+        // Subagent inherits the parent session's cwd, not the server's process cwd.
+        let cwd = self.session_cwd(session);
+        let cwd_str = cwd.to_string_lossy().to_string();
         if copy_events {
             kn9t_store::fork_session(
                 &self.state.store,
@@ -132,7 +149,7 @@ impl ServerHostApi {
                 parent_head,
                 kn9t_core::ForkReason::Subagent,
                 budget_usd,
-                &cwd,
+                &cwd_str,
             )
             .map_err(|e| format!("session_fork: {}", e.0))?;
         } else {
@@ -143,7 +160,7 @@ impl ServerHostApi {
                 parent_head,
                 kn9t_core::ForkReason::Subagent,
                 budget_usd,
-                &cwd,
+                &cwd_str,
             )
             .map_err(|e| format!("session_fork(bare): {}", e.0))?;
         }
@@ -511,6 +528,9 @@ impl ServerHostApi {
             name: name.to_string(),
             args_json: serde_json::to_string(&args).unwrap_or_default(),
         };
+        // Use the session's cwd, not the server's process cwd.
+        let session_cwd = self.session_cwd(session);
+
         // 96E-33: the session and its sink are passed explicitly. This call runs on an API
         // worker thread, not the turn thread, so the old thread-local sink was always unset
         // here and every approval fell through to "no sink" -> Deny. Now the prompt actually
@@ -522,7 +542,7 @@ impl ServerHostApi {
         };
         match self.state.approver_snapshot().request(
             &call,
-            &self.state.cwd,
+            &session_cwd,
             "plugin tool_execute",
             &ctx,
         ) {
@@ -539,7 +559,7 @@ impl ServerHostApi {
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
         let cancel = Cancel::new();
         let ctx = ToolCtx {
-            cwd: self.state.cwd.clone(),
+            cwd: session_cwd,
             read: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             bus: sink,
             call_id: call.id.clone(),

@@ -306,15 +306,34 @@ fn tool_gating_for_session(
     (disabled, reminder)
 }
 
+/// Retrieve the working directory for `session` from the database.
+/// Returns the session's cwd if found, otherwise falls back to the server's cwd.
+pub(crate) fn get_session_cwd(state: &Arc<ServerState>, session: &SessionId) -> std::path::PathBuf {
+    state
+        .store
+        .query_one(
+            "SELECT cwd FROM sessions WHERE id=?1",
+            &[&session.0.as_str()],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| state.cwd.clone())
+}
+
 /// Compose the full `ReactLoop` for a session: bus + sink, hooks (from plugin
 /// hosts, session-attached), provider, tool registry (optionally filtered to a
 /// subset), and the compactor delegation. Single composition point — shared by
 /// `spawn_turn` and the host_api `session_prompt` op (96E-17).
+///
+/// `session_cwd` is the working directory for this session (from the database),
+/// used for tool execution and plugin context — NOT the server's process cwd.
 pub(crate) fn compose_loop(
     state: &Arc<ServerState>,
     session: &SessionId,
     model: &ModelSpec,
     tool_names: Option<Vec<String>>,
+    session_cwd: &std::path::Path,
 ) -> Result<(ReactLoop, Arc<dyn EventSink>), String> {
     let bus = state.buses.bus_for(&session.0);
     // R-STOR-116: salvage in-flight tool progress so a crash mid-batch still leaves
@@ -338,7 +357,7 @@ pub(crate) fn compose_loop(
         for host in &hosts {
             host.set_bus(sink.clone());
             host.set_session(&session.0);
-            host.set_cwd(&state.cwd);
+            host.set_cwd(session_cwd);
         }
         Arc::new(ComposedHookHost::new(hosts.clone()))
     };
@@ -422,7 +441,9 @@ pub(crate) fn run_session_turn(
     // reminders into the parent (kn9t-agents-md plugin leak).
     let _scope = kn9t_plugin::SessionScope::capture();
 
-    let (loop_, _sink) = compose_loop(state, session, &model, tool_names)?;
+    // Use the session's cwd from the database, not the server's process cwd.
+    let session_cwd = get_session_cwd(state, session);
+    let (loop_, _sink) = compose_loop(state, session, &model, tool_names, &session_cwd)?;
 
     // Watchdog: the loop aborts at its next cancel checkpoint when the timeout
     // fires (the plugin's worker thread stays responsive).
@@ -438,7 +459,7 @@ pub(crate) fn run_session_turn(
         model: model.clone(),
         thinking: Thinking::Off,
         max_tokens: Some(model.max_out),
-        cwd: state.cwd.clone(),
+        cwd: session_cwd.clone(),
         config: ReactConfig::default(),
         read_map: Arc::new(Mutex::new(std::collections::HashMap::new())),
         system: Some(system_prompt::default_system_prompt()),
@@ -539,11 +560,15 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
         // compute cache breakpoints and the compaction threshold.
         state.store.register_model_spec(model.clone());
 
+        // Use the session's cwd from the database, not the server's process cwd.
+        // This allows multiple sessions with different working directories on one server.
+        let session_cwd = get_session_cwd(&state, &session);
+
         // Single composition point (bus/sink + hooks + tools + provider + compactor).
         // 96E-33: the sink used to be installed in TLS for the approver. The loop already
         // holds it as `ReactLoop::bus` and now passes it through `ApprovalCtx`, so there is
         // nothing left to thread by hand here.
-        let (loop_, _sink) = match compose_loop(&state, &session, &model, None) {
+        let (loop_, _sink) = match compose_loop(&state, &session, &model, None, &session_cwd) {
             Ok(v) => v,
             Err(e) => {
                 crate::log!("[spawn_turn] compose failed: {e}");
@@ -559,7 +584,7 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             model: model.clone(),
             thinking: Thinking::Off,
             max_tokens: Some(model.max_out),
-            cwd: state.cwd.clone(),
+            cwd: session_cwd,
             config: ReactConfig::default(),
             read_map: Arc::new(Mutex::new(HashMap::new())),
             system: Some(system_prompt::default_system_prompt()),
@@ -850,9 +875,11 @@ pub fn spawn_compact(
 
             match compactor_host {
                 Some(host) => {
+                    // Use the session's cwd, not the server's process cwd.
+                    let session_cwd = get_session_cwd(&state, &session);
                     host.set_bus(sink.clone());
                     host.set_session(&session.0);
-                    host.set_cwd(&state.cwd);
+                    host.set_cwd(&session_cwd);
 
                     use kn9t_core::Compactor;
                     kn9t_plugin::RemoteCompactor::new(host)
