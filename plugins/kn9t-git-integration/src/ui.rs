@@ -638,8 +638,13 @@ bind("Enter", function()
         V.commit_cursor = 1
         V.commit_scroll = 0
         V.mode = "commit"
-        -- Request diff from Rust via internal tool call
-        kn9t.call_tool("_request_commit_diff", { sha = commit.sha })
+        -- Signal Rust to load diff via tmp file (works cross-platform)
+        local tmp_dir = os.getenv("TEMP") or os.getenv("TMP") or "/tmp"
+        local f = io.open(tmp_dir .. "/kn9t-commit-sha", "w")
+        if f then
+          f:write(commit.sha)
+          f:close()
+        end
       end
     end
     return true
@@ -666,7 +671,12 @@ bind("Backspace", function()
     V.mode = "graph"
     V.commit_sha = nil
     -- Clear the diff request
-    kn9t.call_tool("_request_commit_diff", { sha = "" })
+    local tmp_dir = os.getenv("TEMP") or os.getenv("TMP") or "/tmp"
+    local f = io.open(tmp_dir .. "/kn9t-commit-sha", "w")
+    if f then
+      f:write("")
+      f:close()
+    end
     return true
   end
   return true

@@ -160,9 +160,21 @@ fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
             files = diff::collect_with_target(&cwd, &current_target);
         }
         
-        // Check if Lua requested a commit diff via tool call
-        let requested_sha = tool::get_requested_sha();
-        log_message(&format!("[git-poller] Requested sha: '{}'", requested_sha));
+        // Check if Lua requested a commit diff via tmp file
+        let tmp_path = if let Ok(temp) = std::env::var("TEMP") {
+            PathBuf::from(temp).join("kn9t-commit-sha")
+        } else if let Ok(home) = std::env::var("HOME") {
+            PathBuf::from(home).join(".kn9t/kn9t-commit-sha")
+        } else {
+            PathBuf::from("/tmp/kn9t-commit-sha")
+        };
+        
+        let requested_sha = std::fs::read_to_string(&tmp_path)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        
+        log_message(&format!("[git-poller] Requested sha from tmp: '{}'", requested_sha));
         
         if !requested_sha.is_empty() && last_requested_sha.as_ref() != Some(&requested_sha) {
             log_message(&format!("[git-poller] Loading diff for commit: {}", requested_sha));
