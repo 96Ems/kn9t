@@ -642,9 +642,14 @@ Plugins can display interactive UIs in the TUI.
 ### Architecture
 
 1. **Register Lua source** via `ui_register_lua` — defines `render(state)`
-2. **Push state** via `ui_set_state` — arbitrary JSON
+2. **Push state** via `ui_set_state` — arbitrary JSON from plugin to TUI
 3. **Handle keys** via `kn9t.on_key(key, fn)` in the Lua source
-4. **Send messages back** via `kn9t.action("plugin_msg", {plugin, msg})`
+4. **Modify local state directly** in key handlers — the Lua `V` table persists
+
+> **IMPORTANT:** Key handlers run in the TUI process, not your plugin process.
+> You cannot send messages back to your plugin via `kn9t.action`. All UI logic
+> must be self-contained in the Lua source. Use `ui_set_state` to push data
+> FROM your plugin TO the TUI, but there is no reverse channel.
 
 ### Getting session_id
 
@@ -700,17 +705,28 @@ if msg.get("t") == "hook":
 ### Lua Template
 
 ```lua
--- View state (survives state pushes)
-local V = { cursor = 0 }
+-- Local view state (persists across renders, NOT sent back to plugin)
+local V = { cursor = 0, items = {} }
 
+-- Called when plugin pushes state via ui_set_state
 function on_state(s)
-    V.items = s.items or {}
-    V.cursor = s.cursor or 0
+    -- Merge plugin data into V, but keep local UI state (cursor, scroll, etc.)
+    V.items = s.items or V.items
+    -- Don't overwrite V.cursor - that's local navigation state
 end
 
--- Register key handlers (NOT a global on_key function!)
+-- Register key handlers - modify V directly, no messages to plugin!
 kn9t.on_key("j", function()
-    kn9t.action("plugin_msg", {plugin="my-plugin", msg={t="down"}})
+    if V.cursor < #V.items - 1 then
+        V.cursor = V.cursor + 1
+    end
+    return true  -- consumed
+end)
+
+kn9t.on_key("k", function()
+    if V.cursor > 0 then
+        V.cursor = V.cursor - 1
+    end
     return true  -- consumed
 end)
 
@@ -725,14 +741,36 @@ function render(s)
     for i, item in ipairs(V.items) do
         table.insert(out, {
             type = "text",
-            content = (i-1 == V.cursor) and "> "..item or "  "..item,
-            fg = (i-1 == V.cursor) and "cyan" or "white",
+            content = (i == V.cursor + 1) and "> "..item or "  "..item,
+            fg = (i == V.cursor + 1) and "cyan" or "white",
             size = {fixed = 1}
         })
     end
     return {type = "split", direction = "vertical", children = out}
 end
 ```
+
+### Data Flow
+
+```
+Plugin (Python/Rust/etc)          TUI (Lua)
+       │                              │
+       │── ui_register_lua ──────────>│  (send Lua source once)
+       │                              │
+       │── ui_set_state ─────────────>│  (push data anytime)
+       │                              │
+       │                              │<── key events (handled locally)
+       │                              │    modifies V directly
+       │                              │
+       X<─ NO REVERSE CHANNEL ────────│  (can't send back to plugin)
+```
+
+**Key insight:** The Lua runs in the TUI process. Your plugin process cannot
+receive key events or UI interactions. Design your UI to be self-contained:
+
+- **Read-only views:** Plugin pushes data, Lua renders it, navigation is local
+- **Stateful views:** Store state in `V`, persist to temp files if needed
+- **Actions:** Use `kn9t.write_file()` to write to a temp file your plugin can poll
 
 ### Widget Types
 
@@ -743,20 +781,37 @@ end
 | `spacer` | `size` |
 | `box` | `title`, `border`, `child` |
 
-### Handling plugin_msg
+### Communicating Back to Plugin (Advanced)
 
-When the TUI calls `kn9t.action("plugin_msg", {...})`, the host sends:
+Since there's no direct channel from TUI to plugin, use file-based IPC if needed:
 
-```json
-{"t": "plugin_msg", "msg": {"t": "down"}}
+```lua
+-- In Lua key handler
+kn9t.on_key("Enter", function()
+    if V.selected then
+        -- Write selection to temp file
+        kn9t.write_file("/tmp/my-plugin-action.json", 
+            '{"action": "select", "item": "' .. V.items[V.cursor + 1] .. '"}')
+    end
+    return true
+end)
 ```
-
-Handle it in your main loop:
 
 ```python
-elif msg.get("t") == "plugin_msg":
-    handle_plugin_msg(msg.get("msg", {}))
+# In plugin, poll the file
+import os, json, time
+
+def check_actions():
+    path = "/tmp/my-plugin-action.json"
+    if os.path.exists(path):
+        with open(path) as f:
+            action = json.load(f)
+        os.remove(path)
+        return action
+    return None
 ```
+
+**Note:** This is a workaround. For simple UIs, keep all logic in Lua.
 
 ---
 
