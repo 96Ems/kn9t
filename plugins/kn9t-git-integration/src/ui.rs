@@ -502,6 +502,24 @@ kn9t.on_click("files", function(x, y)
   end
 end)
 
+-- Clicking a graph row selects/enters the commit
+kn9t.on_click("graph", function(x, y)
+  if V.mode ~= "graph" then return false end
+  local c = commits()
+  local idx = y + 1
+  if idx >= 1 and idx <= #c then
+    V.graph_cursor = idx
+    local commit = c[idx]
+    if commit and commit.sha and commit.sha ~= "" then
+      V.commit_sha = commit.sha
+      V.commit_file = 1
+      V.commit_cursor = 1
+      V.commit_scroll = 0
+      V.mode = "commit"
+    end
+  end
+end)
+
 kn9t.on_click("body", function(x, y)
   if V.mode ~= "diff" then return false end
   local target = V.scroll + y + 1
@@ -710,7 +728,8 @@ local function graph_view(repo)
     end
   end
   
-  local graph_list = { type = "list", id = "graph", items = items, offset = V.graph_scroll }
+  -- List with current selection; TUI handles scrolling automatically
+  local graph_list = { type = "list", id = "graph", items = items, selected = V.graph_cursor - 1 }
   
   local header_spans = {
     { text = " Git Graph  ", fg = "cyan", bold = true },
