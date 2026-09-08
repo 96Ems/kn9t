@@ -63,11 +63,9 @@ impl ServerHostApi {
     fn session_cwd(&self, session: &str) -> std::path::PathBuf {
         self.state
             .store
-            .query_one(
-                "SELECT cwd FROM sessions WHERE id=?1",
-                &[&session],
-                |r| r.get::<_, String>(0),
-            )
+            .query_one("SELECT cwd FROM sessions WHERE id=?1", &[&session], |r| {
+                r.get::<_, String>(0)
+            })
             .ok()
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| self.state.cwd.clone())

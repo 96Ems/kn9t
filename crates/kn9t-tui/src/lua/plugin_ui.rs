@@ -134,7 +134,11 @@ pub fn drain_effects(lua: &Lua) -> Vec<PluginEffect> {
             let event: String = entry.get("event").unwrap_or_default();
             let data: LuaValue = entry.get("data").unwrap_or(LuaValue::Nil);
             let data_json = lua_to_json(&data);
-            out.push(PluginEffect::NotifyPlugin { plugin, event, data: data_json });
+            out.push(PluginEffect::NotifyPlugin {
+                plugin,
+                event,
+                data: data_json,
+            });
         }
     }
     for i in 1..=len {
@@ -176,7 +180,11 @@ fn lua_to_json(v: &LuaValue) -> serde_json::Value {
             }
             // Otherwise treat as object
             let mut map = serde_json::Map::new();
-            if let Ok(pairs) = t.clone().pairs::<String, LuaValue>().collect::<Result<Vec<_>, _>>() {
+            if let Ok(pairs) = t
+                .clone()
+                .pairs::<String, LuaValue>()
+                .collect::<Result<Vec<_>, _>>()
+            {
                 for (k, val) in pairs {
                     map.insert(k, lua_to_json(&val));
                 }
@@ -226,13 +234,7 @@ impl PluginUiRegistry {
     /// If the source is identical to the previously registered source (same hash),
     /// we skip re-execution to preserve view state (`V`). This allows plugins to
     /// idempotently re-register every poll without resetting cursor/mode/etc.
-    pub fn register(
-        &mut self,
-        lua: &Lua,
-        plugin: &str,
-        source: &str,
-        placement: PluginPlacement,
-    ) {
+    pub fn register(&mut self, lua: &Lua, plugin: &str, source: &str, placement: PluginPlacement) {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         source.hash(&mut hasher);
@@ -1023,7 +1025,11 @@ mod tests {
         let effects = drain_effects(&lua);
         assert_eq!(effects.len(), 1, "expected one effect, got {:?}", effects);
         match &effects[0] {
-            PluginEffect::NotifyPlugin { plugin, event, data } => {
+            PluginEffect::NotifyPlugin {
+                plugin,
+                event,
+                data,
+            } => {
                 assert_eq!(plugin, "demo");
                 assert_eq!(event, "test_event");
                 assert_eq!(data.get("sha").and_then(|v| v.as_str()), Some("abc123"));

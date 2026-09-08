@@ -554,8 +554,8 @@ mod keymap_bridge_tests {
             KeyCode::Char(' '),
         ] {
             let ev = KeyEvent::new(code, KeyModifiers::NONE);
-            let name = key_event_to_string(ev)
-                .unwrap_or_else(|| panic!("{code:?} must produce a name"));
+            let name =
+                key_event_to_string(ev).unwrap_or_else(|| panic!("{code:?} must produce a name"));
             assert!(
                 is_valid_key_string(&name),
                 "{code:?} emits {name:?}, which parse_key rejects"

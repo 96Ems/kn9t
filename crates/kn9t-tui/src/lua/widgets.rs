@@ -341,7 +341,11 @@ fn parse_spans(table: &Table, fallback: &WidgetStyle) -> LuaResult<Vec<TextSpan>
                         style.bg = fallback.bg;
                     }
                     let syntax: Option<String> = t.get("syntax").ok();
-                    out.push(TextSpan { text, style, syntax });
+                    out.push(TextSpan {
+                        text,
+                        style,
+                        syntax,
+                    });
                 }
                 _ => {}
             }
@@ -690,7 +694,11 @@ pub fn parse_status_spans(table: &Table) -> Vec<TextSpan> {
                 .ok()
                 .and_then(|s| crate::theme::parse_color(&s));
         }
-        out.push(TextSpan { text, style, syntax: None });
+        out.push(TextSpan {
+            text,
+            style,
+            syntax: None,
+        });
     }
     out
 }
@@ -721,7 +729,10 @@ fn spans_to_line(spans: &[TextSpan], theme: &Theme) -> Line<'static> {
                 out.push(hl_span);
             }
         } else {
-            out.push(Span::styled(s.text.clone(), s.style.to_ratatui_style(theme)));
+            out.push(Span::styled(
+                s.text.clone(),
+                s.style.to_ratatui_style(theme),
+            ));
         }
     }
     Line::from(out)

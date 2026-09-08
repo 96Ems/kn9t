@@ -18,14 +18,38 @@ fn tui_dir() -> PathBuf {
 
 /// The built-in TUI files, same as in kn9t-tui.
 const DEFAULT_TUI_FILES: &[(&str, &str)] = &[
-    ("00_theme.lua", include_str!("../../kn9t-tui/assets/tui/00_theme.lua")),
-    ("10_state.lua", include_str!("../../kn9t-tui/assets/tui/10_state.lua")),
-    ("20_header.lua", include_str!("../../kn9t-tui/assets/tui/20_header.lua")),
-    ("30_sidebar_left.lua", include_str!("../../kn9t-tui/assets/tui/30_sidebar_left.lua")),
-    ("40_sidebar_right.lua", include_str!("../../kn9t-tui/assets/tui/40_sidebar_right.lua")),
-    ("50_status.lua", include_str!("../../kn9t-tui/assets/tui/50_status.lua")),
-    ("60_keybinds.lua", include_str!("../../kn9t-tui/assets/tui/60_keybinds.lua")),
-    ("90_render.lua", include_str!("../../kn9t-tui/assets/tui/90_render.lua")),
+    (
+        "00_theme.lua",
+        include_str!("../../kn9t-tui/assets/tui/00_theme.lua"),
+    ),
+    (
+        "10_state.lua",
+        include_str!("../../kn9t-tui/assets/tui/10_state.lua"),
+    ),
+    (
+        "20_header.lua",
+        include_str!("../../kn9t-tui/assets/tui/20_header.lua"),
+    ),
+    (
+        "30_sidebar_left.lua",
+        include_str!("../../kn9t-tui/assets/tui/30_sidebar_left.lua"),
+    ),
+    (
+        "40_sidebar_right.lua",
+        include_str!("../../kn9t-tui/assets/tui/40_sidebar_right.lua"),
+    ),
+    (
+        "50_status.lua",
+        include_str!("../../kn9t-tui/assets/tui/50_status.lua"),
+    ),
+    (
+        "60_keybinds.lua",
+        include_str!("../../kn9t-tui/assets/tui/60_keybinds.lua"),
+    ),
+    (
+        "90_render.lua",
+        include_str!("../../kn9t-tui/assets/tui/90_render.lua"),
+    ),
 ];
 
 fn print_help() {
@@ -49,12 +73,9 @@ fn reset(force: bool) {
     let has_lua_files = dir.is_dir()
         && fs::read_dir(&dir)
             .map(|entries| {
-                entries.filter_map(|e| e.ok()).any(|e| {
-                    e.path()
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        == Some("lua")
-                })
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("lua"))
             })
             .unwrap_or(false);
 
@@ -81,7 +102,10 @@ fn reset(force: bool) {
     }
 
     println!();
-    println!("TUI config reset to defaults ({} files)", DEFAULT_TUI_FILES.len());
+    println!(
+        "TUI config reset to defaults ({} files)",
+        DEFAULT_TUI_FILES.len()
+    );
 }
 
 pub fn run(args: &[String]) {

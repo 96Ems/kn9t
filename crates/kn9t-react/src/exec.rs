@@ -945,7 +945,9 @@ mod tests {
 
     #[test]
     fn test_ensure_nonempty_content_empty_text() {
-        let input = vec![Content::Text { text: String::new() }];
+        let input = vec![Content::Text {
+            text: String::new(),
+        }];
         let result = ensure_nonempty_content(input);
         assert_eq!(result.len(), 1);
         match &result[0] {
@@ -957,8 +959,12 @@ mod tests {
     #[test]
     fn test_ensure_nonempty_content_multiple_empty_texts() {
         let input = vec![
-            Content::Text { text: String::new() },
-            Content::Text { text: String::new() },
+            Content::Text {
+                text: String::new(),
+            },
+            Content::Text {
+                text: String::new(),
+            },
         ];
         let result = ensure_nonempty_content(input);
         assert_eq!(result.len(), 1);
@@ -970,7 +976,9 @@ mod tests {
 
     #[test]
     fn test_ensure_nonempty_content_preserves_nonempty() {
-        let input = vec![Content::Text { text: "hello".into() }];
+        let input = vec![Content::Text {
+            text: "hello".into(),
+        }];
         let result = ensure_nonempty_content(input);
         assert_eq!(result.len(), 1);
         match &result[0] {
@@ -983,8 +991,12 @@ mod tests {
     fn test_ensure_nonempty_content_mixed_keeps_all() {
         // If at least one Text is non-empty, keep the original vec as-is
         let input = vec![
-            Content::Text { text: String::new() },
-            Content::Text { text: "data".into() },
+            Content::Text {
+                text: String::new(),
+            },
+            Content::Text {
+                text: "data".into(),
+            },
         ];
         let result = ensure_nonempty_content(input);
         assert_eq!(result.len(), 2);

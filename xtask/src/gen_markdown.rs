@@ -468,8 +468,7 @@ fn hooks_table(plugin: &Value) -> String {
         for (name, sub) in map.iter() {
             let fields: Vec<String> = properties(sub).into_iter().map(|(k, _)| k).collect();
             let payload = format!("`{{{}}}`", fields.join(", "));
-            let (reply, composition, failure) =
-                semantics_for(name).unwrap_or(("—", "—", "—"));
+            let (reply, composition, failure) = semantics_for(name).unwrap_or(("—", "—", "—"));
             s.push_str(&format!(
                 "| `{name}` | {payload} | {reply} | {composition} | {failure} |\n"
             ));
@@ -717,7 +716,12 @@ mod tests {
                 ev.kind
             );
         }
-        for group in ["definitions", "hook_payloads", "host_to_plugin", "plugin_to_host"] {
+        for group in [
+            "definitions",
+            "hook_payloads",
+            "host_to_plugin",
+            "plugin_to_host",
+        ] {
             let Some(map) = plugin.get(group).and_then(|g| g.as_object()) else {
                 panic!("schema/plugin.json is missing '{group}'");
             };
@@ -791,7 +795,10 @@ mod tests {
             })
             .collect();
 
-        assert!(nums.len() > 3, "expected several 5.x sections, got {nums:?}");
+        assert!(
+            nums.len() > 3,
+            "expected several 5.x sections, got {nums:?}"
+        );
         let before = nums.clone();
         nums.sort_unstable();
         nums.dedup();

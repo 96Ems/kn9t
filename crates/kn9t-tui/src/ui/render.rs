@@ -133,7 +133,6 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 /// Shared by the Lua layout and the error shell, so overlays behave identically
 /// no matter which path drew the frame.
 fn render_chat_overlays(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
-
     // Overlay (approval, help, model select, session select, etc).
     if let Some(ref overlay) = app.overlay {
         match overlay {

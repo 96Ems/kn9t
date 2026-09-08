@@ -527,7 +527,11 @@ impl LuaRuntime {
         match keymap::drain_pending_maps(&state.lua, registry) {
             Ok(n) => {
                 if n > 0 {
-                    crate::log!("Lua keymaps: {} applied ({} total bound)", n, registry.len());
+                    crate::log!(
+                        "Lua keymaps: {} applied ({} total bound)",
+                        n,
+                        registry.len()
+                    );
                 }
                 n
             }

@@ -871,7 +871,11 @@ impl ServerState {
 
     /// Send an event to a specific plugin by name.
     /// Used by POST /plugin/{name}/ui_event to forward UI interactions.
-    pub fn send_plugin_event(&self, plugin_name: &str, payload: serde_json::Value) -> Result<(), String> {
+    pub fn send_plugin_event(
+        &self,
+        plugin_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), String> {
         let hosts = self.plugin_hosts.lock().expect("hosts poisoned");
         for host in hosts.iter() {
             if host.name() == plugin_name {

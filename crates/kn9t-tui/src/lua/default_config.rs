@@ -15,14 +15,38 @@ use std::path::Path;
 /// The built-in UI files, compiled into the binary.
 /// Each tuple is (filename, content).
 pub const DEFAULT_TUI_FILES: &[(&str, &str)] = &[
-    ("00_theme.lua", include_str!("../../assets/tui/00_theme.lua")),
-    ("10_state.lua", include_str!("../../assets/tui/10_state.lua")),
-    ("20_header.lua", include_str!("../../assets/tui/20_header.lua")),
-    ("30_sidebar_left.lua", include_str!("../../assets/tui/30_sidebar_left.lua")),
-    ("40_sidebar_right.lua", include_str!("../../assets/tui/40_sidebar_right.lua")),
-    ("50_status.lua", include_str!("../../assets/tui/50_status.lua")),
-    ("60_keybinds.lua", include_str!("../../assets/tui/60_keybinds.lua")),
-    ("90_render.lua", include_str!("../../assets/tui/90_render.lua")),
+    (
+        "00_theme.lua",
+        include_str!("../../assets/tui/00_theme.lua"),
+    ),
+    (
+        "10_state.lua",
+        include_str!("../../assets/tui/10_state.lua"),
+    ),
+    (
+        "20_header.lua",
+        include_str!("../../assets/tui/20_header.lua"),
+    ),
+    (
+        "30_sidebar_left.lua",
+        include_str!("../../assets/tui/30_sidebar_left.lua"),
+    ),
+    (
+        "40_sidebar_right.lua",
+        include_str!("../../assets/tui/40_sidebar_right.lua"),
+    ),
+    (
+        "50_status.lua",
+        include_str!("../../assets/tui/50_status.lua"),
+    ),
+    (
+        "60_keybinds.lua",
+        include_str!("../../assets/tui/60_keybinds.lua"),
+    ),
+    (
+        "90_render.lua",
+        include_str!("../../assets/tui/90_render.lua"),
+    ),
 ];
 
 /// Legacy single-file config for backwards compatibility.

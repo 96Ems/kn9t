@@ -309,8 +309,6 @@ pub enum Screen {
     Chat,
 }
 
-
-
 /// Hit area for tool card click detection.
 #[derive(Debug, Clone)]
 pub struct ToolHitArea {
@@ -2432,7 +2430,11 @@ impl App {
     /// Always invalidates the UI cache — a handler ran, so the view's Lua-local
     /// state almost certainly changed, and the render fingerprint cannot see
     /// inside a plugin's environment to notice.
-    fn apply_plugin_effects(&mut self, runtime: &std::sync::Arc<crate::lua::LuaRuntime>, _tx: &Sender<Event>) {
+    fn apply_plugin_effects(
+        &mut self,
+        runtime: &std::sync::Arc<crate::lua::LuaRuntime>,
+        _tx: &Sender<Event>,
+    ) {
         use crate::lua::plugin_ui::PluginEffect;
         for effect in runtime.drain_plugin_effects() {
             match effect {
@@ -2443,7 +2445,11 @@ impl App {
                     self.input.push_str(&text);
                     self.cursor_col = self.input.chars().count();
                 }
-                PluginEffect::NotifyPlugin { plugin, event, data } => {
+                PluginEffect::NotifyPlugin {
+                    plugin,
+                    event,
+                    data,
+                } => {
                     let session_id = self.session.state.session_id.clone();
                     if !session_id.is_empty() {
                         if let Some(client) = &self.client {
@@ -2765,7 +2771,6 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent, tx: &Sender<Event>) {
-
         match mouse.kind {
             MouseEventKind::Moved => {
                 // Handle scrollbar drag
@@ -2928,7 +2933,10 @@ impl App {
                 .plugin_view_areas
                 .iter()
                 .find(|(_, rect)| {
-                    x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+                    x >= rect.x
+                        && x < rect.x + rect.width
+                        && y >= rect.y
+                        && y < rect.y + rect.height
                 })
                 .map(|(plugin, _)| plugin.clone());
             if let Some(plugin) = plugin_hit {

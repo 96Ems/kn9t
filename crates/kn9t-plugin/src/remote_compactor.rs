@@ -12,9 +12,7 @@
 //! (96E-17): no compactor = no compaction = session ends on context overflow.
 
 use crate::host::PluginHost;
-use kn9t_core::{
-    CompactSpan, CompactionPlan, Compactor, HandoffPlanData, Message, ModelRef,
-};
+use kn9t_core::{CompactSpan, CompactionPlan, Compactor, HandoffPlanData, Message, ModelRef};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -71,5 +69,3 @@ impl Compactor for RemoteCompactor {
         Ok(CompactionPlan { summary, handoff })
     }
 }
-
-
