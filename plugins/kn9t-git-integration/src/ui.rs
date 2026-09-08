@@ -18,10 +18,16 @@ use crate::git::GitState;
 /// `repo` is `null` (not an empty object) when `cwd` is not a git repository,
 /// so the Lua side can render a distinct message instead of an
 /// empty-but-misleadingly-"clean" status.
+use std::collections::HashMap;
+
+/// Commit diffs: sha -> list of changed files with hunks
+pub type CommitDiffs = HashMap<String, Vec<DiffFile>>;
+
 pub fn state_to_json(
     state: Option<&GitState>,
     files: &[DiffFile],
     diff_target: &DiffTarget,
+    commit_diffs: &CommitDiffs,
 ) -> serde_json::Value {
     let repo = match state {
         None => serde_json::Value::Null,
@@ -54,6 +60,12 @@ pub fn state_to_json(
         "repo": repo,
         "diff": files.iter().map(diff_file_to_json).collect::<Vec<_>>(),
         "diff_target": diff_target.label(),
+        "commit_diffs": commit_diffs.iter().map(|(sha, cfiles)| {
+            serde_json::json!({
+                "sha": sha,
+                "files": cfiles.iter().map(diff_file_to_json).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -141,8 +153,13 @@ end
 
 -- Get commit diff files (if viewing a specific commit)
 local function commit_files()
-  if LAST == nil or LAST.commit_diff == nil then return {} end
-  return LAST.commit_diff
+  if LAST == nil or LAST.commit_diffs == nil or V.commit_sha == nil then return {} end
+  for _, cd in ipairs(LAST.commit_diffs) do
+    if cd.sha == V.commit_sha then
+      return cd.files or {}
+    end
+  end
+  return {}
 end
 
 local function cur_commit_file()
@@ -190,6 +207,11 @@ local function rows(file)
     end
   end
   return out
+end
+
+-- Flatten a commit file's hunks into display rows (same as rows() but reusable)
+local function commit_rows(file)
+  return rows(file)  -- Same logic, just a different name for clarity
 end
 
 local function clamp_cursor(n)
@@ -434,31 +456,80 @@ end)
 -- the `bind` wrapper; Enter commits. Esc is deliberately unbound: the host uses
 -- it to blur the panel, and trapping it would leave no way out.
 bind("c", function()
-  if V.mode ~= "diff" then return false end
-  V.typing = ""
+  if V.mode == "diff" or V.mode == "commit" then
+    V.typing = ""
+  end
+  return true
 end)
 
 -- Enter and Backspace are not single printable keys, so they reach here even
 -- while composing and mean "commit" / "erase" rather than text.
 bind("Enter", function()
-  if V.typing == nil then return false end
-  local f = cur_file()
-  local r = rows(f)
-  local row = r[V.cursor]
-  if f ~= nil and row ~= nil and V.typing ~= "" then
-    -- Anchor to the new-file line where there is one, else the old-file line,
-    -- so a comment on a deleted line still lands somewhere meaningful.
-    local line = row.new_lineno or row.old_lineno
-    if line ~= nil then
-      table.insert(V.comments, { path = f.path, line = line, text = V.typing })
+  -- Handle comment submission in diff mode
+  if V.typing ~= nil and V.mode == "diff" then
+    local f = cur_file()
+    local r = rows(f)
+    local row = r[V.cursor]
+    if f ~= nil and row ~= nil and V.typing ~= "" then
+      local line = row.new_lineno or row.old_lineno
+      if line ~= nil then
+        table.insert(V.comments, { path = f.path, line = line, text = V.typing })
+      end
     end
+    V.typing = nil
+    return true
   end
-  V.typing = nil
+  
+  -- Handle comment submission in commit mode
+  if V.typing ~= nil and V.mode == "commit" then
+    local f = cur_commit_file()
+    local r = commit_rows(f)
+    local row = r[V.commit_cursor]
+    if f ~= nil and row ~= nil and V.typing ~= "" then
+      local line = row.new_lineno or row.old_lineno
+      if line ~= nil then
+        -- Format: commit:sha file:path line:N : comment
+        table.insert(V.comments, { 
+          commit = V.commit_sha,
+          path = f.path, 
+          line = line, 
+          text = V.typing 
+        })
+      end
+    end
+    V.typing = nil
+    return true
+  end
+  
+  -- Handle Enter in graph mode to view commit
+  if V.mode == "graph" then
+    local c = commits()
+    if #c > 0 and V.graph_cursor <= #c then
+      local commit = c[V.graph_cursor]
+      if commit and commit.sha and commit.sha ~= "" then
+        V.commit_sha = commit.sha
+        V.commit_file = 1
+        V.commit_cursor = 1
+        V.commit_scroll = 0
+        V.mode = "commit"
+      end
+    end
+    return true
+  end
+  
+  return true
 end)
 
 bind("Backspace", function()
-  if V.typing == nil then return false end
-  V.typing = string.sub(V.typing, 1, -2)
+  if V.typing ~= nil then
+    V.typing = string.sub(V.typing, 1, -2)
+    return true
+  end
+  if V.mode == "commit" then
+    V.mode = "graph"
+    return true
+  end
+  return true
 end)
 
 -- Hand the collected review to the prompt. This is the one host mutation a
@@ -467,7 +538,13 @@ bind("C-s", function()
   if #V.comments == 0 then return false end
   local parts = {}
   for _, c in ipairs(V.comments) do
-    table.insert(parts, "[" .. c.path .. ":" .. c.line .. "] " .. c.text)
+    if c.commit then
+      -- Commit comment format: [commit:sha file:path line:N] comment
+      table.insert(parts, "[commit:" .. c.commit .. " " .. c.path .. ":" .. c.line .. "] " .. c.text)
+    else
+      -- Working tree comment format: [path:line] comment
+      table.insert(parts, "[" .. c.path .. ":" .. c.line .. "] " .. c.text)
+    end
   end
   kn9t.insert_input(table.concat(parts, "\n"))
   V.comments = {}
@@ -769,6 +846,72 @@ local function graph_view(repo)
   return { type = "split", direction = "vertical", children = children }
 end
 
+-- Comment at a specific line in a commit file
+local function commit_comment_at(sha, path, line)
+  for _, c in ipairs(V.comments) do
+    if c.commit == sha and c.path == path and c.line == line then
+      return c.text
+    end
+  end
+  return nil
+end
+
+-- File list for commit view
+local function commit_file_list()
+  local items = {}
+  local cdiff = commit_files()
+  for i, f in ipairs(cdiff) do
+    local col = "yellow"
+    if f.status == "A" then col = "green"
+    elseif f.status == "D" then col = "lightred" end
+    local selected = (i == V.commit_file)
+    table.insert(items, { spans = {
+      { text = selected and ">" or " ", fg = "yellow" },
+      { text = f.status .. " ", fg = col },
+      { text = f.path .. " " },
+      { text = "+" .. (f.additions or 0), fg = "green" },
+      { text = " -" .. (f.deletions or 0), fg = "lightred" },
+    }})
+  end
+  return {
+    type = "list",
+    id = "commit_files",
+    items = items,
+    selected = V.commit_file - 1,
+    size = { fixed = 34 },
+  }
+end
+
+-- Commit unified body: one row per line, with the cursor row marked
+local function commit_unified_body(file)
+  local r = commit_rows(file)
+  local items = {}
+  for i, row in ipairs(r) do
+    if row.hunk then
+      table.insert(items, { spans = { { text = row.text, fg = "cyan", bold = true } } })
+    else
+      local mark = (i == V.commit_cursor) and ">" or " "
+      local num = row.new_lineno or row.old_lineno
+      local prefix = (row.kind == "add" and "+") or (row.kind == "del" and "-") or " "
+      local bg = line_bg(row.kind)
+      table.insert(items, { spans = {
+        { text = mark, fg = "yellow", bold = true, bg = bg },
+        { text = string.format("%5s ", num and tostring(num) or ""), fg = "darkgray", bg = bg },
+        { text = prefix, fg = line_style(row.kind), bg = bg },
+        { text = row.text, syntax = file.path, bg = bg },
+      }})
+      local existing = commit_comment_at(V.commit_sha, file.path, num)
+      if existing ~= nil then
+        table.insert(items, { spans = { { text = "      > " .. existing, fg = "magenta" } } })
+      end
+      if i == V.commit_cursor and V.typing ~= nil then
+        table.insert(items, { spans = { { text = "      > " .. V.typing .. "_", fg = "magenta" } } })
+      end
+    end
+  end
+  return { type = "list", id = "commit_body", items = items, offset = V.commit_scroll }
+end
+
 -- Commit detail view: show commit info and its diff
 local function commit_view(repo)
   -- Find the selected commit
@@ -784,71 +927,80 @@ local function commit_view(repo)
     return { type = "text", content = "Commit not found: " .. (V.commit_sha or "nil"), fg = "lightred" }
   end
   
-  local out = {}
-  
-  -- Header with commit info
-  table.insert(out, { type = "text", spans = {
-    { text = " Commit ", fg = "cyan", bold = true },
-    { text = commit.sha, fg = "yellow", bold = true },
-  }, size = { fixed = 1 }, wrap = false })
-  
-  table.insert(out, { type = "text", spans = {
-    { text = " Author: ", fg = "darkgray" },
-    { text = commit.author or "?", fg = "white" },
-    { text = "  ", fg = "darkgray" },
-    { text = commit.date or "", fg = "darkgray" },
-  }, size = { fixed = 1 }, wrap = false })
-  
-  -- Refs/branches
-  local refs = commit.refs or {}
-  if #refs > 0 then
-    local ref_spans = { { text = " Refs: ", fg = "darkgray" } }
-    for i, ref in ipairs(refs) do
-      if ref ~= "" then
-        if i > 1 then table.insert(ref_spans, { text = ", ", fg = "darkgray" }) end
-        table.insert(ref_spans, { text = ref, fg = ref_color(ref) })
-      end
-    end
-    table.insert(out, { type = "text", spans = ref_spans, size = { fixed = 1 }, wrap = false })
-  end
-  
-  table.insert(out, { type = "text", content = "", size = { fixed = 1 } })
-  table.insert(out, { type = "text", spans = {
-    { text = " ", fg = "white" },
-    { text = commit.subject, fg = "white", bold = true },
-  }, size = { fixed = 1 }, wrap = false })
-  
-  table.insert(out, { type = "text", content = "", size = { fixed = 1 } })
-  
-  -- Show diff if available (commit_diff from Rust)
   local cdiff = commit_files()
-  if #cdiff > 0 then
-    table.insert(out, { type = "text", content = string.format(" Changed files: %d", #cdiff), 
-                        fg = "darkgray", size = { fixed = 1 }, wrap = false })
-    
-    for _, f in ipairs(cdiff) do
-      local col = "yellow"
-      if f.status == "A" then col = "green"
-      elseif f.status == "D" then col = "lightred" end
-      table.insert(out, { type = "text", spans = {
-        { text = "  " .. f.status .. " ", fg = col },
-        { text = f.path .. " ", fg = "white" },
-        { text = "+" .. (f.additions or 0), fg = "green" },
-        { text = " -" .. (f.deletions or 0), fg = "lightred" },
-      }, size = { fixed = 1 }, wrap = false })
-    end
-  else
-    table.insert(out, { type = "text", content = " (diff not loaded - use git show " .. commit.sha .. ")", 
-                        fg = "darkgray", size = { fixed = 1 }, wrap = false })
+  
+  -- If no diff available, show simple view
+  if #cdiff == 0 then
+    local out = {}
+    table.insert(out, { type = "text", spans = {
+      { text = " Commit ", fg = "cyan", bold = true },
+      { text = commit.sha, fg = "yellow", bold = true },
+      { text = " - " .. (commit.author or ""), fg = "darkgray" },
+    }, size = { fixed = 1 }, wrap = false })
+    table.insert(out, { type = "text", spans = {
+      { text = " " .. commit.subject, fg = "white", bold = true },
+    }, size = { fixed = 1 }, wrap = false })
+    table.insert(out, { type = "text", content = " (loading diff...)", fg = "darkgray" })
+    table.insert(out, { type = "spacer", size = { flex = 1 } })
+    table.insert(out, { type = "text", spans = {
+      { text = "[Backspace]", fg = "cyan" }, { text = " back", fg = "darkgray" },
+    }, size = { fixed = 1 }, wrap = false })
+    return { type = "split", direction = "vertical", children = out }
   end
   
-  -- Help bar
-  table.insert(out, { type = "spacer", size = { flex = 1 } })
-  table.insert(out, { type = "text", spans = {
-    { text = "[Backspace]", fg = "cyan" }, { text = " back  ", fg = "darkgray" },
-    { text = "[g]", fg = "cyan" }, { text = " graph  ", fg = "darkgray" },
-    { text = "[d]", fg = "cyan" }, { text = " working diff", fg = "darkgray" },
-  }, size = { fixed = 1 }, wrap = false })
+  -- Full diff view like diff_view
+  local f = cur_commit_file()
+  local head = string.format(" %s  %s  %d/%d",
+    commit.sha, f and f.path or "?", V.commit_file, #cdiff)
+  
+  local body = commit_unified_body(f)
+  
+  local children = {
+    { type = "text", content = head, fg = "cyan", bold = true,
+      size = { fixed = 1 }, wrap = false },
+  }
+  
+  if V.tree then
+    table.insert(children, {
+      type = "split", direction = "horizontal",
+      children = { commit_file_list(), body },
+    })
+  else
+    table.insert(children, body)
+  end
+  
+  -- Bottom bar: comment input or help
+  if V.typing ~= nil then
+    table.insert(children, {
+      type = "text", content = "comment> " .. V.typing .. "  (Enter: save, Esc: cancel)",
+      fg = "magenta", size = { fixed = 1 }, wrap = false,
+    })
+  else
+    local spans = {}
+    local commit_comments = 0
+    for _, c in ipairs(V.comments) do
+      if c.commit then commit_comments = commit_comments + 1 end
+    end
+    if commit_comments > 0 then
+      table.insert(spans, { text = "[C-s]", fg = "cyan" })
+      table.insert(spans, { text = string.format(" send %d  ", commit_comments), fg = "yellow" })
+    end
+    table.insert(spans, { text = "[j/k]", fg = "cyan" })
+    table.insert(spans, { text = " nav  ", fg = "darkgray" })
+    table.insert(spans, { text = "[n/p]", fg = "cyan" })
+    table.insert(spans, { text = " file  ", fg = "darkgray" })
+    table.insert(spans, { text = "[c]", fg = "cyan" })
+    table.insert(spans, { text = " comment  ", fg = "darkgray" })
+    table.insert(spans, { text = "[Backspace]", fg = "cyan" })
+    table.insert(spans, { text = " back", fg = "darkgray" })
+    table.insert(children, {
+      type = "text", spans = spans,
+      size = { fixed = 1 }, wrap = false,
+    })
+  end
+  
+  return { type = "split", direction = "vertical", children = children }
+end
   
   return { type = "split", direction = "vertical", children = out }
 end
@@ -1051,16 +1203,20 @@ diff --git a/src/main.rs b/src/main.rs
         DiffTarget::WorkingTree
     }
 
+    fn no_commit_diffs() -> CommitDiffs {
+        CommitDiffs::new()
+    }
+
     #[test]
     fn not_a_repo_serializes_repo_as_null() {
-        let json = state_to_json(None, &[], &default_target());
+        let json = state_to_json(None, &[], &default_target(), &no_commit_diffs());
         assert_eq!(json["repo"], serde_json::Value::Null);
         assert_eq!(json["diff"].as_array().unwrap().len(), 0);
     }
 
     #[test]
     fn state_to_json_round_trips_fields() {
-        let json = state_to_json(Some(&sample_state()), &[], &default_target());
+        let json = state_to_json(Some(&sample_state()), &[], &default_target(), &no_commit_diffs());
         assert_eq!(json["repo"]["branch"], "main");
         assert_eq!(json["repo"]["ahead"], 2);
         assert_eq!(json["repo"]["changes"][0]["status"], "M");
@@ -1072,7 +1228,7 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn diff_json_carries_per_line_numbers() {
         let files = diff::parse(SAMPLE_DIFF);
-        let json = state_to_json(Some(&sample_state()), &files, &default_target());
+        let json = state_to_json(Some(&sample_state()), &files, &default_target(), &no_commit_diffs());
         let lines = &json["diff"][0]["hunks"][0]["lines"];
 
         assert_eq!(lines[0]["kind"], "ctx");
@@ -1168,7 +1324,7 @@ diff --git a/src/main.rs b/src/main.rs
         let w = render_with(&lua, &serde_json::Value::Null);
         assert_eq!(w.get::<String>("type").unwrap(), "text");
 
-        let json = state_to_json(Some(&sample_state()), &[], &default_target());
+        let json = state_to_json(Some(&sample_state()), &[], &default_target(), &no_commit_diffs());
         let w = render_with(&lua, &json);
         assert_eq!(w.get::<String>("type").unwrap(), "split");
     }
@@ -1178,7 +1334,7 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn d_toggles_into_diff_mode() {
         let lua = lua_with_stubs();
-        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target());
+        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target(), &no_commit_diffs());
 
         render_with(&lua, &json); // publish state to LAST
         assert_eq!(view_state(&lua).get::<String>("mode").unwrap(), "status");
@@ -1192,7 +1348,7 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn cursor_moves_and_clamps_at_both_ends() {
         let lua = lua_with_stubs();
-        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target());
+        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target(), &no_commit_diffs());
         render_with(&lua, &json);
         press(&lua, "d");
 
@@ -1216,7 +1372,7 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn u_and_b_toggle_split_and_tree() {
         let lua = lua_with_stubs();
-        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target());
+        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target(), &no_commit_diffs());
         render_with(&lua, &json);
         press(&lua, "d");
 
@@ -1236,7 +1392,7 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn comment_flow_anchors_to_the_correct_line_and_sends() {
         let lua = lua_with_stubs();
-        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target());
+        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target(), &no_commit_diffs());
         render_with(&lua, &json);
         press(&lua, "d");
 
@@ -1295,7 +1451,7 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn incoming_state_does_not_reset_view_state() {
         let lua = lua_with_stubs();
-        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target());
+        let json = state_to_json(Some(&sample_state()), &diff::parse(SAMPLE_DIFF), &default_target(), &no_commit_diffs());
         render_with(&lua, &json);
         press(&lua, "d");
         press(&lua, "j");
@@ -1322,7 +1478,7 @@ diff --git a/b.rs b/b.rs
 +y
 "
         );
-        let json = state_to_json(Some(&sample_state()), &diff::parse(&two), &default_target());
+        let json = state_to_json(Some(&sample_state()), &diff::parse(&two), &default_target(), &no_commit_diffs());
         render_with(&lua, &json);
         press(&lua, "d");
 
@@ -1337,7 +1493,7 @@ diff --git a/b.rs b/b.rs
     #[test]
     fn diff_mode_with_no_changes_renders_a_message() {
         let lua = lua_with_stubs();
-        let json = state_to_json(Some(&sample_state()), &[], &default_target());
+        let json = state_to_json(Some(&sample_state()), &[], &default_target(), &no_commit_diffs());
         render_with(&lua, &json);
         press(&lua, "d");
         let w = render_with(&lua, &json);

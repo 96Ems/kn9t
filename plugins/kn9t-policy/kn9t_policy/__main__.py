@@ -172,38 +172,127 @@ function on_state(s)
     V.input = s.input_buf or ""
 end
 
-function on_key(key)
+-- Helper to send messages to the Python plugin
+local function send(t, extra)
+    local msg = { t = t }
+    if extra then for k, v in pairs(extra) do msg[k] = v end end
+    kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = msg })
+end
+
+-- Register key handlers using kn9t.on_key
+kn9t.on_key("m", function()
+    if V.adding then return false end
+    send("cycle_mode")
+    return true
+end)
+
+kn9t.on_key("a", function()
     if V.adding then
-        if key == "Escape" then
-            kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "cancel_add" } })
-        elseif key == "Enter" then
-            kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "confirm_add" } })
-        elseif key == "Backspace" then
-            kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "input_backspace" } })
-        elseif #key == 1 or key == "Space" then
-            local ch = (key == "Space") and " " or key
-            kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "input_char", ch = ch } })
-        end
+        V.input = V.input .. "a"
+        send("input_char", { ch = "a" })
         return true
     end
-    
-    if key == "m" then
-        kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "cycle_mode" } })
+    send("start_add")
+    return true
+end)
+
+kn9t.on_key("d", function()
+    if V.adding then
+        V.input = V.input .. "d"
+        send("input_char", { ch = "d" })
         return true
-    elseif key == "a" then
-        kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "start_add" } })
+    end
+    send("delete_grant")
+    return true
+end)
+
+kn9t.on_key("x", function()
+    if V.adding then
+        V.input = V.input .. "x"
+        send("input_char", { ch = "x" })
         return true
-    elseif key == "d" or key == "x" then
-        kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "delete_grant" } })
+    end
+    send("delete_grant")
+    return true
+end)
+
+kn9t.on_key("j", function()
+    if V.adding then
+        V.input = V.input .. "j"
+        send("input_char", { ch = "j" })
         return true
-    elseif key == "j" or key == "Down" then
-        kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "cursor_down" } })
+    end
+    send("cursor_down")
+    return true
+end)
+
+kn9t.on_key("k", function()
+    if V.adding then
+        V.input = V.input .. "k"
+        send("input_char", { ch = "k" })
         return true
-    elseif key == "k" or key == "Up" then
-        kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = { t = "cursor_up" } })
+    end
+    send("cursor_up")
+    return true
+end)
+
+kn9t.on_key("Down", function()
+    if V.adding then return false end
+    send("cursor_down")
+    return true
+end)
+
+kn9t.on_key("Up", function()
+    if V.adding then return false end
+    send("cursor_up")
+    return true
+end)
+
+kn9t.on_key("Escape", function()
+    if V.adding then
+        send("cancel_add")
+        return true
+    end
+    return false  -- Let Esc release focus
+end)
+
+kn9t.on_key("Enter", function()
+    if V.adding then
+        send("confirm_add")
         return true
     end
     return false
+end)
+
+kn9t.on_key("Backspace", function()
+    if V.adding then
+        send("input_backspace")
+        return true
+    end
+    return false
+end)
+
+kn9t.on_key("Space", function()
+    if V.adding then
+        send("input_char", { ch = " " })
+        return true
+    end
+    return false
+end)
+
+-- Bind printable chars for input mode
+for i = 32, 126 do
+    local ch = string.char(i)
+    -- Skip already bound keys
+    if ch ~= "m" and ch ~= "a" and ch ~= "d" and ch ~= "x" and ch ~= "j" and ch ~= "k" and ch ~= " " then
+        kn9t.on_key(ch, function()
+            if V.adding then
+                send("input_char", { ch = ch })
+                return true
+            end
+            return false
+        end)
+    end
 end
 
 function render(s)
