@@ -43,6 +43,11 @@ pub struct ContextStats {
     pub ctx_window: Option<usize>,
     /// Maximum output tokens of the active model.
     pub max_out: Option<usize>,
+    /// Whether server plugins are fully loaded.
+    ///
+    /// `false` during startup while plugins load in background. The status bar
+    /// can show a loading indicator when this is false.
+    pub plugins_ready: bool,
 }
 
 /// Update the kn9t.context table with current stats.
@@ -73,6 +78,7 @@ pub fn update_context(lua: &Lua, stats: &ContextStats) -> LuaResult<()> {
     ctx.set("title", stats.title.as_str())?;
     ctx.set("input_height", stats.input_height)?;
     ctx.set("streaming", stats.streaming)?;
+    ctx.set("plugins_ready", stats.plugins_ready)?;
     // Left nil when unknown, so Lua can tell "no data" from "zero" and fall
     // back to its own estimate rather than dividing by zero.
     if let Some(w) = stats.ctx_window {
@@ -102,6 +108,7 @@ pub fn collect_stats(
     // rather than two more scalars: this call already takes seven positional
     // arguments, and adding same-typed ones invites silent transposition.
     model_limits: Option<&crate::model_selector::ModelEntry>,
+    plugins_ready: bool,
 ) -> ContextStats {
     let mut stats = ContextStats::default();
 
@@ -128,6 +135,7 @@ pub fn collect_stats(
     stats.ctx_window = model_limits.and_then(|m| m.ctx_window);
     stats.max_out = model_limits.and_then(|m| m.max_out);
     stats.streaming = streaming;
+    stats.plugins_ready = plugins_ready;
 
     stats
 }
@@ -158,6 +166,7 @@ mod tests {
             title: "Test session".to_string(),
             input_height: 3,
             streaming: false,
+            plugins_ready: true,
         };
 
         update_context(&lua, &stats).unwrap();

@@ -221,13 +221,18 @@ fn route(
             crate::log!("stop requested via POST /stop");
             JsonResp::ok(serde_json::json!({"ok": true})).into()
         }
-        (Method::Get, ["health"]) => JsonResp::ok(serde_json::json!({
-            "ok": true,
-            "idle_secs": state.idle.last_activity_elapsed().as_secs(),
-            "attached_clients": state.idle.attached_count(),
-            "running_turns": state.idle.running_turns(),
-        }))
-        .into(),
+        (Method::Get, ["health"]) => {
+            let plugins_ready = state.plugins_ready();
+            JsonResp::ok(serde_json::json!({
+                "ok": true,
+                "plugins_ready": plugins_ready,
+                "status": if plugins_ready { "ready" } else { "loading" },
+                "idle_secs": state.idle.last_activity_elapsed().as_secs(),
+                "attached_clients": state.idle.attached_count(),
+                "running_turns": state.idle.running_turns(),
+            }))
+            .into()
+        }
 
         // ── config hot-reload (R-SRV-CFG-100) ──
         (Method::Post, ["config", "reload"]) => routes::config::reload(state),

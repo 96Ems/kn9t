@@ -210,6 +210,13 @@ pub struct ServerState {
     /// `[tool_use] -> [tool_result] -> [steer]` instead of the buggy
     /// `[tool_use] -> [steer] -> [tool_result]`.
     pub pending_steering: Mutex<HashMap<String, Vec<kn9t_core::Message>>>,
+    /// True while plugins are loading in background (non-blocking startup).
+    ///
+    /// The server binds and writes its port file immediately, then loads plugins
+    /// in a background thread. Routes that require plugins (`POST /session`,
+    /// `POST /session/{id}/prompt`) return 503 while this is true. The TUI polls
+    /// `GET /health` for `plugins_ready: true` before proceeding.
+    plugins_loading: AtomicBool,
 }
 
 impl ServerState {
@@ -263,7 +270,23 @@ impl ServerState {
             hooks_override: Mutex::new(None),
             pending_reactivation: Mutex::new(HashMap::new()),
             pending_steering: Mutex::new(HashMap::new()),
+            plugins_loading: AtomicBool::new(false),
         }
+    }
+
+    /// Check if plugins are fully loaded and ready.
+    ///
+    /// Returns `false` during background plugin loading (non-blocking startup).
+    /// Routes that depend on plugins should return 503 when this is false.
+    pub fn plugins_ready(&self) -> bool {
+        !self.plugins_loading.load(Ordering::SeqCst)
+    }
+
+    /// Mark plugins as loading (true) or ready (false).
+    ///
+    /// Called by the background plugin loader thread.
+    pub fn set_plugins_loading(&self, loading: bool) {
+        self.plugins_loading.store(loading, Ordering::SeqCst);
     }
 
     /// Queue a steering message for the given session. Called by `POST /steer`.

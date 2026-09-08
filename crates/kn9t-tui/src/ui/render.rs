@@ -61,6 +61,7 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             input_height,
             app.streaming,
             app.model_sel.current_model(),
+            app.plugins_ready,
         );
         runtime.update_context(&stats);
 

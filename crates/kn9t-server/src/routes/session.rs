@@ -20,7 +20,14 @@ use crate::state::ServerState;
 use crate::turn;
 
 /// `POST /session` — create; body `{cwd?, model?, name?}`.
+///
+/// Returns 503 if plugins are still loading (non-blocking startup). The client
+/// should retry after a short delay or poll `GET /health` for `plugins_ready: true`.
 pub fn create(state: &Arc<ServerState>, req: api::CreateSessionReq) -> JsonResp {
+    if !state.plugins_ready() {
+        return JsonResp::error(503, "loading", "plugins loading, retry shortly");
+    }
+
     let cwd = req
         .cwd
         .unwrap_or_else(|| state.cwd.to_str().unwrap_or(".").to_owned());
@@ -220,6 +227,7 @@ pub fn lease_release(state: &Arc<ServerState>, id: &str, holder: Option<&str>) -
 /// `POST /session/{id}/prompt` — `{text?, blobs?, images?}` [lease required].
 /// Appends the user message and runs a turn on a background thread.
 ///
+/// Returns 503 if plugins are still loading (non-blocking startup).
 /// Returns 409 Conflict if a turn is already running for this session. The client
 /// should wait for the turn to complete (via SSE TurnEnded event) before sending
 /// another prompt. This prevents transcript corruption when the user aborts a turn
@@ -227,6 +235,10 @@ pub fn lease_release(state: &Arc<ServerState>, id: &str, holder: Option<&str>) -
 ///
 /// F12: debug scaffolding moved from `eprintln!` to `crate::log!`.
 pub fn prompt(state: &Arc<ServerState>, id: &str, req: api::PromptReq) -> JsonResp {
+    if !state.plugins_ready() {
+        return JsonResp::error(503, "loading", "plugins loading, retry shortly");
+    }
+
     let text = req.text.unwrap_or_default();
     let blobs = req.blobs.unwrap_or_default();
     let images = req.images.unwrap_or_default();

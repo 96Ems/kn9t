@@ -15,6 +15,7 @@ pub enum ClientError {
     Json(String),
     SessionBusy,
     NotFound,
+    ServerLoading,
 }
 
 impl std::fmt::Display for ClientError {
@@ -24,6 +25,7 @@ impl std::fmt::Display for ClientError {
             ClientError::Json(s) => write!(f, "JSON error: {}", s),
             ClientError::SessionBusy => write!(f, "Session busy (another client holds lease)"),
             ClientError::NotFound => write!(f, "Not found"),
+            ClientError::ServerLoading => write!(f, "Server is loading plugins, please wait"),
         }
     }
 }
@@ -64,6 +66,22 @@ impl Client {
             req.set("Authorization", &format!("Bearer {}", t))
         } else {
             req
+        }
+    }
+
+    /// Check if server plugins are ready (non-blocking, single request).
+    ///
+    /// Returns `true` if plugins are loaded, `false` otherwise.
+    pub fn check_plugins_ready(&self) -> bool {
+        match self.request("GET", "/health").call() {
+            Ok(resp) => {
+                if let Ok(body) = resp.into_json::<serde_json::Value>() {
+                    body.get("plugins_ready").and_then(|v| v.as_bool()) == Some(true)
+                } else {
+                    false
+                }
+            }
+            Err(_) => false,
         }
     }
 

@@ -479,6 +479,10 @@ pub struct App {
     pub lua_panels: crate::lua::panels::PanelRegistry,
     // 96E-43: Input states for Lua Input widgets (id -> current value).
     pub lua_input_states: std::collections::HashMap<String, String>,
+
+    /// True when server plugins are fully loaded. While false, session creation
+    /// and prompts are blocked with a user-visible message.
+    pub plugins_ready: bool,
 }
 
 impl App {
@@ -549,6 +553,7 @@ impl App {
             lua_dir_watcher: None,
             lua_panels: crate::lua::panels::PanelRegistry::new(),
             lua_input_states: std::collections::HashMap::new(),
+            plugins_ready: false,
         }
     }
 
@@ -674,16 +679,23 @@ impl App {
     }
 
     /// Connect to server and load session list + models for welcome screen.
+    ///
+    /// Non-blocking: if plugins are still loading, we set `plugins_ready = false`
+    /// and let the main loop poll for readiness. The welcome screen is displayed
+    /// immediately with a loading indicator.
     pub fn connect(&mut self) -> Result<(), ClientError> {
         let client = Client::new(&self.config.base_url, self.config.token.as_deref());
 
-        // Load session list for welcome screen.
+        // Check if plugins are ready (non-blocking)
+        self.plugins_ready = client.check_plugins_ready();
+
+        // Load session list for welcome screen (works even during loading).
         self.session.load_sessions(&client)?;
 
         // Load available models (auto-discovered from connected providers).
         let _ = self.model_sel.load_models(&client);
 
-        // Load tools from server (GET /tools — Phase 4, discovered plugins, not hardcoded).
+        // Load tools from server - may be empty/partial if plugins still loading.
         self.refresh_tools(&client);
 
         // Start global attach thread to keep server alive.
@@ -694,6 +706,28 @@ impl App {
 
         self.client = Some(client);
         Ok(())
+    }
+
+    /// Poll server to check if plugins are ready. Called periodically from main loop.
+    pub fn poll_plugins_ready(&mut self) {
+        if self.plugins_ready {
+            return;
+        }
+        let is_ready = self
+            .client
+            .as_ref()
+            .map(|c| c.check_plugins_ready())
+            .unwrap_or(false);
+
+        if is_ready {
+            self.plugins_ready = true;
+            // Refresh tools now that all plugins are loaded
+            if let Some(client) = self.client.take() {
+                self.refresh_tools(&client);
+                self.client = Some(client);
+            }
+            crate::log!("plugins ready, refreshed tools");
+        }
     }
 
     /// Refresh tools sidebar from server (GET /tools?session= — Phase 4).
@@ -1047,7 +1081,13 @@ impl App {
     }
 
     /// Create a new session and enter it.
+    ///
+    /// Returns `ServerLoading` error if plugins are still loading.
     pub fn create_new_session(&mut self, tx: Sender<Event>) -> Result<(), ClientError> {
+        if !self.plugins_ready {
+            return Err(ClientError::ServerLoading);
+        }
+
         crate::log!("create_new_session: starting...");
         let client = self
             .client
@@ -1133,12 +1173,17 @@ impl App {
                     if self.spinner_frame % 12 == 0 {
                         self.phrase_idx = self.phrase_idx.wrapping_add(1);
                     }
+                    // Poll for plugins ready (every ~500ms = every 5 ticks at 100ms)
+                    if !self.plugins_ready && self.spinner_frame % 5 == 0 {
+                        self.poll_plugins_ready();
+                    }
                     // 96E-43: Process Lua panel commands (show/hide/toggle/register)
                     self.process_lua_panels();
-                    // Only redraw on tick if streaming OR if we have visible Lua panels.
+                    // Only redraw on tick if streaming OR if we have visible Lua panels
+                    // OR if plugins are still loading (to show loading indicator).
                     // With 100ms ticks (10 FPS), we render each frame.
                     // The spinner has 10 frames, so one full cycle takes ~1 second.
-                    needs_redraw = self.streaming || !self.lua_panels.is_empty();
+                    needs_redraw = self.streaming || !self.lua_panels.is_empty() || !self.plugins_ready;
                 }
                 Event::SseError(session_id, e) => {
                     // Phase 4 fix: R-TUI-230 — reconnect from last_seq instead of lying.
