@@ -66,9 +66,9 @@ pub struct GitState {
     pub stashes: Vec<String>,
 }
 
-/// How many `git log` entries to keep. High enough to allow deep history
-/// browsing while keeping the JSON payload reasonable (~500KB for 500 commits).
-pub const LOG_LIMIT: usize = 500;
+/// How many `git log` entries to fetch. We load all upfront and paginate
+/// in the UI (100 commits per page) for smooth scrolling.
+pub const LOG_LIMIT: usize = 1000;
 
 /// Collect git state for the repository containing `cwd`, or `None` if
 /// `cwd` is not inside a git repository (or `git` is not on PATH).

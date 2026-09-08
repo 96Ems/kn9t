@@ -119,9 +119,13 @@ V = {
   show_remote = true,
   show_tags = false,
   show_stash = false,
-  -- Graph navigation
+  -- Graph navigation & pagination
   graph_cursor = 1,
   graph_scroll = 0,
+  graph_page = 1,        -- current page (1-indexed)
+  graph_page_size = 100, -- commits per page
+  graph_search = nil,    -- search query string
+  graph_searching = false, -- true when typing search query
   -- Refs panel
   refs_cursor = 1,
   show_refs = false,
@@ -149,6 +153,48 @@ local function commits()
     end
   end
   return out
+end
+
+-- Get all commits (unfiltered, for total count)
+local function all_commits()
+  return commits()
+end
+
+-- Get filtered commits (by search query)
+local function filtered_commits()
+  local all = commits()
+  if V.graph_search == nil or V.graph_search == "" then
+    return all
+  end
+  local query = string.lower(V.graph_search)
+  local out = {}
+  for _, c in ipairs(all) do
+    local match = string.find(string.lower(c.sha or ""), query, 1, true)
+      or string.find(string.lower(c.subject or ""), query, 1, true)
+      or string.find(string.lower(c.author or ""), query, 1, true)
+    if match then
+      table.insert(out, c)
+    end
+  end
+  return out
+end
+
+-- Get paginated commits for current page
+local function paged_commits()
+  local filtered = filtered_commits()
+  local start_idx = (V.graph_page - 1) * V.graph_page_size + 1
+  local end_idx = start_idx + V.graph_page_size - 1
+  local out = {}
+  for i = start_idx, math.min(end_idx, #filtered) do
+    table.insert(out, filtered[i])
+  end
+  return out, #filtered
+end
+
+-- Total pages
+local function total_pages()
+  local filtered = filtered_commits()
+  return math.max(1, math.ceil(#filtered / V.graph_page_size))
 end
 
 -- Get commit diff files (if viewing a specific commit)
@@ -252,6 +298,15 @@ local BOUND = {}
 local function bind(key, fn)
   BOUND[key] = true
   kn9t.on_key(key, function()
+    -- Handle search input in graph mode
+    if V.graph_searching and #key == 1 then
+      V.graph_search = V.graph_search .. key
+      V.graph_page = 1  -- Reset to first page on new search
+      V.graph_cursor = 1
+      V.graph_scroll = 0
+      return true
+    end
+    -- Handle comment input
     if V.typing ~= nil and #key == 1 then
       V.typing = V.typing .. key
       return true
@@ -353,29 +408,6 @@ bind("p", function()
   end
 end)
 
--- Next/previous hunk header, falling through to the next/previous file when
--- there are no more in this one — the same behaviour the Rust viewer had.
-bind("]", function()
-  local r = rows(cur_file())
-  for i = V.cursor + 1, #r do
-    if r[i].hunk then V.cursor = i; clamp_cursor(#r); return end
-  end
-  local f = files()
-  if V.file < #f then V.file = V.file + 1; V.cursor = 1; V.scroll = 0 end
-end)
-bind("[", function()
-  local r = rows(cur_file())
-  for i = V.cursor - 1, 1, -1 do
-    if r[i].hunk then V.cursor = i; clamp_cursor(#r); return end
-  end
-  if V.file > 1 then
-    V.file = V.file - 1
-    local pr = rows(cur_file())
-    V.cursor = #pr > 0 and #pr or 1
-    clamp_cursor(#pr)
-  end
-end)
-
 bind("u", function() V.split = not V.split end)
 bind("b", function() V.tree = not V.tree end)
 bind("d", function()
@@ -462,6 +494,59 @@ bind("4", function()
   end
 end)
 
+-- Pagination: [ prev page, ] next page
+bind("[", function()
+  if V.mode == "graph" then
+    if V.graph_page > 1 then
+      V.graph_page = V.graph_page - 1
+      V.graph_cursor = 1
+      V.graph_scroll = 0
+    end
+    return true
+  end
+  -- Original behavior for diff mode (prev hunk)
+  local r = rows(cur_file())
+  for i = V.cursor - 1, 1, -1 do
+    if r[i].hunk then V.cursor = i; clamp_cursor(#r); return true end
+  end
+  if V.file > 1 then
+    V.file = V.file - 1
+    local pr = rows(cur_file())
+    V.cursor = #pr > 0 and #pr or 1
+    clamp_cursor(#pr)
+  end
+  return true
+end)
+
+bind("]", function()
+  if V.mode == "graph" then
+    if V.graph_page < total_pages() then
+      V.graph_page = V.graph_page + 1
+      V.graph_cursor = 1
+      V.graph_scroll = 0
+    end
+    return true
+  end
+  -- Original behavior for diff mode (next hunk)
+  local r = rows(cur_file())
+  for i = V.cursor + 1, #r do
+    if r[i].hunk then V.cursor = i; clamp_cursor(#r); return true end
+  end
+  local f = files()
+  if V.file < #f then V.file = V.file + 1; V.cursor = 1; V.scroll = 0 end
+  return true
+end)
+
+-- Search: Ctrl+F to start search in graph mode
+bind("C-f", function()
+  if V.mode == "graph" then
+    V.graph_searching = true
+    V.graph_search = ""
+    return true
+  end
+  return true
+end)
+
 -- Comment capture. `c` opens composition; printable keys then accumulate via
 -- the `bind` wrapper; Enter commits. Esc is deliberately unbound: the host uses
 -- it to blur the panel, and trapping it would leave no way out.
@@ -475,6 +560,12 @@ end)
 -- Enter and Backspace are not single printable keys, so they reach here even
 -- while composing and mean "commit" / "erase" rather than text.
 bind("Enter", function()
+  -- Confirm search
+  if V.graph_searching then
+    V.graph_searching = false
+    return true
+  end
+  
   -- Handle comment submission in diff mode
   if V.typing ~= nil and V.mode == "diff" then
     local f = cur_file()
@@ -513,9 +604,9 @@ bind("Enter", function()
   
   -- Handle Enter in graph mode to view commit
   if V.mode == "graph" then
-    local c = commits()
-    if #c > 0 and V.graph_cursor <= #c then
-      local commit = c[V.graph_cursor]
+    local paged, _ = paged_commits()
+    if #paged > 0 and V.graph_cursor <= #paged then
+      local commit = paged[V.graph_cursor]
       if commit and commit.sha and commit.sha ~= "" then
         V.commit_sha = commit.sha
         V.commit_file = 1
@@ -531,6 +622,15 @@ bind("Enter", function()
 end)
 
 bind("Backspace", function()
+  -- Handle search backspace
+  if V.graph_searching then
+    V.graph_search = string.sub(V.graph_search or "", 1, -2)
+    V.graph_page = 1
+    V.graph_cursor = 1
+    V.graph_scroll = 0
+    return true
+  end
+  -- Handle comment backspace
   if V.typing ~= nil then
     V.typing = string.sub(V.typing, 1, -2)
     return true
@@ -542,8 +642,16 @@ bind("Backspace", function()
   return true
 end)
 
--- Esc cancels comment composition; otherwise let host handle it (unfocus)
+-- Esc cancels search or comment composition; otherwise let host handle it (unfocus)
 kn9t.on_key("Escape", function()
+  if V.graph_searching then
+    V.graph_searching = false
+    V.graph_search = nil
+    V.graph_page = 1
+    V.graph_cursor = 1
+    V.graph_scroll = 0
+    return true  -- Cancel search, stay focused
+  end
   if V.typing ~= nil then
     V.typing = nil
     return true  -- Consume: cancel comment, stay focused
@@ -794,12 +902,13 @@ local function status_view(repo)
   return { type = "split", direction = "vertical", children = out }
 end
 
--- Full graph view
+-- Full graph view with pagination and search
 local function graph_view(repo)
   local items = {}
-  local recent = repo.recent or {}
+  local paged, total_count = paged_commits()
+  local pages = total_pages()
   
-  for i, l in ipairs(recent) do
+  for i, l in ipairs(paged) do
     local mark = (i == V.graph_cursor) and ">" or " "
     
     if l.sha == "" then
@@ -827,24 +936,31 @@ local function graph_view(repo)
   -- List with current selection; TUI handles scrolling automatically
   local graph_list = { type = "list", id = "graph", items = items, selected = V.graph_cursor - 1, offset = V.graph_scroll }
   
+  -- Header with search and pagination info
   local header_spans = {
     { text = " Git Graph  ", fg = "cyan", bold = true },
-    { text = "[1]", fg = "cyan" },
-    { text = V.show_local and "Local " or "local ", fg = V.show_local and "green" or "darkgray" },
-    { text = "[2]", fg = "cyan" },
-    { text = V.show_remote and "Remote " or "remote ", fg = V.show_remote and "lightred" or "darkgray" },
-    { text = "[3]", fg = "cyan" },
-    { text = V.show_tags and "Tags " or "tags ", fg = V.show_tags and "yellow" or "darkgray" },
-    { text = "[4]", fg = "cyan" },
-    { text = V.show_stash and "Stash" or "stash", fg = V.show_stash and "magenta" or "darkgray" },
   }
+  
+  -- Show search query if searching
+  if V.graph_searching then
+    table.insert(header_spans, { text = "Search: ", fg = "yellow" })
+    table.insert(header_spans, { text = V.graph_search .. "_", fg = "white", bold = true })
+  elseif V.graph_search and V.graph_search ~= "" then
+    table.insert(header_spans, { text = "\"" .. V.graph_search .. "\" ", fg = "yellow" })
+    table.insert(header_spans, { text = "(" .. total_count .. " matches) ", fg = "darkgray" })
+  end
+  
+  -- Pagination info
+  if pages > 1 then
+    table.insert(header_spans, { text = string.format(" Page %d/%d ", V.graph_page, pages), fg = "magenta" })
+  end
   
   local footer_spans = {
     { text = "[j/k]", fg = "cyan" }, { text = " nav  ", fg = "darkgray" },
+    { text = "[[/]]", fg = "cyan" }, { text = " page  ", fg = "darkgray" },
+    { text = "[C-f]", fg = "cyan" }, { text = " search  ", fg = "darkgray" },
     { text = "[Enter]", fg = "cyan" }, { text = " view  ", fg = "darkgray" },
-    { text = "[g]", fg = "cyan" }, { text = " close  ", fg = "darkgray" },
-    { text = "[d]", fg = "cyan" }, { text = " diff  ", fg = "darkgray" },
-    { text = "[r]", fg = "cyan" }, { text = " refs", fg = "darkgray" },
+    { text = "[g]", fg = "cyan" }, { text = " close", fg = "darkgray" },
   }
   
   local children = {
