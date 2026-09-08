@@ -106,105 +106,104 @@ pub const LUA_SOURCE: &str = r##"
 -- View state. Survives `ui_set_state`, which only replaces repo data.
 V = {
   mode = "status",   -- "status" | "diff" | "graph" | "commit"
-  split = false,     -- side-by-side vs unified, diff mode only
+  split = false,     -- side-by-side vs unified
   tree = true,       -- show the file list
-  file = 1,          -- 1-based index into state.diff
-  cursor = 1,        -- 1-based index into the flattened line list
-  scroll = 0,
-  comments = {},     -- { {path=, line=, text=} }
-  typing = nil,      -- in-progress comment text, nil when not composing
-  height = 20,       -- last known viewport height, for paging
-  -- Git graph filters
+  height = 20,       -- last known viewport height
+  comments = {},     -- { {path=, line=, text=, commit=nil|sha} }
+  typing = nil,      -- in-progress comment text
+  
+  -- Diff navigation (shared between "diff" and "commit" modes)
+  diff_file = 1,     -- 1-based index into files
+  diff_cursor = 1,   -- 1-based index into flattened lines
+  diff_scroll = 0,
+  diff_sha = nil,    -- nil for working tree, sha for commit
+  
+  -- Graph navigation & pagination
+  graph_cursor = 1,
+  graph_scroll = 0,
+  graph_page = 1,
+  graph_page_size = 100,
+  graph_search = nil,
+  graph_searching = false,
+  
+  -- Graph filters
   show_local = true,
   show_remote = true,
   show_tags = false,
   show_stash = false,
-  -- Graph navigation & pagination
-  graph_cursor = 1,
-  graph_scroll = 0,
-  graph_page = 1,        -- current page (1-indexed)
-  graph_page_size = 100, -- commits per page
-  graph_search = nil,    -- search query string
-  graph_searching = false, -- true when typing search query
+  
   -- Refs panel
   refs_cursor = 1,
   show_refs = false,
-  -- Commit view (when viewing a specific commit's diff)
-  commit_sha = nil,    -- sha of commit being viewed
-  commit_file = 1,     -- file index in commit diff
-  commit_cursor = 1,   -- line cursor in commit diff
-  commit_scroll = 0,
 }
 
-local LAST = nil  -- most recent state, so handlers can see repo data
+local LAST = nil
 
-local function files()
+-- ── Data accessors ───────────────────────────────────────────────────────────
+
+local function working_files()
   if LAST == nil or LAST.diff == nil then return {} end
   return LAST.diff
 end
 
--- Get commits from recent log (filtering out graph-only lines)
+local function commit_files_for(sha)
+  if LAST == nil or LAST.commit_diffs == nil or sha == nil then return {} end
+  for _, cd in ipairs(LAST.commit_diffs) do
+    if cd.sha == sha then return cd.files or {} end
+  end
+  return {}
+end
+
+-- Returns the files for the current diff context (working tree or commit)
+local function diff_files()
+  if V.diff_sha then
+    return commit_files_for(V.diff_sha)
+  end
+  return working_files()
+end
+
 local function commits()
   if LAST == nil or LAST.repo == nil or LAST.repo.recent == nil then return {} end
   local out = {}
   for _, l in ipairs(LAST.repo.recent) do
-    if l.sha and l.sha ~= "" then
-      table.insert(out, l)
-    end
+    if l.sha and l.sha ~= "" then table.insert(out, l) end
   end
   return out
 end
 
--- Get all commits (unfiltered, for total count)
-local function all_commits()
-  return commits()
-end
-
--- Get filtered commits (by search query and ref filters)
 local function filtered_commits()
   local all = commits()
   local out = {}
   
   for _, c in ipairs(all) do
-    -- Apply search filter
     if V.graph_search and V.graph_search ~= "" then
       local query = string.lower(V.graph_search)
       local match = string.find(string.lower(c.sha or ""), query, 1, true)
         or string.find(string.lower(c.subject or ""), query, 1, true)
         or string.find(string.lower(c.author or ""), query, 1, true)
-      if not match then
-        goto continue
-      end
+      if not match then goto continue end
     end
     
-    -- Apply ref filters (only hide commits that ONLY have filtered-out refs)
     local has_visible_ref = false
     if not c.refs or #c.refs == 0 then
-      -- No refs - always visible
       has_visible_ref = true
     else
       for _, ref in ipairs(c.refs) do
         local is_local = not string.find(ref, "origin/")
         local is_remote = string.find(ref, "origin/") ~= nil
         local is_tag = string.find(ref, "tag:") ~= nil
-        
         if is_local and V.show_local then has_visible_ref = true end
         if is_remote and V.show_remote then has_visible_ref = true end
         if is_tag and V.show_tags then has_visible_ref = true end
-        -- stashes are rare in refs, skip for now
       end
     end
     
-    if has_visible_ref then
-      table.insert(out, c)
-    end
-    
+    if has_visible_ref then table.insert(out, c) end
     ::continue::
   end
   return out
 end
 
--- Get paginated commits for current page
 local function paged_commits()
   local filtered = filtered_commits()
   local start_idx = (V.graph_page - 1) * V.graph_page_size + 1
@@ -216,53 +215,21 @@ local function paged_commits()
   return out, #filtered
 end
 
--- Total pages
 local function total_pages()
   local filtered = filtered_commits()
   return math.max(1, math.ceil(#filtered / V.graph_page_size))
 end
 
--- Get commit diff files (if viewing a specific commit)
-local function commit_files()
-  if LAST == nil or LAST.commit_diffs == nil or V.commit_sha == nil then return {} end
-  for _, cd in ipairs(LAST.commit_diffs) do
-    if cd.sha == V.commit_sha then
-      return cd.files or {}
-    end
-  end
-  return {}
-end
-
-local function cur_commit_file()
-  local f = commit_files()
-  if #f == 0 then return nil end
-  if V.commit_file > #f then V.commit_file = #f end
-  if V.commit_file < 1 then V.commit_file = 1 end
-  return f[V.commit_file]
-end
-
--- Clamp graph cursor
-local function clamp_graph_cursor()
-  local c = commits()
-  if V.graph_cursor < 1 then V.graph_cursor = 1 end
-  if #c > 0 and V.graph_cursor > #c then V.graph_cursor = #c end
-  -- Scroll adjustment
-  local view = math.max(1, V.height - 3)
-  if V.graph_cursor <= V.graph_scroll then V.graph_scroll = V.graph_cursor - 1 end
-  if V.graph_cursor > V.graph_scroll + view then V.graph_scroll = V.graph_cursor - view end
-  if V.graph_scroll < 0 then V.graph_scroll = 0 end
-end
+-- ── Unified diff navigation ──────────────────────────────────────────────────
 
 local function cur_file()
-  local f = files()
+  local f = diff_files()
   if #f == 0 then return nil end
-  if V.file > #f then V.file = #f end
-  if V.file < 1 then V.file = 1 end
-  return f[V.file]
+  if V.diff_file > #f then V.diff_file = #f end
+  if V.diff_file < 1 then V.diff_file = 1 end
+  return f[V.diff_file]
 end
 
--- Flatten a file's hunks into display rows. Hunk headers become rows too, so
--- `]`/`[` can navigate to them and the cursor index means one thing only.
 local function rows(file)
   local out = {}
   if file == nil then return out end
@@ -280,34 +247,30 @@ local function rows(file)
   return out
 end
 
--- Flatten a commit file's hunks into display rows (same as rows() but reusable)
-local function commit_rows(file)
-  return rows(file)  -- Same logic, just a different name for clarity
-end
-
-local function clamp_cursor(n)
-  if V.cursor < 1 then V.cursor = 1 end
-  if n > 0 and V.cursor > n then V.cursor = n end
-  -- Keep the cursor inside the viewport, accounting for the header row.
+local function clamp_diff_cursor(n)
+  if V.diff_cursor < 1 then V.diff_cursor = 1 end
+  if n > 0 and V.diff_cursor > n then V.diff_cursor = n end
   local view = math.max(1, V.height - 2)
-  if V.cursor <= V.scroll then V.scroll = V.cursor - 1 end
-  if V.cursor > V.scroll + view then V.scroll = V.cursor - view end
-  if V.scroll < 0 then V.scroll = 0 end
+  if V.diff_cursor <= V.diff_scroll then V.diff_scroll = V.diff_cursor - 1 end
+  if V.diff_cursor > V.diff_scroll + view then V.diff_scroll = V.diff_cursor - view end
+  if V.diff_scroll < 0 then V.diff_scroll = 0 end
 end
 
--- Clamp commit cursor and scroll (separate from diff mode)
-local function clamp_commit_cursor(n)
-  if V.commit_cursor < 1 then V.commit_cursor = 1 end
-  if n > 0 and V.commit_cursor > n then V.commit_cursor = n end
-  local view = math.max(1, V.height - 2)
-  if V.commit_cursor <= V.commit_scroll then V.commit_scroll = V.commit_cursor - 1 end
-  if V.commit_cursor > V.commit_scroll + view then V.commit_scroll = V.commit_cursor - view end
-  if V.commit_scroll < 0 then V.commit_scroll = 0 end
+local function clamp_graph_cursor()
+  local paged, total = paged_commits()
+  if V.graph_cursor < 1 then V.graph_cursor = 1 end
+  if #paged > 0 and V.graph_cursor > #paged then V.graph_cursor = #paged end
+  local view = math.max(1, V.height - 3)
+  if V.graph_cursor <= V.graph_scroll then V.graph_scroll = V.graph_cursor - 1 end
+  if V.graph_cursor > V.graph_scroll + view then V.graph_scroll = V.graph_cursor - view end
+  if V.graph_scroll < 0 then V.graph_scroll = 0 end
 end
 
-local function comment_at(path, line)
+local function comment_at(path, line, sha)
   for _, c in ipairs(V.comments) do
-    if c.path == path and c.line == line then return c.text end
+    if c.path == path and c.line == line and c.commit == sha then
+      return c.text
+    end
   end
   return nil
 end
@@ -340,52 +303,45 @@ local function bind(key, fn)
   end)
 end
 
+-- Helper: check if we're in a diff-viewing mode (diff or commit)
+local function in_diff_mode()
+  return V.mode == "diff" or V.mode == "commit"
+end
+
 bind("j", function()
   if V.mode == "graph" then
     V.graph_cursor = V.graph_cursor + 1
     clamp_graph_cursor()
-  elseif V.mode == "commit" then
-    V.commit_cursor = V.commit_cursor + 1
-    clamp_commit_cursor(#commit_rows(cur_commit_file()))
-  else
-    V.cursor = V.cursor + 1
-    clamp_cursor(#rows(cur_file()))
+  elseif in_diff_mode() then
+    V.diff_cursor = V.diff_cursor + 1
+    clamp_diff_cursor(#rows(cur_file()))
   end
 end)
 bind("k", function()
   if V.mode == "graph" then
     V.graph_cursor = V.graph_cursor - 1
     clamp_graph_cursor()
-  elseif V.mode == "commit" then
-    V.commit_cursor = V.commit_cursor - 1
-    clamp_commit_cursor(#commit_rows(cur_commit_file()))
-  else
-    V.cursor = V.cursor - 1
-    clamp_cursor(#rows(cur_file()))
+  elseif in_diff_mode() then
+    V.diff_cursor = V.diff_cursor - 1
+    clamp_diff_cursor(#rows(cur_file()))
   end
 end)
 bind("Down", function()
   if V.mode == "graph" then
     V.graph_cursor = V.graph_cursor + 1
     clamp_graph_cursor()
-  elseif V.mode == "commit" then
-    V.commit_cursor = V.commit_cursor + 1
-    clamp_commit_cursor(#commit_rows(cur_commit_file()))
-  else
-    V.cursor = V.cursor + 1
-    clamp_cursor(#rows(cur_file()))
+  elseif in_diff_mode() then
+    V.diff_cursor = V.diff_cursor + 1
+    clamp_diff_cursor(#rows(cur_file()))
   end
 end)
 bind("Up", function()
   if V.mode == "graph" then
     V.graph_cursor = V.graph_cursor - 1
     clamp_graph_cursor()
-  elseif V.mode == "commit" then
-    V.commit_cursor = V.commit_cursor - 1
-    clamp_commit_cursor(#commit_rows(cur_commit_file()))
-  else
-    V.cursor = V.cursor - 1
-    clamp_cursor(#rows(cur_file()))
+  elseif in_diff_mode() then
+    V.diff_cursor = V.diff_cursor - 1
+    clamp_diff_cursor(#rows(cur_file()))
   end
 end)
 
@@ -394,12 +350,9 @@ bind("PageDown", function()
   if V.mode == "graph" then
     V.graph_cursor = V.graph_cursor + step
     clamp_graph_cursor()
-  elseif V.mode == "commit" then
-    V.commit_cursor = V.commit_cursor + step
-    clamp_commit_cursor(#commit_rows(cur_commit_file()))
-  else
-    V.cursor = V.cursor + step
-    clamp_cursor(#rows(cur_file()))
+  elseif in_diff_mode() then
+    V.diff_cursor = V.diff_cursor + step
+    clamp_diff_cursor(#rows(cur_file()))
   end
 end)
 bind("PageUp", function()
@@ -407,52 +360,56 @@ bind("PageUp", function()
   if V.mode == "graph" then
     V.graph_cursor = V.graph_cursor - step
     clamp_graph_cursor()
-  elseif V.mode == "commit" then
-    V.commit_cursor = V.commit_cursor - step
-    clamp_commit_cursor(#commit_rows(cur_commit_file()))
-  else
-    V.cursor = V.cursor - step
-    clamp_cursor(#rows(cur_file()))
+  elseif in_diff_mode() then
+    V.diff_cursor = V.diff_cursor - step
+    clamp_diff_cursor(#rows(cur_file()))
   end
 end)
 
 bind("n", function()
-  if V.mode == "commit" then
-    local f = commit_files()
-    if V.commit_file < #f then V.commit_file = V.commit_file + 1; V.commit_cursor = 1; V.commit_scroll = 0 end
-  else
-    local f = files()
-    if V.file < #f then V.file = V.file + 1; V.cursor = 1; V.scroll = 0 end
+  if in_diff_mode() then
+    local f = diff_files()
+    if V.diff_file < #f then
+      V.diff_file = V.diff_file + 1
+      V.diff_cursor = 1
+      V.diff_scroll = 0
+    end
   end
 end)
 bind("p", function()
-  if V.mode == "commit" then
-    if V.commit_file > 1 then V.commit_file = V.commit_file - 1; V.commit_cursor = 1; V.commit_scroll = 0 end
-  else
-    if V.file > 1 then V.file = V.file - 1; V.cursor = 1; V.scroll = 0 end
+  if in_diff_mode() then
+    if V.diff_file > 1 then
+      V.diff_file = V.diff_file - 1
+      V.diff_cursor = 1
+      V.diff_scroll = 0
+    end
   end
 end)
 
 bind("u", function() V.split = not V.split end)
 bind("b", function() V.tree = not V.tree end)
+
 bind("d", function()
   if V.mode == "diff" then
     V.mode = "status"
   elseif V.mode == "commit" then
-    V.mode = "graph"  -- back to graph from commit view
+    V.mode = "graph"
+    kn9t.notify({ event = "clear_commit_diff" })
   else
     V.mode = "diff"
+    V.diff_sha = nil
+    V.diff_file = 1
+    V.diff_cursor = 1
+    V.diff_scroll = 0
   end
-  V.cursor = 1
-  V.scroll = 0
 end)
 
--- Toggle graph view
 bind("g", function()
   if V.mode == "graph" then
     V.mode = "status"
   elseif V.mode == "commit" then
-    V.mode = "graph"  -- back to graph from commit view
+    V.mode = "graph"
+    kn9t.notify({ event = "clear_commit_diff" })
   else
     V.mode = "graph"
     V.graph_cursor = 1
@@ -460,14 +417,19 @@ bind("g", function()
   end
 end)
 
--- Escape/Backspace: go back from commit view to graph
 bind("Backspace", function()
+  if V.graph_searching then
+    V.graph_search = string.sub(V.graph_search or "", 1, -2)
+    return true
+  end
   if V.typing ~= nil then
     V.typing = string.sub(V.typing, 1, -2)
     return true
   end
   if V.mode == "commit" then
     V.mode = "graph"
+    V.diff_sha = nil
+    kn9t.notify({ event = "clear_commit_diff" })
     return true
   end
   return true
@@ -510,16 +472,17 @@ bind("[", function()
     end
     return true
   end
-  -- Original behavior for diff mode (prev hunk)
-  local r = rows(cur_file())
-  for i = V.cursor - 1, 1, -1 do
-    if r[i].hunk then V.cursor = i; clamp_cursor(#r); return true end
-  end
-  if V.file > 1 then
-    V.file = V.file - 1
-    local pr = rows(cur_file())
-    V.cursor = #pr > 0 and #pr or 1
-    clamp_cursor(#pr)
+  if in_diff_mode() then
+    local r = rows(cur_file())
+    for i = V.diff_cursor - 1, 1, -1 do
+      if r[i].hunk then V.diff_cursor = i; clamp_diff_cursor(#r); return true end
+    end
+    if V.diff_file > 1 then
+      V.diff_file = V.diff_file - 1
+      local pr = rows(cur_file())
+      V.diff_cursor = #pr > 0 and #pr or 1
+      clamp_diff_cursor(#pr)
+    end
   end
   return true
 end)
@@ -533,74 +496,53 @@ bind("]", function()
     end
     return true
   end
-  -- Original behavior for diff mode (next hunk)
-  local r = rows(cur_file())
-  for i = V.cursor + 1, #r do
-    if r[i].hunk then V.cursor = i; clamp_cursor(#r); return true end
+  if in_diff_mode() then
+    local r = rows(cur_file())
+    for i = V.diff_cursor + 1, #r do
+      if r[i].hunk then V.diff_cursor = i; clamp_diff_cursor(#r); return true end
+    end
+    local f = diff_files()
+    if V.diff_file < #f then
+      V.diff_file = V.diff_file + 1
+      V.diff_cursor = 1
+      V.diff_scroll = 0
+    end
   end
-  local f = files()
-  if V.file < #f then V.file = V.file + 1; V.cursor = 1; V.scroll = 0 end
   return true
 end)
 
--- Search: Ctrl+F to start search in graph mode
 bind("C-f", function()
   if V.mode == "graph" then
     V.graph_searching = true
     V.graph_search = ""
-    return true
   end
   return true
 end)
 
--- Comment capture. `c` opens composition; printable keys then accumulate via
--- the `bind` wrapper; Enter commits. Esc is deliberately unbound: the host uses
--- it to blur the panel, and trapping it would leave no way out.
 bind("c", function()
-  if V.mode == "diff" or V.mode == "commit" then
-    V.typing = ""
-  end
+  if in_diff_mode() then V.typing = "" end
   return true
 end)
 
--- Enter and Backspace are not single printable keys, so they reach here even
--- while composing and mean "commit" / "erase" rather than text.
 bind("Enter", function()
-  -- Confirm search
   if V.graph_searching then
     V.graph_searching = false
     return true
   end
   
-  -- Handle comment submission in diff mode
-  if V.typing ~= nil and V.mode == "diff" then
+  -- Handle comment submission (unified for diff and commit modes)
+  if V.typing ~= nil and in_diff_mode() then
     local f = cur_file()
     local r = rows(f)
-    local row = r[V.cursor]
+    local row = r[V.diff_cursor]
     if f ~= nil and row ~= nil and V.typing ~= "" then
       local line = row.new_lineno or row.old_lineno
       if line ~= nil then
-        table.insert(V.comments, { path = f.path, line = line, text = V.typing })
-      end
-    end
-    V.typing = nil
-    return true
-  end
-  
-  -- Handle comment submission in commit mode
-  if V.typing ~= nil and V.mode == "commit" then
-    local f = cur_commit_file()
-    local r = commit_rows(f)
-    local row = r[V.commit_cursor]
-    if f ~= nil and row ~= nil and V.typing ~= "" then
-      local line = row.new_lineno or row.old_lineno
-      if line ~= nil then
-        -- Format: commit:sha file:path line:N : comment
-        table.insert(V.comments, { 
-          commit = V.commit_sha,
-          path = f.path, 
-          line = line, 
-          text = V.typing 
+        table.insert(V.comments, {
+          path = f.path,
+          line = line,
+          text = V.typing,
+          commit = V.diff_sha,
         })
       end
     end
@@ -608,18 +550,17 @@ bind("Enter", function()
     return true
   end
   
-  -- Handle Enter in graph mode to view commit
+  -- Enter in graph mode: view commit
   if V.mode == "graph" then
     local paged, _ = paged_commits()
     if #paged > 0 and V.graph_cursor <= #paged then
       local commit = paged[V.graph_cursor]
       if commit and commit.sha and commit.sha ~= "" then
-        V.commit_sha = commit.sha
-        V.commit_file = 1
-        V.commit_cursor = 1
-        V.commit_scroll = 0
+        V.diff_sha = commit.sha
+        V.diff_file = 1
+        V.diff_cursor = 1
+        V.diff_scroll = 0
         V.mode = "commit"
-        -- Signal Rust to load the commit diff via ui_event
         kn9t.notify({ event = "request_commit_diff", sha = commit.sha })
       end
     end
@@ -629,45 +570,31 @@ bind("Enter", function()
   return true
 end)
 
-bind("Backspace", function()
-  -- Handle search backspace
-  if V.graph_searching then
-    V.graph_search = string.sub(V.graph_search or "", 1, -2)
-    V.graph_page = 1
-    V.graph_cursor = 1
-    V.graph_scroll = 0
-    return true
-  end
-  -- Handle comment backspace
-  if V.typing ~= nil then
-    V.typing = string.sub(V.typing, 1, -2)
-    return true
-  end
-  if V.mode == "commit" then
-    V.mode = "graph"
-    V.commit_sha = nil
-    -- Signal Rust to clear the commit diff request
-    kn9t.notify({ event = "clear_commit_diff" })
-    return true
-  end
-  return true
-end)
-
--- Esc cancels search or comment composition; otherwise let host handle it (unfocus)
-kn9t.on_key("Escape", function()
+-- Ctrl+Q: universal back/cancel - works even while typing
+kn9t.on_key("C-q", function()
   if V.graph_searching then
     V.graph_searching = false
     V.graph_search = nil
     V.graph_page = 1
     V.graph_cursor = 1
     V.graph_scroll = 0
-    return true  -- Cancel search, stay focused
+    return true
   end
   if V.typing ~= nil then
     V.typing = nil
-    return true  -- Consume: cancel comment, stay focused
+    return true
   end
-  return false  -- Let host unfocus the panel
+  if V.mode == "commit" then
+    V.mode = "graph"
+    V.diff_sha = nil
+    kn9t.notify({ event = "clear_commit_diff" })
+    return true
+  end
+  if V.mode == "diff" or V.mode == "graph" then
+    V.mode = "status"
+    return true
+  end
+  return true
 end)
 
 -- Hand the collected review to the prompt. This is the one host mutation a
@@ -690,12 +617,34 @@ end)
 
 -- Remaining printable characters: always consume them when focused to prevent
 -- typing in the user input. When composing a comment, append to V.typing.
-local PRINTABLE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:;!?/()<>-_=+*#@'\"`~$%^&|\\"
+local PRINTABLE = "abcdefghijklmnopqrstuvwxyz0123456789.,:;!?/()<>-_=+*#@'\"`~$%^&|\\"
 for i = 1, #PRINTABLE do
   local ch = string.sub(PRINTABLE, i, i)
   if not BOUND[ch] then
-    bind(ch, function() return true end)  -- Always consume when focused
+    bind(ch, function() return true end)
   end
+end
+
+-- Uppercase letters: Windows sends "S-A", Unix sends "A" (no shift modifier)
+-- Register both forms to handle cross-platform
+for i = 1, 26 do
+  local upper = string.char(64 + i)  -- A=65
+  local handler = function()
+    if V.graph_searching then
+      V.graph_search = V.graph_search .. upper
+      V.graph_page = 1
+      V.graph_cursor = 1
+      V.graph_scroll = 0
+      return true
+    end
+    if V.typing ~= nil then
+      V.typing = V.typing .. upper
+      return true
+    end
+    return true  -- Consume to prevent input leak
+  end
+  kn9t.on_key("S-" .. upper, handler)  -- Windows: Shift+A = "S-A"
+  kn9t.on_key(upper, handler)          -- Unix: Shift+A = "A"
 end
 
 -- Space is sent as "Space" by the TUI, not " ". Always consume.
@@ -706,48 +655,46 @@ kn9t.on_key("Space", function()
   return true  -- Always consume
 end)
 
--- Clicking a file row selects it; clicking a diff row moves the cursor there.
+-- Clicking a file row selects it
 kn9t.on_click("files", function(x, y)
-  local f = files()
+  local f = diff_files()
   local idx = y + 1
   if idx >= 1 and idx <= #f then
-    V.file = idx
-    V.cursor = 1
-    V.scroll = 0
+    V.diff_file = idx
+    V.diff_cursor = 1
+    V.diff_scroll = 0
   end
 end)
 
 -- Clicking a graph row selects/enters the commit
 kn9t.on_click("graph", function(x, y)
   if V.mode ~= "graph" then return false end
-  local c = commits()
+  local paged, _ = paged_commits()
   local idx = y + 1
-  if idx >= 1 and idx <= #c then
+  if idx >= 1 and idx <= #paged then
     V.graph_cursor = idx
-    local commit = c[idx]
+    local commit = paged[idx]
     if commit and commit.sha and commit.sha ~= "" then
-      V.commit_sha = commit.sha
-      V.commit_file = 1
-      V.commit_cursor = 1
-      V.commit_scroll = 0
+      V.diff_sha = commit.sha
+      V.diff_file = 1
+      V.diff_cursor = 1
+      V.diff_scroll = 0
       V.mode = "commit"
-      -- Signal Rust to load the commit diff via ui_event
       kn9t.notify({ event = "request_commit_diff", sha = commit.sha })
     end
   end
 end)
 
 kn9t.on_click("body", function(x, y)
-  if V.mode ~= "diff" then return false end
-  local target = V.scroll + y + 1
+  if not in_diff_mode() then return false end
+  local target = V.diff_scroll + y + 1
   local n = #rows(cur_file())
   if target >= 1 and target <= n then
-    if target == V.cursor and V.typing == nil then
-      -- Double-click on same line: start commenting
+    if target == V.diff_cursor and V.typing == nil then
       V.typing = ""
     else
-      V.cursor = target
-      clamp_cursor(n)
+      V.diff_cursor = target
+      clamp_diff_cursor(n)
     end
   end
 end)
@@ -973,7 +920,7 @@ local function graph_view(repo)
     { text = "[[/]]", fg = "cyan" }, { text = " page  ", fg = "darkgray" },
     { text = "[C-f]", fg = "cyan" }, { text = " search  ", fg = "darkgray" },
     { text = "[Enter]", fg = "cyan" }, { text = " view  ", fg = "darkgray" },
-    { text = "[g]", fg = "cyan" }, { text = " close", fg = "darkgray" },
+    { text = "[C-q]", fg = "cyan" }, { text = " back", fg = "darkgray" },
   }
   
   local children = {
@@ -994,190 +941,33 @@ local function graph_view(repo)
   return { type = "split", direction = "vertical", children = children }
 end
 
--- Comment at a specific line in a commit file
-local function commit_comment_at(sha, path, line)
-  for _, c in ipairs(V.comments) do
-    if c.commit == sha and c.path == path and c.line == line then
-      return c.text
-    end
-  end
-  return nil
-end
-
--- File list for commit view
-local function commit_file_list()
-  local items = {}
-  local cdiff = commit_files()
-  for i, f in ipairs(cdiff) do
-    local col = "yellow"
-    if f.status == "A" then col = "green"
-    elseif f.status == "D" then col = "lightred" end
-    local selected = (i == V.commit_file)
-    table.insert(items, { spans = {
-      { text = selected and ">" or " ", fg = "yellow" },
-      { text = f.status .. " ", fg = col },
-      { text = f.path .. " " },
-      { text = "+" .. (f.additions or 0), fg = "green" },
-      { text = " -" .. (f.deletions or 0), fg = "lightred" },
-    }})
-  end
-  return {
-    type = "list",
-    id = "commit_files",
-    items = items,
-    selected = V.commit_file - 1,
-    size = { fixed = 34 },
-  }
-end
-
--- Commit unified body: one row per line, with the cursor row marked
-local function commit_unified_body(file)
-  local r = commit_rows(file)
-  local items = {}
-  for i, row in ipairs(r) do
-    if row.hunk then
-      table.insert(items, { spans = { { text = row.text, fg = "cyan", bold = true } } })
-    else
-      local mark = (i == V.commit_cursor) and ">" or " "
-      local num = row.new_lineno or row.old_lineno
-      local prefix = (row.kind == "add" and "+") or (row.kind == "del" and "-") or " "
-      local bg = line_bg(row.kind)
-      table.insert(items, { spans = {
-        { text = mark, fg = "yellow", bold = true, bg = bg },
-        { text = string.format("%5s ", num and tostring(num) or ""), fg = "darkgray", bg = bg },
-        { text = prefix, fg = line_style(row.kind), bg = bg },
-        { text = row.text, syntax = file.path, bg = bg },
-      }})
-      local existing = commit_comment_at(V.commit_sha, file.path, num)
-      if existing ~= nil then
-        table.insert(items, { spans = { { text = "      > " .. existing, fg = "magenta" } } })
-      end
-      if i == V.commit_cursor and V.typing ~= nil then
-        table.insert(items, { spans = { { text = "      > " .. V.typing .. "_", fg = "magenta" } } })
-      end
-    end
-  end
-  return { type = "list", id = "commit_body", items = items, offset = V.commit_scroll }
-end
-
--- Commit detail view: show commit info and its diff
-local function commit_view(repo)
-  -- Find the selected commit
-  local commit = nil
-  for _, l in ipairs(repo.recent or {}) do
-    if l.sha == V.commit_sha then
-      commit = l
-      break
-    end
-  end
-  
-  if commit == nil then
-    return { type = "text", content = "Commit not found: " .. (V.commit_sha or "nil"), fg = "lightred" }
-  end
-  
-  local cdiff = commit_files()
-  
-  -- If no diff available, show commit info with status
-  if #cdiff == 0 then
-    local out = {}
-    table.insert(out, { type = "text", spans = {
-      { text = " Commit ", fg = "cyan", bold = true },
-      { text = commit.sha, fg = "yellow", bold = true },
-      { text = " - " .. (commit.author or ""), fg = "darkgray" },
-    }, size = { fixed = 1 }, wrap = false })
-    table.insert(out, { type = "text", spans = {
-      { text = " " .. commit.subject, fg = "white", bold = true },
-    }, size = { fixed = 1 }, wrap = false })
-    table.insert(out, { type = "text", content = "", size = { fixed = 1 } })
-    table.insert(out, { type = "text", content = "  Date: " .. (commit.date or ""), fg = "darkgray" })
-    table.insert(out, { type = "text", content = "", size = { fixed = 1 } })
-    table.insert(out, { type = "text", content = "  No files changed (or diff not loaded yet)", fg = "darkgray" })
-    table.insert(out, { type = "spacer", size = { flex = 1 } })
-    table.insert(out, { type = "text", spans = {
-      { text = "[Backspace]", fg = "cyan" }, { text = " back  ", fg = "darkgray" },
-      { text = "[g]", fg = "cyan" }, { text = " graph", fg = "darkgray" },
-    }, size = { fixed = 1 }, wrap = false })
-    return { type = "split", direction = "vertical", children = out }
-  end
-  
-  -- Full diff view like diff_view
-  local f = cur_commit_file()
-  local head = string.format(" %s  %s  %d/%d",
-    commit.sha, f and f.path or "?", V.commit_file, #cdiff)
-  
-  local body = commit_unified_body(f)
-  
-  local children = {
-    { type = "text", content = head, fg = "cyan", bold = true,
-      size = { fixed = 1 }, wrap = false },
-  }
-  
-  if V.tree then
-    table.insert(children, {
-      type = "split", direction = "horizontal",
-      children = { commit_file_list(), body },
-    })
-  else
-    table.insert(children, body)
-  end
-  
-  -- Bottom bar: comment input or help
-  if V.typing ~= nil then
-    table.insert(children, {
-      type = "text", content = "comment> " .. V.typing .. "  (Enter: save, Esc: cancel)",
-      fg = "magenta", size = { fixed = 1 }, wrap = false,
-    })
-  else
-    local spans = {}
-    local commit_comments = 0
-    for _, c in ipairs(V.comments) do
-      if c.commit then commit_comments = commit_comments + 1 end
-    end
-    if commit_comments > 0 then
-      table.insert(spans, { text = "[C-s]", fg = "cyan" })
-      table.insert(spans, { text = string.format(" send %d  ", commit_comments), fg = "yellow" })
-    end
-    table.insert(spans, { text = "[j/k]", fg = "cyan" })
-    table.insert(spans, { text = " nav  ", fg = "darkgray" })
-    table.insert(spans, { text = "[n/p]", fg = "cyan" })
-    table.insert(spans, { text = " file  ", fg = "darkgray" })
-    table.insert(spans, { text = "[c]", fg = "cyan" })
-    table.insert(spans, { text = " comment  ", fg = "darkgray" })
-    table.insert(spans, { text = "[Backspace]", fg = "cyan" })
-    table.insert(spans, { text = " back", fg = "darkgray" })
-    table.insert(children, {
-      type = "text", spans = spans,
-      size = { fixed = 1 }, wrap = false,
-    })
-  end
-  
-  return { type = "split", direction = "vertical", children = children }
-end
+-- ── Unified diff rendering ───────────────────────────────────────────────────
 
 local function file_list()
   local items = {}
-  for _, f in ipairs(files()) do
+  local f = diff_files()
+  for i, file in ipairs(f) do
     local col = "yellow"
-    if f.status == "A" then col = "green"
-    elseif f.status == "D" then col = "lightred" end
+    if file.status == "A" then col = "green"
+    elseif file.status == "D" then col = "lightred" end
+    local selected = (i == V.diff_file)
     table.insert(items, { spans = {
-      { text = f.status .. " ", fg = col },
-      { text = f.path .. " " },
-      { text = "+" .. f.additions, fg = "green" },
-      { text = " -" .. f.deletions, fg = "lightred" },
+      { text = selected and ">" or " ", fg = "yellow" },
+      { text = file.status .. " ", fg = col },
+      { text = file.path .. " " },
+      { text = "+" .. (file.additions or 0), fg = "green" },
+      { text = " -" .. (file.deletions or 0), fg = "lightred" },
     }})
   end
   return {
     type = "list",
     id = "files",
     items = items,
-    selected = V.file - 1,
+    selected = V.diff_file - 1,
     size = { fixed = 34 },
   }
 end
 
--- Unified body: one row per line, with the cursor row marked and any comment
--- shown inline beneath its anchor.
 local function unified_body(file)
   local r = rows(file)
   local items = {}
@@ -1185,7 +975,7 @@ local function unified_body(file)
     if row.hunk then
       table.insert(items, { spans = { { text = row.text, fg = "cyan", bold = true } } })
     else
-      local mark = (i == V.cursor) and ">" or " "
+      local mark = (i == V.diff_cursor) and ">" or " "
       local num = row.new_lineno or row.old_lineno
       local prefix = (row.kind == "add" and "+") or (row.kind == "del" and "-") or " "
       local bg = line_bg(row.kind)
@@ -1195,17 +985,18 @@ local function unified_body(file)
         { text = prefix, fg = line_style(row.kind), bg = bg },
         { text = row.text, syntax = file.path, bg = bg },
       }})
-      local existing = comment_at(file.path, num)
+      local existing = comment_at(file.path, num, V.diff_sha)
       if existing ~= nil then
         table.insert(items, { spans = { { text = "      > " .. existing, fg = "magenta" } } })
       end
+      if i == V.diff_cursor and V.typing ~= nil then
+        table.insert(items, { spans = { { text = "      > " .. V.typing .. "_", fg = "magenta" } } })
+      end
     end
   end
-  return { type = "list", id = "body", items = items, offset = V.scroll }
+  return { type = "list", id = "body", items = items, offset = V.diff_scroll }
 end
 
--- Side-by-side body. Removed lines occupy the left column, added the right,
--- context both — which is what makes a rename or a reflow readable.
 local function split_body(file)
   local r = rows(file)
   local left, right = {}, {}
@@ -1214,7 +1005,7 @@ local function split_body(file)
       table.insert(left, { spans = { { text = row.text, fg = "cyan", bold = true } } })
       table.insert(right, { spans = { { text = "", fg = "cyan" } } })
     else
-      local mark = (i == V.cursor) and ">" or " "
+      local mark = (i == V.diff_cursor) and ">" or " "
       if row.kind == "del" then
         table.insert(left, { spans = { { text = mark .. "-" .. row.text, fg = "lightred" } } })
         table.insert(right, { spans = { { text = "" } } })
@@ -1231,42 +1022,75 @@ local function split_body(file)
     type = "split",
     direction = "horizontal",
     children = {
-      { type = "list", id = "body", items = left, offset = V.scroll },
-      { type = "list", items = right, offset = V.scroll },
+      { type = "list", id = "body", items = left, offset = V.diff_scroll },
+      { type = "list", items = right, offset = V.diff_scroll },
     },
   }
 end
 
-local function diff_view()
+-- Unified diff view for both working tree and commit diffs
+local function diff_view(repo)
   local f = cur_file()
-  if f == nil then
+  local all_files = diff_files()
+  
+  if f == nil or #all_files == 0 then
+    if V.mode == "commit" and V.diff_sha then
+      -- Loading commit diff
+      local commit = nil
+      for _, l in ipairs(repo.recent or {}) do
+        if l.sha == V.diff_sha then commit = l; break end
+      end
+      local out = {}
+      if commit then
+        table.insert(out, { type = "text", spans = {
+          { text = " Commit ", fg = "cyan", bold = true },
+          { text = commit.sha, fg = "yellow", bold = true },
+          { text = " - " .. (commit.author or ""), fg = "darkgray" },
+        }, size = { fixed = 1 }, wrap = false })
+        table.insert(out, { type = "text", spans = {
+          { text = " " .. commit.subject, fg = "white", bold = true },
+        }, size = { fixed = 1 }, wrap = false })
+        table.insert(out, { type = "text", content = "", size = { fixed = 1 } })
+        table.insert(out, { type = "text", content = "  Date: " .. (commit.date or ""), fg = "darkgray" })
+      end
+      table.insert(out, { type = "text", content = "", size = { fixed = 1 } })
+      table.insert(out, { type = "text", content = "  No files changed (or diff not loaded yet)", fg = "darkgray" })
+      table.insert(out, { type = "spacer", size = { flex = 1 } })
+      table.insert(out, { type = "text", spans = {
+        { text = "[C-q]", fg = "cyan" }, { text = " back  ", fg = "darkgray" },
+        { text = "[g]", fg = "cyan" }, { text = " graph", fg = "darkgray" },
+      }, size = { fixed = 1 }, wrap = false })
+      return { type = "split", direction = "vertical", children = out }
+    end
     return { type = "text", content = "(no changes to review)", fg = "darkgray" }
   end
 
-  local head = string.format("%s  %d/%d  %s",
-    f.path, V.file, #files(),
-    V.split and "split" or "unified")
+  -- Build header
+  local head
+  if V.mode == "commit" then
+    head = string.format(" %s  %s  %d/%d", V.diff_sha, f.path, V.diff_file, #all_files)
+  else
+    head = string.format("%s  %d/%d  %s", f.path, V.diff_file, #all_files, V.split and "split" or "unified")
+  end
 
   local body = V.split and split_body(f) or unified_body(f)
 
   local children = {
-    { type = "text", content = head, fg = "cyan", bold = true,
-      size = { fixed = 1 }, wrap = false },
+    { type = "text", content = head, fg = "cyan", bold = true, size = { fixed = 1 }, wrap = false },
   }
   if V.tree then
-    table.insert(children, {
-      type = "split", direction = "horizontal",
-      children = { file_list(), body },
-    })
+    table.insert(children, { type = "split", direction = "horizontal", children = { file_list(), body } })
   else
     table.insert(children, body)
   end
 
-  -- Bottom bar: comment input or help
+  -- Bottom bar
   if V.typing ~= nil then
+    local prompt = "comment> " .. V.typing .. "_"
+    local hint = "  [Enter] save  [C-q] cancel"
     table.insert(children, {
-      type = "text", content = "comment> " .. V.typing .. "  (Enter: save, Esc: cancel)",
-      fg = "magenta", size = { fixed = 1 }, wrap = false,
+      type = "text", content = prompt .. hint,
+      fg = "magenta", size = { min = 1, max = 3 }, wrap = true,
     })
   else
     local spans = {}
@@ -1278,16 +1102,11 @@ local function diff_view()
     table.insert(spans, { text = " nav  ", fg = "darkgray" })
     table.insert(spans, { text = "[n/p]", fg = "cyan" })
     table.insert(spans, { text = " file  ", fg = "darkgray" })
-    table.insert(spans, { text = "[d]", fg = "cyan" })
-    table.insert(spans, { text = " status  ", fg = "darkgray" })
     table.insert(spans, { text = "[c]", fg = "cyan" })
     table.insert(spans, { text = " comment  ", fg = "darkgray" })
-    table.insert(spans, { text = "[Esc]", fg = "cyan" })
-    table.insert(spans, { text = " close", fg = "darkgray" })
-    table.insert(children, {
-      type = "text", spans = spans,
-      size = { fixed = 1 }, wrap = false,
-    })
+    table.insert(spans, { text = "[C-q]", fg = "cyan" })
+    table.insert(spans, { text = " back", fg = "darkgray" })
+    table.insert(children, { type = "text", spans = spans, size = { fixed = 1 }, wrap = false })
   end
 
   return { type = "split", direction = "vertical", children = children }
@@ -1298,12 +1117,10 @@ function render(state)
   if state == nil or state.repo == nil then
     return { type = "text", content = "(not a git repository)", fg = "darkgray" }
   end
-  if V.mode == "diff" then
-    return diff_view()
+  if V.mode == "diff" or V.mode == "commit" then
+    return diff_view(state.repo)
   elseif V.mode == "graph" then
     return graph_view(state.repo)
-  elseif V.mode == "commit" then
-    return commit_view(state.repo)
   end
   return status_view(state.repo)
 end
@@ -1523,11 +1340,11 @@ diff --git a/src/main.rs b/src/main.rs
         press(&lua, "d");
 
         press(&lua, "j");
-        assert_eq!(view_state(&lua).get::<i64>("cursor").unwrap(), 2);
+        assert_eq!(view_state(&lua).get::<i64>("diff_cursor").unwrap(), 2);
         press(&lua, "k");
         press(&lua, "k");
         assert_eq!(
-            view_state(&lua).get::<i64>("cursor").unwrap(),
+            view_state(&lua).get::<i64>("diff_cursor").unwrap(),
             1,
             "must not go below the first row"
         );
@@ -1536,7 +1353,7 @@ diff --git a/src/main.rs b/src/main.rs
         for _ in 0..20 {
             press(&lua, "j");
         }
-        assert_eq!(view_state(&lua).get::<i64>("cursor").unwrap(), 5);
+        assert_eq!(view_state(&lua).get::<i64>("diff_cursor").unwrap(), 5);
     }
 
     #[test]
@@ -1631,7 +1448,7 @@ diff --git a/src/main.rs b/src/main.rs
 
         let v = view_state(&lua);
         assert_eq!(v.get::<String>("mode").unwrap(), "diff");
-        assert_eq!(v.get::<i64>("cursor").unwrap(), 2);
+        assert_eq!(v.get::<i64>("diff_cursor").unwrap(), 2);
         assert!(v.get::<bool>("split").unwrap());
     }
 
@@ -1657,7 +1474,7 @@ diff --git a/b.rs b/b.rs
         let f: mlua::Function = clicks.get("files").unwrap();
         f.call::<mlua::Value>((0, 1, "left")).unwrap(); // second row
 
-        assert_eq!(view_state(&lua).get::<i64>("file").unwrap(), 2);
+        assert_eq!(view_state(&lua).get::<i64>("diff_file").unwrap(), 2);
     }
 
     #[test]
