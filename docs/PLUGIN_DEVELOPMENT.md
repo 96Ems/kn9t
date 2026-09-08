@@ -1,0 +1,990 @@
+# kn9t Plugin Development Guide
+
+> **Standalone guide for building kn9t plugins in any language.**
+> No source code access required — this document is the complete reference.
+
+---
+
+## Table of Contents
+
+1. [Introduction](#1-introduction)
+2. [Quick Start](#2-quick-start)
+3. [Wire Protocol Reference](#3-wire-protocol-reference)
+4. [Hook Reference](#4-hook-reference)
+5. [Host API](#5-host-api)
+6. [TUI Integration (Lua)](#6-tui-integration-lua)
+7. [Error Handling & Debugging](#7-error-handling--debugging)
+8. [Configuration & Installation](#8-configuration--installation)
+9. [Examples](#9-examples)
+10. [Troubleshooting](#10-troubleshooting)
+
+---
+
+## 1. Introduction
+
+### What is a kn9t plugin?
+
+A kn9t plugin is a **subprocess** that communicates with the kn9t host via
+**newline-delimited JSON (NdJSON) over stdin/stdout**. This architecture provides:
+
+- **Language agnostic** — Write in Rust, Python, TypeScript, Go, or any language
+- **Crash isolation** — A plugin crash doesn't take down the host
+- **Hot reload** — Plugins can be restarted without restarting kn9t
+- **No shared memory** — Simple, debuggable protocol
+
+### Plugin Types
+
+A plugin can provide one or more of:
+
+| Type | Purpose | Example |
+|------|---------|---------|
+| **Tool** | Expose tools to the agent | `bash`, `read`, `write`, custom tools |
+| **Provider** | Implement an LLM provider | OpenAI, Anthropic, Bedrock |
+| **Hook** | Intercept agent lifecycle | Approval gates, context injection, redaction |
+| **Event Sink** | Observe events (read-only) | Logging, metrics, audit trails |
+
+### When to build a plugin
+
+- **Custom tools** — Add domain-specific capabilities (databases, APIs, etc.)
+- **Custom providers** — Integrate with internal LLM deployments
+- **Policy enforcement** — Block dangerous commands, require approval
+- **Context injection** — Add steering messages, system prompts
+- **Observability** — Log events, track metrics, audit actions
+
+---
+
+## 2. Quick Start
+
+### Minimal Python Plugin
+
+```python
+#!/usr/bin/env python3
+"""Minimal kn9t plugin that provides a 'greet' tool."""
+import json
+import sys
+
+def read_msg():
+    line = sys.stdin.readline()
+    return json.loads(line) if line else None
+
+def write_msg(msg):
+    sys.stdout.write(json.dumps(msg, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+def run():
+    # 1. Wait for host hello
+    hello = read_msg()
+    if not hello or hello.get("t") != "hello":
+        return
+    
+    # 2. Reply with our capabilities
+    write_msg({
+        "t": "hello",
+        "name": "my-plugin",
+        "capabilities": [],
+        "tools": [{
+            "name": "greet",
+            "description": "Say hello to someone",
+            "schema": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"]
+            },
+            "parallel_safe": True
+        }],
+        "hooks": [],
+        "events": []
+    })
+    
+    # 3. Main loop
+    while True:
+        msg = read_msg()
+        if not msg:
+            break
+        
+        if msg.get("t") == "shutdown":
+            break
+        
+        if msg.get("t") == "hook" and msg.get("hook") == "tool_call":
+            tool = msg["payload"]["tool"]
+            args = msg["payload"]["args"]
+            
+            if tool == "greet":
+                name = args.get("name", "World")
+                write_msg({
+                    "t": "done",
+                    "id": msg["id"],
+                    "content": [{"type": "text", "text": f"Hello, {name}!"}],
+                    "is_error": False
+                })
+
+if __name__ == "__main__":
+    run()
+```
+
+### Running Your Plugin
+
+1. Save as `my_plugin/__main__.py`
+2. Create `pyproject.toml`:
+   ```toml
+   [project]
+   name = "my-plugin"
+   version = "0.1.0"
+   ```
+3. Add to `~/.kn9t/config.toml`:
+   ```toml
+   [[plugin]]
+   name = "my-plugin"
+   cmd = ["python", "-m", "my_plugin"]
+   
+   [plugin.env]
+   PYTHONPATH = "/path/to/my_plugin"
+   ```
+4. Restart kn9t or hot-reload:
+   ```bash
+   curl -X POST "http://localhost:$PORT/plugin/my-plugin/reload" \
+        -H "Authorization: Bearer $TOKEN"
+   ```
+
+---
+
+## 3. Wire Protocol Reference
+
+### JSON Convention
+
+**All JSON uses `snake_case`** for field names and enum variants.
+
+### Message Flow
+
+```
+Host  → Plugin:  {"t":"hello","proto":1,"kn9t":"0.1.0"}
+Plugin → Host:   {"t":"hello","name":"my-plugin",...}
+
+Host  → Plugin:  {"t":"hook","id":1,"hook":"tool_call","payload":{...}}
+Plugin → Host:   {"t":"done","id":1,"content":[...],"is_error":false}
+
+Host  → Plugin:  {"t":"shutdown"}
+```
+
+### Host → Plugin Messages
+
+| `t` | Fields | Description |
+|-----|--------|-------------|
+| `hello` | `proto`, `kn9t` | Handshake initiation |
+| `hook` | `id`, `hook`, `payload` | Hook invocation |
+| `cancel` | `id` | Cancel in-flight operation |
+| `shutdown` | — | Graceful shutdown request |
+| `apiresult` | `id`, `ok`, `result?`, `error?` | Response to plugin's `request` |
+
+### Plugin → Host Messages
+
+| `t` | Fields | Description |
+|-----|--------|-------------|
+| `hello` | `name`, `capabilities`, `tools`, `hooks`, `events`, `provider?` | Handshake reply |
+| `result` | `id`, + flattened reply fields | Hook reply (non-streaming) |
+| `chunk` | `id`, + streaming fields | Streaming progress |
+| `done` | `id`, `content`, `is_error` | Final tool result |
+| `request` | `id`, `op`, `payload` | Host API call (requires `host_api` capability) |
+| `declare` | `tools`, `hooks`, `events` | Hot re-declaration |
+
+### Handshake
+
+**Host → Plugin:**
+```json
+{"t": "hello", "proto": 1, "kn9t": "0.1.0"}
+```
+
+**Plugin → Host:**
+```json
+{
+  "t": "hello",
+  "name": "my-plugin",
+  "capabilities": ["streaming", "cancelable"],
+  "tools": [...],
+  "hooks": ["before_tool_call", "get_steering"],
+  "events": ["turn_started", "turn_ended"],
+  "provider": null
+}
+```
+
+### Capabilities
+
+| Flag | Meaning |
+|------|---------|
+| `streaming` | Plugin may send `chunk` messages before `done` |
+| `cancelable` | Plugin listens for `cancel` messages |
+| `host_api` | Plugin may send `request` messages to call host ops |
+| `compactor` | Plugin provides context compaction |
+
+### Tool Specification
+
+```json
+{
+  "name": "my_tool",
+  "description": "What the tool does",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "arg1": {"type": "string", "description": "First argument"}
+    },
+    "required": ["arg1"]
+  },
+  "parallel_safe": true,
+  "hidden": false,
+  "effects": [
+    {"field": "path", "kind": "fs_write"}
+  ]
+}
+```
+
+**Effect kinds:** `shell`, `fs_read`, `fs_write`, `network`
+
+### Content Types
+
+Tool results use a `content` array with typed elements:
+
+| `type` | Fields | Example |
+|--------|--------|---------|
+| `text` | `text` | `{"type": "text", "text": "Hello"}` |
+| `image` | `sha256`, `mime` | `{"type": "image", "sha256": "abc...", "mime": "image/png"}` |
+| `tool_call` | `id`, `name`, `args_json` | For providers |
+| `tool_result` | `id`, `content`, `is_error` | For providers |
+| `thinking` | `text` | Extended thinking content |
+
+### Flattened Body Fields
+
+**IMPORTANT:** Hook reply fields are **flattened**, not nested under `"body"`:
+
+```json
+// ✅ Correct — fields at same level as "t" and "id":
+{"t": "result", "id": 7, "action": "allow"}
+{"t": "done", "id": 42, "content": [...], "is_error": false}
+
+// ❌ Wrong — nested body:
+{"t": "result", "id": 7, "body": {"action": "allow"}}
+```
+
+---
+
+## 4. Hook Reference
+
+Plugins subscribe to hooks in the handshake. Each hook has a specific payload and
+expected reply format.
+
+### Hook Invocation
+
+```json
+{"t": "hook", "id": 1, "hook": "before_tool_call", "payload": {...}}
+```
+
+### Hook Reply
+
+```json
+{"t": "result", "id": 1, "action": "allow"}
+```
+
+### Available Hooks
+
+#### `tool_call` — Execute a tool
+
+Called when the agent invokes a tool declared by this plugin.
+
+**Payload:**
+```json
+{
+  "tool": "my_tool",
+  "args": {"arg1": "value"},
+  "cwd": "/path/to/workspace",
+  "session_id": "01ABC..."
+}
+```
+
+**Reply (non-streaming):**
+```json
+{"t": "done", "id": 1, "content": [{"type": "text", "text": "result"}], "is_error": false}
+```
+
+**Reply (streaming):**
+```json
+{"t": "chunk", "id": 1, "text": "partial output..."}
+{"t": "chunk", "id": 1, "text": "more output..."}
+{"t": "done", "id": 1, "content": [{"type": "text", "text": "full output"}], "is_error": false}
+```
+
+---
+
+#### `before_tool_call` — Gate tool execution
+
+Called before any tool executes. Use for approval gates, policy enforcement.
+
+**Payload:**
+```json
+{
+  "tool": "bash",
+  "args": {"cmd": "rm -rf /"},
+  "cwd": "/workspace",
+  "session_id": "01ABC..."
+}
+```
+
+**Reply:**
+```json
+{"t": "result", "id": 1, "action": "allow"}
+{"t": "result", "id": 1, "action": "deny", "reason": "Dangerous command"}
+{"t": "result", "id": 1, "action": "ask", "reason": "Requires approval"}
+{"t": "result", "id": 1, "action": "replace", "args": {"cmd": "ls"}}
+```
+
+**Composition:** First-deny-wins. If any plugin denies, the tool is blocked.
+
+**Failure posture:** Deny (fail closed).
+
+**Timeout:** 30 seconds.
+
+---
+
+#### `after_tool_call` — Transform tool output
+
+Called after a tool executes. Use for redaction, formatting.
+
+**Payload:**
+```json
+{
+  "tool": "bash",
+  "args": {"cmd": "cat secret.txt"},
+  "result": [{"type": "text", "text": "SECRET_KEY=abc123"}],
+  "cwd": "/workspace",
+  "session_id": "01ABC..."
+}
+```
+
+**Reply:**
+```json
+{"t": "result", "id": 1, "action": "keep"}
+{"t": "result", "id": 1, "action": "replace", "content": [{"type": "text", "text": "[REDACTED]"}]}
+```
+
+**Composition:** Pipeline. Each plugin transforms in order.
+
+**Failure posture:** Keep original.
+
+---
+
+#### `before_request` — Modify LLM request
+
+Called before sending a request to the LLM provider.
+
+**Payload:**
+```json
+{
+  "messages": [...],
+  "model": {"provider": "anthropic", "id": "claude-3"},
+  "system": "You are a helpful assistant.",
+  "session_id": "01ABC..."
+}
+```
+
+**Reply:**
+```json
+{"t": "result", "id": 1, "action": "keep"}
+{"t": "result", "id": 1, "action": "replace", "messages": [...]}
+```
+
+**Composition:** Pipeline.
+
+**Failure posture:** Use original.
+
+---
+
+#### `get_steering` — Inject context messages
+
+Called every turn. Use for injecting steering messages, reminders.
+
+**Payload:**
+```json
+{
+  "cwd": "/workspace",
+  "session_id": "01ABC..."
+}
+```
+
+**Reply:**
+```json
+{
+  "t": "result",
+  "id": 1,
+  "messages": [
+    {"role": "user", "silent": true, "content": [{"type": "text", "text": "Remember: be concise."}]}
+  ]
+}
+```
+
+**Composition:** Concat. All plugins' messages are combined.
+
+**Failure posture:** Empty (no messages injected).
+
+---
+
+#### `get_followup` — Queue follow-up messages
+
+Called after a turn ends. Use for chaining prompts.
+
+**Payload:**
+```json
+{
+  "cwd": "/workspace",
+  "session_id": "01ABC..."
+}
+```
+
+**Reply:**
+```json
+{
+  "t": "result",
+  "id": 1,
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "Now run the tests."}]}
+  ]
+}
+```
+
+**Composition:** Concat.
+
+**Failure posture:** Empty.
+
+---
+
+#### `should_stop_after_turn` — Control loop termination
+
+Called after each turn. Use for budget limits, turn caps.
+
+**Payload:**
+```json
+{
+  "stop": "tool_use",
+  "turn": 5,
+  "usage": {"input": 1000, "output": 500, "cache_read": 0, "cache_write": 0},
+  "session_id": "01ABC..."
+}
+```
+
+**Reply:**
+```json
+{"t": "result", "id": 1, "action": "continue"}
+{"t": "result", "id": 1, "action": "stop", "reason": "Turn limit reached"}
+```
+
+**Composition:** Any-says-stop. If any plugin says stop, the loop ends.
+
+**Failure posture:** Continue.
+
+---
+
+#### `prepare_next_turn` — Switch model/thinking
+
+Called before starting the next turn. Use for model switching.
+
+**Payload:**
+```json
+{
+  "stop": "tool_use",
+  "usage": {"input": 1000, "output": 500, "cache_read": 0, "cache_write": 0},
+  "session_id": "01ABC..."
+}
+```
+
+**Reply:**
+```json
+{"t": "result", "id": 1, "action": "keep"}
+{"t": "result", "id": 1, "action": "patch", "model": {"provider": "openai", "id": "gpt-4"}}
+```
+
+**Composition:** Pipeline.
+
+**Failure posture:** No change.
+
+---
+
+#### `get_api_key` — Provide API keys
+
+Called when a provider needs an API key.
+
+**Payload:**
+```json
+{
+  "provider": "openai",
+  "session_id": "01ABC..."
+}
+```
+
+**Reply:**
+```json
+{"t": "result", "id": 1, "key": "sk-..."}
+{"t": "result", "id": 1, "key": null}
+```
+
+**Composition:** First non-null wins.
+
+**Failure posture:** Fall back to config/environment.
+
+---
+
+#### `provider_complete` — Custom LLM provider
+
+Called when the host needs to complete a request via your provider.
+
+**Payload:**
+```json
+{
+  "model": "my-model",
+  "messages": [...],
+  "system": "...",
+  "tools": [...],
+  "session_id": "01ABC..."
+}
+```
+
+**Reply (streaming chunks):**
+```json
+{"t": "chunk", "id": 1, "text_delta": "Hello "}
+{"t": "chunk", "id": 1, "text_delta": "world!"}
+{"t": "chunk", "id": 1, "tool_use_start": {"id": "call_1", "name": "bash"}}
+{"t": "chunk", "id": 1, "tool_use_delta": {"id": "call_1", "delta": "{\"cmd\":"}}
+{"t": "chunk", "id": 1, "tool_use_delta": {"id": "call_1", "delta": "\"ls\"}"}}
+{"t": "chunk", "id": 1, "input_tokens": 100}
+{"t": "done", "id": 1, "stop": "tool_use", "usage": {...}, "cost_usd": 0.001}
+```
+
+---
+
+#### `compactor_compact` — Context compaction
+
+Called when context needs compaction (requires `compactor` capability).
+
+**Payload:**
+```json
+{
+  "messages": [...],
+  "target_tokens": 50000,
+  "session_id": "01ABC..."
+}
+```
+
+**Reply:**
+```json
+{
+  "t": "result",
+  "id": 1,
+  "messages": [...],
+  "summary": "Compacted 20 messages to 5"
+}
+```
+
+---
+
+### Hook Composition Classes
+
+| Class | Behavior | Hooks |
+|-------|----------|-------|
+| **Pipeline** | Each plugin transforms in order | `before_request`, `after_tool_call`, `prepare_next_turn` |
+| **Veto (First-deny-wins)** | Any deny blocks | `before_tool_call` |
+| **Collect (Concat)** | All results combined | `get_steering`, `get_followup` |
+| **Any-says-stop** | First stop wins | `should_stop_after_turn` |
+| **First non-null** | First valid value wins | `get_api_key` |
+| **Single handler** | One plugin handles | `tool_call`, `provider_complete` |
+
+---
+
+## 5. Host API
+
+Plugins with `host_api` capability can call back to the host via `request` messages.
+
+### Request Format
+
+```json
+{
+  "t": "request",
+  "id": 1,
+  "op": "session_read",
+  "payload": {"session": "01ABC..."}
+}
+```
+
+### Response Format
+
+```json
+{"t": "apiresult", "id": 1, "ok": true, "result": {...}}
+{"t": "apiresult", "id": 1, "ok": false, "error": "session not found"}
+```
+
+### Available Operations
+
+| Op | Payload | Result | Description |
+|----|---------|--------|-------------|
+| `session_read` | `{session}` | `{messages, meta}` | Read session transcript |
+| `session_fork` | `{session, origin_seq?}` | `{session}` | Fork a session |
+| `session_prompt` | `{session, text}` | `{accepted, seq}` | Send a prompt |
+| `tool_execute` | `{session, name, args}` | `{content, is_error}` | Execute a tool |
+| `tool_list` | `{session}` | `{tools}` | List available tools |
+| `provider_complete` | `{session, model, messages, system?, tools?}` | streaming | LLM completion |
+| `ui_register_lua` | `{session, source, placement?, title?}` | `{ok}` | Register TUI |
+| `ui_set_state` | `{session, state}` | `{ok}` | Push TUI state |
+| `ui_clear` | `{session}` | `{ok}` | Clear TUI |
+
+**Note:** Most ops require `session` in the payload. The SDK auto-injects it from hook context.
+
+---
+
+## 6. TUI Integration (Lua)
+
+Plugins can display interactive UIs in the TUI.
+
+### Architecture
+
+1. **Register Lua source** via `ui_register_lua` — defines `render(state)`
+2. **Push state** via `ui_set_state` — arbitrary JSON
+3. **Handle keys** via `kn9t.on_key(key, fn)` in the Lua source
+4. **Send messages back** via `kn9t.action("plugin_msg", {plugin, msg})`
+
+### Getting session_id
+
+The host hello does NOT include `session_id`. Get it from the first hook payload:
+
+```python
+session_id = None
+ui_registered = False
+
+# In main loop:
+if msg.get("t") == "hook":
+    payload = msg.get("payload", {})
+    if not session_id:
+        session_id = payload.get("session_id")
+    
+    if session_id and not ui_registered:
+        register_ui()
+        ui_registered = True
+```
+
+### Register UI
+
+```json
+{
+  "t": "request",
+  "id": 1,
+  "op": "ui_register_lua",
+  "payload": {
+    "session": "01ABC...",
+    "source": "function render(s) ... end",
+    "placement": "main",
+    "title": "My Plugin"
+  }
+}
+```
+
+**Placements:** `main`, `sidebar`, `status`
+
+### Push State
+
+```json
+{
+  "t": "request",
+  "id": 2,
+  "op": "ui_set_state",
+  "payload": {
+    "session": "01ABC...",
+    "state": {"items": [...], "cursor": 0}
+  }
+}
+```
+
+### Lua Template
+
+```lua
+-- View state (survives state pushes)
+local V = { cursor = 0 }
+
+function on_state(s)
+    V.items = s.items or {}
+    V.cursor = s.cursor or 0
+end
+
+-- Register key handlers (NOT a global on_key function!)
+kn9t.on_key("j", function()
+    kn9t.action("plugin_msg", {plugin="my-plugin", msg={t="down"}})
+    return true  -- consumed
+end)
+
+kn9t.on_key("Escape", function()
+    return false  -- let Esc release focus
+end)
+
+-- Render function (required)
+function render(s)
+    on_state(s)
+    local out = {}
+    for i, item in ipairs(V.items) do
+        table.insert(out, {
+            type = "text",
+            content = (i-1 == V.cursor) and "> "..item or "  "..item,
+            fg = (i-1 == V.cursor) and "cyan" or "white",
+            size = {fixed = 1}
+        })
+    end
+    return {type = "split", direction = "vertical", children = out}
+end
+```
+
+### Widget Types
+
+| Type | Properties |
+|------|------------|
+| `text` | `content`, `fg`, `bold`, `spans` |
+| `split` | `direction` (`vertical`/`horizontal`), `children` |
+| `spacer` | `size` |
+| `box` | `title`, `border`, `child` |
+
+### Handling plugin_msg
+
+When the TUI calls `kn9t.action("plugin_msg", {...})`, the host sends:
+
+```json
+{"t": "plugin_msg", "msg": {"t": "down"}}
+```
+
+Handle it in your main loop:
+
+```python
+elif msg.get("t") == "plugin_msg":
+    handle_plugin_msg(msg.get("msg", {}))
+```
+
+---
+
+## 7. Error Handling & Debugging
+
+### stderr is for logging
+
+Plugin stderr goes to the host's log. Use it for debugging:
+
+```python
+import sys
+print("Debug: got message", msg, file=sys.stderr)
+```
+
+### Hook Errors
+
+If a hook handler raises an exception, the host uses the **failure posture**:
+
+| Hook | Failure Posture |
+|------|-----------------|
+| `before_tool_call` | **Deny** (fail closed) |
+| `after_tool_call` | Keep original |
+| `before_request` | Use original |
+| `get_steering` | Empty |
+| `get_followup` | Empty |
+| `should_stop_after_turn` | Continue |
+| `get_api_key` | Fall back to config |
+
+### Timeouts
+
+| Hook | Default Timeout |
+|------|-----------------|
+| `before_tool_call` | 30 seconds |
+| `tool_call` | No limit (streaming) |
+| `provider_complete` | No limit (streaming) |
+| Others | 60 seconds |
+
+### Cancellation
+
+If your plugin declares `cancelable` capability, handle `cancel` messages:
+
+```python
+if msg.get("t") == "cancel":
+    cancel_id = msg.get("id")
+    # Stop the operation with that id
+```
+
+### Common Errors
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `malformed message` | Invalid JSON or unknown `t` | Check JSON syntax, use `t` not `type` |
+| `protocol violation` | Wrong message type | Use `request` not `host_api` |
+| `session not found` | Invalid session_id | Get session_id from hook payload |
+| `plugin unhealthy` | Plugin crashed or timed out | Check stderr, add error handling |
+
+---
+
+## 8. Configuration & Installation
+
+### config.toml Entry
+
+```toml
+[[plugin]]
+name = "my-plugin"
+cmd = ["python", "-m", "my_plugin"]
+
+[plugin.env]
+PYTHONPATH = "/path/to/my_plugin"
+MY_API_KEY = "secret"
+```
+
+### Plugin Discovery
+
+kn9t looks for plugins in `~/.kn9t/plugins/` (binaries) and `config.toml` entries.
+
+**Binary plugins** (Rust, Go): Copy executable to `~/.kn9t/plugins/`
+
+**Interpreted plugins** (Python, Node): Add `[[plugin]]` entry with `cmd` and `env`
+
+### Hot Reload
+
+Reload without restarting kn9t:
+
+```bash
+PORT=$(cat ~/.kn9t/port)
+TOKEN=$(cat ~/.kn9t/token)
+curl -X POST "http://localhost:$PORT/plugin/my-plugin/reload" \
+     -H "Authorization: Bearer $TOKEN"
+```
+
+The host will:
+1. Cancel in-flight operations
+2. Send `shutdown` message
+3. Respawn from `cmd`
+4. Re-handshake
+
+### Hot Re-declaration
+
+Plugins can change their tools/hooks at runtime via `declare`:
+
+```json
+{
+  "t": "declare",
+  "tools": [...],
+  "hooks": ["get_steering"],
+  "events": []
+}
+```
+
+---
+
+## 9. Examples
+
+### Policy Gate (Python)
+
+```python
+#!/usr/bin/env python3
+"""Block dangerous commands."""
+import json, sys, fnmatch
+
+DANGEROUS = ["rm -rf*", "git reset --hard*", "git clean -fd*"]
+
+def matches(cmd, patterns):
+    return any(fnmatch.fnmatch(cmd, p) for p in patterns)
+
+def read_msg():
+    line = sys.stdin.readline()
+    return json.loads(line) if line else None
+
+def write_msg(msg):
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
+
+def run():
+    read_msg()  # hello
+    write_msg({"t": "hello", "name": "policy", "hooks": ["before_tool_call"],
+               "capabilities": [], "tools": [], "events": []})
+    
+    while True:
+        msg = read_msg()
+        if not msg or msg.get("t") == "shutdown":
+            break
+        
+        if msg.get("t") == "hook" and msg.get("hook") == "before_tool_call":
+            payload = msg["payload"]
+            if payload.get("tool") == "bash":
+                cmd = payload.get("args", {}).get("cmd", "")
+                if matches(cmd, DANGEROUS):
+                    write_msg({"t": "result", "id": msg["id"],
+                               "action": "deny", "reason": f"Blocked: {cmd}"})
+                    continue
+            write_msg({"t": "result", "id": msg["id"], "action": "allow"})
+
+if __name__ == "__main__":
+    run()
+```
+
+### Context Injector (Python)
+
+```python
+#!/usr/bin/env python3
+"""Inject reminders every turn."""
+import json, sys
+
+def read_msg():
+    line = sys.stdin.readline()
+    return json.loads(line) if line else None
+
+def write_msg(msg):
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
+
+def run():
+    read_msg()
+    write_msg({"t": "hello", "name": "injector", "hooks": ["get_steering"],
+               "capabilities": [], "tools": [], "events": []})
+    
+    while True:
+        msg = read_msg()
+        if not msg or msg.get("t") == "shutdown":
+            break
+        
+        if msg.get("t") == "hook" and msg.get("hook") == "get_steering":
+            write_msg({
+                "t": "result", "id": msg["id"],
+                "messages": [{
+                    "role": "user", "silent": True,
+                    "content": [{"type": "text", "text": "Remember: be concise."}]
+                }]
+            })
+
+if __name__ == "__main__":
+    run()
+```
+
+---
+
+## 10. Troubleshooting
+
+### Plugin not loading
+
+1. Check `~/.kn9t/server.log` for errors
+2. Verify `cmd` path is correct
+3. Test manually: `echo '{"t":"hello","proto":1,"kn9t":"test"}' | python -m my_plugin`
+
+### Keys not working in TUI
+
+1. Use `kn9t.on_key("j", fn)` not `function on_key(key)`
+2. Return `true` to consume, `false` to pass through
+3. Check plugin is focused (F10 to cycle)
+
+### UI not appearing
+
+1. Get `session_id` from hook payload, not hello
+2. Register UI on first hook, not at startup
+3. Use `"t": "request"` not `"t": "host_api"`
+4. Include `session` in every payload
+
+### Hook not being called
+
+1. Verify hook name in handshake `hooks` array
+2. Check spelling (`before_tool_call` not `beforeToolCall`)
+3. Use `get_steering` to ensure early registration (called every turn)
+
+### Hot reload fails
+
+1. Check server log for errors
+2. Verify Authorization header is correct
+3. Plugin must handle `shutdown` gracefully
+

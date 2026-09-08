@@ -224,6 +224,16 @@ local function clamp_cursor(n)
   if V.scroll < 0 then V.scroll = 0 end
 end
 
+-- Clamp commit cursor and scroll (separate from diff mode)
+local function clamp_commit_cursor(n)
+  if V.commit_cursor < 1 then V.commit_cursor = 1 end
+  if n > 0 and V.commit_cursor > n then V.commit_cursor = n end
+  local view = math.max(1, V.height - 2)
+  if V.commit_cursor <= V.commit_scroll then V.commit_scroll = V.commit_cursor - 1 end
+  if V.commit_cursor > V.commit_scroll + view then V.commit_scroll = V.commit_cursor - view end
+  if V.commit_scroll < 0 then V.commit_scroll = 0 end
+end
+
 local function comment_at(path, line)
   for _, c in ipairs(V.comments) do
     if c.path == path and c.line == line then return c.text end
@@ -256,7 +266,7 @@ bind("j", function()
     clamp_graph_cursor()
   elseif V.mode == "commit" then
     V.commit_cursor = V.commit_cursor + 1
-    clamp_cursor(#rows(cur_commit_file()))
+    clamp_commit_cursor(#commit_rows(cur_commit_file()))
   else
     V.cursor = V.cursor + 1
     clamp_cursor(#rows(cur_file()))
@@ -268,7 +278,7 @@ bind("k", function()
     clamp_graph_cursor()
   elseif V.mode == "commit" then
     V.commit_cursor = V.commit_cursor - 1
-    clamp_cursor(#rows(cur_commit_file()))
+    clamp_commit_cursor(#commit_rows(cur_commit_file()))
   else
     V.cursor = V.cursor - 1
     clamp_cursor(#rows(cur_file()))
@@ -280,7 +290,7 @@ bind("Down", function()
     clamp_graph_cursor()
   elseif V.mode == "commit" then
     V.commit_cursor = V.commit_cursor + 1
-    clamp_cursor(#rows(cur_commit_file()))
+    clamp_commit_cursor(#commit_rows(cur_commit_file()))
   else
     V.cursor = V.cursor + 1
     clamp_cursor(#rows(cur_file()))
@@ -292,7 +302,7 @@ bind("Up", function()
     clamp_graph_cursor()
   elseif V.mode == "commit" then
     V.commit_cursor = V.commit_cursor - 1
-    clamp_cursor(#rows(cur_commit_file()))
+    clamp_commit_cursor(#commit_rows(cur_commit_file()))
   else
     V.cursor = V.cursor - 1
     clamp_cursor(#rows(cur_file()))
@@ -306,7 +316,7 @@ bind("PageDown", function()
     clamp_graph_cursor()
   elseif V.mode == "commit" then
     V.commit_cursor = V.commit_cursor + step
-    clamp_cursor(#rows(cur_commit_file()))
+    clamp_commit_cursor(#commit_rows(cur_commit_file()))
   else
     V.cursor = V.cursor + step
     clamp_cursor(#rows(cur_file()))
@@ -319,7 +329,7 @@ bind("PageUp", function()
     clamp_graph_cursor()
   elseif V.mode == "commit" then
     V.commit_cursor = V.commit_cursor - step
-    clamp_cursor(#rows(cur_commit_file()))
+    clamp_commit_cursor(#commit_rows(cur_commit_file()))
   else
     V.cursor = V.cursor - step
     clamp_cursor(#rows(cur_file()))
@@ -530,6 +540,15 @@ bind("Backspace", function()
     return true
   end
   return true
+end)
+
+-- Esc cancels comment composition; otherwise let host handle it (unfocus)
+kn9t.on_key("Escape", function()
+  if V.typing ~= nil then
+    V.typing = nil
+    return true  -- Consume: cancel comment, stay focused
+  end
+  return false  -- Let host unfocus the panel
 end)
 
 -- Hand the collected review to the prompt. This is the one host mutation a
@@ -806,7 +825,7 @@ local function graph_view(repo)
   end
   
   -- List with current selection; TUI handles scrolling automatically
-  local graph_list = { type = "list", id = "graph", items = items, selected = V.graph_cursor - 1 }
+  local graph_list = { type = "list", id = "graph", items = items, selected = V.graph_cursor - 1, offset = V.graph_scroll }
   
   local header_spans = {
     { text = " Git Graph  ", fg = "cyan", bold = true },
