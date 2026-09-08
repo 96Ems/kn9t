@@ -22,6 +22,8 @@ jobs:
           # check-unwrap-trend.sh diffs against origin/main.
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: bash scripts/check-ci.sh
 
@@ -34,6 +36,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Format check
         run: cargo fmt -- --check
