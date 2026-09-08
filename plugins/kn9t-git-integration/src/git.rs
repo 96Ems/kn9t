@@ -66,9 +66,9 @@ pub struct GitState {
     pub stashes: Vec<String>,
 }
 
-/// How many `git log` entries to keep. Bounded so the sidebar (and the
-/// `ui_set_state` payload) cannot grow with repository age.
-pub const LOG_LIMIT: usize = 12;
+/// How many `git log` entries to keep. High enough to allow deep history
+/// browsing while keeping the JSON payload reasonable (~500KB for 500 commits).
+pub const LOG_LIMIT: usize = 500;
 
 /// Collect git state for the repository containing `cwd`, or `None` if
 /// `cwd` is not inside a git repository (or `git` is not on PATH).
