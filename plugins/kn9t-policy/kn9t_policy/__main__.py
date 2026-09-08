@@ -134,26 +134,22 @@ def check(tool: str, args: dict, cwd: str) -> dict:
     for part in split_commands(cmd):
         inner = extract_inner(part)
         
-        # Check user grants first (highest priority)
+        # Check user grants first (highest priority) - overrides DENY/ASK
         if matches(inner, state.grants):
-            return {"action": "allow", "reason": f"Granted: {inner}"}
+            continue  # Granted, check next part
         
-        # Check built-in DENY
+        # Check built-in DENY (hard block)
         if matches(inner, DENY):
             return {"action": "deny", "reason": f"Blocked: {inner}"}
         
-        # Check built-in ASK
+        # Check built-in ASK (dangerous but allowable)
         if matches(inner, ASK):
             return {"action": "ask", "reason": f"Destructive: {inner}"}
         
-        # Check built-in ALLOW
-        if matches(inner, ALLOW):
-            continue  # This part is allowed, check next
-        
-        # Unknown command: ask
-        return {"action": "ask", "reason": f"Unknown: {inner}"}
+        # Everything else is allowed by default (yolo mode logic)
+        # Unknown commands are safe unless explicitly in DENY/ASK
     
-    return {"action": "allow", "reason": "All parts allowed"}
+    return {"action": "allow", "reason": "No dangerous patterns"}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UI

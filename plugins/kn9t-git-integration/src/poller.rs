@@ -168,9 +168,12 @@ fn run(host: HostApiClient, cwd: PathBuf, shared_state: SharedState) {
             PathBuf::from("/tmp/kn9t-commit-sha")
         };
         
+        log_message(&format!("[git-poller] Checking tmp file at: {}", tmp_path.display()));
+        
         match std::fs::read_to_string(&tmp_path) {
             Ok(content) => {
                 let sha = content.trim().to_string();
+                log_message(&format!("[git-poller] Tmp file found, sha: '{}'", sha));
                 if !sha.is_empty() && last_requested_sha.as_ref() != Some(&sha) {
                     log_message(&format!("[git-poller] Loading diff for commit: {}", sha));
                     last_requested_sha = Some(sha.clone());
