@@ -158,103 +158,125 @@ def check(tool: str, args: dict, cwd: str) -> dict:
 UI_LUA = r'''
 -- Policy plugin UI
 local V = { cursor = 0, adding = false, input = "" }
+local MODES = { "normal", "yolo", "ask_all" }
 
 function on_state(s)
     V.mode = s.mode or "normal"
     V.grants = s.grants or {}
     V.recent = s.recent or {}
-    V.cursor = s.cursor or 0
-    V.adding = s.adding or false
-    V.input = s.input_buf or ""
+    -- Don't override cursor/adding/input from state - those are local UI state
 end
 
--- Helper to send messages to the Python plugin
-local function send(t, extra)
-    local msg = { t = t }
-    if extra then for k, v in pairs(extra) do msg[k] = v end end
-    kn9t.action("plugin_msg", { plugin = "kn9t-policy", msg = msg })
+-- Cycle through modes: normal -> yolo -> ask_all -> normal
+local function cycle_mode()
+    for i, m in ipairs(MODES) do
+        if V.mode == m then
+            V.mode = MODES[(i % #MODES) + 1]
+            return
+        end
+    end
+    V.mode = "normal"
 end
 
 -- Register key handlers using kn9t.on_key
 kn9t.on_key("m", function()
     if V.adding then return false end
-    send("cycle_mode")
+    cycle_mode()
     return true
 end)
 
 kn9t.on_key("a", function()
     if V.adding then
         V.input = V.input .. "a"
-        send("input_char", { ch = "a" })
         return true
     end
-    send("start_add")
+    V.adding = true
+    V.input = ""
     return true
 end)
 
 kn9t.on_key("d", function()
     if V.adding then
         V.input = V.input .. "d"
-        send("input_char", { ch = "d" })
         return true
     end
-    send("delete_grant")
+    -- Delete grant at cursor
+    if V.cursor >= 0 and V.cursor < #V.grants then
+        table.remove(V.grants, V.cursor + 1)
+        if V.cursor >= #V.grants and V.cursor > 0 then
+            V.cursor = V.cursor - 1
+        end
+    end
     return true
 end)
 
 kn9t.on_key("x", function()
     if V.adding then
         V.input = V.input .. "x"
-        send("input_char", { ch = "x" })
         return true
     end
-    send("delete_grant")
+    -- Same as d
+    if V.cursor >= 0 and V.cursor < #V.grants then
+        table.remove(V.grants, V.cursor + 1)
+        if V.cursor >= #V.grants and V.cursor > 0 then
+            V.cursor = V.cursor - 1
+        end
+    end
     return true
 end)
 
 kn9t.on_key("j", function()
     if V.adding then
         V.input = V.input .. "j"
-        send("input_char", { ch = "j" })
         return true
     end
-    send("cursor_down")
+    if V.cursor < #V.grants - 1 then
+        V.cursor = V.cursor + 1
+    end
     return true
 end)
 
 kn9t.on_key("k", function()
     if V.adding then
         V.input = V.input .. "k"
-        send("input_char", { ch = "k" })
         return true
     end
-    send("cursor_up")
+    if V.cursor > 0 then
+        V.cursor = V.cursor - 1
+    end
     return true
 end)
 
 kn9t.on_key("Down", function()
     if V.adding then return false end
-    send("cursor_down")
+    if V.cursor < #V.grants - 1 then
+        V.cursor = V.cursor + 1
+    end
     return true
 end)
 
 kn9t.on_key("Up", function()
     if V.adding then return false end
-    send("cursor_up")
+    if V.cursor > 0 then
+        V.cursor = V.cursor - 1
+    end
     return true
 end)
 
 kn9t.on_key("Escape", function()
     if V.adding then
-        send("cancel_add")
+        V.adding = false
+        V.input = ""
         return true
     end
     return false  -- Let Esc release focus
 end)
 
 kn9t.on_key("Enter", function()
-    if V.adding then
-        send("confirm_add")
+    if V.adding and V.input ~= "" then
+        table.insert(V.grants, V.input)
+        V.adding = false
+        V.input = ""
         return true
     end
     return false
@@ -262,7 +284,7 @@ end)
 
 kn9t.on_key("Backspace", function()
     if V.adding then
-        send("input_backspace")
+        V.input = string.sub(V.input, 1, -2)
         return true
     end
     return false
@@ -270,7 +292,7 @@ end)
 
 kn9t.on_key("Space", function()
     if V.adding then
-        send("input_char", { ch = " " })
+        V.input = V.input .. " "
         return true
     end
     return false
@@ -283,7 +305,7 @@ for i = 32, 126 do
     if ch ~= "m" and ch ~= "a" and ch ~= "d" and ch ~= "x" and ch ~= "j" and ch ~= "k" and ch ~= " " then
         kn9t.on_key(ch, function()
             if V.adding then
-                send("input_char", { ch = ch })
+                V.input = V.input .. ch
                 return true
             end
             return false
