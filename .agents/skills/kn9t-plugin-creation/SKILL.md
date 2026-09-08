@@ -738,6 +738,351 @@ echo '{"t":"hello","proto":1,"kn9t":"test"}' | ./my-plugin
 cargo run -p xtask -- generate
 ```
 
+## Plugin TUI Integration
+
+Plugins can register interactive UIs in the TUI. The UI is defined in Lua and sent to the host.
+
+### Architecture
+
+1. **Plugin sends Lua source** via `ui_register_lua` — defines `render(state)` returning a widget tree
+2. **Plugin pushes state** via `ui_set_state` — arbitrary JSON that `render(state)` uses
+3. **Keys are handled via `kn9t.on_key(key, fn)`** — registered in the Lua source
+4. **User interactions sent back** via `kn9t.action("plugin_msg", {plugin, msg})` — plugin handles in main loop
+
+### Key Concepts
+
+| Concept | Description |
+|---------|-------------|
+| **Session-scoped** | UI is tied to a session, not global. Get `session_id` from hook payloads. |
+| **Lazy registration** | Register UI on first hook that provides `session_id` (e.g., `get_steering`). |
+| **Focus model** | Keys only reach a focused plugin (F10 cycles, Esc releases). |
+| **Widget tree** | `render(state)` returns `{type, children, ...}` — see widget reference below. |
+
+### Wire Protocol
+
+**Register UI (once per session):**
+```json
+{
+  "t": "request",
+  "id": 1,
+  "op": "ui_register_lua",
+  "payload": {
+    "session": "<session_id>",
+    "source": "-- Lua code...",
+    "placement": "main",
+    "title": "My Plugin"
+  }
+}
+```
+
+**Push state (on every update):**
+```json
+{
+  "t": "request",
+  "id": 2,
+  "op": "ui_set_state",
+  "payload": {
+    "session": "<session_id>",
+    "state": { "items": [...], "cursor": 0 }
+  }
+}
+```
+
+### Lua UI Template
+
+```lua
+-- View state (survives state pushes)
+local V = { cursor = 0, input = "" }
+
+-- Update view state from host pushes
+function on_state(s)
+    V.items = s.items or {}
+    V.cursor = s.cursor or 0
+end
+
+-- Helper to send messages back to plugin
+local function send(t, extra)
+    local msg = { t = t }
+    if extra then for k, v in pairs(extra) do msg[k] = v end end
+    kn9t.action("plugin_msg", { plugin = "my-plugin", msg = msg })
+end
+
+-- Register key handlers (NOT a global on_key function!)
+kn9t.on_key("j", function()
+    send("cursor_down")
+    return true  -- consumed
+end)
+
+kn9t.on_key("k", function()
+    send("cursor_up")
+    return true
+end)
+
+kn9t.on_key("Enter", function()
+    send("select_item")
+    return true
+end)
+
+kn9t.on_key("Escape", function()
+    return false  -- Let Esc release focus to TUI
+end)
+
+-- Render the UI
+function render(s)
+    on_state(s)
+    local out = {}
+    
+    for i, item in ipairs(V.items) do
+        local prefix = (i - 1 == V.cursor) and "> " or "  "
+        local fg = (i - 1 == V.cursor) and "cyan" or "white"
+        table.insert(out, {
+            type = "text",
+            content = prefix .. item,
+            fg = fg,
+            size = { fixed = 1 }
+        })
+    end
+    
+    -- Help bar at bottom
+    table.insert(out, { type = "spacer", size = { flex = 1 } })
+    table.insert(out, {
+        type = "text",
+        spans = {
+            { text = "[j/k]", fg = "cyan" },
+            { text = " nav  ", fg = "darkgray" },
+            { text = "[Enter]", fg = "cyan" },
+            { text = " select", fg = "darkgray" },
+        },
+        size = { fixed = 1 }
+    })
+    
+    return { type = "split", direction = "vertical", children = out }
+end
+```
+
+### Widget Reference
+
+| Type | Properties | Description |
+|------|------------|-------------|
+| `text` | `content`, `fg`, `bold`, `spans` | Single line of text |
+| `split` | `direction`, `children` | Vertical/horizontal layout |
+| `spacer` | `size` | Flexible space |
+| `box` | `title`, `border`, `child` | Bordered container |
+
+**Spans** (styled text segments):
+```lua
+{ type = "text", spans = {
+    { text = "[key]", fg = "cyan" },
+    { text = " description", fg = "darkgray" }
+}}
+```
+
+**Size** options:
+- `{ fixed = N }` — exactly N rows/cols
+- `{ flex = N }` — proportional space
+- `{ min = N, max = M }` — constrained
+
+### Python Example with UI
+
+```python
+#!/usr/bin/env python3
+import json
+import sys
+from dataclasses import dataclass, asdict
+
+# State
+@dataclass
+class State:
+    items: list = None
+    cursor: int = 0
+    
+    def __post_init__(self):
+        self.items = self.items or ["Item 1", "Item 2", "Item 3"]
+
+state = State()
+session_id = None
+_request_id = 0
+
+# Lua UI source
+UI_LUA = r'''
+local V = { cursor = 0 }
+
+function on_state(s)
+    V.items = s.items or {}
+    V.cursor = s.cursor or 0
+end
+
+local function send(t)
+    kn9t.action("plugin_msg", { plugin = "my-plugin", msg = { t = t } })
+end
+
+kn9t.on_key("j", function() send("down"); return true end)
+kn9t.on_key("k", function() send("up"); return true end)
+kn9t.on_key("Escape", function() return false end)
+
+function render(s)
+    on_state(s)
+    local out = {}
+    for i, item in ipairs(V.items) do
+        local prefix = (i - 1 == V.cursor) and "> " or "  "
+        table.insert(out, { type = "text", content = prefix .. item,
+                           fg = (i - 1 == V.cursor) and "cyan" or "white",
+                           size = { fixed = 1 } })
+    end
+    return { type = "split", direction = "vertical", children = out }
+end
+'''
+
+def read_msg():
+    line = sys.stdin.readline()
+    return json.loads(line) if line else None
+
+def write_msg(msg):
+    sys.stdout.write(json.dumps(msg, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+def send_request(op, payload):
+    global _request_id
+    _request_id += 1
+    write_msg({"t": "request", "id": _request_id, "op": op, "payload": payload})
+
+def register_ui():
+    if not session_id:
+        return
+    send_request("ui_register_lua", {
+        "session": session_id,
+        "source": UI_LUA,
+        "placement": "main",
+        "title": "My Plugin",
+    })
+
+def send_ui_state():
+    if not session_id:
+        return
+    send_request("ui_set_state", {
+        "session": session_id,
+        "state": asdict(state),
+    })
+
+def handle_plugin_msg(msg):
+    t = msg.get("t", "")
+    if t == "down":
+        state.cursor = min(state.cursor + 1, len(state.items) - 1)
+    elif t == "up":
+        state.cursor = max(state.cursor - 1, 0)
+    send_ui_state()
+
+def run():
+    global session_id
+    ui_registered = False
+    
+    # Handshake
+    hello = read_msg()
+    if not hello or hello.get("t") != "hello":
+        return
+    
+    write_msg({
+        "t": "hello",
+        "name": "my-plugin",
+        "capabilities": [],
+        "hooks": ["get_steering"],  # Need a hook to get session_id
+        "tools": [],
+    })
+    
+    while True:
+        msg = read_msg()
+        if not msg:
+            break
+        
+        t = msg.get("t", "")
+        
+        if t == "shutdown":
+            break
+        
+        elif t == "hook":
+            hook_id = msg.get("id", 0)
+            payload = msg.get("payload", {})
+            
+            # Get session_id from hook payload
+            if not session_id:
+                session_id = payload.get("session_id")
+            
+            # Register UI on first hook
+            if session_id and not ui_registered:
+                register_ui()
+                send_ui_state()
+                ui_registered = True
+            
+            # Reply to hook
+            write_msg({"t": "result", "id": hook_id, "messages": []})
+        
+        elif t == "plugin_msg":
+            handle_plugin_msg(msg.get("msg", {}))
+
+if __name__ == "__main__":
+    run()
+```
+
+### Common Mistakes
+
+| Mistake | Correct Approach |
+|---------|------------------|
+| Using `"t": "host_api"` | Use `"t": "request"` |
+| Calling `ui_register_lua` at startup | Wait for first hook with `session_id` |
+| Defining `function on_key(key)` | Use `kn9t.on_key("j", fn)` per key |
+| Missing `session` in payload | Include `"session": session_id` in every request |
+| Missing `"state"` wrapper | `ui_set_state` payload needs `{"session": ..., "state": ...}` |
+
+### Rust SDK Example
+
+```rust
+use kn9t_plugin_sdk::{Plugin, PluginHook};
+use kn9t_plugin_sdk::ctx::HookCtx;
+use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static UI_REGISTERED: AtomicBool = AtomicBool::new(false);
+
+const UI_LUA: &str = r#"
+local V = { count = 0 }
+function on_state(s) V.count = s.count or 0 end
+kn9t.on_key("j", function()
+    kn9t.action("plugin_msg", { plugin = "counter", msg = { t = "inc" } })
+    return true
+end)
+function render(s)
+    on_state(s)
+    return { type = "text", content = "Count: " .. V.count, fg = "cyan" }
+end
+"#;
+
+struct Counter { count: u32 }
+
+impl PluginHook for Counter {
+    fn hooks(&self) -> Vec<&'static str> {
+        vec!["get_steering"]
+    }
+    
+    fn call_with_ctx(&self, _hook: &str, _payload: &Value, ctx: &HookCtx) -> Value {
+        // Register UI on first call
+        if !UI_REGISTERED.swap(true, Ordering::SeqCst) {
+            let _ = ctx.host.call("ui_register_lua", json!({
+                "source": UI_LUA,
+                "placement": "main",
+                "title": "Counter",
+            }));
+        }
+        
+        // Push state
+        let _ = ctx.host.call("ui_set_state", json!({
+            "state": { "count": self.count }
+        }));
+        
+        json!({"messages": []})
+    }
+}
+```
+
 ## Common Patterns
 
 ### Tool with file effects
