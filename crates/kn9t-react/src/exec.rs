@@ -384,7 +384,7 @@ impl ReactLoop {
                     let patched = self.hook_after_tool_call(&name, &args, &params.cwd, inner);
                     Content::ToolResult {
                         id,
-                        content: patched,
+                        content: ensure_nonempty_content(patched),
                         is_error,
                     }
                 }
@@ -440,7 +440,7 @@ impl ReactLoop {
                 let patched = self.hook_after_tool_call(&call.name, args, &params.cwd, inner);
                 Content::ToolResult {
                     id: call.id.clone(),
-                    content: patched,
+                    content: ensure_nonempty_content(patched),
                     is_error,
                 }
             }
@@ -561,6 +561,25 @@ fn synth_error(id: &kn9t_provider_core::CallId, msg: &str) -> Content {
             text: msg.to_string(),
         }],
         is_error: true,
+    }
+}
+
+/// Ensure tool result content is never empty (provider APIs reject empty content).
+/// If the content vec is empty or contains only empty Text blocks, substitute a
+/// placeholder so the API call doesn't fail with "message content cannot be empty".
+fn ensure_nonempty_content(content: Vec<Content>) -> Vec<Content> {
+    // Check if content is effectively empty
+    let is_empty = content.is_empty()
+        || content.iter().all(|c| match c {
+            Content::Text { text } => text.is_empty(),
+            _ => false,
+        });
+    if is_empty {
+        vec![Content::Text {
+            text: "(no output)".to_string(),
+        }]
+    } else {
+        content
     }
 }
 
@@ -909,5 +928,69 @@ mod tests {
 
         assert_eq!(assembled.usage.model.provider, "anthropic");
         assert_eq!(assembled.usage.model.id, "claude-3");
+    }
+
+    /// Provider APIs (Anthropic, OpenAI) reject tool results with empty content.
+    /// `ensure_nonempty_content` must substitute a placeholder when the tool
+    /// returns an empty vec or only empty Text blocks.
+    #[test]
+    fn test_ensure_nonempty_content_empty_vec() {
+        let result = ensure_nonempty_content(vec![]);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            Content::Text { text } => assert_eq!(text, "(no output)"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_ensure_nonempty_content_empty_text() {
+        let input = vec![Content::Text { text: String::new() }];
+        let result = ensure_nonempty_content(input);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            Content::Text { text } => assert_eq!(text, "(no output)"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_ensure_nonempty_content_multiple_empty_texts() {
+        let input = vec![
+            Content::Text { text: String::new() },
+            Content::Text { text: String::new() },
+        ];
+        let result = ensure_nonempty_content(input);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            Content::Text { text } => assert_eq!(text, "(no output)"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_ensure_nonempty_content_preserves_nonempty() {
+        let input = vec![Content::Text { text: "hello".into() }];
+        let result = ensure_nonempty_content(input);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            Content::Text { text } => assert_eq!(text, "hello"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_ensure_nonempty_content_mixed_keeps_all() {
+        // If at least one Text is non-empty, keep the original vec as-is
+        let input = vec![
+            Content::Text { text: String::new() },
+            Content::Text { text: "data".into() },
+        ];
+        let result = ensure_nonempty_content(input);
+        assert_eq!(result.len(), 2);
+        match &result[1] {
+            Content::Text { text } => assert_eq!(text, "data"),
+            _ => panic!("expected Text"),
+        }
     }
 }
