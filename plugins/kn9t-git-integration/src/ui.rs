@@ -638,9 +638,7 @@ bind("Enter", function()
         V.commit_cursor = 1
         V.commit_scroll = 0
         V.mode = "commit"
-        -- Signal Rust to load diff via tmp file (kn9t.write_file provided by host)
-        local tmp_dir = os.getenv("TEMP") or os.getenv("TMP") or "/tmp"
-        kn9t.write_file(tmp_dir .. "/kn9t-commit-sha", commit.sha)
+        -- TODO: Signal Rust to load diff (requires kn9t.write_file from host or alternate mechanism)
       end
     end
     return true
@@ -666,9 +664,7 @@ bind("Backspace", function()
   if V.mode == "commit" then
     V.mode = "graph"
     V.commit_sha = nil
-    -- Clear the diff request
-    local tmp_dir = os.getenv("TEMP") or os.getenv("TMP") or "/tmp"
-    kn9t.write_file(tmp_dir .. "/kn9t-commit-sha", "")
+    -- TODO: Clear the diff request
     return true
   end
   return true
@@ -1096,7 +1092,7 @@ local function commit_view(repo)
   
   local cdiff = commit_files()
   
-  -- If no diff available, show simple view
+  -- If no diff available, show commit info with status
   if #cdiff == 0 then
     local out = {}
     table.insert(out, { type = "text", spans = {
@@ -1107,10 +1103,14 @@ local function commit_view(repo)
     table.insert(out, { type = "text", spans = {
       { text = " " .. commit.subject, fg = "white", bold = true },
     }, size = { fixed = 1 }, wrap = false })
-    table.insert(out, { type = "text", content = " (loading diff...)", fg = "darkgray" })
+    table.insert(out, { type = "text", content = "", size = { fixed = 1 } })
+    table.insert(out, { type = "text", content = "  Date: " .. (commit.date or ""), fg = "darkgray" })
+    table.insert(out, { type = "text", content = "", size = { fixed = 1 } })
+    table.insert(out, { type = "text", content = "  No files changed (or diff not loaded yet)", fg = "darkgray" })
     table.insert(out, { type = "spacer", size = { flex = 1 } })
     table.insert(out, { type = "text", spans = {
-      { text = "[Backspace]", fg = "cyan" }, { text = " back", fg = "darkgray" },
+      { text = "[Backspace]", fg = "cyan" }, { text = " back  ", fg = "darkgray" },
+      { text = "[g]", fg = "cyan" }, { text = " graph", fg = "darkgray" },
     }, size = { fixed = 1 }, wrap = false })
     return { type = "split", direction = "vertical", children = out }
   end
