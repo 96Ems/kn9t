@@ -7,5 +7,6 @@ rust-version.workspace = true
 description = "kn9t vocabulary crate: events, types, traits, bus, pure functions."
 
 [dependencies]
+kn9t-macros = { path = "../kn9t-macros" }
 serde = { workspace = true }
 serde_json = { workspace = true }

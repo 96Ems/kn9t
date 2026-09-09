@@ -6,6 +6,7 @@ license.workspace = true
 
 # R-TUI-010/GI-6: NO kn9t-* dependencies allowed.
 [dependencies]
+kn9t-macros = { path = "../kn9t-macros" }
 ratatui       = "0.29"
 crossterm     = { version = "0.29", features = ["event-stream", "bracketed-paste"] }
 ureq          = { version = "2", features = ["json", "tls"] }

@@ -858,6 +858,7 @@ name = "kn9t"
 version = "0.1.0"
 dependencies = [
  "crossterm 0.27.0",
+ "kn9t-macros",
  "serde_json",
 ]
 
@@ -865,15 +866,21 @@ dependencies = [
 name = "kn9t-core"
 version = "0.1.0"
 dependencies = [
+ "kn9t-macros",
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "kn9t-macros"
+version = "0.1.0"
 
 [[package]]
 name = "kn9t-plugin"
 version = "0.1.0"
 dependencies = [
  "kn9t-core",
+ "kn9t-macros",
  "serde",
  "serde_json",
 ]
@@ -882,6 +889,7 @@ dependencies = [
 name = "kn9t-plugin-sdk"
 version = "0.1.0"
 dependencies = [
+ "kn9t-macros",
  "serde",
  "serde_json",
 ]
@@ -891,6 +899,7 @@ name = "kn9t-provider-core"
 version = "0.1.0"
 dependencies = [
  "kn9t-core",
+ "kn9t-macros",
  "regex",
  "serde",
  "serde_json",
@@ -922,6 +931,7 @@ name = "kn9t-react"
 version = "0.1.0"
 dependencies = [
  "kn9t-core",
+ "kn9t-macros",
  "kn9t-plugin",
  "kn9t-provider-core",
  "kn9t-provider-replay",
@@ -935,6 +945,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "kn9t-core",
+ "kn9t-macros",
  "kn9t-plugin",
  "kn9t-provider-core",
  "kn9t-provider-openai",
@@ -957,6 +968,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "kn9t-core",
+ "kn9t-macros",
  "rusqlite",
  "serde",
  "serde_json",
@@ -983,6 +995,7 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "crossterm 0.29.0",
+ "kn9t-macros",
  "kn9t-tui-test-support",
  "mlua",
  "notify",

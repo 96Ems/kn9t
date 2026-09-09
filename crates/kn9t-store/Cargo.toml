@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+kn9t-macros = { path = "../kn9t-macros" }
 kn9t-core = { path = "../kn9t-core" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"

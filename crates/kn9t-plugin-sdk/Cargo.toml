@@ -8,6 +8,7 @@ description = "SDK for writing kn9t plugins in Rust. Zero workspace deps — sui
 
 # No kn9t-* workspace dependencies (R-PLUG2-010).
 [dependencies]
+kn9t-macros = { path = "../kn9t-macros" }
 serde     = { workspace = true }
 serde_json = { workspace = true }
 

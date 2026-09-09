@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/kn9t-macros",
     "crates/kn9t-core",
     "crates/kn9t-provider-replay",
     "crates/kn9t-react",

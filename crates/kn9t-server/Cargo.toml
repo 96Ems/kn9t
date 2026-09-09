@@ -11,6 +11,7 @@ license.workspace = true
 # Tools are loaded from the kn9t-tools plugin subprocess (R-PLUG2-110), not from
 # an in-process crate — this validates the full plugin code path.
 [dependencies]
+kn9t-macros = { path = "../kn9t-macros" }
 kn9t-core          = { path = "../kn9t-core" }
 kn9t-store         = { path = "../kn9t-store" }
 kn9t-react         = { path = "../kn9t-react" }
