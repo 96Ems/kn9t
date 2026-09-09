@@ -168,6 +168,8 @@ impl ServerHostApi {
     /// `session_prompt` — run one full synchronous turn on `session` with `text`
     /// (the session's own model, tool subset optional, fork budget enforced).
     /// Reply: `{"session":"...","result":"..."}`.
+    ///
+    /// 96E-39: passes parent session's Cancel so ESC propagates to subagent.
     fn session_prompt(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
         let session = self.require_session(session)?;
         let text = payload
@@ -183,12 +185,15 @@ impl ServerHostApi {
             .get("timeout_s")
             .and_then(|v| v.as_u64())
             .unwrap_or(600);
+        // 96E-39: get parent session's Cancel so ESC propagates to subagent
+        let parent_cancel = crate::turn::get_cancel(&self.state, session);
         let result = crate::turn::run_session_turn(
             &self.state,
             &SessionId(session.to_string()),
             text,
             tools,
             timeout,
+            parent_cancel,
         )?;
         Ok(json!({ "session": session, "result": result }))
     }
@@ -251,6 +256,8 @@ impl ServerHostApi {
     /// `provider_complete` — one real provider call with the session's model.
     /// Reply: `{"content":[...],"stop":"...","usage":{"input":..,"output":..}}`.
     /// Optional: `"tools"` — array of tool specs to enable tool_use responses.
+    ///
+    /// 96E-39: uses session's Cancel so ESC can abort the provider call.
     fn provider_complete(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
         let session = self.require_session(session)?;
         let model = self.resolve_model(payload)?;
@@ -305,7 +312,9 @@ impl ServerHostApi {
             max_tokens,
             cache: &[],
         };
-        let cancel = Cancel::new();
+        // 96E-39: use session's Cancel so ESC can abort the provider call
+        let cancel = crate::turn::get_cancel(&self.state, session)
+            .unwrap_or_else(Cancel::new);
         let chunks = provider
             .stream_with_sink(&req, &cancel, Some(sink.as_ref()))
             .map_err(|e| format!("provider stream: {e:?}"))?;

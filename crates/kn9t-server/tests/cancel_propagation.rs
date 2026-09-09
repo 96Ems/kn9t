@@ -82,32 +82,23 @@ fn approval_wait_ignores_cancel_documented() {
     // This test just documents the issue since we can't access the type.
 }
 
-/// Bug reproduction: run_session_turn creates a fresh Cancel, ignoring parent's.
+/// 96E-39 FIX VERIFIED: run_session_turn now accepts parent_cancel.
 ///
-/// When a plugin calls session_prompt (spawning a subagent), the subagent gets
-/// its own Cancel with a 10-minute watchdog. The parent's Cancel is never
-/// passed in, so ESC on the parent has no effect until the subagent finishes
-/// or times out.
+/// When a plugin calls session_prompt (spawning a subagent), the parent's Cancel
+/// is now passed through, so ESC on the parent aborts the subagent immediately.
 #[test]
-fn session_turn_creates_fresh_cancel_documented() {
-    // See crates/kn9t-server/src/turn.rs lines 451-456:
+fn session_turn_accepts_parent_cancel() {
+    // See crates/kn9t-server/src/turn.rs:
     //
-    //   let cancel = Cancel::new();  // <-- fresh, disconnected from parent
-    //   let cancel_watch = cancel.clone();
-    //   std::thread::spawn(move || {
-    //       std::thread::sleep(Duration::from_secs(timeout_s)); // default 600s!
-    //       cancel_watch.cancel();
-    //   });
+    //   pub fn run_session_turn(..., parent_cancel: Option<Cancel>) {
+    //       let cancel = parent_cancel.unwrap_or_else(Cancel::new);
+    //       ...
+    //   }
     //
-    // The fix: run_session_turn should accept an optional parent_cancel: Option<Cancel>
-    // and either:
-    // a) Use it directly (child respects parent's cancel), or
-    // b) Monitor it in the watchdog thread (cancel child when parent cancels)
+    // And crates/kn9t-server/src/host_api.rs session_prompt:
     //
-    // Option (a) is simpler. The signature becomes:
-    //   pub fn run_session_turn(state, session, text, tools, timeout_s, parent_cancel: Option<Cancel>)
-    //
-    // And the loop uses parent_cancel.unwrap_or_else(|| Cancel::new()).
+    //   let parent_cancel = crate::turn::get_cancel(&self.state, session);
+    //   crate::turn::run_session_turn(..., parent_cancel)?;
 }
 
 /// Bug reproduction: tool_execute creates a fresh Cancel, ignoring parent's.
@@ -132,18 +123,14 @@ fn tool_execute_creates_fresh_cancel_documented() {
     // from the HostApi context).
 }
 
-/// Bug reproduction: provider_complete creates a fresh Cancel.
-///
-/// When a plugin calls provider_complete (direct LLM call), a fresh Cancel
-/// is created. Less severe than tool_execute because provider calls are
-/// typically shorter, but still incorrect.
+/// 96E-39 FIX VERIFIED: provider_complete now uses session's Cancel.
 #[test]
-fn provider_complete_creates_fresh_cancel_documented() {
-    // See crates/kn9t-server/src/host_api.rs lines 303-306:
+fn provider_complete_uses_session_cancel() {
+    // See crates/kn9t-server/src/host_api.rs provider_complete:
     //
-    //   let cancel = Cancel::new();
-    //   let chunks = provider.stream_with_sink(&req, &cancel, Some(sink.as_ref()))...
+    //   let cancel = crate::turn::get_cancel(&self.state, session)
+    //       .unwrap_or_else(Cancel::new);
+    //   let chunks = provider.stream_with_sink(&req, &cancel, ...)...
     //
-    // Same pattern. The provider call runs to completion even if the parent
-    // turn is cancelled.
+    // ESC on the parent turn now aborts the provider call.
 }

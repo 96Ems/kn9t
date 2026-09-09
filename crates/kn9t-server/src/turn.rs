@@ -409,12 +409,17 @@ pub(crate) fn compose_loop(
 /// Returns the final assistant text. Enforces the session's fork budget.
 /// 96E-17: this is the "make a spawned session do its work" primitive (a
 /// spawned session running a turn IS a sub-agent — the concept adds nothing).
+///
+/// 96E-39: `parent_cancel` is the calling turn's Cancel. If provided, this turn
+/// aborts when the parent cancels (ESC propagates to subagents). If None, a fresh
+/// Cancel with only a timeout watchdog is created.
 pub(crate) fn run_session_turn(
     state: &Arc<ServerState>,
     session: &SessionId,
     text: &str,
     tool_names: Option<Vec<String>>,
     timeout_s: u64,
+    parent_cancel: Option<Cancel>,
 ) -> Result<String, String> {
     // The model spec comes from the session's fork (model_at_fork) or default.
     let model = state
@@ -456,7 +461,8 @@ pub(crate) fn run_session_turn(
 
     // Watchdog: the loop aborts at its next cancel checkpoint when the timeout
     // fires (the plugin's worker thread stays responsive).
-    let cancel = Cancel::new();
+    // 96E-39: use parent_cancel if provided, so ESC on parent aborts the subagent.
+    let cancel = parent_cancel.unwrap_or_else(Cancel::new);
     let cancel_watch = cancel.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(timeout_s));
