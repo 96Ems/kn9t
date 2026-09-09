@@ -300,15 +300,19 @@ fn hot_reload_cancels_inflight() {
 // ── R-PLUG2-110: GI-1 check ───────────────────────────────────────────────────
 
 /// plug2::autostart_tools_plugin — SDK has zero kn9t-* workspace deps.
+/// Exception: kn9t-macros is a zero-dep macro crate (no runtime coupling).
 #[test]
 fn autostart_tools_plugin() {
     let manifest = include_str!("../Cargo.toml");
-    let has_kn9t_dep = manifest
-        .lines()
-        .any(|l| l.contains("kn9t-") && !l.contains("kn9t-plugin-sdk") && l.contains("path"));
+    let has_kn9t_dep = manifest.lines().any(|l| {
+        l.contains("kn9t-")
+            && !l.contains("kn9t-plugin-sdk")
+            && !l.contains("kn9t-macros") // exemption: zero-dep macro crate
+            && l.contains("path")
+    });
     assert!(
         !has_kn9t_dep,
-        "kn9t-plugin-sdk must not depend on any kn9t-* workspace crate"
+        "kn9t-plugin-sdk must not depend on any kn9t-* workspace crate (except kn9t-macros)"
     );
 }
 

@@ -184,7 +184,8 @@ fn p1_96e8_authorize_malformed_json_is_deny() {
         name: "x".into(),
         args_json: "{not valid json".into(),
     };
-    let plan = looop.authorize(&params, &call_bad);
+    let cancel = Cancel::new();
+    let plan = looop.authorize(&params, &call_bad, &cancel);
     assert!(
         matches!(plan, CallPlan::Deny(_)),
         "malformed JSON must be Deny, got Execute"
@@ -237,7 +238,7 @@ fn p1_96e8_authorize_malformed_json_is_deny() {
         name: "x".into(),
         args_json: "null".into(),
     };
-    let plan2 = looop.authorize(&params, &call_null);
+    let plan2 = looop.authorize(&params, &call_null, &cancel);
     assert!(matches!(plan2, CallPlan::Deny(_)), "null must be Deny");
     let batch2 = looop.run_tool_batch(&params, &[call_null], &Cancel::new());
     match &batch2[0] {

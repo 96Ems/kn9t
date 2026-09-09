@@ -1,17 +1,31 @@
 //! R-PCORE-040 — SSE line splitter. Buffers across Read-boundary splits.
+//!
+//! 96E-40: `sse_lines` now accepts `Option<Cancel>` and checks cancel at each
+//! parsed event, not just at read() boundaries. This fixes the intermittent
+//! cancel bug caused by BufReader buffering multiple events in one read().
 
+use kn9t_core::Cancel;
 use std::io::{self, BufRead, BufReader, Read};
 
 /// Returns an iterator over complete SSE event payloads (the `data: ...` part),
 /// correctly reassembled across chunk boundaries.
-pub fn sse_lines(r: impl Read) -> impl Iterator<Item = Result<Vec<u8>, io::Error>> {
+///
+/// 96E-40: When `cancel` is `Some`, checks `cancel.cancelled()` at each parsed
+/// event, not just at read() boundaries. This ensures cancel takes effect even
+/// when BufReader has buffered multiple events from a single underlying read().
+pub fn sse_lines(
+    r: impl Read,
+    cancel: Option<Cancel>,
+) -> impl Iterator<Item = Result<Vec<u8>, io::Error>> {
     SseIter {
         reader: BufReader::new(r),
+        cancel,
     }
 }
 
 struct SseIter<R: Read> {
     reader: BufReader<R>,
+    cancel: Option<Cancel>,
 }
 
 impl<R: Read> Iterator for SseIter<R> {
@@ -19,6 +33,17 @@ impl<R: Read> Iterator for SseIter<R> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
+            // 96E-40: Check cancel at EACH iteration, not just at read() boundaries.
+            // This catches cancel even when processing already-buffered data.
+            if let Some(ref cancel) = self.cancel {
+                if cancel.cancelled() {
+                    return Some(Err(io::Error::new(
+                        io::ErrorKind::ConnectionAborted,
+                        "cancelled",
+                    )));
+                }
+            }
+
             let mut line = String::new();
             match self.reader.read_line(&mut line) {
                 Err(e) => return Some(Err(e)),

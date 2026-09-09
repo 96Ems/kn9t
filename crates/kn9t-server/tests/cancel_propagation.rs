@@ -14,59 +14,45 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Bug reproduction: InteractionRegistry::wait ignores Cancel entirely.
+/// 96E-39 FIX VERIFIED: InteractionRegistry::wait now respects Cancel.
 ///
-/// This test SHOULD pass once the fix is applied. Currently it will timeout
-/// (the wait blocks forever) or we bound it to fail fast.
+/// This test verifies the fix is working: wait() returns None quickly
+/// when cancel fires, instead of blocking forever.
 #[test]
-fn interaction_wait_ignores_cancel() {
+fn interaction_wait_respects_cancel() {
     let reg = Arc::new(InteractionRegistry::new());
     let (_id, handle) = reg.create("sess-1", "test-plugin", &json!({"q": "test"}));
 
-    // Create a cancel token (this would be the turn's cancel in real code)
     let cancel = Cancel::new();
     let cancel_c = cancel.clone();
 
-    // Start a thread that will wait on the interaction
     let reg_c = reg.clone();
     let waiter = std::thread::spawn(move || {
         let start = Instant::now();
-        // BUG: InteractionRegistry::wait() takes no Cancel parameter, so it
-        // cannot observe cancel.cancelled(). It will block forever.
-        let _result = reg_c.wait(&handle);
-        start.elapsed()
+        // FIX: wait() now takes Cancel and returns Option<Value>
+        let result = reg_c.wait(&handle, &cancel_c);
+        (start.elapsed(), result)
     });
 
     // Give the waiter time to enter the wait
     std::thread::sleep(Duration::from_millis(50));
 
     // Fire cancel (simulates user pressing ESC)
-    let start = Instant::now();
-    cancel_c.cancel();
+    cancel.cancel();
 
-    // The waiter should return quickly after cancel fires.
-    // BUG: it won't, because wait() doesn't check cancel.
-    // We need to resolve it manually to unblock the test.
-    // UNCOMMENT THE FOLLOWING LINE TO SEE THE BUG (test will hang):
-    // let elapsed = waiter.join().unwrap();
+    // The waiter should return quickly with None
+    let (elapsed, result) = waiter.join().unwrap();
 
-    // For now, resolve it so the test doesn't hang forever, but assert
-    // that cancel SHOULD have worked (this assert will fail, proving the bug).
-    std::thread::sleep(Duration::from_millis(100));
-    let cancel_acknowledged = cancel.cancelled();
     assert!(
-        cancel_acknowledged,
-        "Cancel should be set"
+        result.is_none(),
+        "Cancelled wait should return None"
     );
-
-    // Since wait() doesn't take Cancel, we can't actually test it blocks.
-    // The API itself is the bug: fn wait(&self, handle) should be
-    // fn wait(&self, handle, cancel: &Cancel) -> Option<Value>
-    //
-    // This test documents the missing API. The fix will add the Cancel param.
-    // For now, just resolve to clean up.
-    // reg.resolve(id, json!({"aborted": true}));
-    // waiter.join().unwrap();
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "Cancel should unblock quickly, took {:?}",
+        elapsed
+    );
+    eprintln!("FIX VERIFIED: interaction_wait returned in {:?}", elapsed);
 }
 
 /// Bug reproduction: ApprovalRegistry::wait ignores Cancel.

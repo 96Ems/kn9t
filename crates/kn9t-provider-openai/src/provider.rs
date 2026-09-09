@@ -104,11 +104,12 @@ impl OpenAiProvider {
     }
 
     /// Make one streaming attempt; returns the SSE chunk iterator.
+    /// 96E-40: cancel is now passed to sse_lines_cancellable for mid-buffer cancel.
     fn attempt(
         &self,
         req: &Request<'_>,
         model_ref: ModelRef,
-        cancel: Option<Cancel>,
+        cancel: Cancel,
     ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
         let body = build_request(
             req,
@@ -136,7 +137,7 @@ impl OpenAiProvider {
         };
 
         let timeout = Duration::from_millis(self.config.connect_timeout_ms);
-        let mut resp = send(http_req, timeout, cancel)?;
+        let mut resp = send(http_req, timeout, Some(cancel.clone()))?;
 
         if resp.status != 200 {
             let body = std::io::read_to_string(&mut resp.body).unwrap_or_default();
@@ -161,8 +162,9 @@ impl OpenAiProvider {
 
         if streaming {
             // SSE streaming path.
+            // 96E-40: pass cancel to sse_lines for mid-buffer cancel support.
             let mut state = DecodeState::new();
-            let lines = sse_lines(resp.body);
+            let lines = sse_lines(resp.body, Some(cancel));
             let iter = lines.flat_map(move |line_res| match line_res {
                 Err(e) => vec![Err(ProvErr::Stream(e.to_string()))],
                 Ok(bytes) => match state.decode(&bytes, &quirks, &model_ref) {
@@ -210,7 +212,7 @@ impl Provider for OpenAiProvider {
             if cancel_c.cancelled() {
                 return Err(ProvErr::Stream("cancelled".into()));
             }
-            self.attempt(req, model_ref.clone(), Some(cancel_c.clone()))
+            self.attempt(req, model_ref.clone(), cancel_c.clone())
         })
     }
 }

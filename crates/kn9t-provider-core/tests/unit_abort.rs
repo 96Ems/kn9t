@@ -95,7 +95,7 @@ fn abort_interrupts_http_sse_quickly() {
         tls_insecure: false,
     };
     let resp = send(req, Duration::from_secs(5), Some(cancel)).expect("send ok");
-    let mut lines = kn9t_provider_core::sse::sse_lines(resp.body);
+    let mut lines = kn9t_provider_core::sse::sse_lines(resp.body, None);
     eprintln!("test: reading first line");
     let first = lines.next().expect("first").expect("ok");
     eprintln!("test: first line ok {:?}", first);

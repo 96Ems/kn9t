@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use kn9t_core::{ApprovalCtx, ApprovalId, Approver, Decision, LiveEvent, ToolCall};
+use kn9t_core::{ApprovalCtx, ApprovalId, Approver, Cancel, Decision, LiveEvent, ToolCall};
 
 // ── Fingerprint ──────────────────────────────────────────────────────────────
 /// Canonical fingerprint for a tool call, used for session/always caching.
@@ -269,17 +269,39 @@ impl ApprovalRegistry {
             .remove(&id);
     }
 
-    /// Block until `id` is resolved. Caller must have created the slot.
-    fn wait(&self, slot: Arc<ApprovalSlot>) -> Decision {
+    /// Block until `id` is resolved or `cancel` fires.
+    /// 96E-39: Returns Deny if cancelled (ESC during pending approval = abort).
+    fn wait(&self, slot: Arc<ApprovalSlot>, id: u64, cancel: &Cancel) -> Decision {
         let mut guard = slot
             .decision
             .lock()
             .expect("policy.rs: ApprovalRegistry::wait decision lock poisoned");
+
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
         while guard.is_none() {
-            guard = slot
+            // 96E-39: Check cancel at each iteration
+            if cancel.cancelled() {
+                eprintln!("[approval] wait id={} cancelled", id);
+                // Clean up the pending slot
+                self.inner
+                    .lock()
+                    .expect("policy.rs: ApprovalRegistry::wait cleanup lock poisoned")
+                    .remove(&id);
+                self.meta
+                    .lock()
+                    .expect("policy.rs: ApprovalRegistry::wait meta cleanup lock poisoned")
+                    .remove(&id);
+                return Decision::Deny {
+                    reason: "cancelled".to_string(),
+                };
+            }
+
+            let (new_guard, _timeout) = slot
                 .cvar
-                .wait(guard)
+                .wait_timeout(guard, POLL_INTERVAL)
                 .expect("policy.rs: ApprovalRegistry::wait condvar wait poisoned");
+            guard = new_guard;
         }
         guard
             .clone()
@@ -435,7 +457,8 @@ impl Approver for InteractiveApprover {
         // Blocks until `POST /approve` arrives. The human wait happens here, server-side,
         // *after* the hook returned — so a user taking their time cannot trip the plugin's
         // 30 s hook timeout (ADR-0008).
-        let decision = self.registry.wait(slot);
+        // 96E-39: pass cancel so ESC can abort the approval wait.
+        let decision = self.registry.wait(slot, id, ctx.cancel);
         self.registry.remove(id);
         decision
     }

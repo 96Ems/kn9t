@@ -314,9 +314,10 @@ impl ReactLoop {
         cancel: &Cancel,
     ) -> Vec<Content> {
         // Decide each call up front (hooks, ADR-0008) preserving order; then execute.
+        // 96E-39: pass cancel so approval waits can be aborted.
         let mut plans: Vec<CallPlan> = Vec::with_capacity(calls.len());
         for call in calls {
-            plans.push(self.authorize(params, call));
+            plans.push(self.authorize(params, call, cancel));
         }
 
         // Execute: split into parallel-safe (run concurrently) and the rest (sequential),
@@ -460,8 +461,9 @@ impl ReactLoop {
     /// Failure posture (DESIGN §13.5) is unchanged: a hook that errors or times out yields
     /// `Deny` — a policy that cannot answer is not permission. That is distinct from *no
     /// policy installed*, which yields `Allow` (ADR-0008 decision 5).
+    /// 96E-39: pass cancel so approval waits can be aborted.
     #[doc(hidden)]
-    pub fn authorize(&self, params: &RunParams, call: &ToolCall) -> CallPlan {
+    pub fn authorize(&self, params: &RunParams, call: &ToolCall, cancel: &Cancel) -> CallPlan {
         // Session-scoped tool blocking (tools enable/disable). Checked before args
         // parsing and before policy hooks: a disabled tool must never reach parsing,
         // `before_tool_call`, or `Tool::execute`. The provider still saw the tool in
@@ -510,7 +512,7 @@ impl ReactLoop {
         match self.hook_before_tool_call(&call.name, &args, &params.cwd) {
             HookVeto::Allow => CallPlan::Execute { args },
             HookVeto::Deny { reason } => CallPlan::Deny(reason),
-            HookVeto::Ask { reason } => self.request_approval(params, call, args, &reason),
+            HookVeto::Ask { reason } => self.request_approval(params, call, args, &reason, cancel),
             // `Replace` permits the call with rewritten arguments. The plugin that rewrote
             // them has already judged them, so this does not re-ask.
             HookVeto::Replace { args: new_args } => CallPlan::Execute { args: new_args },
@@ -521,12 +523,15 @@ impl ReactLoop {
     ///
     /// The `Approver` blocks this thread until `POST /approve` arrives (or the scope cache
     /// answers immediately), so no polling and no extra state machine here.
+    ///
+    /// 96E-39: pass cancel so ESC can abort the approval wait.
     fn request_approval(
         &self,
         params: &RunParams,
         call: &ToolCall,
         args: serde_json::Value,
         reason: &str,
+        cancel: &Cancel,
     ) -> CallPlan {
         // The approver echoes the call back to the user, so give it the arguments actually
         // being dispatched (a `Replace` may have rewritten them). Local to this request and
@@ -540,6 +545,7 @@ impl ReactLoop {
         let ctx = kn9t_provider_core::ApprovalCtx {
             session: &params.session.0,
             sink: self.bus.as_ref(),
+            cancel,
         };
         match self.approver.request(&dispatch, &params.cwd, reason, &ctx) {
             Decision::Allow => CallPlan::Execute { args },

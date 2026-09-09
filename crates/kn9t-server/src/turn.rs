@@ -144,12 +144,20 @@ pub fn is_turn_running(state: &Arc<ServerState>, session: &str) -> bool {
 /// Fire the cancel for `session`'s running turn, if any.
 pub fn abort(state: &Arc<ServerState>, session: &str) {
     crate::log!("[DEBUG abort] session={}", session);
-    if let Some(c) =safe_expect!(state.aborts.lock(), "aborts poisoned").get(session) {
+    if let Some(c) = safe_expect!(state.aborts.lock(), "aborts poisoned").get(session) {
         crate::log!("[DEBUG abort] firing cancel for session={}", session);
         c.cancel();
     } else {
         crate::log!("[DEBUG abort] no cancel registered for session={}", session);
     }
+}
+
+/// Get the Cancel for `session`'s running turn, if any.
+/// 96E-39: used by host_api to pass Cancel to blocking waits.
+pub fn get_cancel(state: &Arc<ServerState>, session: &str) -> Option<Cancel> {
+    safe_expect!(state.aborts.lock(), "aborts poisoned")
+        .get(session)
+        .cloned()
 }
 
 /// Record an approval decision (R-SRV-010 `/approve`).

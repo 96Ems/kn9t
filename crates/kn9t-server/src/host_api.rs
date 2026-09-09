@@ -239,8 +239,13 @@ impl ServerHostApi {
             payload: prompt_payload,
         });
         // Block on condvar until `POST /ui-respond` resolves it.
-        let response = self.state.interaction_registry.wait(&handle);
-        Ok(json!({ "payload": response }))
+        // 96E-39: get the session's Cancel so ESC can abort the wait.
+        let cancel = crate::turn::get_cancel(&self.state, session)
+            .unwrap_or_else(Cancel::new);
+        match self.state.interaction_registry.wait(&handle, &cancel) {
+            Some(response) => Ok(json!({ "payload": response })),
+            None => Err("interaction cancelled".to_string()),
+        }
     }
 
     /// `provider_complete` — one real provider call with the session's model.
@@ -533,10 +538,14 @@ impl ServerHostApi {
         // worker thread, not the turn thread, so the old thread-local sink was always unset
         // here and every approval fell through to "no sink" -> Deny. Now the prompt actually
         // reaches the session's SSE stream.
+        // 96E-39: use session's cancel so ESC can abort the approval wait and tool execution.
+        let cancel = crate::turn::get_cancel(&self.state, session)
+            .unwrap_or_else(Cancel::new);
         let approval_sink = self.sink(session);
         let ctx = kn9t_core::ApprovalCtx {
             session,
             sink: &approval_sink,
+            cancel: &cancel,
         };
         match self.state.approver_snapshot().request(
             &call,
@@ -555,7 +564,7 @@ impl ServerHostApi {
         }
 
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
-        let cancel = Cancel::new();
+        // 96E-39: reuse session's cancel (already fetched above)
         let ctx = ToolCtx {
             cwd: session_cwd,
             read: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),

@@ -88,7 +88,7 @@ impl ReplayProvider {
         // each yielded Vec<u8> is directly the JSON payload — no data_events wrapper needed.
         let reader = SegmentedReader::new(self.fixture.body.clone(), &self.fixture.chunks);
         let mut out = Vec::new();
-        for item in sse_lines(reader) {
+        for item in sse_lines(reader, None) {
             let payload =
                 item.map_err(|e| ProvErr::Stream(format!("replay: io while splitting sse: {e}")))?;
             let chunk: Chunk = serde_json::from_slice(&payload)

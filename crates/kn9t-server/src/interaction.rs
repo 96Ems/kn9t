@@ -12,10 +12,15 @@
 //! `POST /ui-respond {id, payload}` resolves a pending slot, and the
 //! `HostApi` op `interaction_request {session, payload}` blocks the plugin's
 //! worker thread until the client responds.
+//!
+//! 96E-39: `wait` now accepts a `Cancel` to allow the turn to abort a pending
+//! interaction request when the user hits ESC.
 
+use kn9t_core::Cancel;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -68,21 +73,41 @@ impl InteractionRegistry {
         (id, Arc::new(InteractionSlotHandle { id, slot }))
     }
 
-    /// Block until `id` is resolved (by `POST /ui-respond`). The caller must hold
-    /// the `InteractionSlotHandle` returned by `create`.
-    pub fn wait(&self, handle: &InteractionSlotHandle) -> Value {
+    /// Block until `id` is resolved (by `POST /ui-respond`) or `cancel` fires.
+    ///
+    /// 96E-39: Now accepts a `Cancel` to allow the turn to abort a pending
+    /// interaction request when the user hits ESC. Returns `None` if cancelled.
+    pub fn wait(&self, handle: &InteractionSlotHandle, cancel: &Cancel) -> Option<Value> {
         let mut guard = handle
             .slot
             .response
             .lock()
             .expect("interaction.rs: InteractionRegistry::wait lock poisoned");
+
+        // Poll interval for cancel check. Short enough to be responsive, long
+        // enough to avoid busy-looping.
+        const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
         while guard.is_none() {
-            guard = handle
+            // 96E-39: Check cancel at each iteration
+            if cancel.cancelled() {
+                eprintln!("[interaction] wait id={} cancelled", handle.id);
+                // Clean up the pending slot
+                self.inner
+                    .lock()
+                    .expect("interaction.rs: InteractionRegistry::wait cleanup lock poisoned")
+                    .remove(&handle.id);
+                return None;
+            }
+
+            let (new_guard, _timeout) = handle
                 .slot
                 .cvar
-                .wait(guard)
+                .wait_timeout(guard, POLL_INTERVAL)
                 .expect("interaction.rs: InteractionRegistry::wait cvar poisoned");
+            guard = new_guard;
         }
+
         let v = guard
             .clone()
             .expect("interaction.rs: wait loop must have Some");
@@ -91,7 +116,7 @@ impl InteractionRegistry {
             .lock()
             .expect("interaction.rs: InteractionRegistry::wait cleanup lock poisoned")
             .remove(&handle.id);
-        v
+        Some(v)
     }
 
     /// Resolve `id` with `response`, waking any waiter. Returns `true` if a pending

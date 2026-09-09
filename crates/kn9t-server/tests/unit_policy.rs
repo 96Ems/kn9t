@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use kn9t_core::{Approver, ApprovalCtx, CallId, Decision, EventSink, LiveEvent, ToolCall};
+use kn9t_core::{Approver, ApprovalCtx, CallId, Cancel, Decision, EventSink, LiveEvent, ToolCall};
 use kn9t_server::policy::{
     fingerprint, ApprovalCache, ApprovalRegistry, InteractiveApprover, NonInteractiveApprover,
 };
@@ -69,6 +69,7 @@ fn approver_emits_and_blocks_until_resolved() {
         let ctx = ApprovalCtx {
             session: "test-session",
             sink: s.as_ref(),
+            cancel: &Cancel::new(),
         };
         a_c.request(&bash_call("rm -rf /"), Path::new("/"), "dangerous", &ctx)
     });
@@ -93,6 +94,7 @@ fn approver_propagates_deny() {
         let ctx = ApprovalCtx {
             session: "test-session",
             sink: s.as_ref(),
+            cancel: &Cancel::new(),
         };
         a_c.request(&bash_call("rm -rf /"), Path::new("/"), "dangerous", &ctx)
     });
@@ -127,6 +129,7 @@ fn approver_forwards_plugin_reason() {
         let ctx = ApprovalCtx {
             session: "test-session",
             sink: s.as_ref(),
+            cancel: &Cancel::new(),
         };
         a_c.request(
             &bash_call("git push"),
@@ -162,6 +165,7 @@ fn approver_emits_from_a_foreign_thread() {
         let ctx = ApprovalCtx {
             session: "sess-foreign",
             sink: sink_c.as_ref(),
+            cancel: &Cancel::new(),
         };
         a_c.request(&bash_call("ls"), Path::new("/"), "because", &ctx)
     });
@@ -181,6 +185,7 @@ fn non_interactive_approver_denies_ask() {
     let ctx = ApprovalCtx {
         session: "test-session",
         sink: sink.as_ref(),
+            cancel: &Cancel::new(),
     };
     match a.request(&bash_call("rm x"), Path::new("/"), "mutation", &ctx) {
         Decision::Deny { reason } => assert!(reason.contains("mutation")),
@@ -205,6 +210,7 @@ fn cache_session_allows_second_call_without_prompt() {
         let ctx = ApprovalCtx {
             session: "sess1",
             sink: s.as_ref(),
+            cancel: &Cancel::new(),
         };
         a_c.request(
             &bash_call("rm -rf /tmp/x"),
@@ -226,6 +232,7 @@ fn cache_session_allows_second_call_without_prompt() {
         let ctx = ApprovalCtx {
             session: "sess1",
             sink: s.as_ref(),
+            cancel: &Cancel::new(),
         };
         a.request(
             &bash_call("rm -rf /tmp/x"),
@@ -249,6 +256,7 @@ fn cache_session_allows_second_call_without_prompt() {
         let ctx = ApprovalCtx {
             session: "sess2",
             sink: s.as_ref(),
+            cancel: &Cancel::new(),
         };
         a2.request(
             &bash_call("rm -rf /tmp/x"),
@@ -286,6 +294,7 @@ fn cache_persistent_allows_across_sessions() {
         let ctx = ApprovalCtx {
             session: "s1",
             sink: s.as_ref(),
+            cancel: &Cancel::new(),
         };
         a_c.request(
             &bash_call("rm -rf /tmp/persist"),
@@ -307,6 +316,7 @@ fn cache_persistent_allows_across_sessions() {
         let ctx = ApprovalCtx {
             session: "different",
             sink: s.as_ref(),
+            cancel: &Cancel::new(),
         };
         a.request(
             &bash_call("rm -rf /tmp/persist"),

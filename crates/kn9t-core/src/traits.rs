@@ -228,7 +228,10 @@ pub trait Approver: Send + Sync {
 
 /// R-CORE-270 — what an [`Approver`] needs beyond the call itself: which session to prompt,
 /// and where to emit the prompt. Borrowed rather than owned so the caller keeps its `Arc`.
+///
+/// 96E-39: `cancel` added so approval waits can be aborted when the user hits ESC.
 pub struct ApprovalCtx<'a> {
     pub session: &'a str,
     pub sink: &'a dyn crate::bus::EventSink,
+    pub cancel: &'a crate::Cancel,
 }

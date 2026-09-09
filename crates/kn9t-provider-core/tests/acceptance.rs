@@ -12,8 +12,8 @@ fn pcore_sse_boundary() {
     let part2 = &whole[split_at..];
     let combined: Vec<u8> = part1.iter().chain(part2.iter()).copied().collect();
 
-    let from_whole: Vec<Vec<u8>> = sse_lines(&whole[..]).collect::<Result<_, _>>().unwrap();
-    let from_combined: Vec<Vec<u8>> = sse_lines(&combined[..]).collect::<Result<_, _>>().unwrap();
+    let from_whole: Vec<Vec<u8>> = sse_lines(&whole[..], None).collect::<Result<_, _>>().unwrap();
+    let from_combined: Vec<Vec<u8>> = sse_lines(&combined[..], None).collect::<Result<_, _>>().unwrap();
 
     assert_eq!(
         from_whole, from_combined,
@@ -26,7 +26,7 @@ fn pcore_sse_boundary() {
 #[test]
 fn pcore_sse_done_terminates() {
     let body = b"data: {\"a\":1}\n\ndata: [DONE]\n\n";
-    let events: Vec<Vec<u8>> = sse_lines(&body[..]).collect::<Result<_, _>>().unwrap();
+    let events: Vec<Vec<u8>> = sse_lines(&body[..], None).collect::<Result<_, _>>().unwrap();
     assert_eq!(events.len(), 1, "[DONE] must terminate the iterator");
 }
 
