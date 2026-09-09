@@ -277,6 +277,41 @@ been working on them separately.
 
 ---
 
+## 9.2 Clippy lint suppression — per-call, not per-file
+
+**RULE:** Never use `#![allow(clippy::...)]` at file level to suppress safety lints like
+`unwrap_used` or `expect_used`. File-level allows disable protection for the entire module,
+hiding new unsafe additions from review.
+
+**Granularity order (best to worst):**
+
+1. **Per-call** (best) — inline `#[allow]` on the exact expression:
+   ```rust
+   #[allow(clippy::unwrap_used)] // poisoned mutex = fatal, no recovery
+   let guard = self.inner.lock().unwrap();
+   ```
+
+2. **Per-function** (acceptable) — when a function has multiple related unwraps:
+   ```rust
+   #[allow(clippy::expect_used)] // all expects here are mutex poisoned checks
+   fn update_state(&self) { ... }
+   ```
+
+3. **Per-file** (forbidden for safety lints) — loses all protection for new code.
+
+**Why traits/macros don't work:** A wrapper trait like `SafeUnwrap` requires importing it
+everywhere, creates cross-crate dependencies (GI-1/GI-6 violations), and the `#[allow]`
+inside the trait impl doesn't suppress the lint at the call site in all clippy versions.
+
+**Acceptable patterns for `unwrap`/`expect`:**
+- Mutex/RwLock `.lock().unwrap()` — poisoned = another thread panicked, unrecoverable
+- `"127.0.0.1:{port}".parse().unwrap()` — static format, cannot fail
+- `lua.create_table().unwrap()` — only fails on OOM, which panics anyway
+
+**Each allow must have a comment explaining why the panic is acceptable.**
+
+---
+
 ## 10. No patches, fix the architecture
 
 When a bug reveals a design flaw, **fix the design** — do not patch around it. Patches
