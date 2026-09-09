@@ -28,6 +28,7 @@ base64             = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
+kn9t-test-support = { path = "../kn9t-test-support" }
 
 [[bin]]
 name = "kn9t-server"

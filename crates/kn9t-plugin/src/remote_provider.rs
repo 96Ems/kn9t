@@ -133,7 +133,8 @@ fn serialise_request(req: &Request) -> Value {
 
 // ── chunk decoding ────────────────────────────────────────────────────────────
 
-fn decode_chunk_body(body: &Value) -> Result<Option<Chunk>, ProvErr> {
+#[doc(hidden)]
+pub fn decode_chunk_body(body: &Value) -> Result<Option<Chunk>, ProvErr> {
     let kind = body.get("kind").and_then(|k| k.as_str()).unwrap_or("");
     let idx = body.get("idx").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
 
@@ -191,7 +192,8 @@ fn decode_chunk_body(body: &Value) -> Result<Option<Chunk>, ProvErr> {
     Ok(Some(c))
 }
 
-fn decode_stop(body: &Value) -> StopReason {
+#[doc(hidden)]
+pub fn decode_stop(body: &Value) -> StopReason {
     match body.get("stop").and_then(|s| s.as_str()).unwrap_or("") {
         s if s.to_ascii_lowercase().contains("abort") => StopReason::Aborted,
         s if s.to_ascii_lowercase().contains("tool") => StopReason::ToolUse,
@@ -204,7 +206,8 @@ fn decode_stop(body: &Value) -> StopReason {
     }
 }
 
-fn decode_tokens(u: &Value) -> Tokens {
+#[doc(hidden)]
+pub fn decode_tokens(u: &Value) -> Tokens {
     let get = |keys: &[&str]| -> u32 {
         keys.iter()
             .find_map(|k| u.get(*k).and_then(|v| v.as_u64()))
@@ -229,70 +232,3 @@ fn decode_tokens(u: &Value) -> Tokens {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Test that decode_stop correctly handles ABORTED from custom provider cancel fix.
-    #[test]
-    fn decode_stop_handles_aborted() {
-        // The custom provider fix returns stop="ABORTED" when cancelled mid-stream
-        let body = json!({"stop": "ABORTED"});
-        assert!(matches!(decode_stop(&body), StopReason::Aborted));
-
-        // Also test lowercase
-        let body = json!({"stop": "aborted"});
-        assert!(matches!(decode_stop(&body), StopReason::Aborted));
-
-        // And mixed case
-        let body = json!({"stop": "Aborted"});
-        assert!(matches!(decode_stop(&body), StopReason::Aborted));
-
-        // And with prefix/suffix
-        let body = json!({"stop": "user_aborted"});
-        assert!(matches!(decode_stop(&body), StopReason::Aborted));
-    }
-
-    #[test]
-    fn decode_stop_handles_tool_call() {
-        let body = json!({"stop": "TOOL_CALL"});
-        assert!(matches!(decode_stop(&body), StopReason::ToolUse));
-
-        let body = json!({"stop": "tool_use"});
-        assert!(matches!(decode_stop(&body), StopReason::ToolUse));
-    }
-
-    #[test]
-    fn decode_stop_handles_length() {
-        let body = json!({"stop": "LENGTH"});
-        assert!(matches!(decode_stop(&body), StopReason::Length));
-
-        let body = json!({"stop": "max_tokens"});
-        assert!(matches!(decode_stop(&body), StopReason::Length));
-    }
-
-    #[test]
-    fn decode_stop_defaults_to_stop() {
-        let body = json!({"stop": "STOP"});
-        assert!(matches!(decode_stop(&body), StopReason::Stop));
-
-        let body = json!({"stop": "end_turn"});
-        assert!(matches!(decode_stop(&body), StopReason::Stop));
-
-        // Missing stop field
-        let body = json!({});
-        assert!(matches!(decode_stop(&body), StopReason::Stop));
-    }
-
-    /// Ensure ABORTED takes priority (checked first).
-    #[test]
-    fn decode_stop_aborted_priority() {
-        // Edge case: what if someone sends "aborted_tool"?
-        // ABORTED should match first since it's checked first
-        let body = json!({"stop": "aborted_tool"});
-        assert!(
-            matches!(decode_stop(&body), StopReason::Aborted),
-            "ABORTED should be checked before TOOL"
-        );
-    }
-}

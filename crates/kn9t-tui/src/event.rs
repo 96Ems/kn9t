@@ -102,7 +102,8 @@ impl TickControl {
     pub fn set_streaming(&self, val: bool) {
         self.streaming.store(val, Ordering::Relaxed);
     }
-    #[cfg(test)]
+    /// Test helper — creates a dummy TickControl not connected to any thread.
+    #[doc(hidden)]
     pub fn dummy() -> Self {
         Self {
             streaming: Arc::new(AtomicBool::new(false)),

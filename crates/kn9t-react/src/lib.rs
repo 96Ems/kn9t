@@ -24,3 +24,9 @@ pub use loop_::{ReactConfig, ReactError, ReactLoop, ReadMap, RunParams};
 
 // R-RCT-100: re-export the hook surface so callers can `use kn9t_react::HookHost`.
 pub use kn9t_provider_core::{HookHost, HookVeto, NextTurnPatch, NoopHookHost};
+
+// Re-export internal helpers for integration tests (tests/unit_exec.rs).
+// `#[doc(hidden)]` keeps them out of the public docs while making them
+// accessible to the test binary, which links the crate in non-test mode.
+#[doc(hidden)]
+pub use exec::{ensure_nonempty_content, estimated_assembled, synth_error, CallPlan};

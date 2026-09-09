@@ -1,0 +1,16 @@
+[package]
+name = "kn9t-tui-test-support"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+description = "Test utilities for kn9t-tui — GI-6 compliant (no kn9t-core dependency)"
+
+# This crate provides test helpers for kn9t-tui without violating GI-6.
+# It depends only on kn9t-tui itself (for wire types) and external crates.
+
+[dependencies]
+kn9t-tui = { path = "../kn9t-tui" }
+serde_json.workspace = true
+
+[lints.clippy]
+unwrap_used = "allow"  # Test code is allowed to panic on failure

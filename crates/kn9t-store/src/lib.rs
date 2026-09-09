@@ -22,3 +22,6 @@ pub use plan::{
     close_orphan_tool_calls, close_orphan_tool_calls_with, compact_span, has_orphan_tool_call,
 };
 pub use session::create_session;
+
+#[doc(hidden)]
+pub use session::{event_kind_name, now_ts};

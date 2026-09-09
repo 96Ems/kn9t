@@ -925,6 +925,7 @@ dependencies = [
  "kn9t-plugin",
  "kn9t-provider-core",
  "kn9t-provider-replay",
+ "kn9t-test-support",
  "serde_json",
 ]
 
@@ -939,6 +940,7 @@ dependencies = [
  "kn9t-provider-openai",
  "kn9t-react",
  "kn9t-store",
+ "kn9t-test-support",
  "mime_guess",
  "serde",
  "serde_json",
@@ -963,12 +965,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "kn9t-test-support"
+version = "0.1.0"
+dependencies = [
+ "kn9t-core",
+ "kn9t-plugin",
+ "kn9t-provider-core",
+ "kn9t-provider-replay",
+ "kn9t-react",
+ "serde_json",
+]
+
+[[package]]
 name = "kn9t-tui"
 version = "0.1.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",
  "crossterm 0.29.0",
+ "kn9t-tui-test-support",
  "mlua",
  "notify",
  "png 0.17.16",
@@ -981,6 +996,14 @@ dependencies = [
  "toml",
  "unicode-segmentation",
  "ureq 2.12.1",
+]
+
+[[package]]
+name = "kn9t-tui-test-support"
+version = "0.1.0"
+dependencies = [
+ "kn9t-tui",
+ "serde_json",
 ]
 
 [[package]]

@@ -12,6 +12,8 @@ members = [
     "crates/kn9t-plugin",
     "crates/kn9t-plugin-sdk",
     "crates/kn9t",
+    "crates/kn9t-test-support",
+    "crates/kn9t-tui-test-support",
     "xtask"
 ]
 

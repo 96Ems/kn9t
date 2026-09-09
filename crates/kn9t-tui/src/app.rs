@@ -2937,7 +2937,8 @@ impl App {
     /// Whether row `y` is outside the transcript as actually drawn last frame.
     ///
     /// Returns false when geometry is unknown, so clicks are never wrongly swallowed.
-    fn is_outside_transcript(&self, y: u16) -> bool {
+    #[doc(hidden)]
+    pub fn is_outside_transcript(&self, y: u16) -> bool {
         self.transcript_area
             .is_some_and(|r| y < r.y || y >= r.y + r.height)
     }

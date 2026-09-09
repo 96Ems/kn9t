@@ -1,0 +1,28 @@
+[package]
+name = "kn9t-test-support"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+description = "Shared test utilities for kn9t workspace — not for production use"
+
+# This crate is a [dev-dependency] of other crates, never a regular dependency.
+# It provides test doubles, fixtures, and helpers that should not ship in release builds.
+
+[dependencies]
+# Core types needed for test doubles (EventSink, Event, Message, etc.)
+kn9t-core = { path = "../kn9t-core" }
+
+# Plugin types for RemoteTool, PluginHost
+kn9t-plugin = { path = "../kn9t-plugin" }
+
+# Provider types for ReplayProvider, ApprovalCtx
+kn9t-provider-core = { path = "../kn9t-provider-core" }
+kn9t-provider-replay = { path = "../kn9t-provider-replay" }
+
+# React types for ReadMap
+kn9t-react = { path = "../kn9t-react" }
+
+serde_json.workspace = true
+
+[lints.clippy]
+unwrap_used = "allow"  # Test code is allowed to panic on failure

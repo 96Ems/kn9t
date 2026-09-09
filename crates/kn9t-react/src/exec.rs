@@ -305,7 +305,8 @@ impl ReactLoop {
     /// threads; unsafe tools run sequentially. Results are returned in the model's call
     /// order regardless of completion order. Each call passes before_tool_call (fail
     /// closed) which decides allow/ask/deny, then executes, then after_tool_call.
-    pub(crate) fn run_tool_batch(
+    #[doc(hidden)]
+    pub fn run_tool_batch(
         &self,
         params: &RunParams,
         calls: &[ToolCall],
@@ -458,7 +459,8 @@ impl ReactLoop {
     /// Failure posture (DESIGN §13.5) is unchanged: a hook that errors or times out yields
     /// `Deny` — a policy that cannot answer is not permission. That is distinct from *no
     /// policy installed*, which yields `Allow` (ADR-0008 decision 5).
-    fn authorize(&self, params: &RunParams, call: &ToolCall) -> CallPlan {
+    #[doc(hidden)]
+    pub fn authorize(&self, params: &RunParams, call: &ToolCall) -> CallPlan {
         // Session-scoped tool blocking (tools enable/disable). Checked before args
         // parsing and before policy hooks: a disabled tool must never reach parsing,
         // `before_tool_call`, or `Tool::execute`. The provider still saw the tool in
@@ -550,14 +552,16 @@ impl ReactLoop {
 }
 
 /// Authorization outcome for one call.
-enum CallPlan {
+#[doc(hidden)]
+pub enum CallPlan {
     Execute { args: serde_json::Value },
     Deny(String),
 }
 
 /// A synthesized `is_error` tool result so no `ToolCall` is left without its `ToolResult`
 /// (DESIGN sec.7.5 invariant; R-RCT-060).
-fn synth_error(id: &kn9t_provider_core::CallId, msg: &str) -> Content {
+#[doc(hidden)]
+pub fn synth_error(id: &kn9t_provider_core::CallId, msg: &str) -> Content {
     Content::ToolResult {
         id: id.clone(),
         content: vec![Content::Text {
@@ -570,7 +574,8 @@ fn synth_error(id: &kn9t_provider_core::CallId, msg: &str) -> Content {
 /// Ensure tool result content is never empty (provider APIs reject empty content).
 /// If the content vec is empty or contains only empty Text blocks, substitute a
 /// placeholder so the API call doesn't fail with "message content cannot be empty".
-fn ensure_nonempty_content(content: Vec<Content>) -> Vec<Content> {
+#[doc(hidden)]
+pub fn ensure_nonempty_content(content: Vec<Content>) -> Vec<Content> {
     // Check if content is effectively empty
     let is_empty = content.is_empty()
         || content.iter().all(|c| match c {
@@ -588,7 +593,8 @@ fn ensure_nonempty_content(content: Vec<Content>) -> Vec<Content> {
 
 /// A zeroed, estimated `Assembled` used when the stream was cut before any usage arrived
 /// and no message survives (R-RCT-050).
-fn estimated_assembled(model: &ModelRef) -> Assembled {
+#[doc(hidden)]
+pub fn estimated_assembled(model: &ModelRef) -> Assembled {
     Assembled {
         message: Message {
             id: MsgId::new(),
@@ -605,407 +611,3 @@ fn estimated_assembled(model: &ModelRef) -> Assembled {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── 96E-8: malformed JSON must not reach Tool::execute ────────────────
-    #[test]
-    fn p1_96e8_authorize_malformed_json_is_deny() {
-        use crate::loop_::RunParams;
-        use kn9t_core::{
-            Approver, CallId, Cancel, Content, Decision, Event, EventSink, HookHost, LiveEvent,
-            Message, ModelRef, RequestPlan, SessionId, SessionSnapshot, Store, StoreErr, Tool,
-            ToolCall, ToolCtx, ToolRegistry, ToolSpec,
-        };
-        use kn9t_core::{CacheMode, ModelSpec, Price, Quirks, Thinking};
-        use std::collections::HashMap;
-        use std::sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc, Mutex,
-        };
-
-        struct DummyStore;
-        impl Store for DummyStore {
-            fn plan_request(&self, _s: &SessionId) -> Result<RequestPlan, StoreErr> {
-                unreachable!()
-            }
-            fn append(&self, _s: &SessionId, _e: Event) -> Result<u64, StoreErr> {
-                Ok(1)
-            }
-            fn snapshot(&self, _s: &SessionId) -> Result<SessionSnapshot, StoreErr> {
-                unreachable!()
-            }
-        }
-        struct DummyProvider;
-        impl kn9t_core::Provider for DummyProvider {
-            fn name(&self) -> &str {
-                "dummy"
-            }
-            fn stream(
-                &self,
-                _r: &kn9t_core::Request,
-                _c: &Cancel,
-            ) -> Result<
-                Box<dyn Iterator<Item = Result<kn9t_core::Chunk, kn9t_core::ProvErr>> + Send>,
-                kn9t_core::ProvErr,
-            > {
-                unreachable!()
-            }
-        }
-        struct DummyBus(Arc<Mutex<Vec<LiveEvent>>>);
-        impl EventSink for DummyBus {
-            fn emit(&self, e: LiveEvent) {
-                self.0.lock().unwrap().push(e);
-            }
-        }
-        struct AllowAllApprover;
-        impl Approver for AllowAllApprover {
-            fn request(
-                &self,
-                _c: &ToolCall,
-                _cwd: &std::path::Path,
-                _r: &str,
-                _ctx: &kn9t_provider_core::ApprovalCtx,
-            ) -> Decision {
-                Decision::Allow
-            }
-        }
-        struct CountingTool(Arc<AtomicUsize>);
-        impl Tool for CountingTool {
-            fn spec(&self) -> &ToolSpec {
-                Box::leak(Box::new(ToolSpec {
-                    name: "x".into(),
-                    description: "".into(),
-                    schema: serde_json::json!({}),
-                    hidden: false,
-                    effects: vec![],
-                    policy: Default::default(),
-                }))
-            }
-            fn execute(
-                &self,
-                _a: &serde_json::Value,
-                _c: &ToolCtx,
-                _cancel: &Cancel,
-            ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                Ok(kn9t_core::ToolOutput {
-                    content: vec![Content::Text { text: "ok".into() }],
-                    details: None,
-                    is_error: false,
-                })
-            }
-        }
-        struct CountingHook(Arc<AtomicUsize>);
-        impl HookHost for CountingHook {
-            fn before_tool_call(
-                &self,
-                _t: &str,
-                _a: &serde_json::Value,
-                _c: &std::path::Path,
-            ) -> kn9t_core::HookVeto {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                kn9t_core::HookVeto::Allow
-            }
-            fn after_tool_call(
-                &self,
-                _t: &str,
-                _a: &serde_json::Value,
-                _cwd: &std::path::Path,
-                r: Vec<Content>,
-            ) -> Vec<Content> {
-                r
-            }
-            fn before_request(
-                &self,
-                m: Vec<Message>,
-                _model: &ModelRef,
-                _s: Option<&str>,
-            ) -> Vec<Message> {
-                m
-            }
-            fn should_stop_after_turn(
-                &self,
-                _s: kn9t_core::StopReason,
-                _u: &kn9t_core::Usage,
-                _t: u32,
-            ) -> bool {
-                false
-            }
-            fn prepare_next_turn(
-                &self,
-                _s: kn9t_core::StopReason,
-                _u: &kn9t_core::Usage,
-            ) -> kn9t_core::NextTurnPatch {
-                Default::default()
-            }
-            fn get_steering(&self) -> Vec<Message> {
-                vec![]
-            }
-            fn get_followup(&self) -> Vec<Message> {
-                vec![]
-            }
-            fn get_api_key(&self, _p: &str) -> Option<String> {
-                None
-            }
-        }
-
-        let tool_calls = Arc::new(AtomicUsize::new(0));
-        let hook_calls = Arc::new(AtomicUsize::new(0));
-        let bus_events = Arc::new(Mutex::new(Vec::new()));
-        let mut tools = ToolRegistry::new();
-        tools.push(Arc::new(CountingTool(tool_calls.clone())) as Arc<dyn Tool>);
-        let looop = ReactLoop {
-            provider: Arc::new(DummyProvider),
-            store: Arc::new(DummyStore),
-            approver: Arc::new(AllowAllApprover),
-            tools,
-            hooks: Arc::new(CountingHook(hook_calls.clone())),
-            bus: Arc::new(DummyBus(bus_events.clone())),
-            compactor: None,
-        };
-        let params = RunParams {
-            session: SessionId::new(),
-            model: ModelSpec {
-                r#ref: ModelRef {
-                    provider: "test".into(),
-                    id: "m".into(),
-                },
-                api_id: "test".into(),
-                ctx_window: 100000,
-                max_out: 8000,
-                price: Price {
-                    input: 1000000,
-                    output: 1000000,
-                    cache_read: 1000000,
-                    cache_write: 1000000,
-                },
-                cache: CacheMode::None,
-                streaming: true,
-                quirks: Quirks::default(),
-            },
-            thinking: Thinking::Off,
-            max_tokens: None,
-            cwd: std::env::temp_dir(),
-            config: crate::ReactConfig::default(),
-            read_map: Arc::new(Mutex::new(HashMap::new())),
-            system: None,
-            cancel: None,
-            disabled_tools: std::collections::HashSet::new(),
-            reactivation_reminder: None,
-        };
-        // Case 1: syntactically invalid JSON
-        let call_bad = ToolCall {
-            id: CallId("c1".into()),
-            name: "x".into(),
-            args_json: "{not valid json".into(),
-        };
-        let plan = looop.authorize(&params, &call_bad);
-        assert!(
-            matches!(plan, CallPlan::Deny(_)),
-            "malformed JSON must be Deny, got {:?}",
-            match plan {
-                CallPlan::Deny(ref s) => s,
-                _ => "Execute",
-            }
-        );
-        assert_eq!(
-            tool_calls.load(Ordering::SeqCst),
-            0,
-            "tool must not be called for malformed"
-        );
-        assert_eq!(
-            hook_calls.load(Ordering::SeqCst),
-            0,
-            "hook must not be called for malformed"
-        );
-        // Also check that run_tool_batch produces is_error ToolResult and does not call tool
-        let batch = looop.run_tool_batch(&params, &[call_bad.clone()], &Cancel::new());
-        assert_eq!(batch.len(), 1);
-        match &batch[0] {
-            Content::ToolResult {
-                id,
-                is_error,
-                content,
-            } => {
-                assert_eq!(id.0, "c1");
-                assert!(*is_error, "must be is_error");
-                let txt = content
-                    .iter()
-                    .filter_map(|c| {
-                        if let Content::Text { text } = c {
-                            Some(text.as_str())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                assert!(
-                    txt.to_lowercase().contains("malformed"),
-                    "error must mention malformed, got {txt:?}"
-                );
-            }
-            _ => panic!("expected ToolResult"),
-        }
-        assert_eq!(
-            tool_calls.load(Ordering::SeqCst),
-            0,
-            "run_tool_batch must not call tool for malformed"
-        );
-        // Case 2: valid JSON but not object (null)
-        let call_null = ToolCall {
-            id: CallId("c2".into()),
-            name: "x".into(),
-            args_json: "null".into(),
-        };
-        let plan2 = looop.authorize(&params, &call_null);
-        assert!(matches!(plan2, CallPlan::Deny(_)), "null must be Deny");
-        let batch2 = looop.run_tool_batch(&params, &[call_null], &Cancel::new());
-        match &batch2[0] {
-            Content::ToolResult { is_error, .. } => assert!(*is_error),
-            _ => panic!("expected ToolResult"),
-        }
-        assert_eq!(
-            tool_calls.load(Ordering::SeqCst),
-            0,
-            "null must not reach tool"
-        );
-        // Bus must have Error events
-        let evs = bus_events.lock().unwrap();
-        assert!(
-            evs.iter().any(|e| matches!(e, LiveEvent::Error { .. })),
-            "must emit Error"
-        );
-    }
-
-    #[test]
-    fn test_synth_error_creates_tool_result() {
-        let call_id = kn9t_provider_core::CallId("call-123".into());
-        let result = synth_error(&call_id, "something failed");
-
-        match result {
-            Content::ToolResult {
-                id,
-                content,
-                is_error,
-            } => {
-                assert_eq!(id.0, "call-123");
-                assert!(is_error);
-                assert_eq!(content.len(), 1);
-                match &content[0] {
-                    Content::Text { text } => assert_eq!(text, "something failed"),
-                    _ => panic!("expected Text content"),
-                }
-            }
-            _ => panic!("expected ToolResult"),
-        }
-    }
-
-    #[test]
-    fn test_estimated_assembled_has_aborted_stop() {
-        let model = ModelRef {
-            provider: "test".into(),
-            id: "test-model".into(),
-        };
-
-        let assembled = estimated_assembled(&model);
-
-        // StopReason doesn't implement Debug, use matches! instead
-        assert!(matches!(assembled.stop, StopReason::Aborted));
-        assert!(!assembled.usage_reported);
-        assert!(assembled.message.content.is_empty());
-        // Role doesn't implement Debug, use matches! instead
-        assert!(matches!(assembled.message.role, Role::Assistant));
-    }
-
-    #[test]
-    fn test_estimated_assembled_copies_model() {
-        let model = ModelRef {
-            provider: "anthropic".into(),
-            id: "claude-3".into(),
-        };
-
-        let assembled = estimated_assembled(&model);
-
-        assert_eq!(assembled.usage.model.provider, "anthropic");
-        assert_eq!(assembled.usage.model.id, "claude-3");
-    }
-
-    /// Provider APIs (Anthropic, OpenAI) reject tool results with empty content.
-    /// `ensure_nonempty_content` must substitute a placeholder when the tool
-    /// returns an empty vec or only empty Text blocks.
-    #[test]
-    fn test_ensure_nonempty_content_empty_vec() {
-        let result = ensure_nonempty_content(vec![]);
-        assert_eq!(result.len(), 1);
-        match &result[0] {
-            Content::Text { text } => assert_eq!(text, "(no output)"),
-            _ => panic!("expected Text"),
-        }
-    }
-
-    #[test]
-    fn test_ensure_nonempty_content_empty_text() {
-        let input = vec![Content::Text {
-            text: String::new(),
-        }];
-        let result = ensure_nonempty_content(input);
-        assert_eq!(result.len(), 1);
-        match &result[0] {
-            Content::Text { text } => assert_eq!(text, "(no output)"),
-            _ => panic!("expected Text"),
-        }
-    }
-
-    #[test]
-    fn test_ensure_nonempty_content_multiple_empty_texts() {
-        let input = vec![
-            Content::Text {
-                text: String::new(),
-            },
-            Content::Text {
-                text: String::new(),
-            },
-        ];
-        let result = ensure_nonempty_content(input);
-        assert_eq!(result.len(), 1);
-        match &result[0] {
-            Content::Text { text } => assert_eq!(text, "(no output)"),
-            _ => panic!("expected Text"),
-        }
-    }
-
-    #[test]
-    fn test_ensure_nonempty_content_preserves_nonempty() {
-        let input = vec![Content::Text {
-            text: "hello".into(),
-        }];
-        let result = ensure_nonempty_content(input);
-        assert_eq!(result.len(), 1);
-        match &result[0] {
-            Content::Text { text } => assert_eq!(text, "hello"),
-            _ => panic!("expected Text"),
-        }
-    }
-
-    #[test]
-    fn test_ensure_nonempty_content_mixed_keeps_all() {
-        // If at least one Text is non-empty, keep the original vec as-is
-        let input = vec![
-            Content::Text {
-                text: String::new(),
-            },
-            Content::Text {
-                text: "data".into(),
-            },
-        ];
-        let result = ensure_nonempty_content(input);
-        assert_eq!(result.len(), 2);
-        match &result[1] {
-            Content::Text { text } => assert_eq!(text, "data"),
-            _ => panic!("expected Text"),
-        }
-    }
-}

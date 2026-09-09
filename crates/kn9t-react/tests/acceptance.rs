@@ -2,8 +2,6 @@
 //! Everything is driven by the replay provider over synthetic native fixtures: no network,
 //! no API key, no spend.
 
-mod support;
-
 use std::sync::{Arc, Mutex};
 
 use kn9t_core::{
@@ -11,7 +9,7 @@ use kn9t_core::{
 };
 use kn9t_react::{ReactConfig, ReactLoop, RunParams};
 
-use support::*;
+use kn9t_test_support::*;
 
 /// `StopReason` has no `Debug`, so `assert_eq!` will not compile; compare explicitly.
 fn assert_stop(got: StopReason, want: StopReason) {

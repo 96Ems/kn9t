@@ -27,3 +27,6 @@ notify        = "8"  # File watcher for hot-reload
 [[bin]]
 name = "kn9t-tui"
 path = "src/main.rs"
+
+[dev-dependencies]
+kn9t-tui-test-support = { path = "../kn9t-tui-test-support" }
