@@ -38,6 +38,7 @@ pub mod state;
 mod watcher;
 pub mod widgets;
 
+use kn9t_macros::safe_expect;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -229,13 +230,13 @@ impl LuaRuntime {
     /// The theme is remembered so a hot-reload can republish it without the
     /// watcher thread needing access to the app.
     pub fn install_environment(&self, theme: &crate::theme::Theme) {
-        *self.theme.write().unwrap() = theme.clone();
+        *safe_expect!(self.theme.write(), "poisoned") = theme.clone();
         self.publish_environment();
     }
 
     fn publish_environment(&self) {
-        let theme = self.theme.read().unwrap().clone();
-        let st = self.inner.read().unwrap();
+        let theme =safe_expect!(self.theme.read(), "poisoned").clone();
+        let st =safe_expect!(self.inner.read(), "poisoned");
         if let Err(e) = state::install_environment(&st.lua, &theme) {
             crate::log!("Failed to publish Lua environment: {}", e);
         }
@@ -245,7 +246,7 @@ impl LuaRuntime {
     ///
     /// `name` is used for error messages (chunk name).
     fn load_source(&self, source: &str, name: &str) -> bool {
-        let mut state = self.inner.write().unwrap();
+        let mut state =safe_expect!(self.inner.write(), "poisoned");
         let result = match state.lua.load(source).set_name(name.to_string()).exec() {
             Ok(()) => {
                 state.last_error = None;
@@ -270,7 +271,7 @@ impl LuaRuntime {
         // this, saving `tui.lua` with an unchanged fingerprint (same message
         // count, same scroll, ...) would keep showing the *previous* file's
         // layout until something else happened to invalidate it.
-        *self.ui_cache.write().unwrap() = None;
+        *safe_expect!(self.ui_cache.write(), "poisoned") = None;
         result
     }
 
@@ -292,14 +293,14 @@ impl LuaRuntime {
     /// between this and `load_dir` based on what actually exists on disk.
     pub fn load_file(&self, path: &PathBuf) -> bool {
         {
-            let mut state = self.inner.write().unwrap();
+            let mut state =safe_expect!(self.inner.write(), "poisoned");
             state.config_source = Some(ConfigSource::File(path.clone()));
         }
 
         match std::fs::read_to_string(path) {
             Ok(source) => self.load_source(&source, &path.display().to_string()),
             Err(e) => {
-                let mut state = self.inner.write().unwrap();
+                let mut state =safe_expect!(self.inner.write(), "poisoned");
                 // A missing user config is normal: the built-in already ran.
                 if e.kind() == std::io::ErrorKind::NotFound {
                     crate::log!("No user config at {} (using built-in)", path.display());
@@ -328,14 +329,14 @@ impl LuaRuntime {
     /// might reference names it was supposed to define.
     pub fn load_dir(&self, dir: &std::path::Path) -> bool {
         {
-            let mut state = self.inner.write().unwrap();
+            let mut state =safe_expect!(self.inner.write(), "poisoned");
             state.config_source = Some(ConfigSource::Dir(dir.to_path_buf()));
         }
 
         let files: Vec<PathBuf> = ConfigSource::lua_files_in(dir).collect();
         if files.is_empty() {
             // An empty tui/ is not an error - same as a missing tui.lua.
-            let mut state = self.inner.write().unwrap();
+            let mut state =safe_expect!(self.inner.write(), "poisoned");
             state.last_error = None;
             return true;
         }
@@ -344,7 +345,7 @@ impl LuaRuntime {
             let source = match std::fs::read_to_string(path) {
                 Ok(s) => s,
                 Err(e) => {
-                    let mut state = self.inner.write().unwrap();
+                    let mut state =safe_expect!(self.inner.write(), "poisoned");
                     let msg = format!("Failed to read {}: {}", path.display(), e);
                     crate::log!("{}", msg);
                     state.last_error = Some(msg);
@@ -374,7 +375,7 @@ impl LuaRuntime {
     /// from your config restores the default behaviour instead of leaving the
     /// previous definition stale in the Lua state.
     pub fn reload_all(&self) -> bool {
-        let source = self.inner.read().unwrap().config_source.clone();
+        let source =safe_expect!(self.inner.read(), "poisoned").config_source.clone();
         let builtin_ok = self.load_builtin();
         match source {
             Some(ConfigSource::File(p)) => self.load_file(&p) && builtin_ok,
@@ -391,7 +392,7 @@ impl LuaRuntime {
     /// previous definition stale in the Lua state.
     pub fn reload(&self) -> bool {
         {
-            let mut state = self.inner.write().unwrap();
+            let mut state =safe_expect!(self.inner.write(), "poisoned");
             if let Err(e) = sandbox::apply_sandbox(&state.lua) {
                 state.last_error = Some(format!("Failed to reset sandbox: {}", e));
                 return false;
@@ -416,24 +417,24 @@ impl LuaRuntime {
 
     /// Get the last error message, if any.
     pub fn last_error(&self) -> Option<String> {
-        self.inner.read().unwrap().last_error.clone()
+        safe_expect!(self.inner.read(), "poisoned").last_error.clone()
     }
 
     /// Clear the last error (e.g., after displaying it).
     pub fn clear_error(&self) {
-        self.inner.write().unwrap().last_error = None;
+        safe_expect!(self.inner.write(), "poisoned").last_error = None;
     }
 
     /// Check if a Lua config was ever successfully loaded.
     pub fn is_loaded(&self) -> bool {
-        self.inner.read().unwrap().ever_loaded
+        safe_expect!(self.inner.read(), "poisoned").ever_loaded
     }
 
     /// Call a Lua function by name with no arguments, returning a string result.
     ///
     /// On error, logs and returns `None` (fallback to Rust behavior).
     pub fn call_string(&self, func_name: &str) -> Option<String> {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         if !state.ever_loaded {
             return None;
         }
@@ -463,7 +464,7 @@ impl LuaRuntime {
     ///
     /// Useful for getting structured config (e.g., keybinds, theme overrides).
     pub fn call_table(&self, func_name: &str) -> Option<serde_json::Value> {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         if !state.ever_loaded {
             return None;
         }
@@ -492,7 +493,7 @@ impl LuaRuntime {
 
     /// Get a global value directly (for simple config values).
     pub fn get_global<T: mlua::FromLua>(&self, name: &str) -> Option<T> {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         if !state.ever_loaded {
             return None;
         }
@@ -502,7 +503,7 @@ impl LuaRuntime {
 
     /// 96E-43: Process pending panel registrations from Lua.
     pub fn process_panels(&self, registry: &mut panels::PanelRegistry) {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         if !state.ever_loaded {
             return;
         }
@@ -520,7 +521,7 @@ impl LuaRuntime {
     ///
     /// Returns the number of bindings applied. Called after (re)loading config.
     pub fn drain_keymaps(&self, registry: &mut keymap::KeymapRegistry) -> usize {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         match keymap::drain_pending_maps(&state.lua, registry) {
             Ok(n) => {
                 if n > 0 {
@@ -541,7 +542,7 @@ impl LuaRuntime {
 
     /// Dispatch `key` to its Lua handler. Returns true if the key was consumed.
     pub fn dispatch_keymap(&self, registry: &keymap::KeymapRegistry, key: &str) -> bool {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         registry.dispatch(&state.lua, key)
     }
 
@@ -550,7 +551,7 @@ impl LuaRuntime {
     /// Returns the number of handlers applied. Called after (re)loading config,
     /// same as `drain_keymaps`.
     pub fn drain_clicks(&self, registry: &mut click::ClickRegistry) -> usize {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         match click::drain_pending_clicks(&state.lua, registry) {
             Ok(n) => n,
             Err(e) => {
@@ -570,7 +571,7 @@ impl LuaRuntime {
         y: u16,
         button: &str,
     ) -> bool {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         registry.dispatch(&state.lua, id, x, y, button)
     }
 
@@ -579,7 +580,7 @@ impl LuaRuntime {
     /// Returns the number of commands applied. Called after (re)loading
     /// config, same cadence as `drain_keymaps`/`drain_clicks`.
     pub fn drain_commands(&self, registry: &mut commands::LuaCommandRegistry) -> usize {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         match commands::drain_pending_commands(&state.lua, registry) {
             Ok(n) => n,
             Err(e) => {
@@ -591,7 +592,7 @@ impl LuaRuntime {
 
     /// Run a Lua-registered command's handler with the given argument string.
     pub fn run_lua_command(&self, cmd: &commands::LuaCommand, args: &str) {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         cmd.run(&state.lua, args);
     }
 
@@ -603,7 +604,7 @@ impl LuaRuntime {
     /// so `Action` stays `Copy` (a `HashMap<KeyPattern, Action>` entry for a
     /// real keypress never has an argument to carry).
     pub fn drain_lua_actions(&self) -> Vec<(crate::keybind::Action, Option<String>)> {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         keymap::drain_pending_actions(&state.lua)
             .into_iter()
             .filter_map(|(name, arg)| crate::keybind::parse_action(&name).map(|a| (a, arg)))
@@ -612,7 +613,7 @@ impl LuaRuntime {
 
     /// 96E-43: Build a widget tree for a panel.
     pub fn build_panel_widget(&self, panel: &panels::Panel) -> Option<widgets::Widget> {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         panel.build_widget(&state.lua)
     }
 
@@ -627,7 +628,7 @@ impl LuaRuntime {
     pub fn build_ui_outcome(&self, width: u16, height: u16) -> widgets::UiOutcome {
         use widgets::UiOutcome;
 
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         // Check the load error *before* `ever_loaded`: when the very first load
         // fails, `ever_loaded` is still false, and treating that as "no Lua UI"
         // is what made a broken config silently show the full Rust chrome.
@@ -646,7 +647,7 @@ impl LuaRuntime {
         // hatch for Lua-local state this fingerprint cannot see.
         let fp = read_ui_fingerprint(&state.lua, width, height);
         {
-            let cache = self.ui_cache.read().unwrap();
+            let cache =safe_expect!(self.ui_cache.read(), "poisoned");
             if let Some((cached_fp, cached_widget)) = cache.as_ref() {
                 if *cached_fp == fp {
                     return UiOutcome::Ok(cached_widget.clone());
@@ -675,7 +676,7 @@ impl LuaRuntime {
         }
         match widgets::parse_widget(&state.lua, &table) {
             Ok(w) => {
-                *self.ui_cache.write().unwrap() = Some((fp, w.clone()));
+                *safe_expect!(self.ui_cache.write(), "poisoned") = Some((fp, w.clone()));
                 UiOutcome::Ok(w)
             }
             Err(e) => {
@@ -693,7 +694,7 @@ impl LuaRuntime {
         key: &str,
         modifiers: &str,
     ) -> bool {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         registry.handle_key(&state.lua, key, modifiers)
     }
 
@@ -703,7 +704,7 @@ impl LuaRuntime {
     /// propagated: one broken plugin must not break the frame.
     pub fn apply_plugin_lua_op(&self, op: &crate::reducer::PluginLuaOp) {
         use crate::reducer::PluginLuaOp;
-        let mut state = self.inner.write().unwrap();
+        let mut state =safe_expect!(self.inner.write(), "poisoned");
         // Split the borrow: `plugin_ui` needs `&Lua` while being mutated.
         let LuaState { lua, plugin_ui, .. } = &mut *state;
         match op {
@@ -725,7 +726,7 @@ impl LuaRuntime {
 
     /// Names of plugins with a registered UI, in stable order.
     pub fn plugin_view_names(&self) -> Vec<String> {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         state
             .plugin_ui
             .names()
@@ -736,7 +737,7 @@ impl LuaRuntime {
 
     /// `(name, placement)` for every registered view, in stable order.
     pub fn plugin_views(&self) -> Vec<(String, crate::reducer::PluginPlacement)> {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         state
             .plugin_ui
             .views()
@@ -747,7 +748,7 @@ impl LuaRuntime {
 
     /// Build one plugin's widget tree, or the error to display in its place.
     pub fn build_plugin_view(&self, plugin: &str) -> Result<widgets::Widget, String> {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         state.plugin_ui.build(&state.lua, plugin)
     }
 
@@ -760,7 +761,7 @@ impl LuaRuntime {
         local_y: u16,
         button: &str,
     ) -> bool {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         state
             .plugin_ui
             .dispatch_click(&state.lua, plugin, id, local_x, local_y, button)
@@ -768,13 +769,13 @@ impl LuaRuntime {
 
     /// Dispatch `key` to `plugin`'s handler. Returns true if consumed.
     pub fn dispatch_plugin_key(&self, plugin: &str, key: &str) -> bool {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         state.plugin_ui.dispatch_key(&state.lua, plugin, key)
     }
 
     /// Whether `plugin` binds `key` at all (without invoking the handler).
     pub fn plugin_has_key(&self, plugin: &str, key: &str) -> bool {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         state.plugin_ui.has_key(&state.lua, plugin, key)
     }
 
@@ -785,7 +786,7 @@ impl LuaRuntime {
     /// fingerprint cannot observe — plugin focus, or a plugin's Lua-local state
     /// after one of its handlers ran.
     pub fn invalidate_ui(&self) {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         let Ok(kn9t) = state.lua.globals().get::<mlua::Table>("kn9t") else {
             return;
         };
@@ -795,13 +796,13 @@ impl LuaRuntime {
 
     /// Drain side effects queued by plugin view handlers.
     pub fn drain_plugin_effects(&self) -> Vec<plugin_ui::PluginEffect> {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         plugin_ui::drain_effects(&state.lua)
     }
 
     /// Update context stats for Lua status bar customization.
     pub fn update_context(&self, stats: &context::ContextStats) {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         if let Err(e) = context::update_context(&state.lua, stats) {
             crate::log!("Failed to update context: {}", e);
         }
@@ -812,7 +813,7 @@ impl LuaRuntime {
     /// Takes a pre-collected snapshot rather than `&App` so the caller controls
     /// how often the (bounded but non-free) collection happens.
     pub fn update_state(&self, snap: &state::StateSnapshot) {
-        let lua_state = self.inner.read().unwrap();
+        let lua_state =safe_expect!(self.inner.read(), "poisoned");
         if let Err(e) = state::update_state(&lua_state.lua, snap) {
             crate::log!("Failed to update Lua state: {}", e);
         }
@@ -829,7 +830,7 @@ impl LuaRuntime {
     /// `color=` is accepted as a synonym of `fg=` for configs written against
     /// the older shape.
     pub fn call_status_spans(&self) -> Option<Vec<widgets::TextSpan>> {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         if !state.ever_loaded {
             return None;
         }
@@ -867,7 +868,7 @@ impl LuaRuntime {
     /// notably the API-contract test, which checks that every documented global
     /// is actually present rather than merely implemented somewhere.
     pub fn eval_bool(&self, src: &str) -> Option<bool> {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         match state.lua.load(src).eval::<bool>() {
             Ok(v) => Some(v),
             Err(e) => {
@@ -887,7 +888,7 @@ impl LuaRuntime {
     /// Called once per visible card per frame, so it must stay a cheap Lua call
     /// — a table lookup, not a computation.
     pub fn call_tool_mode(&self, tool: &str) -> Option<String> {
-        let state = self.inner.read().unwrap();
+        let state =safe_expect!(self.inner.read(), "poisoned");
         if !state.ever_loaded {
             return None;
         }

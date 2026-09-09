@@ -11,10 +11,10 @@ import re
 import sys
 from pathlib import Path
 
-# Pattern to find .lock().unwrap() or .lock().expect("...")
+# Patterns to find .lock()/.read()/.write().unwrap() or .expect("...")
 # This handles the expression before .lock() by finding balanced parens/brackets
-LOCK_UNWRAP = re.compile(r'\.lock\(\)\.unwrap\(\)')
-LOCK_EXPECT = re.compile(r'\.lock\(\)\.expect\(("[^"]*")\)')
+LOCK_UNWRAP = re.compile(r'\.(lock|read|write)\(\)\.unwrap\(\)')
+LOCK_EXPECT = re.compile(r'\.(lock|read|write)\(\)\.expect\(("[^"]*")\)')
 
 def find_expr_start(content: str, lock_pos: int) -> int:
     """Find where the expression before .lock() starts."""
@@ -66,12 +66,13 @@ def migrate_content(content: str) -> tuple[str, int]:
     """
     count = 0
     
-    # Process .lock().unwrap() first
+    # Process .lock()/.read()/.write().unwrap() first
     while True:
         m = LOCK_UNWRAP.search(content)
         if not m:
             break
         
+        method = m.group(1)  # lock, read, or write
         lock_pos = m.start()
         expr_start = find_expr_start(content, lock_pos)
         expr = content[expr_start:lock_pos].strip()
@@ -85,21 +86,22 @@ def migrate_content(content: str) -> tuple[str, int]:
         # Build replacement
         before = content[:expr_start]
         after = content[m.end():]
-        replacement = f'{prefix}safe_expect!({expr}.lock(), "poisoned")'
+        replacement = f'{prefix}safe_expect!({expr}.{method}(), "poisoned")'
         
         content = before + replacement + after
         count += 1
     
-    # Process .lock().expect("...")
+    # Process .lock()/.read()/.write().expect("...")
     while True:
         m = LOCK_EXPECT.search(content)
         if not m:
             break
         
+        method = m.group(1)  # lock, read, or write
         lock_pos = m.start()
         expr_start = find_expr_start(content, lock_pos)
         expr = content[expr_start:lock_pos].strip()
-        msg = m.group(1)  # The message string
+        msg = m.group(2)  # The message string
         
         # Handle leading * dereference — keep it outside the macro
         prefix = ''
@@ -109,7 +111,7 @@ def migrate_content(content: str) -> tuple[str, int]:
         
         before = content[:expr_start]
         after = content[m.end():]
-        replacement = f'{prefix}safe_expect!({expr}.lock(), {msg})'
+        replacement = f'{prefix}safe_expect!({expr}.{method}(), {msg})'
         
         content = before + replacement + after
         count += 1
