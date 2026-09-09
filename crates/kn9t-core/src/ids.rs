@@ -3,6 +3,7 @@
 //! ULID (not UUID) is used for `SessionId`/`MsgId` because lexical order equals
 //! creation order, which the store relies on (R-CORE-045).
 
+use kn9t_macros::safe_expect;
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
 use std::cell::Cell;
@@ -208,6 +209,6 @@ fn ulid() -> String {
         *slot = CROCKFORD[((value >> shift) & 0x1f) as usize];
     }
     // Safe: every byte is from the ASCII CROCKFORD table.
-    String::from_utf8(out.to_vec()).expect("crockford bytes are valid ascii")
+    safe_expect!(String::from_utf8(out.to_vec()), "crockford bytes are valid ascii")
 }
 

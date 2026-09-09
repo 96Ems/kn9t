@@ -2,6 +2,7 @@
 //! See `docs/internal/job/instant-cut.md` — instant cut <1ms on next `read()`.
 
 use kn9t_core::Cancel;
+use kn9t_macros::safe_unwrap;
 use std::io::{self, Read};
 
 pub struct CancellableReader<R> {
@@ -32,7 +33,7 @@ impl<R: Read + Send + 'static> Read for CancellableReader<R> {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         std::thread::spawn(move || {
             let mut tmp = vec![0u8; len];
-            let res = inner.lock().unwrap().read(&mut tmp);
+            let res = safe_unwrap!(inner.lock()).read(&mut tmp);
             let _ = tx.send((res, tmp));
         });
         loop {

@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+use kn9t_macros::safe_expect;
 
 struct CancelInner {
     flag: AtomicBool,
@@ -37,7 +38,7 @@ impl Cancel {
     pub fn cancel(&self) {
         // Hold the lock across the store so a waiter cannot check the flag and
         // begin waiting in the gap before we notify.
-        let _guard = self.0.lock.lock().expect("cancel mutex poisoned");
+        let _guard = safe_expect!(self.0.lock.lock(), "cancel mutex poisoned");
         self.0.flag.store(true, Ordering::Release);
         self.0.cv.notify_all();
     }
@@ -53,7 +54,7 @@ impl Cancel {
             return true;
         }
         let deadline = std::time::Instant::now() + d;
-        let mut guard = self.0.lock.lock().expect("cancel mutex poisoned");
+        let mut guard = safe_expect!(self.0.lock.lock(), "cancel mutex poisoned");
         loop {
             if self.cancelled() {
                 return true;
@@ -62,11 +63,10 @@ impl Cancel {
                 Some(r) if !r.is_zero() => r,
                 _ => return self.cancelled(),
             };
-            let (g, _res) = self
-                .0
-                .cv
-                .wait_timeout(guard, remaining)
-                .expect("cancel condvar poisoned");
+            let (g, _res) = safe_expect!(
+                self.0.cv.wait_timeout(guard, remaining),
+                "cancel condvar poisoned"
+            );
             guard = g;
         }
     }

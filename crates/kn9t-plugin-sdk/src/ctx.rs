@@ -3,6 +3,7 @@
 //! Plugin authors receive these through their trait method signatures.
 //! The SDK constructs them; authors only call their methods.
 
+use kn9t_macros::safe_unwrap;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -206,7 +207,7 @@ impl ChunkSender {
 
     /// Get or assign a stable idx for a call_id.
     fn get_or_assign_idx(&self, call_id: &str) -> u32 {
-        let mut map = self.call_id_to_idx.lock().unwrap();
+        let mut map = safe_unwrap!(self.call_id_to_idx.lock()); // poisoned mutex = fatal
         if let Some(&idx) = map.get(call_id) {
             return idx;
         }
@@ -299,7 +300,7 @@ impl KvClient {
     pub fn get(&self, scope: &str, key: &str) -> Result<Option<serde_json::Value>, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::sync_channel(1);
-        self.pending.lock().unwrap().insert(id, tx);
+        safe_unwrap!(self.pending.lock()).insert(id, tx); // poisoned mutex = fatal
         let msg = crate::wire::PluginMsg::KvGet {
             id,
             scope: scope.to_string(),
@@ -314,7 +315,7 @@ impl KvClient {
         }
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(r) => {
-                self.pending.lock().unwrap().remove(&id);
+                safe_unwrap!(self.pending.lock()).remove(&id); // poisoned mutex = fatal
                 if r.ok {
                     Ok(r.value)
                 } else {
@@ -322,7 +323,7 @@ impl KvClient {
                 }
             }
             Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
+                safe_unwrap!(self.pending.lock()).remove(&id); // poisoned mutex = fatal
                 Err("kv_get timeout".to_string())
             }
         }
@@ -332,7 +333,7 @@ impl KvClient {
     pub fn set(&self, scope: &str, key: &str, value: &serde_json::Value) -> Result<(), String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::sync_channel(1);
-        self.pending.lock().unwrap().insert(id, tx);
+        safe_unwrap!(self.pending.lock()).insert(id, tx); // poisoned mutex = fatal
         let msg = crate::wire::PluginMsg::KvSet {
             id,
             scope: scope.to_string(),
@@ -348,7 +349,7 @@ impl KvClient {
         }
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(r) => {
-                self.pending.lock().unwrap().remove(&id);
+                safe_unwrap!(self.pending.lock()).remove(&id); // poisoned mutex = fatal
                 if r.ok {
                     Ok(())
                 } else {
@@ -356,7 +357,7 @@ impl KvClient {
                 }
             }
             Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
+                safe_unwrap!(self.pending.lock()).remove(&id); // poisoned mutex = fatal
                 Err("kv_set timeout".to_string())
             }
         }
@@ -366,7 +367,7 @@ impl KvClient {
     pub fn del(&self, scope: &str, key: &str) -> Result<(), String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::sync_channel(1);
-        self.pending.lock().unwrap().insert(id, tx);
+        safe_unwrap!(self.pending.lock()).insert(id, tx); // poisoned mutex = fatal
         let msg = crate::wire::PluginMsg::KvDel {
             id,
             scope: scope.to_string(),
@@ -381,7 +382,7 @@ impl KvClient {
         }
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(r) => {
-                self.pending.lock().unwrap().remove(&id);
+                safe_unwrap!(self.pending.lock()).remove(&id); // poisoned mutex = fatal
                 if r.ok {
                     Ok(())
                 } else {
@@ -389,7 +390,7 @@ impl KvClient {
                 }
             }
             Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
+                safe_unwrap!(self.pending.lock()).remove(&id); // poisoned mutex = fatal
                 Err("kv_del timeout".to_string())
             }
         }
@@ -400,7 +401,7 @@ impl KvClient {
     pub fn del_scope(&self, scope: &str) -> Result<(), String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::sync_channel(1);
-        self.pending.lock().unwrap().insert(id, tx);
+        safe_unwrap!(self.pending.lock()).insert(id, tx); // poisoned mutex = fatal
         let msg = crate::wire::PluginMsg::KvDelScope {
             id,
             scope: scope.to_string(),
@@ -415,7 +416,7 @@ impl KvClient {
         }
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(r) => {
-                self.pending.lock().unwrap().remove(&id);
+                safe_unwrap!(self.pending.lock()).remove(&id); // poisoned mutex = fatal
                 if r.ok {
                     Ok(())
                 } else {
@@ -423,7 +424,7 @@ impl KvClient {
                 }
             }
             Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
+                safe_unwrap!(self.pending.lock()).remove(&id); // poisoned mutex = fatal
                 Err("kv_del_scope timeout".to_string())
             }
         }
@@ -509,7 +510,7 @@ impl HostApiClient {
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::sync_channel(1);
-        self.pending.lock().unwrap().insert(id, tx);
+        safe_unwrap!(self.pending.lock()).insert(id, tx); // poisoned mutex = fatal
         let msg = crate::wire::PluginMsg::Request {
             id,
             op: op.to_string(),
@@ -525,7 +526,7 @@ impl HostApiClient {
         }
         match rx.recv_timeout(std::time::Duration::from_secs(600)) {
             Ok(r) => {
-                self.pending.lock().unwrap().remove(&id);
+                safe_unwrap!(self.pending.lock()).remove(&id); // poisoned mutex = fatal
                 if r.ok {
                     Ok(r.result.unwrap_or(serde_json::Value::Null))
                 } else {
@@ -533,7 +534,7 @@ impl HostApiClient {
                 }
             }
             Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
+                safe_unwrap!(self.pending.lock()).remove(&id); // poisoned mutex = fatal
                 Err(format!("host_api {op} timeout"))
             }
         }

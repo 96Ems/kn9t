@@ -20,6 +20,7 @@
 use crate::ctx::{
     CancelToken, ChunkSender, KvClient, KvReply, ProgressSender, ProviderCallCtx, ToolCallCtx,
 };
+use kn9t_macros::safe_unwrap;
 use crate::traits::{
     PluginEventSink, PluginHook, PluginProvider, PluginTool, ProviderResult, ToolOutput,
 };
@@ -244,7 +245,7 @@ impl Runner {
 
                 HostMsg::Cancel { id } => {
                     // Deliver cancellation to the matching in-flight call.
-                    if let Some(tok) = runner.cancels.lock().unwrap().get(&id) {
+                    if let Some(tok) = safe_unwrap!(runner.cancels.lock()).get(&id) { // poisoned mutex = fatal
                         tok.cancel();
                     }
                 }
@@ -275,7 +276,7 @@ impl Runner {
                     error,
                 } => {
                     let reply = KvReply { value, ok, error };
-                    if let Some(tx) = runner.kv_pending.lock().unwrap().remove(&id) {
+                    if let Some(tx) = safe_unwrap!(runner.kv_pending.lock()).remove(&id) { // poisoned mutex = fatal
                         let _ = tx.send(reply);
                     }
                 }
@@ -287,7 +288,7 @@ impl Runner {
                     error,
                 } => {
                     let reply = crate::ctx::ApiReply { ok, result, error };
-                    if let Some(tx) = runner.api_pending.lock().unwrap().remove(&id) {
+                    if let Some(tx) = safe_unwrap!(runner.api_pending.lock()).remove(&id) { // poisoned mutex = fatal
                         let _ = tx.send(reply);
                     }
                 }
@@ -342,7 +343,7 @@ impl Runner {
         };
 
         let cancel = CancelToken::new();
-        self.cancels.lock().unwrap().insert(id, cancel.clone());
+        safe_unwrap!(self.cancels.lock()).insert(id, cancel.clone()); // poisoned mutex = fatal
 
         let writer = Arc::clone(&self.writer);
         let ctx = ToolCallCtx {
@@ -354,7 +355,7 @@ impl Runner {
         };
 
         let output = tool.execute(&args, &ctx);
-        self.cancels.lock().unwrap().remove(&id);
+        safe_unwrap!(self.cancels.lock()).remove(&id); // poisoned mutex = fatal
         self.send_tool_done(id, output);
     }
 
@@ -385,7 +386,7 @@ impl Runner {
         };
 
         let cancel = CancelToken::new();
-        self.cancels.lock().unwrap().insert(id, cancel.clone());
+        safe_unwrap!(self.cancels.lock()).insert(id, cancel.clone()); // poisoned mutex = fatal
 
         let ctx = ProviderCallCtx {
             cancel: cancel.clone(),
@@ -395,7 +396,7 @@ impl Runner {
         };
 
         let result = provider.complete(&payload, &ctx);
-        self.cancels.lock().unwrap().remove(&id);
+        safe_unwrap!(self.cancels.lock()).remove(&id); // poisoned mutex = fatal
         self.send_provider_done(id, result);
     }
 

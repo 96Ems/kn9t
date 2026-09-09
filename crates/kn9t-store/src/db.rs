@@ -9,6 +9,7 @@
 use kn9t_core::{
     Event, ModelRef, ModelSpec, PluginKv, RequestPlan, SessionId, SessionSnapshot, Store, StoreErr,
 };
+use kn9t_macros::safe_unwrap;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -42,12 +43,12 @@ impl SqliteStore {
     /// Install the after-append observer. `None` (default) disables echo — used by
     /// tests that publish to the bus manually.
     pub fn set_after_append(&self, f: Option<AfterAppendCallback>) {
-        *self.after_append.lock().unwrap() = f;
+        *safe_unwrap!(self.after_append.lock()) = f;
     }
 
     pub fn register_model_spec(&self, spec: ModelSpec) {
         let key = format!("{}:{}", spec.r#ref.provider, spec.r#ref.id);
-        self.model_specs.write().unwrap().insert(key, spec);
+        safe_unwrap!(self.model_specs.write()).insert(key, spec);
     }
 
     /// Find a lightweight model from the given provider for auto-titling.
