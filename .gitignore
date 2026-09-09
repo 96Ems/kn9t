@@ -38,6 +38,7 @@ plugins/*/dist/
 #   go build -o kn9t-agents-md.exe .    (windows)
 plugins/kn9t-agents-md/kn9t-agents-md
 plugins/kn9t-agents-md/kn9t-agents-md.exe
+plugins/kn9t-agents-md/kn9t-agents-md-linux
 
 # scratch
 out.txt
