@@ -86,9 +86,8 @@ fn emit_sse_frames(http: &Value) -> String {
     for (i, ev) in events.iter().enumerate() {
         let durable = is_durable(&ev.fields);
         let prev = i.checked_sub(1).map(|j| is_durable(&events[j].fields));
-        if i == 0 && durable {
-            s.push_str("    // ── Durable events (have seq) ──\n");
-        } else if durable && prev == Some(false) {
+        // Insert section comment when transitioning between durable/transient
+        if durable && (i == 0 || prev == Some(false)) {
             s.push_str("    // ── Durable events (have seq) ──\n");
         } else if !durable && prev == Some(true) {
             s.push_str("\n    // ── Transient events (no seq) ──\n");

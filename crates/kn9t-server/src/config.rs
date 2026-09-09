@@ -99,16 +99,13 @@ pub struct RawApprovals {
 
 /// Resolved policy mode — DESIGN §10.1 `mode`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PolicyMode {
+    #[default]
     AskOnMutation,
     AllowAll,
     DenyAll,
     ReadOnly,
-}
-impl Default for PolicyMode {
-    fn default() -> Self {
-        PolicyMode::AskOnMutation
-    }
 }
 impl PolicyMode {
     pub fn parse(s: &str) -> Result<Self, String> {
@@ -774,8 +771,7 @@ fn resolve_headers(
 }
 
 fn resolve_header_value(raw: &str) -> Result<String, String> {
-    if raw.starts_with("env:") {
-        let var = &raw[4..];
+    if let Some(var) = raw.strip_prefix("env:") {
         std::env::var(var).map_err(|_| format!("env var {var:?} not set"))
     } else {
         Ok(raw.to_owned())

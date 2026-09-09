@@ -394,10 +394,8 @@ pub fn process_pending_panels(lua: &Lua, registry: &mut PanelRegistry) -> LuaRes
 
     // Process removals first
     if let Ok(to_remove) = globals.get::<Table>("_kn9t_panels_to_remove") {
-        for pair in to_remove.pairs::<i64, String>() {
-            if let Ok((_, id)) = pair {
-                registry.unregister(&id);
-            }
+        for (_, id) in to_remove.pairs::<i64, String>().flatten() {
+            registry.unregister(&id);
         }
         globals.set("_kn9t_panels_to_remove", mlua::Value::Nil)?;
     }
@@ -408,13 +406,11 @@ pub fn process_pending_panels(lua: &Lua, registry: &mut PanelRegistry) -> LuaRes
         if pending_count > 0 {
             crate::log!("Processing {} pending panels", pending_count);
         }
-        for pair in pending.pairs::<String, Table>() {
-            if let Ok((id, spec)) = pair {
-                let position: String = spec.get("position").unwrap_or_else(|_| "?".to_string());
-                crate::log!("Registering panel '{}' position={}", id, position);
-                if let Err(e) = registry.register(lua, &id, &spec) {
-                    crate::log!("Failed to register panel '{}': {}", id, e);
-                }
+        for (id, spec) in pending.pairs::<String, Table>().flatten() {
+            let position: String = spec.get("position").unwrap_or_else(|_| "?".to_string());
+            crate::log!("Registering panel '{}' position={}", id, position);
+            if let Err(e) = registry.register(lua, &id, &spec) {
+                crate::log!("Failed to register panel '{}': {}", id, e);
             }
         }
         // Clear pending after processing
@@ -429,17 +425,15 @@ pub fn process_panel_commands(lua: &Lua, registry: &mut PanelRegistry) -> LuaRes
     let globals = lua.globals();
 
     if let Ok(cmds) = globals.get::<Table>("_kn9t_panel_cmds") {
-        for pair in cmds.pairs::<i64, Table>() {
-            if let Ok((_, cmd)) = pair {
-                let action: String = cmd.get("action").unwrap_or_default();
-                let id: String = cmd.get("id").unwrap_or_default();
+        for (_, cmd) in cmds.pairs::<i64, Table>().flatten() {
+            let action: String = cmd.get("action").unwrap_or_default();
+            let id: String = cmd.get("id").unwrap_or_default();
 
-                match action.as_str() {
-                    "show" => registry.show(&id),
-                    "hide" => registry.hide(&id),
-                    "toggle" => registry.toggle(&id),
-                    _ => {}
-                }
+            match action.as_str() {
+                "show" => registry.show(&id),
+                "hide" => registry.hide(&id),
+                "toggle" => registry.toggle(&id),
+                _ => {}
             }
         }
         globals.set("_kn9t_panel_cmds", lua.create_table()?)?;

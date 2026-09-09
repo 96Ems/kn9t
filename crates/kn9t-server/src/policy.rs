@@ -205,7 +205,7 @@ impl ApprovalCache {
             .lock()
             .expect("policy.rs: ApprovalCache::has_session lock poisoned")
             .get(sid)
-            .map_or(false, |s| s.contains(fp))
+            .is_some_and(|s| s.contains(fp))
     }
 }
 
@@ -226,6 +226,12 @@ pub struct ApprovalMeta {
 pub struct ApprovalRegistry {
     inner: Mutex<HashMap<u64, Arc<ApprovalSlot>>>,
     meta: Mutex<HashMap<u64, ApprovalMeta>>,
+}
+
+impl Default for ApprovalRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ApprovalRegistry {

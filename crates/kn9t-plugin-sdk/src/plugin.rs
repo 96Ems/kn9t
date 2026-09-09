@@ -212,8 +212,8 @@ impl Runner {
         let mut stdin = BufReader::new(io::stdin());
 
         // 1. Read host hello
-        let host_hello = match read_host(&mut stdin) {
-            Ok(HostMsg::Hello { proto, .. }) if proto == 1 => {}
+        match read_host(&mut stdin) {
+            Ok(HostMsg::Hello { proto: 1, .. }) => {}
             Ok(HostMsg::Hello { proto, .. }) => {
                 eprintln!("[kn9t-plugin-sdk] unsupported proto {proto}");
                 return;
@@ -222,8 +222,7 @@ impl Runner {
                 eprintln!("[kn9t-plugin-sdk] expected hello");
                 return;
             }
-        };
-        let _ = host_hello; // consumed above via pattern
+        }
 
         // 2. Send plugin hello
         self.write_msg(&PluginMsg::Hello {
@@ -239,12 +238,7 @@ impl Runner {
         let runner = Arc::new(self);
 
         // 4. Main dispatch loop
-        loop {
-            let msg = match read_host(&mut stdin) {
-                Ok(m) => m,
-                Err(_) => break,
-            };
-
+        while let Ok(msg) = read_host(&mut stdin) {
             match msg {
                 HostMsg::Shutdown => break,
 
@@ -444,7 +438,7 @@ impl Runner {
 
         // Find first hook handler that declares this hook name.
         for h in self.hooks.iter() {
-            if h.hooks().iter().any(|n| *n == hook) {
+            if h.hooks().contains(&hook) {
                 let reply_body = h.call_with_ctx(hook, &payload, &ctx);
                 self.write_msg(&PluginMsg::Result {
                     id,

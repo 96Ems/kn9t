@@ -71,55 +71,47 @@ pub fn spawn_watcher(
         let mut last_reload = std::time::Instant::now();
         let debounce = Duration::from_millis(100);
 
-        loop {
-            match notify_rx.recv() {
-                Ok(event) => {
-                    // Check if the event is for our file
-                    let is_our_file = event
-                        .paths
-                        .iter()
-                        .any(|p| p.file_name().map(|n| n == filename).unwrap_or(false));
+        while let Ok(event) = notify_rx.recv() {
+            // Check if the event is for our file
+            let is_our_file = event
+                .paths
+                .iter()
+                .any(|p| p.file_name().map(|n| n == filename).unwrap_or(false));
 
-                    if !is_our_file {
-                        continue;
-                    }
+            if !is_our_file {
+                continue;
+            }
 
-                    // Only reload on modify/create events
-                    let should_reload =
-                        matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_));
+            // Only reload on modify/create events
+            let should_reload =
+                matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_));
 
-                    if !should_reload {
-                        continue;
-                    }
+            if !should_reload {
+                continue;
+            }
 
-                    // Debounce
-                    let now = std::time::Instant::now();
-                    if now.duration_since(last_reload) < debounce {
-                        continue;
-                    }
-                    last_reload = now;
+            // Debounce
+            let now = std::time::Instant::now();
+            if now.duration_since(last_reload) < debounce {
+                continue;
+            }
+            last_reload = now;
 
-                    crate::log!("Detected change in {}", path_clone.display());
+            crate::log!("Detected change in {}", path_clone.display());
 
-                    // Reload the Lua state
-                    let success = runtime.reload();
+            // Reload the Lua state
+            let success = runtime.reload();
 
-                    // Notify the TUI (it will re-render with new config or show error)
-                    if tx.send(Event::Tick).is_err() {
-                        // Channel closed, exit thread
-                        break;
-                    }
+            // Notify the TUI (it will re-render with new config or show error)
+            if tx.send(Event::Tick).is_err() {
+                // Channel closed, exit thread
+                break;
+            }
 
-                    if success {
-                        crate::log!("Hot-reload successful");
-                    } else {
-                        crate::log!("Hot-reload failed (check last_error)");
-                    }
-                }
-                Err(_) => {
-                    // Channel closed, exit thread
-                    break;
-                }
+            if success {
+                crate::log!("Hot-reload successful");
+            } else {
+                crate::log!("Hot-reload failed (check last_error)");
             }
         }
     });
@@ -170,46 +162,41 @@ pub fn spawn_dir_watcher(
         let mut last_reload = std::time::Instant::now();
         let debounce = Duration::from_millis(100);
 
-        loop {
-            match notify_rx.recv() {
-                Ok(event) => {
-                    let is_lua_file = event
-                        .paths
-                        .iter()
-                        .any(|p| p.extension().and_then(|e| e.to_str()) == Some("lua"));
-                    if !is_lua_file {
-                        continue;
-                    }
+        while let Ok(event) = notify_rx.recv() {
+            let is_lua_file = event
+                .paths
+                .iter()
+                .any(|p| p.extension().and_then(|e| e.to_str()) == Some("lua"));
+            if !is_lua_file {
+                continue;
+            }
 
-                    let should_reload = matches!(
-                        event.kind,
-                        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
-                    );
-                    if !should_reload {
-                        continue;
-                    }
+            let should_reload = matches!(
+                event.kind,
+                EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+            );
+            if !should_reload {
+                continue;
+            }
 
-                    let now = std::time::Instant::now();
-                    if now.duration_since(last_reload) < debounce {
-                        continue;
-                    }
-                    last_reload = now;
+            let now = std::time::Instant::now();
+            if now.duration_since(last_reload) < debounce {
+                continue;
+            }
+            last_reload = now;
 
-                    crate::log!("Detected change in {}", dir_clone.display());
+            crate::log!("Detected change in {}", dir_clone.display());
 
-                    let success = runtime.reload();
+            let success = runtime.reload();
 
-                    if tx.send(Event::Tick).is_err() {
-                        break;
-                    }
+            if tx.send(Event::Tick).is_err() {
+                break;
+            }
 
-                    if success {
-                        crate::log!("Hot-reload successful");
-                    } else {
-                        crate::log!("Hot-reload failed (check last_error)");
-                    }
-                }
-                Err(_) => break,
+            if success {
+                crate::log!("Hot-reload successful");
+            } else {
+                crate::log!("Hot-reload failed (check last_error)");
             }
         }
     });

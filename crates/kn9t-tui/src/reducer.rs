@@ -23,6 +23,15 @@ use crate::session_manager::SessionEntry;
 use crate::token_tracker::{TokenCounts, TokenTracker};
 use crate::wire::SseFrame;
 
+/// Extracted content from a wire message: text, tool calls, tool results.
+struct ExtractedContent {
+    text: String,
+    /// (id, name, args_json)
+    tool_calls: Vec<(String, String, String)>,
+    /// (id, output, is_error)
+    tool_results: Vec<(String, String, bool)>,
+}
+
 /// 96E-27 — collapsible subagent entry nested under its spawning tool call.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SubagentEntry {
@@ -251,8 +260,8 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             if msg.role == "user" || msg.silent {
                 return;
             }
-            let (text, tool_calls, tool_results, _) = extract_message_content(&msg.content);
-            for (call_id, output, is_error) in &tool_results {
+            let extracted = extract_message_content(&msg.content);
+            for (call_id, output, is_error) in &extracted.tool_results {
                 state.transcript.update_tool(call_id, |tool| {
                     tool.output = Some(output.clone());
                     if *is_error {
@@ -263,9 +272,10 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             let final_content = if !state.transcript.live_delta().is_empty() {
                 state.transcript.take_delta()
             } else {
-                text
+                extracted.text
             };
-            let tools: Vec<ToolCard> = tool_calls
+            let tools: Vec<ToolCard> = extracted
+                .tool_calls
                 .iter()
                 .map(|(id, name, args)| ToolCard {
                     call_id: id.clone(),
@@ -280,7 +290,7 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                 })
                 .collect();
             // 96E-27: detect SubagentSpec spawns (args contains task) and create collapsed sub-entry
-            for (call_id, name, args) in &tool_calls {
+            for (call_id, name, args) in &extracted.tool_calls {
                 // Heuristic: SubagentSpec tools have task in args; also name often spawn_subagent
                 let is_spawn = name.contains("spawn") || args.contains("\"task\"");
                 if is_spawn {
@@ -419,9 +429,9 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
         SseFrame::Compacted { summary, .. } => {
             // Just show the summary as an assistant message.
             // "Compaction started..." was already shown when the user triggered it.
-            let (text, _, _, _) = extract_message_content(&summary.content);
-            if !text.is_empty() {
-                state.transcript.push(Message::new(&summary.role, text));
+            let extracted = extract_message_content(&summary.content);
+            if !extracted.text.is_empty() {
+                state.transcript.push(Message::new(&summary.role, extracted.text));
             }
         }
         SseFrame::Error { message } => {
@@ -457,8 +467,8 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                     "error",
                     format!("turn {}: {}", phase, message),
                 ));
-            } else if phase == "retrying" && !message.is_empty() {
-                if !state
+            } else if phase == "retrying" && !message.is_empty()
+                && !state
                     .transcript
                     .messages()
                     .last()
@@ -469,7 +479,6 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                         .transcript
                         .push(Message::new("system", message.clone()));
                 }
-            }
             match phase.as_str() {
                 "idle" | "failed" | "aborted" => state.streaming = false,
                 "thinking" | "streaming" | "tool" | "retrying" => state.streaming = true,
@@ -548,19 +557,11 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
     }
 }
 
-fn extract_message_content(
-    content: &[crate::wire::WireContent],
-) -> (
-    String,
-    Vec<(String, String, String)>,
-    Vec<(String, String, bool)>,
-    usize,
-) {
+fn extract_message_content(content: &[crate::wire::WireContent]) -> ExtractedContent {
     use crate::wire::WireContent;
     let mut text_parts = Vec::new();
     let mut tool_calls = Vec::new();
     let mut tool_results = Vec::new();
-    let mut image_count = 0;
     for c in content {
         match c {
             WireContent::Text { text } => text_parts.push(text.as_str()),
@@ -585,10 +586,14 @@ fn extract_message_content(
                     .join("\n");
                 tool_results.push((id.clone(), output, *is_error));
             }
-            WireContent::Image { .. } => image_count += 1,
+            WireContent::Image { .. } => {} // images handled separately
         }
     }
-    (text_parts.join("\n"), tool_calls, tool_results, image_count)
+    ExtractedContent {
+        text: text_parts.join("\n"),
+        tool_calls,
+        tool_results,
+    }
 }
 
 #[cfg(test)]

@@ -235,7 +235,7 @@ fn python_types(requests: &[(String, &Value)], defs: &[(String, &Value)]) -> Str
             s.push_str(&format!("    {key}: {ann}{default}\n"));
         }
     }
-    s.push_str("\n");
+    s.push('\n');
     s
 }
 

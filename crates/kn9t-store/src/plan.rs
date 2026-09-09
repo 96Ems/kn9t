@@ -8,6 +8,9 @@ use rusqlite::params;
 
 use crate::db::SqliteStore;
 
+/// Callback to salvage partial tool output: (output_text, status, is_error).
+type SalvageCallback<'a> = &'a dyn Fn(&CallId) -> Option<(String, String, bool)>;
+
 /// SPEC-OPEN compaction threshold: 0.80 × ctx_window
 const COMPACT_THRESHOLD: f64 = 0.80;
 
@@ -19,19 +22,27 @@ pub fn plan_request(store: &SqliteStore, session: &SessionId) -> Result<RequestP
         seq: u64,
         role: String,
         content_json: String,
-        est_tokens: i64,
     }
 
-    // Scope the lock to just the query - release before resolve_image_blobs
-    // to avoid deadlock (get_blob also needs the lock).
-    let rows: Vec<MsgRow> = {
+    // Query last usage (real tokens from provider) and messages in one lock scope.
+    let (rows, last_usage_seq, last_real_tokens): (Vec<MsgRow>, u64, i64) = {
         let conn = store
             .conn
             .lock()
             .map_err(|_| StoreErr("lock poisoned".into()))?;
+
+        // Get the last usage record: its tokens_in is the real prompt size at that turn
+        let (last_seq, real_tokens): (u64, i64) = conn
+            .query_row(
+                "SELECT seq, tokens_in FROM usage WHERE session_id=?1 ORDER BY seq DESC LIMIT 1",
+                params![sid],
+                |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?)),
+            )
+            .unwrap_or((0, 0)); // No usage yet = first turn
+
         let mut stmt = conn
             .prepare(
-                "SELECT seq, role, content, est_tokens FROM messages \
+                "SELECT seq, role, content FROM messages \
              WHERE session_id=?1 ORDER BY seq",
             )
             .map_err(|e| StoreErr(format!("plan prepare: {e}")))?;
@@ -47,10 +58,9 @@ pub fn plan_request(store: &SqliteStore, session: &SessionId) -> Result<RequestP
                 seq: r.get::<_, i64>(0).unwrap_or(0) as u64,
                 role: r.get(1).unwrap_or_default(),
                 content_json: r.get(2).unwrap_or_default(),
-                est_tokens: r.get(3).unwrap_or(0),
             });
         }
-        out
+        (out, last_seq, real_tokens)
     }; // conn lock released here
 
     // Now safe to call resolve_image_blobs (which calls get_blob -> needs lock)
@@ -69,7 +79,14 @@ pub fn plan_request(store: &SqliteStore, session: &SessionId) -> Result<RequestP
         })
         .collect();
 
-    let total_est: i64 = rows.iter().map(|r| r.est_tokens).sum();
+    // Token count: real tokens from last provider response + estimate new messages not yet sent.
+    let new_messages_est: i64 = rows
+        .iter()
+        .filter(|r| r.seq > last_usage_seq)
+        .map(|r| crate::project::estimate_tokens_json(&r.content_json))
+        .sum();
+    let total_tokens: i64 = last_real_tokens + new_messages_est;
+
     let mut seqs: Vec<u64> = rows.iter().map(|r| r.seq).collect();
 
     // R-STOR-117 — a durable `args_json` the provider cannot parse would otherwise be
@@ -92,7 +109,7 @@ pub fn plan_request(store: &SqliteStore, session: &SessionId) -> Result<RequestP
 
     let compact = model_spec.as_ref().and_then(|spec| {
         let threshold = (spec.ctx_window as f64 * COMPACT_THRESHOLD) as i64;
-        if total_est >= threshold && messages.len() >= 2 {
+        if total_tokens >= threshold && messages.len() >= 2 {
             Some(compact_span(&seqs, &messages))
         } else {
             None
@@ -247,7 +264,7 @@ pub fn close_orphan_tool_calls(seqs: &mut Vec<u64>, messages: &mut Vec<Message>)
 pub fn close_orphan_tool_calls_with(
     seqs: &mut Vec<u64>,
     messages: &mut Vec<Message>,
-    salvage: &dyn Fn(&CallId) -> Option<(String, String, bool)>,
+    salvage: SalvageCallback<'_>,
 ) {
     let answered: std::collections::HashSet<CallId> = messages
         .iter()

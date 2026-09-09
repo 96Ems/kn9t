@@ -11,7 +11,7 @@ pub fn run(port: u16, server_token: &str) {
     let tools = resp.get("tools").and_then(|v| v.as_array());
     match tools {
         Some(arr) if !arr.is_empty() => {
-            println!("{:<22}  {}", "TOOL", "DESCRIPTION");
+            println!("{:<22}  DESCRIPTION", "TOOL");
             println!("{}", "-".repeat(72));
             for t in arr {
                 let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");

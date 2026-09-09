@@ -89,7 +89,7 @@ impl<R: Read> Iterator for SseReader<R> {
                 Ok(_) => {}
             }
 
-            let line = line.trim_end_matches(|c| c == '\r' || c == '\n');
+            let line = line.trim_end_matches(['\r', '\n']);
 
             if line.is_empty() {
                 // Blank line = block separator

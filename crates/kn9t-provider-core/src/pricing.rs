@@ -83,7 +83,7 @@ pub fn lookup_price(api_id: &str) -> Option<Price> {
 
     for entry in table {
         if entry.pattern.is_match(api_id) {
-            return Some(entry.price.clone());
+            return Some(entry.price);
         }
     }
 

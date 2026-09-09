@@ -3,13 +3,22 @@
 use std::thread;
 
 use kn9t_provider_core::{
-    Cancel, Content, Decision, Event, HookVeto, LiveEvent, Message, ModelRef, MsgId, ProvErr,
-    Request, Role, StopReason, Tokens, ToolCall, ToolCtx, Usage,
+    CallId, Cancel, Content, Decision, Event, HookVeto, LiveEvent, Message, ModelRef, MsgId,
+    ProvErr, Request, Role, StopReason, Tokens, ToolCall, ToolCtx, Usage,
 };
 
 use crate::assembler::{assemble, Assembled};
 use crate::loop_::{ReactError, ReactLoop, RunParams};
 use crate::turn::Attempt;
+
+/// Handle for a parallel tool execution: (index, name, args, call_id, join_handle).
+type ParallelToolHandle = (
+    usize,
+    String,
+    serde_json::Value,
+    CallId,
+    thread::JoinHandle<(Vec<Content>, bool)>,
+);
 
 impl ReactLoop {
     /// One provider attempt: plan (compaction decided here), before_request hook, stream,
@@ -109,7 +118,7 @@ impl ReactLoop {
 
         // R-RCT-020 step 4: stream + assemble via reusable abstraction (96E-11).
         let attempt = self.provider_attempt(&req, cancel, &params.model.r#ref)?;
-        return Ok(attempt);
+        Ok(attempt)
     }
 
     /// 96E-11: reusable provider-attempt/cancellation abstraction.
@@ -281,13 +290,13 @@ impl ReactLoop {
                     stop: StopReason::Stop,
                     usage_reported: false,
                 };
-                return Ok(Attempt::Completed(assembled));
+                Ok(Attempt::Completed(assembled))
             }
             Err(e) => {
                 self.bus.emit(LiveEvent::Error {
                     message: format!("compactor failed: {e}"),
                 });
-                return Err(ReactError::Provider(format!("compactor failed: {e}")));
+                Err(ReactError::Provider(format!("compactor failed: {e}")))
             }
         }
     }
@@ -316,13 +325,7 @@ impl ReactLoop {
         // Fix 96E-6: parallel path now returns raw inner content + is_error;
         // after_tool_call is applied after join in sequential order, so both
         // paths share the identical before/execute/after lifecycle.
-        let mut handles: Vec<(
-            usize,
-            String,
-            serde_json::Value,
-            kn9t_provider_core::CallId,
-            thread::JoinHandle<(Vec<Content>, bool)>,
-        )> = Vec::new();
+        let mut handles: Vec<ParallelToolHandle> = Vec::new();
         for (i, plan) in plans.iter().enumerate() {
             if let CallPlan::Execute { args } = plan {
                 let call = &calls[i];

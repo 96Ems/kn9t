@@ -20,6 +20,7 @@ fn now_ts() -> i64 {
 /// The caller then writes the copied events (fork) or nothing (empty), sets
 /// `head_seq`, and commits. 96E-17: extracted so the bare child fork
 /// (`fork_session_empty`) shares exactly the same snapshot semantics.
+#[allow(clippy::too_many_arguments)]
 fn fork_begin(
     conn: &Connection,
     origin: &SessionId,
@@ -44,13 +45,14 @@ fn fork_begin(
         )
         .map_err(|e| StoreErr(format!("fork usage query: {e}")))?;
 
+    // Context tokens at fork point: real tokens from last usage before origin_seq.
     let inh_ctx: i64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(est_tokens),0) FROM messages WHERE session_id=?1 AND seq<=?2",
+            "SELECT tokens_in FROM usage WHERE session_id=?1 AND seq<=?2 ORDER BY seq DESC LIMIT 1",
             params![origin_sid, origin_seq as i64],
             |r| r.get(0),
         )
-        .map_err(|e| StoreErr(format!("fork ctx: {e}")))?;
+        .unwrap_or(0);
 
     let inh_messages: i64 = conn
         .query_row(

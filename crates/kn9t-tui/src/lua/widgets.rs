@@ -321,7 +321,7 @@ pub fn parse_widget(lua: &Lua, table: &Table) -> LuaResult<Widget> {
 fn parse_spans(table: &Table, fallback: &WidgetStyle) -> LuaResult<Vec<TextSpan>> {
     if let Ok(spans_table) = table.get::<Table>("spans") {
         let mut out = Vec::new();
-        for i in 1..=spans_table.len()? as i64 {
+        for i in 1..=spans_table.len()? {
             match spans_table.get::<Value>(i) {
                 // A bare string in a spans list inherits the node style.
                 Ok(Value::String(s)) => out.push(TextSpan {
@@ -510,7 +510,7 @@ fn parse_list_widget(table: &Table) -> LuaResult<Widget> {
 
     let mut items: Vec<Vec<TextSpan>> = Vec::new();
     if let Ok(items_table) = table.get::<Table>("items") {
-        for i in 1..=items_table.len()? as i64 {
+        for i in 1..=items_table.len()? {
             match items_table.get::<Value>(i) {
                 Ok(Value::String(s)) => items.push(vec![TextSpan {
                     text: s.to_str()?.to_string(),
@@ -614,7 +614,7 @@ fn parse_split_widget(lua: &Lua, table: &Table) -> LuaResult<Widget> {
     let mut sizes = Vec::new();
 
     if let Ok(children_table) = table.get::<Table>("children") {
-        for i in 1..=children_table.len()? as i64 {
+        for i in 1..=children_table.len()? {
             if let Ok(child_table) = children_table.get::<Table>(i) {
                 children.push(parse_widget(lua, &child_table)?);
 
@@ -957,9 +957,8 @@ pub fn render_widget(
             let fill_char = filled.chars().next().unwrap_or('#');
             let empty_char = empty.chars().next().unwrap_or('-');
             let n = ((*frac) * w as f64).round() as usize;
-            let mut bar: String = std::iter::repeat(fill_char)
-                .take(n.min(w))
-                .chain(std::iter::repeat(empty_char).take(w.saturating_sub(n)))
+            let mut bar: String = std::iter::repeat_n(fill_char, n.min(w))
+                .chain(std::iter::repeat_n(empty_char, w.saturating_sub(n)))
                 .collect();
 
             // Overlay the label centred, so it reads on both halves of the bar.

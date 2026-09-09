@@ -24,18 +24,6 @@ use serde_json::Value;
 struct InteractionSlot {
     response: Mutex<Option<Value>>,
     cvar: Condvar,
-    /// Debug meta: which session/plugin created this interaction.
-    ///
-    /// Captured for diagnostics only — never read for routing, which goes by the
-    /// slot id alone. Kept because an orphaned interaction is otherwise
-    /// impossible to attribute from a core dump or a debugger.
-    #[allow(dead_code)]
-    session_id: String,
-    #[allow(dead_code)]
-    plugin: String,
-    /// The original request payload (for diagnostics, not used for routing).
-    #[allow(dead_code)]
-    request_payload: Value,
 }
 
 // ── Registry ────────────────────────────────────────────────────────────────
@@ -55,19 +43,23 @@ impl InteractionRegistry {
 
     /// Register a new pending interaction. Returns the allocated `id` and the
     /// slot that the caller will `wait` on.
+    ///
+    /// `session_id`, `plugin`, and `payload` are logged for diagnostics but not
+    /// stored in the slot — routing uses only the numeric id.
     pub fn create(
         &self,
-        session_id: String,
-        plugin: String,
-        payload: Value,
+        session_id: &str,
+        plugin: &str,
+        _payload: &Value,
     ) -> (u64, Arc<InteractionSlotHandle>) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        eprintln!(
+            "[interaction] create id={} session={} plugin={}",
+            id, session_id, plugin
+        );
         let slot = Arc::new(InteractionSlot {
             response: Mutex::new(None),
             cvar: Condvar::new(),
-            session_id,
-            plugin,
-            request_payload: payload,
         });
         self.inner
             .lock()
@@ -171,9 +163,9 @@ mod tests {
     fn registry_blocks_and_resolves_opaque_payload() {
         let reg = Arc::new(InteractionRegistry::new());
         let (id, handle) = reg.create(
-            "sess-1".into(),
-            "my-plugin".into(),
-            json!({"question":"hello"}),
+            "sess-1",
+            "my-plugin",
+            &json!({"question":"hello"}),
         );
         let reg_c = reg.clone();
         let h = std::thread::spawn(move || reg_c.wait(&handle));
@@ -197,7 +189,7 @@ mod tests {
     fn opaque_payload_is_forwarded_verbatim() {
         let reg = Arc::new(InteractionRegistry::new());
         let payload = json!({"question":"choose","choices":["a","b","c"],"meta":{"x":1}});
-        let (id, handle) = reg.create("s".into(), "p".into(), payload.clone());
+        let (id, handle) = reg.create("s", "p", &payload);
         let reg_c = reg.clone();
         let h = std::thread::spawn(move || reg_c.wait(&handle));
         reg.resolve(id, json!({"choice":"b"}));

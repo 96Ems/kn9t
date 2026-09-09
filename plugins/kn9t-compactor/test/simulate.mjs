@@ -62,7 +62,7 @@ while (Date.now() < deadline) {
     if (req.op === "session_read") {
       assert.equal(req.payload.session, "sess-x");
       send({ t: "api_result", id: req.id, ok: true, result: { messages: SPAN } });
-    } else if (req.op === "ui_set_state") {
+    } else if (req.op === "ui_register_lua" || req.op === "ui_set_state" || req.op === "ui_clear") {
       // UI updates are fire-and-forget, just ack them
       send({ t: "api_result", id: req.id, ok: true, result: null });
     } else if (req.op === "provider_complete") {

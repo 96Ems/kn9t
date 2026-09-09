@@ -123,16 +123,13 @@ pub enum Thinking {
 /// R-CORE-095 — whether persisted thinking reaches the wire on replay.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ThinkingReplay {
+    #[default]
     Verbatim,
     Strip,
 }
 
-impl Default for ThinkingReplay {
-    fn default() -> Self {
-        ThinkingReplay::Verbatim
-    }
-}
 
 /// R-CORE-095 — wire divergences that are config data (§8.2), never URL-sniffed.
 /// The full field set is enumerated in PCORE/OAI (05); core defines at least

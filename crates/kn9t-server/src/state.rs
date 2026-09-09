@@ -22,6 +22,7 @@ use crate::bus::SessionBuses;
 use crate::interaction::InteractionRegistry;
 use crate::lease::{LeaseMap, DEFAULT_LEASE_IDLE};
 use crate::policy::{ApprovalCache, ApprovalRegistry, InteractiveApprover, NonInteractiveApprover};
+use crate::tools::SpawnRecipe;
 
 /// Grace period after last client disconnects before the server exits.
 /// Short enough to feel immediate, long enough to survive a TUI restart.
@@ -177,7 +178,7 @@ pub struct ServerState {
     pub plugin_hosts: Mutex<Vec<Arc<PluginHost>>>,
     /// Spawn recipe per plugin declared name — used to respawn on reload (R-PLUG2-100).
     /// `cmd` is the exact argv (binary + args) and `env` the injected vars.
-    pub plugin_spawn: Mutex<HashMap<String, (Vec<String>, Vec<(String, String)>)>>,
+    pub plugin_spawn: Mutex<HashMap<String, SpawnRecipe>>,
     /// Plugin hosts backing `kind = "plugin"` providers, by provider name.
     /// R-SRV-CFG-100: kept so `reload_config` can shut down the old subprocess
     /// before replacing it, instead of leaking one process per reload.
@@ -443,7 +444,7 @@ impl ServerState {
                 name,
                 n
             );
-            return Ok((new_decl_name, n));
+            Ok((new_decl_name, n))
         }
     }
 

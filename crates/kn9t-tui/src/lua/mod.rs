@@ -360,7 +360,7 @@ impl LuaRuntime {
 
     /// Load the user's config from whichever of `dir`/`file` actually has
     /// content — see `ConfigSource::resolve` for the precedence rule.
-    pub fn load_config(&self, dir: &std::path::Path, file: &PathBuf) -> bool {
+    pub fn load_config(&self, dir: &std::path::Path, file: &std::path::Path) -> bool {
         match ConfigSource::resolve(dir, file) {
             Some(ConfigSource::Dir(d)) => self.load_dir(&d),
             Some(ConfigSource::File(f)) => self.load_file(&f),
@@ -497,10 +497,7 @@ impl LuaRuntime {
             return None;
         }
 
-        match state.lua.globals().get::<T>(name) {
-            Ok(v) => Some(v),
-            Err(_) => None,
-        }
+        state.lua.globals().get::<T>(name).ok()
     }
 
     /// 96E-43: Process pending panel registrations from Lua.
@@ -1000,18 +997,16 @@ pub fn lua_value_to_json(v: &Value) -> Option<serde_json::Value> {
                 Some(serde_json::Value::Array(arr))
             } else {
                 let mut map = serde_json::Map::new();
-                for pair in t.clone().pairs::<Value, Value>() {
-                    if let Ok((k, v)) = pair {
-                        let key = match &k {
-                            Value::String(s) => s.to_str().ok()?.to_string(),
-                            Value::Integer(i) => i.to_string(),
-                            _ => return None,
-                        };
-                        if let Some(jv) = lua_value_to_json(&v) {
-                            map.insert(key, jv);
-                        } else {
-                            return None;
-                        }
+                for (k, v) in t.clone().pairs::<Value, Value>().flatten() {
+                    let key = match &k {
+                        Value::String(s) => s.to_str().ok()?.to_string(),
+                        Value::Integer(i) => i.to_string(),
+                        _ => return None,
+                    };
+                    if let Some(jv) = lua_value_to_json(&v) {
+                        map.insert(key, jv);
+                    } else {
+                        return None;
                     }
                 }
                 Some(serde_json::Value::Object(map))

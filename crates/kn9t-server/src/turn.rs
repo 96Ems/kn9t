@@ -923,7 +923,7 @@ pub fn spawn_compact(
 
         let event = Event::Compacted {
             seq: 0,
-            replaced: compact_span.replaced.clone(),
+            replaced: compact_span.replaced,
             summary: compaction_plan.summary,
         };
 

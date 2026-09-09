@@ -102,7 +102,7 @@ impl Provider for RemoteProvider {
                 }
 
                 let stop = decode_stop(&done);
-                let tokens = decode_tokens(&done.get("usage").unwrap_or(&Value::Null));
+                let tokens = decode_tokens(done.get("usage").unwrap_or(&Value::Null));
 
                 // Emit Usage chunk, then Stop.
                 chunks.push(Ok(Chunk::Usage(Usage {

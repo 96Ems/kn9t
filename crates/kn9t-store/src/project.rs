@@ -9,7 +9,6 @@ pub enum Row {
         seq: u64,
         role: String,
         content_json: String,
-        est_tokens: i64,
         silent: bool,
     },
     Usage {
@@ -43,12 +42,12 @@ pub enum Row {
         replaced_end: u64,
         role: String,
         content_json: String,
-        est_tokens: i64,
     },
 }
 
 /// Estimate tokens as len/4 (§7.4 — no tokenizer).
-fn est_tokens(content: &[Content]) -> i64 {
+/// Used for messages not yet sent to the provider; real token counts come from usage.
+pub fn estimate_tokens(content: &[Content]) -> i64 {
     let total: usize = content
         .iter()
         .map(|c| match c {
@@ -68,6 +67,12 @@ fn est_tokens(content: &[Content]) -> i64 {
         })
         .sum();
     (total / 4).max(1) as i64
+}
+
+/// Estimate tokens from raw JSON content string.
+pub fn estimate_tokens_json(content_json: &str) -> i64 {
+    let content: Vec<Content> = serde_json::from_str(content_json).unwrap_or_default();
+    estimate_tokens(&content)
 }
 
 fn role_str(role: Role) -> &'static str {
@@ -93,13 +98,11 @@ pub fn project(session_id: &str, ts: i64, event: &Event) -> Vec<Row> {
     match event {
         Event::MessageAppended { seq, msg } => {
             let content_json = serde_json::to_string(&msg.content).unwrap_or_default();
-            let est = est_tokens(&msg.content);
             vec![Row::Message {
                 session_id: session_id.to_owned(),
                 seq: *seq,
                 role: role_str(msg.role).to_owned(),
                 content_json,
-                est_tokens: est,
                 silent: msg.silent,
             }]
         }
@@ -155,7 +158,6 @@ pub fn project(session_id: &str, ts: i64, event: &Event) -> Vec<Row> {
             summary,
         } => {
             let content_json = serde_json::to_string(&summary.content).unwrap_or_default();
-            let est = est_tokens(&summary.content);
             vec![Row::Compacted {
                 session_id: session_id.to_owned(),
                 seq: *seq,
@@ -163,7 +165,6 @@ pub fn project(session_id: &str, ts: i64, event: &Event) -> Vec<Row> {
                 replaced_end: replaced.end,
                 role: role_str(summary.role).to_owned(),
                 content_json,
-                est_tokens: est,
             }]
         }
         // SessionForked, ModelChanged → no projection row
@@ -180,13 +181,12 @@ pub fn write_rows(conn: &Connection, rows: Vec<Row>) -> Result<(), StoreErr> {
                 seq,
                 role,
                 content_json,
-                est_tokens,
                 silent,
             } => {
                 conn.execute(
-                    "INSERT OR REPLACE INTO messages(session_id,seq,role,content,est_tokens,silent)\
-                     VALUES(?1,?2,?3,?4,?5,?6)",
-                    params![session_id, seq as i64, role, content_json, est_tokens, silent as i64],
+                    "INSERT OR REPLACE INTO messages(session_id,seq,role,content,silent)\
+                     VALUES(?1,?2,?3,?4,?5)",
+                    params![session_id, seq as i64, role, content_json, silent as i64],
                 ).map_err(|e| StoreErr(format!("insert message: {e}")))?;
             }
             Row::Usage {
@@ -236,7 +236,6 @@ pub fn write_rows(conn: &Connection, rows: Vec<Row>) -> Result<(), StoreErr> {
                 replaced_end,
                 role,
                 content_json,
-                est_tokens,
             } => {
                 conn.execute(
                     "DELETE FROM messages WHERE session_id=?1 AND seq>=?2 AND seq<=?3",
@@ -245,9 +244,9 @@ pub fn write_rows(conn: &Connection, rows: Vec<Row>) -> Result<(), StoreErr> {
                 .map_err(|e| StoreErr(format!("delete compacted: {e}")))?;
                 // Compacted messages are never silent (they're assistant summaries)
                 conn.execute(
-                    "INSERT OR REPLACE INTO messages(session_id,seq,role,content,est_tokens,silent)\
-                     VALUES(?1,?2,?3,?4,?5,0)",
-                    params![session_id, seq as i64, role, content_json, est_tokens],
+                    "INSERT OR REPLACE INTO messages(session_id,seq,role,content,silent)\
+                     VALUES(?1,?2,?3,?4,0)",
+                    params![session_id, seq as i64, role, content_json],
                 ).map_err(|e| StoreErr(format!("insert compact summary: {e}")))?;
             }
         }

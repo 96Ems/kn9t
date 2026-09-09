@@ -131,7 +131,7 @@ impl Theme {
     fn auto_detect() -> Self {
         // COLORFGBG format: "fg;bg" where higher bg values suggest light background
         if let Ok(colorfgbg) = std::env::var("COLORFGBG") {
-            if let Some(bg_str) = colorfgbg.split(';').last() {
+            if let Some(bg_str) = colorfgbg.split(';').next_back() {
                 if let Ok(bg) = bg_str.trim().parse::<u32>() {
                     // ANSI colors: 0-7 are dark, 8-15 are bright
                     // Values > 7 (especially 15 = white) suggest light theme

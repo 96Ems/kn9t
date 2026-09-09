@@ -20,8 +20,8 @@ pub fn run(port: u16, server_token: &str) {
     };
     // Header
     println!(
-        "{:<16}  {:<28}  {:>8}  {:>8}  {}",
-        "PROVIDER", "MODEL", "CTX", "MAX_OUT", "DEFAULT"
+        "{:<16}  {:<28}  {:>8}  {:>8}  DEFAULT",
+        "PROVIDER", "MODEL", "CTX", "MAX_OUT"
     );
     println!("{}", "-".repeat(80));
     for m in models {

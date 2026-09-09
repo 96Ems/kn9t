@@ -581,8 +581,8 @@ pub fn spawn_sse_thread(
                 }
             };
 
-            if line.starts_with("data: ") {
-                data_buf = line[6..].to_string();
+            if let Some(data) = line.strip_prefix("data: ") {
+                data_buf = data.to_string();
             } else if line.is_empty() && !data_buf.is_empty() {
                 // End of event.
                 match serde_json::from_str::<SseFrame>(&data_buf) {

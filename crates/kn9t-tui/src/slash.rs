@@ -247,7 +247,7 @@ pub fn fuzzy_match(target: &str, query: &str) -> bool {
     let mut query_chars = query.chars().peekable();
     for ch in target.chars() {
         if let Some(&qch) = query_chars.peek() {
-            if ch.to_ascii_lowercase() == qch.to_ascii_lowercase() {
+            if ch.eq_ignore_ascii_case(&qch) {
                 query_chars.next();
             }
         }

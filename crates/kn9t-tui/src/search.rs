@@ -396,9 +396,9 @@ impl SearchState {
         // Build the bar text in sections.
         // "Search: " prefix
         let prefix = "Search: ";
-        // Toggles suffix: " [.*] [Aa]"
-        let regex_label = if self.regex_mode { "[.*]" } else { "[.*]" };
-        let case_label = if self.case_sensitive { "[Aa]" } else { "[Aa]" };
+        // Toggles suffix: " [.*] [Aa]" — labels are constant, only style changes
+        let regex_label = "[.*]";
+        let case_label = "[Aa]";
         let count_str = self.match_count_display();
         // Suffix: " ─ 3/42 ─ [.*] [Aa] "
         let suffix_len = 3 + count_str.len() + 3 + regex_label.len() + 1 + case_label.len() + 1;

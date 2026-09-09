@@ -33,8 +33,8 @@ pub fn run(port: u16, server_token: &str) {
     let name_w = 36;
     let seq_w = 6;
     println!(
-        "{:<id_w$}  {:<name_w$}  {:>seq_w$}  {}",
-        "ID", "NAME", "SEQ", "CWD"
+        "{:<id_w$}  {:<name_w$}  {:>seq_w$}  CWD",
+        "ID", "NAME", "SEQ"
     );
     println!("{}", "-".repeat(id_w + 2 + name_w + 2 + seq_w + 2 + 30));
 

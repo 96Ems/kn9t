@@ -219,7 +219,7 @@ fn post_json(host: &str, auth: &str, path: &str, body: &Value, lease: Option<&st
 use std::cell::RefCell;
 
 thread_local! {
-    static APPROVAL_CTX: RefCell<Option<(String, String)>> = RefCell::new(None);
+    static APPROVAL_CTX: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
 }
 
 fn set_approval_ctx(host: &str, auth: &str) {
@@ -368,11 +368,7 @@ fn json_emit(v: &Value) -> bool {
 /// Approval is still handled inline (selector on stderr) so interactive json still works;
 /// for headless runs the caller should pre-allow via policy or run with `allow_all`.
 fn stream_events_json(rx: mpsc::Receiver<String>) {
-    loop {
-        let raw = match rx.recv() {
-            Ok(r) => r,
-            Err(_) => break,
-        };
+    while let Ok(raw) = rx.recv() {
         let line = raw.trim();
         if !line.starts_with("data:") {
             continue;
@@ -437,11 +433,7 @@ fn stream_events_until_turn_end(rx: &mpsc::Receiver<String>) {
     // Whether the last character printed to stdout was model text (need a newline before tool output).
     let mut in_text = false;
 
-    loop {
-        let raw = match rx.recv() {
-            Ok(r) => r,
-            Err(_) => break, // sender dropped — SSE ended
-        };
+    while let Ok(raw) = rx.recv() {
         let line = raw.trim();
         if !line.starts_with("data:") {
             continue;

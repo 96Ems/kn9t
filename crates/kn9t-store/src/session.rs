@@ -18,7 +18,7 @@ fn now_ts() -> i64 {
 pub fn append(store: &SqliteStore, session: &SessionId, event: Event) -> Result<u64, StoreErr> {
     // R-STOR-050 — reject transient events
     if event.seq().is_none() {
-        return Err(StoreErr(format!("append: transient event rejected")));
+        return Err(StoreErr("append: transient event rejected".to_string()));
     }
 
     let sid = session.0.clone();
@@ -114,13 +114,15 @@ pub fn snapshot(store: &SqliteStore, session: &SessionId) -> Result<SessionSnaps
         )
         .map_err(|e| StoreErr(format!("snapshot query: {e}")))?;
 
+    // Context tokens: real tokens from last provider response.
+    // New messages since last usage are negligible for display purposes.
     let ctx_tokens: i64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(est_tokens),0) FROM messages WHERE session_id = ?1",
+            "SELECT tokens_in FROM usage WHERE session_id=?1 ORDER BY seq DESC LIMIT 1",
             params![sid],
             |r| r.get(0),
         )
-        .map_err(|e| StoreErr(format!("ctx_tokens: {e}")))?;
+        .unwrap_or(0);
 
     let cost_micros: i64 = conn
         .query_row(

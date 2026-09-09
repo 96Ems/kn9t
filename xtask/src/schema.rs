@@ -81,7 +81,7 @@ pub fn routes(http: &Value) -> Vec<Route<'_>> {
 }
 
 /// Ordered property map of an object subschema.
-pub fn properties<'a>(obj: &'a Value) -> Vec<(String, &'a Value)> {
+pub fn properties(obj: &Value) -> Vec<(String, &Value)> {
     obj.get("properties")
         .and_then(|p| p.as_object())
         .map(props_in_order)

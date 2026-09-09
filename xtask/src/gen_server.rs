@@ -74,8 +74,8 @@ fn emit_struct(name: &str, obj: &Value) -> String {
         .and_then(|d| d.as_str())
         .unwrap_or("Request body.");
     s.push_str(&format!("/// {doc}\n"));
-    s.push_str(&format!("#[derive(Debug, Clone, Deserialize)]\n"));
-    s.push_str(&format!("#[serde(deny_unknown_fields)]\n"));
+    s.push_str("#[derive(Debug, Clone, Deserialize)]\n");
+    s.push_str("#[serde(deny_unknown_fields)]\n");
     s.push_str(&format!("pub struct {name} {{\n"));
 
     for (key, prop) in props {

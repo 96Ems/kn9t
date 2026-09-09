@@ -178,9 +178,7 @@ impl PromptHistory {
         }
 
         // Not navigating
-        if self.position.is_none() {
-            return None;
-        }
+        self.position?;
 
         // Filter history by prefix
         let matches: Vec<usize> = self

@@ -34,6 +34,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+/// Result of spawning a single plugin: host handle + extracted tools.
+type SpawnedPlugin = (Arc<PluginHost>, Vec<Arc<dyn Tool>>);
+
+/// Spawn recipe for hot-reload: (command, env vars).
+pub type SpawnRecipe = (Vec<String>, Vec<(String, String)>);
+
+/// Result of spawning all plugins: hosts, registry, and spawn recipes keyed by plugin name.
+pub type AllPluginsResult = (Vec<Arc<PluginHost>>, ToolRegistry, HashMap<String, SpawnRecipe>);
+
 /// The user plugin directory: `<KN9T_HOME|~/.kn9t>/plugins` (ADR-0004).
 ///
 /// This is the ONLY directory scanned for plugin binaries at startup. It is derived
@@ -62,7 +71,7 @@ fn is_plugin_candidate(path: &Path) -> bool {
     }
     #[cfg(target_family = "windows")]
     {
-        return path.extension().map_or(false, |e| e == "exe");
+        path.extension().is_some_and(|e| e == "exe")
     }
     #[cfg(not(any(target_family = "unix", target_family = "windows")))]
     {
@@ -92,10 +101,7 @@ pub fn discover_plugin_binaries(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Spawn a pinned user plugin from [[plugin]] config (cmd is Some).
-fn spawn_user_plugin(
-    cfg: &ResolvedPlugin,
-    kv: Arc<dyn PluginKv>,
-) -> Result<(Arc<PluginHost>, Vec<Arc<dyn Tool>>), String> {
+fn spawn_user_plugin(cfg: &ResolvedPlugin, kv: Arc<dyn PluginKv>) -> Result<SpawnedPlugin, String> {
     let cmd = cfg
         .cmd
         .as_ref()
@@ -145,7 +151,7 @@ fn spawn_discovered_plugin(
     bin: &Path,
     env_vars: &[(&str, &str)],
     kv: Arc<dyn PluginKv>,
-) -> Result<(Arc<PluginHost>, Vec<Arc<dyn Tool>>), String> {
+) -> Result<SpawnedPlugin, String> {
     if env_vars.is_empty() {
         crate::log!("spawning discovered plugin: {}", bin.display());
     } else {
@@ -318,14 +324,7 @@ pub fn spawn_all_plugins(
 pub fn spawn_all_plugins_with_info(
     user_plugins: &[ResolvedPlugin],
     kv: Arc<dyn PluginKv>,
-) -> Result<
-    (
-        Vec<Arc<PluginHost>>,
-        ToolRegistry,
-        HashMap<String, (Vec<String>, Vec<(String, String)>)>,
-    ),
-    String,
-> {
+) -> Result<AllPluginsResult, String> {
     spawn_all_plugins_in_dir_with_info(user_plugins, &plugin_dir(), kv)
 }
 
@@ -350,17 +349,10 @@ fn spawn_all_plugins_in_dir_with_info(
     user_plugins: &[ResolvedPlugin],
     discovery_dir: &Path,
     kv: Arc<dyn PluginKv>,
-) -> Result<
-    (
-        Vec<Arc<PluginHost>>,
-        ToolRegistry,
-        HashMap<String, (Vec<String>, Vec<(String, String)>)>,
-    ),
-    String,
-> {
+) -> Result<AllPluginsResult, String> {
     let mut all_hosts: Vec<Arc<PluginHost>> = Vec::new();
     let mut all_tools: Vec<Arc<dyn Tool>> = Vec::new();
-    let mut spawn_info: HashMap<String, (Vec<String>, Vec<(String, String)>)> = HashMap::new();
+    let mut spawn_info: HashMap<String, SpawnRecipe> = HashMap::new();
     // For dedup: track tool names already registered (first wins, duplicate warns).
     let mut seen_tools: HashSet<String> = HashSet::new();
 

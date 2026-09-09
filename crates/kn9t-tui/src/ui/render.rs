@@ -1,4 +1,8 @@
 //! Rendering — draws all UI components.
+//!
+//! Render functions take many parameters (buffer, theme, coords, state...) by design.
+//! This is unavoidable in immediate-mode rendering code.
+#![allow(clippy::too_many_arguments)]
 
 use ratatui::{
     layout::Rect,
@@ -104,14 +108,12 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
             render_lua_panels(f, app, area, theme);
             render_chat_overlays(f, app, area, theme);
-            return;
         }
         crate::lua::widgets::UiOutcome::Failed(err) => {
             // Broken config: show a usable minimum plus the error, never the
             // full Rust chrome, which would look like nothing is wrong.
             render_lua_error_shell(f, app, area, theme, &err);
             render_chat_overlays(f, app, area, theme);
-            return;
         }
         crate::lua::widgets::UiOutcome::NotDefined => {
             // Only reachable if the embedded built-in itself failed to load,
@@ -655,7 +657,7 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         // - Not the last message while streaming (may be incomplete)
         // - Width hasn't changed (tracked in update_state)
         let is_last_msg = msg_idx == msg_count.saturating_sub(1);
-        let can_use_cache = !search_active && !(is_last_msg && is_streaming);
+        let can_use_cache = !(search_active || (is_last_msg && is_streaming));
 
         // Compute tool info hash - changes when tool state changes (expanded, scroll, status, etc.)
         let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools);
@@ -1168,10 +1170,12 @@ fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let mut cursor_display_col: usize = 0;
 
     // Track position for cursor mapping.
+    // logical_row tracks newlines in the original input, not display lines after wrapping.
     let mut logical_row: usize = 0;
     let input_char_count = app.input.chars().count();
 
     // Use display_input (with image suffix) for rendering.
+    #[allow(clippy::explicit_counter_loop)]
     for (line_idx, line) in display_input.lines().enumerate() {
         let chars: Vec<char> = line.chars().collect();
         if chars.is_empty() {
@@ -1301,16 +1305,7 @@ fn render_status(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         String::new()
     };
 
-    let phase_disp = match app.turn_phase.as_str() {
-        "idle" => "idle",
-        "thinking" => "thinking",
-        "streaming" => "streaming",
-        "tool" => "tool",
-        "retrying" => "retrying",
-        "failed" => "failed",
-        "aborted" => "aborted",
-        other => other,
-    };
+    let phase_disp = app.turn_phase.as_str();
     let status = format!(
         "{} | ${:.4} | {}{} | {} | ^P",
         app.current_model_name(),
@@ -1636,9 +1631,11 @@ fn render_model_select(
 
     let mut rows: Vec<Row> = Vec::new();
     let mut current_provider: Option<&str> = None;
-    let mut selectable_idx = 0usize; // Index for selection (headers don't count)
+    // selectable_idx counts models only (headers don't count), so it differs from enumerate().
+    let mut selectable_idx = 0usize;
     let mut selected_row_idx: Option<usize> = None; // Row index of selected model
 
+    #[allow(clippy::explicit_counter_loop)]
     for (_orig_idx, model) in &filtered {
         if current_provider != Some(&model.provider) {
             current_provider = Some(&model.provider);
@@ -2059,9 +2056,11 @@ fn render_tools_manager(
 
     let mut rows: Vec<ToolRow> = Vec::new();
     let mut current_plugin: Option<&str> = None;
+    // selectable_idx counts tools only (headers don't count), so it differs from enumerate().
     let mut selectable_idx = 0usize;
     let mut selected_row_idx: Option<usize> = None;
 
+    #[allow(clippy::explicit_counter_loop)]
     for (_orig_idx, tool) in &filtered {
         let plugin = tool.plugin.as_deref().unwrap_or("builtin");
         if current_plugin != Some(plugin) {
@@ -2658,9 +2657,7 @@ fn render_tool_card(
     // Use most of the screen when expanded (leave room for header, footer, scrollbar hint)
     let visible_lines = if available_height > 10 {
         // Use ~60% of available height for expanded tool, capped reasonably
-        (available_height * 60 / 100)
-            .max(TOOL_OUTPUT_MIN_VISIBLE_LINES)
-            .min(50)
+        (available_height * 60 / 100).clamp(TOOL_OUTPUT_MIN_VISIBLE_LINES, 50)
     } else {
         TOOL_OUTPUT_DEFAULT_VISIBLE_LINES
     };
@@ -3589,7 +3586,7 @@ fn compute_interaction_height(state: &InteractionState, inner_w: usize, max_h: u
             let header_lines = if header.is_some() { 1 } else { 0 };
             let question_lines = wrap_text(question, inner_w.max(1)).len();
             let input_lines = if input_w > 0 {
-                ((input.chars().count().max(1) + input_w - 1) / input_w).max(1)
+                input.chars().count().max(1).div_ceil(input_w).max(1)
             } else {
                 1
             };
@@ -3649,7 +3646,7 @@ fn compute_interaction_height(state: &InteractionState, inner_w: usize, max_h: u
         InteractionState::Generic { payload, input, .. } => {
             let payload_lines = wrap_text(payload, inner_w.max(1)).len();
             let input_lines = if input_w > 0 {
-                ((input.chars().count().max(1) + input_w - 1) / input_w).max(1)
+                input.chars().count().max(1).div_ceil(input_w).max(1)
             } else {
                 1
             };
@@ -3911,8 +3908,8 @@ fn render_interaction_overlay(
                 }
             }
             // "Other..." option if allow_custom
-            if *allow_custom {
-                if y < overlay_y + overlay_h - 2 {
+            if *allow_custom
+                && y < overlay_y + overlay_h - 2 {
                     let is_sel = *selected == options.len() || *in_custom_mode;
                     let marker = if is_sel && !*in_custom_mode {
                         "● "
@@ -3957,7 +3954,6 @@ fn render_interaction_overlay(
                         }
                     }
                 }
-            }
             // Footer
             let footer = if *in_custom_mode {
                 "Enter send · Esc back"

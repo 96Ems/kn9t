@@ -217,7 +217,7 @@ pub fn latex_to_unicode(latex: &str) -> String {
                                   // Read until matching }
                     let mut depth = 1;
                     let mut content = String::new();
-                    while let Some(c) = chars.next() {
+                    for c in chars.by_ref() {
                         if c == '{' {
                             depth += 1;
                             content.push(c);
@@ -309,7 +309,7 @@ fn read_braced(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
     let mut content = String::new();
     let mut depth = 1;
 
-    while let Some(c) = chars.next() {
+    for c in chars.by_ref() {
         if c == '{' {
             depth += 1;
             content.push(c);

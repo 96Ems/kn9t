@@ -35,7 +35,7 @@ impl ReactLoop {
             // before the next provider round (fix 4.3).
             // R-RCT-040: use external cancel if provided (server abort), else fresh per turn.
             // The external cancel allows the server to abort the entire run when user presses ESC.
-            let cancel = params.cancel.clone().unwrap_or_else(Cancel::new);
+            let cancel = params.cancel.clone().unwrap_or_default();
             match self.execute_turn(&mut params, turn, &cancel) {
                 Ok(TurnOutcome::Continue) => continue,
                 Ok(TurnOutcome::Idle(stop)) => {

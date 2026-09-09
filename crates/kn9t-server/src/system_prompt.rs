@@ -7,8 +7,7 @@ pub fn build_system_prompt(platform: &str) -> String {
         _ => "Bash. Use standard Unix commands: `ls`, `grep`, `find`, `cat`, etc.",
     };
 
-    format!(
-        r#"You are kn9t pronouced "knight", a kind coding assistant.
+    r#"You are kn9t pronouced "knight", a kind coding assistant.
 
 # Guidelines
 - Be concise and direct. Output is displayed in a terminal.
@@ -27,8 +26,7 @@ pub fn build_system_prompt(platform: &str) -> String {
 
 # Code references
 When referencing code, use the format `file_path:line_number` for easy navigation.
-"#
-    )
+"#.to_string()
 }
 
 /// Get the default system prompt for the current platform.

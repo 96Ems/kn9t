@@ -19,7 +19,6 @@ pub fn reproject(conn: &Connection) -> Result<(), StoreErr> {
            seq INTEGER NOT NULL,
            role TEXT NOT NULL,
            content TEXT NOT NULL,
-           est_tokens INTEGER NOT NULL,
            silent INTEGER NOT NULL DEFAULT 0,
            PRIMARY KEY (session_id, seq)
          );
@@ -72,7 +71,7 @@ pub fn reproject(conn: &Connection) -> Result<(), StoreErr> {
 pub fn reproject_check(conn: &Connection) -> Result<Vec<String>, StoreErr> {
     conn.execute_batch(
         "CREATE TEMP TABLE IF NOT EXISTS chk_messages (
-           session_id TEXT, seq INTEGER, role TEXT, content TEXT, est_tokens INTEGER,
+           session_id TEXT, seq INTEGER, role TEXT, content TEXT,
            silent INTEGER DEFAULT 0,
            PRIMARY KEY (session_id, seq)
          );
@@ -201,13 +200,12 @@ fn write_rows_temp(conn: &Connection, rows: Vec<project::Row>) -> Result<(), Sto
                 seq,
                 role,
                 content_json,
-                est_tokens,
                 silent,
             } => {
                 conn.execute(
-                    "INSERT OR REPLACE INTO temp.chk_messages(session_id,seq,role,content,est_tokens,silent)\
-                     VALUES(?1,?2,?3,?4,?5,?6)",
-                    params![session_id, seq as i64, role, content_json, est_tokens, silent as i64],
+                    "INSERT OR REPLACE INTO temp.chk_messages(session_id,seq,role,content,silent)\
+                     VALUES(?1,?2,?3,?4,?5)",
+                    params![session_id, seq as i64, role, content_json, silent as i64],
                 ).map_err(|e| StoreErr(format!("insert temp msg: {e}")))?;
             }
             project::Row::Usage {
@@ -257,7 +255,6 @@ fn write_rows_temp(conn: &Connection, rows: Vec<project::Row>) -> Result<(), Sto
                 replaced_end,
                 role,
                 content_json,
-                est_tokens,
             } => {
                 conn.execute(
                     "DELETE FROM temp.chk_messages WHERE session_id=?1 AND seq>=?2 AND seq<=?3",
@@ -266,9 +263,9 @@ fn write_rows_temp(conn: &Connection, rows: Vec<project::Row>) -> Result<(), Sto
                 .map_err(|e| StoreErr(format!("delete temp compacted: {e}")))?;
                 // Compacted messages are never silent (they're assistant summaries)
                 conn.execute(
-                    "INSERT OR REPLACE INTO temp.chk_messages(session_id,seq,role,content,est_tokens,silent)\
-                     VALUES(?1,?2,?3,?4,?5,0)",
-                    params![session_id, seq as i64, role, content_json, est_tokens],
+                    "INSERT OR REPLACE INTO temp.chk_messages(session_id,seq,role,content,silent)\
+                     VALUES(?1,?2,?3,?4,0)",
+                    params![session_id, seq as i64, role, content_json],
                 ).map_err(|e| StoreErr(format!("insert temp compact: {e}")))?;
             }
         }

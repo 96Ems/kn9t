@@ -478,7 +478,7 @@ pub fn ensure_home(home: &Path) {
     if need_config {
         match fs::write(&config_path, CONFIG_TEMPLATE) {
             Ok(_) => {
-                writeln!(err, "").ok();
+                writeln!(err).ok();
                 writeln!(err, "  kn9t — first run").ok();
                 writeln!(
                     err,
@@ -486,7 +486,7 @@ pub fn ensure_home(home: &Path) {
                 )
                 .ok();
                 writeln!(err, "  Created: {}", home.display()).ok();
-                writeln!(err, "").ok();
+                writeln!(err).ok();
                 writeln!(err, "  Next step: edit ~/.kn9t/config.toml and uncomment a").ok();
                 writeln!(err, "  [[provider]] block with your API credentials, then").ok();
                 writeln!(err, "  run kn9t again.").ok();
@@ -495,7 +495,7 @@ pub fn ensure_home(home: &Path) {
                     "  ─────────────────────────────────────────────────────"
                 )
                 .ok();
-                writeln!(err, "").ok();
+                writeln!(err).ok();
             }
             Err(e) => {
                 writeln!(err, "[kn9t] warning: cannot write config template: {e}").ok();

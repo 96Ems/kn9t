@@ -51,9 +51,8 @@ impl SqliteStore {
         };
 
         for cj in &content_jsons {
-            project::decr_blob_refs(&conn, cj).map_err(|e| {
+            project::decr_blob_refs(&conn, cj).inspect_err(|_| {
                 let _ = conn.execute_batch("ROLLBACK");
-                e
             })?;
         }
 

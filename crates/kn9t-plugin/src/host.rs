@@ -35,9 +35,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 thread_local! {
-    static TL_SESSION: RefCell<Option<String>> = RefCell::new(None);
+    static TL_SESSION: RefCell<Option<String>> = const { RefCell::new(None) };
     static TL_BUS: RefCell<Option<Arc<dyn EventSink>>> = RefCell::new(None);
-    static TL_CWD: RefCell<Option<PathBuf>> = RefCell::new(None);
+    static TL_CWD: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
 /// Per-call channel registration. Shared between main thread and reader thread.

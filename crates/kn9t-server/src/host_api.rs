@@ -227,9 +227,9 @@ impl ServerHostApi {
             .unwrap_or_else(|| payload.clone());
         // Create pending slot
         let (id, handle) = self.state.interaction_registry.create(
-            session.to_string(),
-            plugin.to_string(),
-            prompt_payload.clone(),
+            session,
+            plugin,
+            &prompt_payload,
         );
         // Emit to session bus — TUI renders generically from `payload`.
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
@@ -319,7 +319,7 @@ impl ServerHostApi {
                     model: model.r#ref.id.clone(),
                     kind: UsageKind::Subagent,
                     tokens: assembled.usage.tokens,
-                    price_snapshot: model.price.clone(),
+                    price_snapshot: model.price,
                     cost_micros: micros,
                     cost_usd: micros as f64 / 1_000_000.0,
                     estimated: !assembled.usage_reported,

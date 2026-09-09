@@ -14,6 +14,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
+/// Callback invoked after each durable event is appended to the store.
+pub type AfterAppendCallback = Arc<dyn Fn(&SessionId, &Event) + Send + Sync>;
+
 /// Current projection version — bump when `project()` semantics change.
 pub const PROJECTION_VERSION: &str = "2";
 
@@ -32,13 +35,13 @@ pub struct SqliteStore {
     /// `EventSink` is transient-only (96E-12), so without this the SSE bus never sees
     /// `MessageAppended`/`UsageRecorded`/`ModelChanged`/`Compacted` emitted by the loop
     /// or the routes.
-    pub(crate) after_append: Mutex<Option<Arc<dyn Fn(&SessionId, &Event) + Send + Sync>>>,
+    pub(crate) after_append: Mutex<Option<AfterAppendCallback>>,
 }
 
 impl SqliteStore {
     /// Install the after-append observer. `None` (default) disables echo — used by
     /// tests that publish to the bus manually.
-    pub fn set_after_append(&self, f: Option<Arc<dyn Fn(&SessionId, &Event) + Send + Sync>>) {
+    pub fn set_after_append(&self, f: Option<AfterAppendCallback>) {
         *self.after_append.lock().unwrap() = f;
     }
 
@@ -230,7 +233,7 @@ impl SqliteStore {
         let mut f = f;
         let mut out = Vec::new();
         while let Some(r) = rows.next().map_err(|e| StoreErr(format!("row: {e}")))? {
-            out.push(f(&r).map_err(|e| StoreErr(format!("row map: {e}")))?);
+            out.push(f(r).map_err(|e| StoreErr(format!("row map: {e}")))?);
         }
         Ok(out)
     }
@@ -517,7 +520,6 @@ CREATE TABLE IF NOT EXISTS messages (
   seq        INTEGER NOT NULL,
   role       TEXT    NOT NULL,
   content    TEXT    NOT NULL,
-  est_tokens INTEGER NOT NULL,
   silent     INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, seq)
 );

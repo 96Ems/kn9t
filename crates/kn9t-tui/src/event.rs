@@ -33,6 +33,12 @@ pub struct EventLoop {
     tx: Sender<Event>,
 }
 
+impl Default for EventLoop {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventLoop {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
@@ -65,28 +71,23 @@ impl EventLoop {
 /// Spawn crossterm input thread.
 pub fn spawn_input_thread(tx: Sender<Event>) {
     thread::spawn(move || {
-        loop {
-            match event::read() {
-                Ok(ev) => {
-                    let mapped = match ev {
-                        // Bracketed paste event - works on all platforms with patched crossterm.
-                        // See: https://github.com/crossterm-rs/crossterm/pull/1030
-                        CtEvent::Paste(s) => {
-                            crate::log!("PASTE EVENT: len={}", s.len());
-                            Event::Paste(s)
-                        }
-                        // Only handle key press, not release/repeat.
-                        CtEvent::Key(k) if k.kind == KeyEventKind::Press => Event::Key(k),
-                        CtEvent::Key(_) => continue,
-                        CtEvent::Mouse(m) => Event::Mouse(m),
-                        CtEvent::Resize(w, h) => Event::Resize(w, h),
-                        _ => continue,
-                    };
-                    if tx.send(mapped).is_err() {
-                        break;
-                    }
+        while let Ok(ev) = event::read() {
+            let mapped = match ev {
+                // Bracketed paste event - works on all platforms with patched crossterm.
+                // See: https://github.com/crossterm-rs/crossterm/pull/1030
+                CtEvent::Paste(s) => {
+                    crate::log!("PASTE EVENT: len={}", s.len());
+                    Event::Paste(s)
                 }
-                Err(_) => break,
+                // Only handle key press, not release/repeat.
+                CtEvent::Key(k) if k.kind == KeyEventKind::Press => Event::Key(k),
+                CtEvent::Key(_) => continue,
+                CtEvent::Mouse(m) => Event::Mouse(m),
+                CtEvent::Resize(w, h) => Event::Resize(w, h),
+                _ => continue,
+            };
+            if tx.send(mapped).is_err() {
+                break;
             }
         }
     });
@@ -116,11 +117,10 @@ pub fn spawn_tick_thread(tx: Sender<Event>, interval: Duration) -> TickControl {
 
     thread::spawn(move || loop {
         thread::sleep(interval);
-        if flag.load(Ordering::Relaxed) {
-            if tx.send(Event::Tick).is_err() {
+        if flag.load(Ordering::Relaxed)
+            && tx.send(Event::Tick).is_err() {
                 break;
             }
-        }
     });
 
     TickControl { streaming }

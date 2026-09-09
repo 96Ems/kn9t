@@ -918,7 +918,7 @@ impl App {
     /// Scroll within focused tool's output (includes progress_lines + output).
     pub fn scroll_tool_output(&mut self, delta: isize) {
         if let Some(ref call_id) = self.focused_tool.clone() {
-            if let Some(tool) = self.tool_mut(&call_id) {
+            if let Some(tool) = self.tool_mut(call_id) {
                 // Count total lines: progress_lines + output
                 let mut line_count = tool.progress_lines.len();
                 if let Some(ref output) = tool.output {
@@ -1170,11 +1170,11 @@ impl App {
                 }
                 Event::Tick => {
                     self.spinner_frame = self.spinner_frame.wrapping_add(1);
-                    if self.spinner_frame % 12 == 0 {
+                    if self.spinner_frame.is_multiple_of(12) {
                         self.phrase_idx = self.phrase_idx.wrapping_add(1);
                     }
                     // Poll for plugins ready (every ~500ms = every 5 ticks at 100ms)
-                    if !self.plugins_ready && self.spinner_frame % 5 == 0 {
+                    if !self.plugins_ready && self.spinner_frame.is_multiple_of(5) {
                         self.poll_plugins_ready();
                     }
                     // 96E-43: Process Lua panel commands (show/hide/toggle/register)
@@ -1452,21 +1452,21 @@ impl App {
                 }
                 KeyCode::Enter | KeyCode::Char(' ') => {
                     if let Some(ref id) = self.focused_tool.clone() {
-                        self.toggle_tool_expand(&id);
+                        self.toggle_tool_expand(id);
                     }
                     return;
                 }
                 KeyCode::Left => {
                     // Cycle tabs: Progress <- Output <- Input (wrap)
                     if let Some(ref id) = self.focused_tool.clone() {
-                        self.cycle_tool_tab(&id, false);
+                        self.cycle_tool_tab(id, false);
                     }
                     return;
                 }
                 KeyCode::Right => {
                     // Cycle tabs: Progress -> Output -> Input (wrap)
                     if let Some(ref id) = self.focused_tool.clone() {
-                        self.cycle_tool_tab(&id, true);
+                        self.cycle_tool_tab(id, true);
                     }
                     return;
                 }
@@ -2739,12 +2739,10 @@ impl App {
             // Close search.
             KeyCode::Esc => {
                 self.search_state = None;
-                return;
             }
             // Ctrl+F again: close search (toggle).
             KeyCode::Char('f') if ctrl => {
                 self.search_state = None;
-                return;
             }
             // Next match: Enter (no shift).
             KeyCode::Enter if !shift => {
@@ -2763,7 +2761,6 @@ impl App {
                         self.transcript.set_scroll(lines_from_bottom);
                     }
                 }
-                return;
             }
             // Previous match: Shift+Enter.
             KeyCode::Enter if shift => {
@@ -2777,7 +2774,6 @@ impl App {
                         self.transcript.set_scroll(lines_from_bottom);
                     }
                 }
-                return;
             }
             // Toggle regex: Alt+R.
             KeyCode::Char('r') if alt => {
@@ -2785,7 +2781,6 @@ impl App {
                     s.regex_mode = !s.regex_mode;
                     s.search(self.transcript.messages());
                 }
-                return;
             }
             // Toggle case: Alt+C.
             KeyCode::Char('c') if alt => {
@@ -2793,7 +2788,6 @@ impl App {
                     s.case_sensitive = !s.case_sensitive;
                     s.search(self.transcript.messages());
                 }
-                return;
             }
             // Backspace: delete char before cursor in query.
             KeyCode::Backspace => {
@@ -2801,7 +2795,6 @@ impl App {
                     s.delete_before_cursor();
                     s.search(self.transcript.messages());
                 }
-                return;
             }
             // Typing: insert char into query.
             KeyCode::Char(c) if !ctrl && !alt => {
@@ -2809,7 +2802,6 @@ impl App {
                     s.insert_char(c);
                     s.search(self.transcript.messages());
                 }
-                return;
             }
             _ => {}
         }
@@ -3140,11 +3132,8 @@ impl App {
             turn_phase: self.turn_phase.clone(),
             turn_status_msg: self.turn_status_msg.clone(),
             last_seq: self.session.state.last_seq,
-            transcript: std::mem::replace(
-                &mut self.transcript,
-                crate::message_handler::Transcript::new(),
-            ),
-            tokens: std::mem::replace(&mut self.tokens, crate::token_tracker::TokenTracker::new()),
+            transcript: std::mem::take(&mut self.transcript),
+            tokens: std::mem::take(&mut self.tokens),
             active_approval_id: self.active_approval_id,
             active_interaction_id: self.active_interaction_id,
             overlay: self.overlay.clone(),
@@ -3294,7 +3283,7 @@ impl App {
         // Visual feedback: show the queued message in transcript with a marker
         self.transcript.push(Message::new(
             "system",
-            &format!("⏳ Queued: {}", &text[..text.len().min(50)]),
+            format!("⏳ Queued: {}", &text[..text.len().min(50)]),
         ));
         crate::log!("QUEUE: message queued for post-idle send");
     }
@@ -3786,13 +3775,13 @@ impl App {
                         Ok(_) => {
                             crate::log!("MODEL CYCLE: success");
                             self.transcript
-                                .push(Message::new("system", &format!("Model: {}", display_name)));
+                                .push(Message::new("system", format!("Model: {}", display_name)));
                         }
                         Err(e) => {
                             crate::log!("MODEL CYCLE: error {:?}", e);
                             self.transcript.push(Message::new(
                                 "system",
-                                &format!("Failed to set model: {:?}", e),
+                                format!("Failed to set model: {:?}", e),
                             ));
                         }
                     }
@@ -3800,20 +3789,20 @@ impl App {
                     // No session yet - just show the selection.
                     self.transcript.push(Message::new(
                         "system",
-                        &format!("Model: {} (will apply on next message)", display_name),
+                        format!("Model: {} (will apply on next message)", display_name),
                     ));
                 }
             } else {
                 // No lease - just show the selection.
                 self.transcript.push(Message::new(
                     "system",
-                    &format!("Model: {} (will apply on next message)", display_name),
+                    format!("Model: {} (will apply on next message)", display_name),
                 ));
             }
         } else {
             self.transcript.push(Message::new(
                 "system",
-                &format!("Model: {} (not connected)", display_name),
+                format!("Model: {} (not connected)", display_name),
             ));
         }
     }
@@ -3836,7 +3825,7 @@ impl App {
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.transcript
-            .push(Message::new("system", &format!("Stashed {} chars", len)));
+            .push(Message::new("system", format!("Stashed {} chars", len)));
     }
 
     /// Restore prompt from stash.
@@ -4219,7 +4208,7 @@ impl App {
                 self.theme_mode = self.config.theme.get_mode().to_string();
                 self.transcript.push(Message::new(
                     "system",
-                    &format!("Theme toggled to {}.", self.theme_mode),
+                    format!("Theme toggled to {}.", self.theme_mode),
                 ));
             }
             "quit" => {

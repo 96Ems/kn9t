@@ -192,6 +192,12 @@ pub fn decode_usage(u: &Value) -> Tokens {
 /// Public stream state wrapper.
 pub struct DecodeState(StreamState);
 
+impl Default for DecodeState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DecodeState {
     pub fn new() -> Self {
         DecodeState(StreamState::default())

@@ -113,8 +113,6 @@ pub fn millis_to_iso(ms: i64) -> String {
     )
 }
 
-/// Read the full request body into a byte vector.
-
 /// Look up a header value (case-insensitive on field name).
 pub fn header<'a>(req: &'a Request, name: &str) -> Option<&'a str> {
     req.headers()

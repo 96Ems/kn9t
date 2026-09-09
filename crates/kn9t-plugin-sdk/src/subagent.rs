@@ -8,7 +8,7 @@
 //!
 //! A spawned session running a turn IS a sub-agent — there is no separate
 //! sub-agent concept in kn9t. This builder just makes the common `session_fork`
-//! + `session_prompt` pair well-shaped and consistent across plugins, alongside
+//! \+ `session_prompt` pair well-shaped and consistent across plugins, alongside
 //! `ask_user` (96E-28) as the SDK's two reference examples.
 
 use crate::ctx::ToolCallCtx;
