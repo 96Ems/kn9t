@@ -28,11 +28,19 @@ for toml in crates/*/Cargo.toml crates/internal-plugins/*/Cargo.toml plugins/*/C
     # kn9t-server is the documented exception (DESIGN §2, spec/06-server.md)
     [[ "$crate" == "kn9t-server" ]] && continue
     
+    # kn9t-test-support is a test harness crate — it needs to orchestrate all
+    # components for integration tests. Not shipped in the final binary.
+    [[ "$crate" == "kn9t-test-support" ]] && continue
+    
     # Count workspace deps in [dependencies] section only (not [dev-dependencies]).
     # NOTE: the range form /^\[dependencies\]/,/^\[/ is wrong — it terminates on the
     # very line it starts, yielding an empty section and a vacuously passing check.
+    #
+    # kn9t-macros is exempt: it's a zero-dep macro crate that exists solely to provide
+    # clippy-safe unwrap/expect macros. It creates no runtime coupling and is designed
+    # to be used alongside any other single workspace dep (§9.2 of AGENTS.md).
     deps_section=$(awk '/^\[dependencies\]/{f=1;next} /^\[/{f=0} f' "$toml" 2>/dev/null || true)
-    count=$(echo "$deps_section" | grep -cE 'path = "(\.\./)+(crates/)?kn9t-' || true)
+    count=$(echo "$deps_section" | grep -E 'path = "(\.\./)+(crates/)?kn9t-' | grep -cv 'kn9t-macros' || true)
     count=${count:-0}
     
     if [ "$count" -gt 1 ]; then

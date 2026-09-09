@@ -2,7 +2,7 @@
 //! See `docs/internal/job/instant-cut.md` — instant cut <1ms on next `read()`.
 
 use kn9t_core::Cancel;
-use kn9t_macros::safe_unwrap;
+use kn9t_core::safe_unwrap;
 use std::io::{self, Read};
 
 pub struct CancellableReader<R> {

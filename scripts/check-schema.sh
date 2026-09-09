@@ -27,12 +27,13 @@ if ! "$CARGO" run -p xtask -- --check > /tmp/xtask-check.log 2>&1; then
   exit 1
 fi
 
-# 2. GI-6 still holds after generation: kn9t-tui must not depend on any kn9t-* crate.
-#    NOTE: the old form `grep -q 'kn9t-' file | grep -q 'path'` silently no-oped —
-#    the second grep read empty stdin and always failed, so the branch never fired.
-#    An explicit anchored pattern test replaces it.
-if grep -nE '^[[:space:]]*kn9t-' crates/kn9t-tui/Cargo.toml; then
-  echo "GI-6 VIOLATION: kn9t-tui/Cargo.toml contains a kn9t-* dependency"
+# 2. GI-6 still holds after generation: kn9t-tui must not depend on any kn9t-* crate
+#    in [dependencies]. Test-only deps ([dev-dependencies]) are allowed — they don't
+#    ship in the final binary and kn9t-tui-test-support exists solely to help tests.
+deps_section=$(awk '/^\[dependencies\]/{f=1;next} /^\[/{f=0} f' crates/kn9t-tui/Cargo.toml 2>/dev/null || true)
+if echo "$deps_section" | grep -qE '^[[:space:]]*kn9t-'; then
+  echo "GI-6 VIOLATION: kn9t-tui/Cargo.toml [dependencies] contains a kn9t-* dependency:"
+  echo "$deps_section" | grep -E '^[[:space:]]*kn9t-'
   exit 1
 fi
 

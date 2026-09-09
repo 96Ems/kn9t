@@ -38,7 +38,7 @@ pub mod state;
 mod watcher;
 pub mod widgets;
 
-use kn9t_macros::safe_expect;
+
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 

@@ -5,6 +5,9 @@
 //! R-TUI-030: The whole screen is defined in Lua (`render_ui`); Rust supplies
 //! native views (transcript, input, status, diff) and draws them where Lua says.
 
+#[macro_use]
+mod macros;
+
 pub mod app;
 #[cfg(test)]
 mod bench;

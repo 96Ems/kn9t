@@ -4,7 +4,7 @@
 //! Host can send Cancel for in-flight calls on cancelable plugins.
 //! Accepts `Box<dyn Read+Send>` + `Box<dyn Write+Send>` so tests wire in-process pipes.
 
-use kn9t_macros::safe_expect;
+use kn9t_core::safe_expect;
 use crate::codec::{
     hook_name_str, parse_hook_name, write_host_msg, HostMsg, PluginDeclaration, PluginMsg,
 };

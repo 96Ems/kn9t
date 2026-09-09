@@ -7,7 +7,6 @@ rust-version.workspace = true
 description = "kn9t ReAct loop: turn sequencing, cancellation/abort, truncation ladder, compaction, hook integration."
 
 [dependencies]
-kn9t-macros = { path = "../kn9t-macros" }
 kn9t-provider-core = { path = "../kn9t-provider-core" }
 serde_json = { workspace = true }
 

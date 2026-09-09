@@ -3,7 +3,7 @@
 //! The host sends `{"t":"hook","hook":"provider_complete","payload":<Request>}`.
 //! The plugin streams `Chunk` messages then a `Done` with stop + usage.
 
-use kn9t_macros::safe_expect;
+use kn9t_core::safe_expect;
 use crate::codec::{write_host_msg, HostMsg};
 use crate::host::PluginHost;
 use kn9t_core::{

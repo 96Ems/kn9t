@@ -9,7 +9,7 @@
 use kn9t_core::{
     Event, ModelRef, ModelSpec, PluginKv, RequestPlan, SessionId, SessionSnapshot, Store, StoreErr,
 };
-use kn9t_macros::safe_unwrap;
+use kn9t_core::safe_unwrap;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

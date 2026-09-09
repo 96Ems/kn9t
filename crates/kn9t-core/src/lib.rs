@@ -45,3 +45,6 @@ pub use traits::{
     PluginKv, RequestPlan, SessionSnapshot, Sha256, Store, Tool, ToolCall, ToolCtx, ToolOutput,
 };
 pub use usage::{StopReason, Tokens, Usage};
+
+// Re-export macros so other crates don't need a direct kn9t-macros dependency (GI-1).
+pub use kn9t_macros::{safe_expect, safe_unwrap};
