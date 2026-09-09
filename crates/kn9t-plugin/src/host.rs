@@ -4,6 +4,7 @@
 //! Host can send Cancel for in-flight calls on cancelable plugins.
 //! Accepts `Box<dyn Read+Send>` + `Box<dyn Write+Send>` so tests wire in-process pipes.
 
+use kn9t_macros::safe_expect;
 use crate::codec::{
     hook_name_str, parse_hook_name, write_host_msg, HostMsg, PluginDeclaration, PluginMsg,
 };
@@ -169,9 +170,9 @@ impl PluginHost {
                         // violation. Fail all pending calls, mark unhealthy, stop
                         // accepting new calls, and terminate the reader (poisoned).
                         let reason = format!("protocol violation: malformed message: {e}");
-                        *poison_for_reader.lock().unwrap() = Some(reason.clone());
+                        *safe_expect!(poison_for_reader.lock(), "poisoned") = Some(reason.clone());
                         unhealthy_for_reader.store(true, Ordering::SeqCst);
-                        let pending = pending_for_reader.lock().unwrap();
+                        let pending =safe_expect!(pending_for_reader.lock(), "poisoned");
                         for tx in pending.values() {
                             let _ = tx.send(ReaderMsg::Err {
                                 reason: reason.clone(),
@@ -182,13 +183,13 @@ impl PluginHost {
                 };
                 match msg {
                     PluginMsg::Result { id, body } | PluginMsg::Done { id, body } => {
-                        let pending = pending_for_reader.lock().unwrap();
+                        let pending =safe_expect!(pending_for_reader.lock(), "poisoned");
                         if let Some(tx) = pending.get(&id) {
                             let _ = tx.send(ReaderMsg::Final { body });
                         }
                     }
                     PluginMsg::Chunk { id, body } => {
-                        let pending = pending_for_reader.lock().unwrap();
+                        let pending =safe_expect!(pending_for_reader.lock(), "poisoned");
                         if let Some(tx) = pending.get(&id) {
                             let _ = tx.send(ReaderMsg::Chunk { body });
                         }
@@ -288,7 +289,7 @@ impl PluginHost {
                     // must never block the reader (96E-9). The session id travels
                     // INSIDE the payload (TLS session is turn-thread-local, 96E-5).
                     PluginMsg::Request { id, op, payload } => {
-                        let handler = api_for_reader.lock().unwrap().clone();
+                        let handler =safe_expect!(api_for_reader.lock(), "poisoned").clone();
                         let writer = Arc::clone(&writer_clone);
                         let name = name_for_reader.clone();
                         let payload = payload.clone();
@@ -342,7 +343,7 @@ impl PluginHost {
                         tools,
                         events,
                     } => {
-                        let mut decl = declaration_for_reader.lock().unwrap();
+                        let mut decl =safe_expect!(declaration_for_reader.lock(), "poisoned");
                         let old_tools: std::collections::HashSet<String> =
                             decl.tools.iter().map(|t| t.name.clone()).collect();
 
@@ -368,7 +369,7 @@ impl PluginHost {
                             old_tools.difference(&new_tools).cloned().collect();
 
                         // Call the callback if registered
-                        if let Some(cb) = on_declare_for_reader.lock().unwrap().as_ref() {
+                        if let Some(cb) =safe_expect!(on_declare_for_reader.lock(), "poisoned").as_ref() {
                             cb(&decl.name, &decl, added, removed);
                         }
                     }
@@ -398,7 +399,7 @@ impl PluginHost {
                             .map(|s| s.to_string())
                     });
                 if let Some(sid) = sid_opt {
-                    if let Some(bus) = session_buses_for_thread.lock().unwrap().get(&sid) {
+                    if let Some(bus) =safe_expect!(session_buses_for_thread.lock(), "poisoned").get(&sid) {
                         bus.emit(LiveEvent::PluginNotification { payload: event });
                     }
                     // unknown sid -> drop (no broadcast)
@@ -434,7 +435,7 @@ impl PluginHost {
 
     /// Reason for poisoning, if unhealthy.
     pub fn poison_reason(&self) -> Option<String> {
-        self.poison_reason.lock().unwrap().clone()
+        safe_expect!(self.poison_reason.lock(), "poisoned").clone()
     }
 
     fn check_healthy(&self) -> Result<(), String> {
@@ -452,17 +453,17 @@ impl PluginHost {
 
     /// Get a snapshot of the current declaration.
     pub fn declaration(&self) -> PluginDeclaration {
-        self.declaration.lock().unwrap().clone()
+        safe_expect!(self.declaration.lock(), "poisoned").clone()
     }
 
     /// Get the plugin name (shorthand for declaration().name).
     pub fn name(&self) -> String {
-        self.declaration.lock().unwrap().name.clone()
+        safe_expect!(self.declaration.lock(), "poisoned").name.clone()
     }
 
     /// Set the callback invoked when the plugin sends a `declare` message.
     pub fn set_on_declare(&self, callback: OnDeclareCallback) {
-        *self.on_declare.lock().unwrap() = Some(callback);
+        *safe_expect!(self.on_declare.lock(), "poisoned") = Some(callback);
     }
 
     /// Set the event bus for forwarding plugin events.
@@ -473,7 +474,7 @@ impl PluginHost {
         // If session already set on this thread, register in the per-session map
         TL_SESSION.with(|c| {
             if let Some(sid) = c.borrow().as_ref() {
-                self.session_buses.lock().unwrap().insert(sid.clone(), bus);
+                safe_expect!(self.session_buses.lock(), "poisoned").insert(sid.clone(), bus);
             }
         });
     }
@@ -598,7 +599,7 @@ impl PluginHost {
         TL_BUS.with(|c| *c.borrow_mut() = Some(bus.clone()));
         TL_SESSION.with(|c| {
             if let Some(sid) = c.borrow().as_ref() {
-                self.session_buses.lock().unwrap().insert(sid.clone(), bus);
+                safe_expect!(self.session_buses.lock(), "poisoned").insert(sid.clone(), bus);
             }
         });
         self
@@ -606,7 +607,7 @@ impl PluginHost {
 
     /// Whether this plugin subscribes to a given hook.
     pub fn has_hook(&self, hook: HookName) -> bool {
-        self.declaration.lock().unwrap().hooks.contains(&hook)
+        safe_expect!(self.declaration.lock(), "poisoned").hooks.contains(&hook)
     }
 
     /// 96E-17: whether the plugin declared a given capability in its hello.
@@ -621,7 +622,7 @@ impl PluginHost {
 
     /// 96E-17: install the plugin → host API handler (server-side ops).
     pub fn set_api_handler(&self, api: Arc<dyn HostApi>) {
-        *self.api_handler.lock().unwrap() = Some(api);
+        *safe_expect!(self.api_handler.lock(), "poisoned") = Some(api);
     }
 
     /// Whether this plugin subscribes to a given event kind string.
@@ -636,7 +637,7 @@ impl PluginHost {
 
     /// Whether on_event has been unsubscribed due to repeated failures.
     pub fn is_event_unsubscribed(&self) -> bool {
-        self.event_state.lock().unwrap().unsubscribed
+        safe_expect!(self.event_state.lock(), "poisoned").unsubscribed
     }
 
     // ── internal: send a hook request and read the response ──────────────────
@@ -657,7 +658,7 @@ impl PluginHost {
 
         // Send request
         {
-            let mut w = self.writer.lock().unwrap();
+            let mut w =safe_expect!(self.writer.lock(), "poisoned");
             write_host_msg(&mut **w, &msg).map_err(|e| format!("write error: {e}"))?;
         }
 
@@ -681,7 +682,7 @@ impl PluginHost {
         };
 
         {
-            let mut w = self.writer.lock().unwrap();
+            let mut w =safe_expect!(self.writer.lock(), "poisoned");
             write_host_msg(&mut **w, &msg).map_err(|e| format!("write error: {e}"))?;
         }
 
@@ -706,7 +707,7 @@ impl PluginHost {
         };
 
         {
-            let mut w = self.writer.lock().unwrap();
+            let mut w =safe_expect!(self.writer.lock(), "poisoned");
             write_host_msg(&mut **w, &msg).map_err(|e| format!("write error: {e}"))?;
         }
 
@@ -731,7 +732,7 @@ impl PluginHost {
             payload,
         };
         {
-            let mut w = self.writer.lock().unwrap();
+            let mut w =safe_expect!(self.writer.lock(), "poisoned");
             write_host_msg(&mut **w, &msg).map_err(|e| format!("write error: {e}"))?;
         }
         self.wait_for_streaming_cancellable(id, cancel, timeout, on_chunk)
@@ -741,13 +742,13 @@ impl PluginHost {
     /// Caller is responsible for unregistering after use.
     fn register_call(&self, id: u64) -> mpsc::Receiver<ReaderMsg> {
         let (tx, rx) = mpsc::sync_channel::<ReaderMsg>(32);
-        self.pending_calls.lock().unwrap().insert(id, tx);
+        safe_expect!(self.pending_calls.lock(), "poisoned").insert(id, tx);
         rx
     }
 
     /// Unregister a per-call channel (cleanup after call completes or times out).
     fn unregister_call(&self, id: u64) {
-        self.pending_calls.lock().unwrap().remove(&id);
+        safe_expect!(self.pending_calls.lock(), "poisoned").remove(&id);
     }
 
     /// Wait for the final body of call `expected_id`, discarding chunks (atomic path).
@@ -855,10 +856,10 @@ impl PluginHost {
     /// Send a cancel message for an in-flight call (R-PLUG2-050).
     /// Only sent to plugins that declared `cancelable` capability.
     pub fn cancel_call(&self, id: u64) {
-        if !self.declaration.lock().unwrap().is_cancelable() {
+        if !safe_expect!(self.declaration.lock(), "poisoned").is_cancelable() {
             return;
         }
-        let mut w = self.writer.lock().unwrap();
+        let mut w =safe_expect!(self.writer.lock(), "poisoned");
         let _ = write_host_msg(&mut **w, &HostMsg::Cancel { id });
     }
 
@@ -1049,7 +1050,7 @@ impl PluginHost {
     /// Returns false if unsubscribed (3 consecutive failures).
     pub fn send_event(&self, event: &Event) -> bool {
         {
-            let state = self.event_state.lock().unwrap();
+            let state =safe_expect!(self.event_state.lock(), "poisoned");
             if state.unsubscribed {
                 return false;
             }
@@ -1064,11 +1065,11 @@ impl PluginHost {
         };
 
         let msg = HostMsg::Event { payload };
-        let mut w = self.writer.lock().unwrap();
+        let mut w =safe_expect!(self.writer.lock(), "poisoned");
         match write_host_msg(&mut **w, &msg) {
             Ok(_) => {
                 drop(w);
-                let mut state = self.event_state.lock().unwrap();
+                let mut state =safe_expect!(self.event_state.lock(), "poisoned");
                 state.consecutive_failures = 0;
                 true
             }
@@ -1081,7 +1082,7 @@ impl PluginHost {
     }
 
     fn record_event_failure(&self) {
-        let mut state = self.event_state.lock().unwrap();
+        let mut state =safe_expect!(self.event_state.lock(), "poisoned");
         state.consecutive_failures += 1;
         if state.consecutive_failures >= 3 {
             state.unsubscribed = true;
@@ -1090,18 +1091,18 @@ impl PluginHost {
 
     /// Send shutdown message.
     pub fn shutdown(&self) {
-        let mut w = self.writer.lock().unwrap();
+        let mut w =safe_expect!(self.writer.lock(), "poisoned");
         let _ = write_host_msg(&mut **w, &HostMsg::Shutdown);
     }
 
     /// Number of in-flight calls (pending responses) for this plugin.
     pub fn pending_count(&self) -> usize {
-        self.pending_calls.lock().unwrap().len()
+        safe_expect!(self.pending_calls.lock(), "poisoned").len()
     }
 
     /// Snapshot of in-flight call ids, for cancel during reload (R-PLUG2-100 step 1).
     pub fn pending_ids(&self) -> Vec<u64> {
-        self.pending_calls.lock().unwrap().keys().cloned().collect()
+        safe_expect!(self.pending_calls.lock(), "poisoned").keys().cloned().collect()
     }
 }
 

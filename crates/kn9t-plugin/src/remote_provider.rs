@@ -3,6 +3,7 @@
 //! The host sends `{"t":"hook","hook":"provider_complete","payload":<Request>}`.
 //! The plugin streams `Chunk` messages then a `Done` with stop + usage.
 
+use kn9t_macros::safe_expect;
 use crate::codec::{write_host_msg, HostMsg};
 use crate::host::PluginHost;
 use kn9t_core::{
@@ -49,7 +50,7 @@ impl Provider for RemoteProvider {
             payload,
         };
         {
-            let mut w = self.host.writer.lock().unwrap();
+            let mut w =safe_expect!(self.host.writer.lock(), "poisoned");
             write_host_msg(&mut **w, &msg)
                 .map_err(|e| ProvErr::Connect(format!("plugin write: {e}")))?;
         }

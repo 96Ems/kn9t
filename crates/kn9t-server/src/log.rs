@@ -2,6 +2,7 @@
 //! Writes timestamped lines to `~/.kn9t/server.log`.
 //! No external deps — just std::fs and std::sync.
 
+use kn9t_macros::safe_expect;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -13,7 +14,7 @@ static LOG: Mutex<Option<File>> = Mutex::new(None);
 /// Open (or create) the log file. Call once at startup.
 pub fn init(path: &PathBuf) {
     if let Ok(f) = OpenOptions::new().create(true).append(true).open(path) {
-        *LOG.lock().unwrap() = Some(f);
+        *safe_expect!(LOG.lock(), "poisoned") = Some(f);
     }
 }
 

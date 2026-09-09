@@ -6,6 +6,7 @@
 //! provider-reported spend where available; drift between them is NOT warned in v1
 //! (SPEC-OPEN §18.8).
 
+use kn9t_macros::safe_expect;
 use std::sync::Arc;
 
 use crate::http_util::{query_param, JsonResp};
@@ -108,7 +109,7 @@ pub fn budget(state: &Arc<ServerState>) -> JsonResp {
         })
         .unwrap_or(0.0);
 
-    let provider_reported = *state.provider_reported_budget.lock().unwrap();
+    let provider_reported =*safe_expect!(state.provider_reported_budget.lock(), "poisoned");
 
     let mut obj = serde_json::json!({ "local_estimate": local });
     if let Some(p) = provider_reported {

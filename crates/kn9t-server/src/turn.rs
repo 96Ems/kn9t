@@ -9,6 +9,7 @@
 //! generates a title, recorded as `UsageKind::Title` (R-SRV-100). It is
 //! best-effort: any failure leaves `name` null and surfaces no client error.
 
+use kn9t_macros::safe_expect;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -143,7 +144,7 @@ pub fn is_turn_running(state: &Arc<ServerState>, session: &str) -> bool {
 /// Fire the cancel for `session`'s running turn, if any.
 pub fn abort(state: &Arc<ServerState>, session: &str) {
     crate::log!("[DEBUG abort] session={}", session);
-    if let Some(c) = state.aborts.lock().expect("aborts poisoned").get(session) {
+    if let Some(c) =safe_expect!(state.aborts.lock(), "aborts poisoned").get(session) {
         crate::log!("[DEBUG abort] firing cancel for session={}", session);
         c.cancel();
     } else {

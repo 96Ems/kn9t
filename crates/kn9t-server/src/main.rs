@@ -5,6 +5,7 @@
 //! (503) until all plugins are ready. This prevents client timeouts when plugins are
 //! slow to load (e.g., WSL with files on /mnt/c/).
 
+use kn9t_macros::safe_expect;
 use kn9t_core::ToolRegistry;
 use kn9t_server::{auth, config, log, spawn, ServerHandle, ServerState};
 use std::sync::Arc;
@@ -169,8 +170,8 @@ fn load_plugins_background(
             let tool_count = tools.len();
 
             // Update state with loaded plugins (order matters for install_* calls)
-            *state.tools.lock().expect("tools poisoned") = tools;
-            *state.plugin_hosts.lock().expect("plugin_hosts poisoned") = plugin_hosts;
+            *safe_expect!(state.tools.lock(), "tools poisoned") = tools;
+            *safe_expect!(state.plugin_hosts.lock(), "plugin_hosts poisoned") = plugin_hosts;
 
             // Record spawn recipes for hot-reload (R-PLUG2-100).
             for (name, (cmd, env)) in spawn_info {
