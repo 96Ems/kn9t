@@ -97,7 +97,8 @@ impl KillRing {
         self.yank_index = Some(new_idx);
 
         let text = &self.ring[new_idx];
-        self.last_yank_pos = Some((self.last_yank_pos.unwrap().0, text.len()));
+        // Safe: checked via ? above that last_yank_pos is Some
+        self.last_yank_pos = Some((self.last_yank_pos.expect("checked Some above").0, text.len()));
 
         Some((len, text.as_str()))
     }

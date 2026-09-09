@@ -624,7 +624,8 @@ pub fn resolve_latest_session(host: &str, auth: &str) -> String {
     let resp = get_json(host, auth, "/session");
     let owned;
     let arr: &Vec<Value> = if resp.is_array() {
-        owned = resp.as_array().unwrap().to_vec();
+        // Safe: checked is_array() above
+        owned = resp.as_array().expect("checked is_array").to_vec();
         &owned
     } else if let Some(a) = resp["sessions"].as_array() {
         owned = a.to_vec();

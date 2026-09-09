@@ -34,7 +34,8 @@ pub fn run(args: &[String], port: u16, server_token: &str) {
         return;
     };
 
-    for msg in transcript.as_array().unwrap() {
+    // Safe: checked is_array() above
+    for msg in transcript.as_array().expect("checked is_array") {
         print_message(msg);
     }
 }

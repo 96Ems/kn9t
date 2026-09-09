@@ -60,7 +60,8 @@ impl ReactLoop {
             if *replans > params.config.max_context_replans {
                 return Err(ReactError::CompactionLoop);
             }
-            match self.run_compaction(params, cancel, plan.compact.take().unwrap())? {
+            // Safe: checked is_some() above at line 43
+            match self.run_compaction(params, cancel, plan.compact.take().expect("checked is_some"))? {
                 Attempt::Completed(_) => {
                     // compaction committed; re-plan once
                 }

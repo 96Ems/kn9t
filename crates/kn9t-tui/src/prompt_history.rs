@@ -147,14 +147,14 @@ impl PromptHistory {
                 self.stashed = None;
                 return None;
             }
-            // Start at most recent match
-            let idx = *matches.last().unwrap();
+            // Start at most recent match — safe: matches not empty checked above
+            let idx = *matches.last().expect("matches non-empty after is_empty check");
             self.position = Some(idx);
             return Some(&self.history[idx]);
         }
 
-        // Already navigating: go to previous match
-        let current_pos = self.position.unwrap();
+        // Already navigating: go to previous match — safe: checked position.is_none() above
+        let current_pos = self.position.expect("position Some after is_none check");
         let prev_match = matches.iter().rev().find(|&&i| i < current_pos).copied();
 
         if let Some(idx) = prev_match {
@@ -189,7 +189,8 @@ impl PromptHistory {
             .map(|(i, _)| i)
             .collect();
 
-        let current_pos = self.position.unwrap();
+        // Safe: early return via `?` above guarantees position is Some
+        let current_pos = self.position.expect("position Some after ? early return");
         let next_match = matches.iter().find(|&&i| i > current_pos).copied();
 
         if let Some(idx) = next_match {

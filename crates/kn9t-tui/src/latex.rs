@@ -187,7 +187,8 @@ pub fn latex_to_unicode(latex: &str) -> String {
             let mut cmd = String::new();
             while let Some(&next) = chars.peek() {
                 if next.is_ascii_alphabetic() {
-                    cmd.push(chars.next().unwrap());
+                    // Safe: peek() returned Some so next() will too
+                    cmd.push(chars.next().expect("peek guarantees next"));
                 } else {
                     break;
                 }
@@ -250,7 +251,8 @@ pub fn latex_to_unicode(latex: &str) -> String {
                             chars.next();
                             break;
                         }
-                        n.push(chars.next().unwrap());
+                        // Safe: peek() returned Some so next() will too
+                        n.push(chars.next().expect("peek guarantees next"));
                     }
                     result.push_str(&to_superscript(&n));
                 }

@@ -55,8 +55,10 @@ pub fn run() {
             std::process::exit(1);
         }
     };
-    stream.write_all(request.as_bytes()).unwrap();
-    stream.flush().unwrap();
+    stream
+        .write_all(request.as_bytes())
+        .expect("write to connected socket");
+    stream.flush().expect("flush connected socket");
 
     let mut resp = String::new();
     BufReader::new(stream)

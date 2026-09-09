@@ -69,8 +69,10 @@ fn get_sessions(host: &str, auth: &str) -> Value {
         eprintln!("[kn9t sessions] cannot reach server: {e}");
         std::process::exit(1);
     });
-    stream.write_all(request.as_bytes()).unwrap();
-    stream.flush().unwrap();
+    stream
+        .write_all(request.as_bytes())
+        .expect("write to connected socket");
+    stream.flush().expect("flush connected socket");
     let mut resp = String::new();
     BufReader::new(stream)
         .read_to_string(&mut resp)

@@ -217,5 +217,6 @@ pub fn respond(req: Request, reply: Reply) {
 
 fn header_kv(k: &str, v: &str) -> Header {
     Header::from_bytes(k.as_bytes(), v.as_bytes())
-        .unwrap_or_else(|_| Header::from_bytes(&b"X-Invalid"[..], &b"1"[..]).unwrap())
+        // Fallback header for invalid input — static bytes cannot fail
+        .unwrap_or_else(|_| Header::from_bytes(&b"X-Invalid"[..], &b"1"[..]).expect("static bytes"))
 }

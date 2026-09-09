@@ -942,7 +942,8 @@ fn update_toml_field(path: &Path, keys: &[&str], value: toml::Value) -> Result<(
     let mut val = load_toml_value(path)?;
 
     // Navigate to parent and set the final key
-    let mut current = val.as_table_mut().unwrap();
+    // Safe: load_toml_value returns Table for empty/missing files, and valid TOML is a table
+    let mut current = val.as_table_mut().expect("TOML root is a table");
     for &key in &keys[..keys.len() - 1] {
         current = current
             .entry(key)

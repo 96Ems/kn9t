@@ -73,7 +73,8 @@ pub fn parse_content(content: &str) -> Vec<ContentSegment> {
 
         for (open, close) in &tag_patterns {
             if let Some(pos) = remaining.find(open) {
-                if earliest.is_none() || pos < earliest.unwrap().0 {
+                let dominated = earliest.as_ref().is_none_or(|e| pos < e.0);
+                if dominated {
                     earliest = Some((pos, *open, *close));
                 }
             }

@@ -49,10 +49,11 @@ pub fn highlight_code(
         "base16-ocean.light"
     };
 
+    // Fallback: syntect guarantees at least one theme in ThemeSet::load_defaults()
     let syntax_theme = ts
         .themes
         .get(syntax_theme_name)
-        .unwrap_or_else(|| ts.themes.values().next().unwrap());
+        .unwrap_or_else(|| ts.themes.values().next().expect("syntect ThemeSet has themes"));
 
     // Find syntax for language
     let syntax = language
@@ -108,10 +109,11 @@ pub fn highlight_code_inline(
         "base16-ocean.light"
     };
 
+    // Fallback: syntect guarantees at least one theme in ThemeSet::load_defaults()
     let syntax_theme = ts
         .themes
         .get(syntax_theme_name)
-        .unwrap_or_else(|| ts.themes.values().next().unwrap());
+        .unwrap_or_else(|| ts.themes.values().next().expect("syntect ThemeSet has themes"));
 
     let syntax = language
         .and_then(|lang| ss.find_syntax_by_token(lang))
