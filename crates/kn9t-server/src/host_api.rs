@@ -55,6 +55,7 @@ impl ServerHostApi {
             self.state.buses.bus_for(session),
             self.state.store.clone(),
             SessionId(session.to_string()),
+            self.state.clone(),
         )
     }
 
@@ -98,6 +99,48 @@ impl ServerHostApi {
             )
             .map_err(|e| format!("session_read: {}", e.0))?;
         Ok(json!({ "messages": rows }))
+    }
+
+    /// `session_create` — create a brand new session (no parent, no fork).
+    /// Use this for fully independent workers that don't need context from the caller.
+    /// Optional: `"model"` (model id), `"cwd"` (working directory, defaults to caller's).
+    /// Reply: `{"session":"<new-id>"}`.
+    fn session_create(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
+        let new_id = SessionId::new();
+        
+        // Use specified model, or inherit from calling session, or use default
+        let model_ref = if let Some(id) = payload.get("model").and_then(|v| v.as_str()) {
+            self.state
+                .find_model(id)
+                .map(|m| m.r#ref.clone())
+                .ok_or_else(|| format!("model {id:?} not in registry"))?
+        } else if let Some(sess) = session {
+            self.state
+                .store
+                .get_model_spec_for_session(sess)
+                .or_else(|| self.state.default_model_snapshot())
+                .map(|m| m.r#ref.clone())
+                .ok_or_else(|| "no model available".to_string())?
+        } else {
+            self.state
+                .default_model_snapshot()
+                .map(|m| m.r#ref.clone())
+                .ok_or_else(|| "no model available".to_string())?
+        };
+
+        // Use specified cwd, or inherit from calling session, or use server cwd
+        let cwd = if let Some(c) = payload.get("cwd").and_then(|v| v.as_str()) {
+            c.to_string()
+        } else if let Some(sess) = session {
+            self.session_cwd(sess).to_string_lossy().to_string()
+        } else {
+            self.state.cwd.to_string_lossy().to_string()
+        };
+
+        kn9t_store::create_session(&self.state.store, &new_id, &cwd, &model_ref)
+            .map_err(|e| format!("session_create: {}", e.0))?;
+
+        Ok(json!({ "session": new_id.0 }))
     }
 
     /// `session_fork` — spawn a new session from `session` (fork_reason=subagent).
@@ -600,6 +643,7 @@ impl HostApi for ServerHostApi {
             "provider_complete" => self.provider_complete(session, payload),
             "tool_execute" => self.tool_execute(session, payload),
             "session_fork" => self.session_fork(session, payload),
+            "session_create" => self.session_create(session, payload),
             "session_prompt" => self.session_prompt(session, payload),
             "tool_list" => self.tool_list(session, payload),
             "interaction_request" => self.interaction_request(session, payload, plugin),

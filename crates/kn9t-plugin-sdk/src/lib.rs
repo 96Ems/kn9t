@@ -67,7 +67,6 @@
 pub mod ctx;
 pub mod plugin;
 pub mod sse;
-pub mod subagent;
 pub mod traits;
 pub mod wire;
 
