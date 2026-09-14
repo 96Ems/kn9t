@@ -9,9 +9,18 @@ license.workspace = true
 kn9t-provider-core = { path = "../kn9t-provider-core" }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
+base64             = "0.22"
+# R-OAI-IMG-GUARD: decode images to verify they are well-formed before sending.
+# A corrupt image makes the provider reject every turn it appears in. Default
+# features off - these four are the formats Anthropic accepts.
+image              = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 # GI-1 counts [dependencies] only (spec/04-store.md §preamble sets this precedent, and
 # kn9t-react does the same). Tests need `kn9t_core::Quirks`, which provider-core
 # deliberately does NOT re-export because it collides with its own HTTP `Quirks`.
 [dev-dependencies]
 kn9t-core = { path = "../kn9t-core" }
+# Wire tests must build a genuinely decodable image: R-OAI-IMG-GUARD rejects
+# placeholder bytes, so a real PNG is needed to test the image path.
+image     = { version = "0.25", default-features = false, features = ["png"] }
+base64    = "0.22"

@@ -163,6 +163,14 @@ pub fn build_request(
 /// Expand one `Message` into ≥1 wire objects, pushing into `out`.
 /// Tool-role messages with N ToolResult blocks become N separate wire messages
 /// (one `{ role: "tool", tool_call_id, content }` per result).
+///
+/// R-OAI-IMG: OpenAI's chat-completions wire format rejects `image_url` parts
+/// inside a `role: "tool"` message - only `user` messages may carry images
+/// (see community reports; this is the same restriction opencode/Claude Code
+/// work around). When a tool result contains `Content::Image` blocks, the
+/// tool message itself gets a text-only placeholder, and the images are
+/// pushed as a synthetic `user` message immediately after - same pattern
+/// every OpenAI-compatible agent harness uses.
 pub fn encode_messages(msg: &Message, quirks: &Quirks, needs_cache: bool, out: &mut Vec<Value>) {
     if msg.role == Role::Tool {
         let results: Vec<_> = msg
@@ -191,7 +199,11 @@ pub fn encode_messages(msg: &Message, quirks: &Quirks, needs_cache: bool, out: &
                     } else {
                         inner_text
                     };
-                    Some((id, inner_text))
+                    let images: Vec<&Content> = content
+                        .iter()
+                        .filter(|c| matches!(c, Content::Image { .. }))
+                        .collect();
+                    Some((id, inner_text, images))
                 } else {
                     None
                 }
@@ -200,7 +212,7 @@ pub fn encode_messages(msg: &Message, quirks: &Quirks, needs_cache: bool, out: &
 
         // Apply cache_control to last tool result if needed.
         let last_idx = results.len().saturating_sub(1);
-        for (i, (id, inner_text)) in results.into_iter().enumerate() {
+        for (i, (id, inner_text, images)) in results.into_iter().enumerate() {
             if needs_cache && i == last_idx {
                 out.push(json!({
                     "role": "tool",
@@ -217,6 +229,12 @@ pub fn encode_messages(msg: &Message, quirks: &Quirks, needs_cache: bool, out: &
                     "tool_call_id": id.0,
                     "content": inner_text,
                 }));
+            }
+            // R-OAI-IMG: images from a tool result ride along as a synthetic
+            // user message right after - see doc comment above.
+            if !images.is_empty() {
+                let parts: Vec<Value> = images.into_iter().map(|c| encode_content(c, quirks)).collect();
+                out.push(json!({ "role": "user", "content": parts }));
             }
         }
         return;
@@ -375,10 +393,24 @@ fn encode_content(c: &Content, _quirks: &Quirks) -> Value {
             } else {
                 format!("data:{mime};base64,{sha256}")
             };
-            json!({
-                "type": "image_url",
-                "image_url": { "url": url }
-            })
+            // R-OAI-IMG-GUARD: every image reaching the provider funnels through
+            // here, so this is the one place that can stop a corrupt one. A bad
+            // image does not just fail this turn, it stays in the transcript and
+            // fails every turn after it, so it degrades to text rather than being
+            // forwarded and poisoning the session.
+            match crate::image_guard::check(&url) {
+                crate::image_guard::Verdict::Pass => json!({
+                    "type": "image_url",
+                    "image_url": { "url": url }
+                }),
+                crate::image_guard::Verdict::Repaired(fixed) => json!({
+                    "type": "image_url",
+                    "image_url": { "url": fixed }
+                }),
+                crate::image_guard::Verdict::Unusable(note) => {
+                    json!({ "type": "text", "text": note })
+                }
+            }
         }
         Content::ToolCall {
             id,
