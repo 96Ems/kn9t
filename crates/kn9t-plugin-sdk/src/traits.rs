@@ -78,9 +78,31 @@ impl ToolOutput {
             is_error: true,
         }
     }
+    /// Convenience: a single image as a data URI.
+    ///
+    /// `data_uri` should be `data:<mime>;base64,<data>`.
+    pub fn image(data_uri: impl Into<String>, mime: impl Into<String>) -> Self {
+        Self {
+            content: vec![ContentBlock::Image {
+                sha256: data_uri.into(),
+                mime: mime.into(),
+            }],
+            is_error: false,
+        }
+    }
+    /// Convenience: multiple content blocks.
+    pub fn blocks(content: Vec<ContentBlock>) -> Self {
+        Self {
+            content,
+            is_error: false,
+        }
+    }
 }
 
 /// A single content block in a tool result.
+///
+/// Field names match `kn9t_core::Content` so serde can parse plugin output
+/// directly into the host's type without a translation layer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
@@ -89,12 +111,15 @@ pub enum ContentBlock {
         /// The text content.
         text: String,
     },
-    /// An image referenced by its SHA-256 content hash (uploaded via the blob store).
+    /// An image, either as a data URI or a SHA-256 blob reference.
+    ///
+    /// For inline images, `sha256` should be a data URI: `data:image/png;base64,...`.
+    /// For blob references, use `sha256:<hex>` format.
     Image {
-        /// Hex SHA-256 of the blob.
+        /// Data URI (`data:image/png;base64,...`) or blob ref (`sha256:<hex>`).
         sha256: String,
         /// MIME type, e.g. `"image/png"`.
-        media_type: String,
+        mime: String,
     },
 }
 
