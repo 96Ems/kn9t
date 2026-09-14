@@ -45,6 +45,7 @@ pub fn live_event_tag(e: &LiveEvent) -> String {
         LiveEvent::ToolProgress { .. } => "ToolProgress",
         LiveEvent::ToolFinished { .. } => "ToolFinished",
         LiveEvent::ApprovalRequest { .. } => "ApprovalRequest",
+        LiveEvent::TurnFinishing { .. } => "TurnFinishing",
         LiveEvent::TurnEnded { .. } => "TurnEnded",
         LiveEvent::HookFailed { .. } => "HookFailed",
         LiveEvent::TitleChanged { .. } => "TitleChanged",

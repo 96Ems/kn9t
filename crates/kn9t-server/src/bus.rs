@@ -83,6 +83,8 @@ pub struct SessionSink {
     /// `None` in tests that only need the bus.
     store: Option<Arc<SqliteStore>>,
     session: SessionId,
+    /// Server state for clearing the turn on TurnFinishing.
+    state: Option<Arc<crate::state::ServerState>>,
 }
 
 impl SessionSink {
@@ -91,15 +93,22 @@ impl SessionSink {
             bus,
             store: None,
             session: SessionId(String::new()),
+            state: None,
         }
     }
 
     /// R-STOR-116 — a sink that also salvages tool progress for `session`.
-    pub fn with_store(bus: Arc<Bus>, store: Arc<SqliteStore>, session: SessionId) -> Self {
+    pub fn with_store(
+        bus: Arc<Bus>,
+        store: Arc<SqliteStore>,
+        session: SessionId,
+        state: Arc<crate::state::ServerState>,
+    ) -> Self {
         SessionSink {
             bus,
             store: Some(store),
             session,
+            state: Some(state),
         }
     }
 
@@ -126,6 +135,21 @@ impl SessionSink {
 
 impl EventSink for SessionSink {
     fn emit(&self, e: LiveEvent) {
+        // Intercept TurnFinishing to clear the turn state BEFORE publishing.
+        // This avoids a race where the client receives TurnEnded and sends
+        // the next prompt before the server has cleared is_turn_running().
+        if matches!(e, LiveEvent::TurnFinishing { .. }) {
+            crate::log!("[SessionSink] TurnFinishing intercepted, clearing cancel for session={}", self.session.0);
+            if let Some(state) = &self.state {
+                crate::turn::clear_cancel(state, &self.session.0);
+                crate::log!("[SessionSink] clear_cancel done");
+            } else {
+                crate::log!("[SessionSink] WARNING: no state, cannot clear_cancel!");
+            }
+            // Don't publish TurnFinishing to clients — it's internal.
+            return;
+        }
+        
         self.salvage(&e);
         self.bus.publish(Event::from(e));
     }

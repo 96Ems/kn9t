@@ -386,6 +386,15 @@ pub enum LiveEvent {
         #[serde(default)]
         reason: String,
     },
+    /// Internal event emitted just before TurnEnded.
+    /// The server intercepts this to clear the turn state (abort handle),
+    /// then emits TurnEnded to clients. This avoids a race condition where
+    /// the client receives TurnEnded before the server has cleared the turn,
+    /// causing 409 Conflict on the next prompt.
+    TurnFinishing {
+        turn: u32,
+        stop: StopReason,
+    },
     TurnEnded {
         turn: u32,
         stop: StopReason,
@@ -512,6 +521,11 @@ impl From<LiveEvent> for Event {
                 op,
                 payload,
             },
+            LiveEvent::TurnFinishing { .. } => {
+                // TurnFinishing is internal — intercepted by SessionSink before reaching here.
+                // If we get here, something is wrong.
+                panic!("TurnFinishing should be intercepted by SessionSink, not converted to Event")
+            }
         }
     }
 }

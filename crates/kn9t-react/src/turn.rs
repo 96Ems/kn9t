@@ -43,6 +43,9 @@ impl ReactLoop {
                         phase: "idle".into(),
                         message: String::new(),
                     });
+                    // Emit TurnFinishing first — the server intercepts this to clear
+                    // the turn state before relaying TurnEnded to clients.
+                    self.bus.emit(LiveEvent::TurnFinishing { turn, stop: stop.clone() });
                     self.bus.emit(LiveEvent::TurnEnded { turn, stop });
                     return Ok(stop);
                 }
@@ -53,6 +56,12 @@ impl ReactLoop {
                     });
                     self.bus.emit(LiveEvent::Error {
                         message: format!("{e:?}"),
+                    });
+                    // Emit TurnFinishing first — the server intercepts this to clear
+                    // the turn state before relaying TurnEnded to clients.
+                    self.bus.emit(LiveEvent::TurnFinishing {
+                        turn,
+                        stop: StopReason::Aborted,
                     });
                     self.bus.emit(LiveEvent::TurnEnded {
                         turn,

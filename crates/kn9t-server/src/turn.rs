@@ -124,7 +124,9 @@ fn register_cancel(state: &Arc<ServerState>, session: &str, cancel: Cancel) {
         .expect("aborts poisoned")
         .insert(session.to_owned(), cancel);
 }
-fn clear_cancel(state: &Arc<ServerState>, session: &str) {
+/// Clear the abort handle for a session, marking the turn as no longer running.
+/// Called from SessionSink when TurnFinishing is received.
+pub fn clear_cancel(state: &Arc<ServerState>, session: &str) {
     state
         .aborts
         .lock()
@@ -347,10 +349,12 @@ pub(crate) fn compose_loop(
     let bus = state.buses.bus_for(&session.0);
     // R-STOR-116: salvage in-flight tool progress so a crash mid-batch still leaves
     // usable content for R-STOR-115's synthesized result.
+    // Also passes state so the sink can clear_cancel on TurnFinishing.
     let sink: Arc<dyn EventSink> = Arc::new(SessionSink::with_store(
         bus.clone(),
         state.store.clone(),
         session.clone(),
+        state.clone(),
     ));
 
     // Compose hooks from all plugins (R-PLUG-060).
@@ -615,6 +619,10 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             Err(e) => crate::log!("turn error: session={} error={e:?}", session.0),
         }
 
+        // Note: clear_cancel is now called by SessionSink when it receives TurnFinishing,
+        // BEFORE TurnEnded is published to clients. This avoids the race condition where
+        // the client sends the next prompt before the server has cleared is_turn_running().
+        // We keep a fallback here in case TurnFinishing wasn't emitted (shouldn't happen).
         clear_cancel(&state, &session.0);
         state.idle.turn_ended();
 
@@ -888,6 +896,7 @@ pub fn spawn_compact(
             bus,
             state.store.clone(),
             session.clone(),
+            state.clone(),
         ));
 
         // 96E-17: the compactor plugin is the ONLY compaction engine.
