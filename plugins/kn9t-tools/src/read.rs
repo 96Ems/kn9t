@@ -1,8 +1,12 @@
 //! read tool — reads file content; records (path → sha256, mtime) for edit's stale check.
 //!
 //! R-PLUG2-130: read-tracking map lives inside kn9t-tools, shared with edit via READ_MAP.
+//!
+//! Supports reading images (png, jpg, gif, webp, svg) — returns them as base64 data URIs
+//! so the model can see the image content directly.
 
-use kn9t_plugin_sdk::{ctx::ToolCallCtx, traits::{PluginTool, ToolOutput}, wire::{DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec}};
+use base64::Engine;
+use kn9t_plugin_sdk::{ctx::ToolCallCtx, traits::{ContentBlock, PluginTool, ToolOutput}, wire::{DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec}};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,6 +40,32 @@ pub fn track_as_read(path: &Path) -> bool {
     true
 }
 
+/// Image extensions we support reading as visual content.
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg"];
+
+/// Max image size to inline (10 MB). Larger images get an error.
+const MAX_IMAGE_SIZE: usize = 10 * 1024 * 1024;
+
+/// Check if a path is an image file based on extension.
+fn is_image_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| IMAGE_EXTENSIONS.contains(&e.to_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// Get MIME type for an image extension.
+fn mime_for_extension(ext: &str) -> &'static str {
+    match ext.to_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
+}
+
 pub struct Read;
 
 impl PluginTool for Read {
@@ -44,6 +74,7 @@ impl PluginTool for Read {
             name: "read".into(),
             description: "Read a file or directory. For files: returns contents with line numbers. \
                 For directories: lists entries (folders first, with trailing /). \
+                For images (png, jpg, gif, webp, svg): returns the image so you can see it. \
                 Tracks file hash and mtime so 'edit' can detect stale reads."
                 .into(),
             schema: json!({
@@ -85,6 +116,11 @@ impl PluginTool for Read {
             return list_directory(&path, limit);
         }
 
+        // Check if it's an image file
+        if is_image_file(&path) {
+            return read_image(&path);
+        }
+
         let content = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => return ToolOutput::error(format!("read error: {e}")),
@@ -109,6 +145,48 @@ impl PluginTool for Read {
 
         ToolOutput::text(slice.join("\n"))
     }
+}
+
+/// Read an image file and return it as a base64 data URI.
+fn read_image(path: &Path) -> ToolOutput {
+    let content = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => return ToolOutput::error(format!("read error: {e}")),
+    };
+
+    if content.len() > MAX_IMAGE_SIZE {
+        return ToolOutput::error(format!(
+            "image too large: {} bytes (max {} bytes)",
+            content.len(),
+            MAX_IMAGE_SIZE
+        ));
+    }
+
+    // Record sha256 + mtime for edit's stale check (images can be edited too).
+    let sha = sha256(&content);
+    let mtime = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    read_map().lock().unwrap().insert(path.to_path_buf(), (sha, mtime));
+
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("png");
+    let mime = mime_for_extension(ext);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&content);
+    let data_uri = format!("data:{};base64,{}", mime, b64);
+
+    // Return image with a text description
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
+    let size_kb = content.len() / 1024;
+    
+    ToolOutput::blocks(vec![
+        ContentBlock::Image {
+            sha256: data_uri,
+            mime: mime.to_string(),
+        },
+        ContentBlock::Text {
+            text: format!("[{} - {} KB]", filename, size_kb),
+        },
+    ])
 }
 
 /// Public alias so edit.rs can reuse the same hash function.
