@@ -177,6 +177,7 @@ fn ui_directive_payload_is_opaque_structured_and_plugin_notification_still_works
         state.buses.bus_for(&sess.0),
         state.store.clone(),
         sess.clone(),
+        state.clone(),
     );
     sink.emit(LiveEvent::PluginNotification {
         payload: json!({"plugin":"p","message":"hello free text"}),
