@@ -48,6 +48,10 @@ pub struct ContextStats {
     /// `false` during startup while plugins load in background. The status bar
     /// can show a loading indicator when this is false.
     pub plugins_ready: bool,
+    /// 96E-45: Number of messages in the steering buffer.
+    pub steering_count: usize,
+    /// 96E-45: Number of messages in the queue buffer.
+    pub queue_count: usize,
 }
 
 /// Update the kn9t.context table with current stats.
@@ -79,6 +83,9 @@ pub fn update_context(lua: &Lua, stats: &ContextStats) -> LuaResult<()> {
     ctx.set("input_height", stats.input_height)?;
     ctx.set("streaming", stats.streaming)?;
     ctx.set("plugins_ready", stats.plugins_ready)?;
+    // 96E-45: Pending message counts for steering/queue buffers.
+    ctx.set("steering_count", stats.steering_count)?;
+    ctx.set("queue_count", stats.queue_count)?;
     // Left nil when unknown, so Lua can tell "no data" from "zero" and fall
     // back to its own estimate rather than dividing by zero.
     if let Some(w) = stats.ctx_window {
@@ -109,6 +116,8 @@ pub fn collect_stats(
     // arguments, and adding same-typed ones invites silent transposition.
     model_limits: Option<&crate::model_selector::ModelEntry>,
     plugins_ready: bool,
+    steering_count: usize,
+    queue_count: usize,
 ) -> ContextStats {
     let mut stats = ContextStats::default();
 
@@ -136,6 +145,8 @@ pub fn collect_stats(
     stats.max_out = model_limits.and_then(|m| m.max_out);
     stats.streaming = streaming;
     stats.plugins_ready = plugins_ready;
+    stats.steering_count = steering_count;
+    stats.queue_count = queue_count;
 
     stats
 }

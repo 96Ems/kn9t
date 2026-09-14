@@ -16,6 +16,8 @@ pub enum ClientError {
     SessionBusy,
     NotFound,
     ServerLoading,
+    /// 409 on /prompt: a turn is already running, retry later.
+    TurnRunning,
 }
 
 impl std::fmt::Display for ClientError {
@@ -26,6 +28,7 @@ impl std::fmt::Display for ClientError {
             ClientError::SessionBusy => write!(f, "Session busy (another client holds lease)"),
             ClientError::NotFound => write!(f, "Not found"),
             ClientError::ServerLoading => write!(f, "Server is loading plugins, please wait"),
+            ClientError::TurnRunning => write!(f, "Turn already running"),
         }
     }
 }
@@ -198,11 +201,14 @@ impl Client {
                 Some(images)
             },
         };
-        self.request("POST", &format!("/session/{}/prompt", session_id))
+        match self.request("POST", &format!("/session/{}/prompt", session_id))
             .set("X-Lease", holder)
             .send_json(&req)
-            .map_err(|e| ClientError::Http(e.to_string()))?;
-        Ok(())
+        {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(409, _)) => Err(ClientError::TurnRunning),
+            Err(e) => Err(ClientError::Http(e.to_string())),
+        }
     }
 
     /// Abort current turn.

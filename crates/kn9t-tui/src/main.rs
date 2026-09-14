@@ -3,7 +3,10 @@
 use std::io::{self, stdout};
 
 use crossterm::{
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -92,6 +95,19 @@ fn main() -> io::Result<()> {
     // Terminal setup.
     enable_raw_mode()?;
     let mut stdout = stdout();
+
+    // Enable keyboard enhancements to get modifiers on special keys (Enter, Esc, etc.).
+    // This is required for Shift+Enter, Ctrl+Enter to work properly.
+    // Not all terminals support this — we try and ignore failure.
+    let _ = execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+        )
+    );
+
     execute!(
         stdout,
         EnterAlternateScreen,
@@ -143,6 +159,8 @@ fn main() -> io::Result<()> {
 
 fn cleanup_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     disable_raw_mode()?;
+    // Pop keyboard enhancements (ignore error if terminal doesn't support it).
+    let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,

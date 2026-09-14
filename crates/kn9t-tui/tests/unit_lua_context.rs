@@ -28,6 +28,8 @@ fn test_update_context() {
         input_height: 3,
         streaming: false,
         plugins_ready: true,
+        steering_count: 0,
+        queue_count: 0,
     };
 
     update_context(&lua, &stats).unwrap();

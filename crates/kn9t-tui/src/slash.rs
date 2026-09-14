@@ -97,6 +97,16 @@ pub const COMMANDS: &[SlashCommand] = &[
         description: "Rename current session",
         args: "<title>",
     },
+    SlashCommand {
+        name: "queue",
+        description: "Queue message for next turn",
+        args: "<message>",
+    },
+    SlashCommand {
+        name: "q",
+        description: "Queue message (alias for /queue)",
+        args: "<message>",
+    },
 ];
 
 /// One searchable/selectable slash-dropdown row, from either source.

@@ -16,6 +16,7 @@ pub enum Role {
 /// R-CORE-050
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(default)]
     pub id: MsgId,
     pub role: Role,
     pub content: Vec<Content>,

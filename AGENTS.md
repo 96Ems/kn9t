@@ -312,6 +312,18 @@ inside the trait impl doesn't suppress the lint at the call site in all clippy v
 
 ---
 
+## 9.3 Assume the developer rebuilds and restarts
+
+**RULE:** Never ask "did you rebuild?" or "did you restart the server?" — the answer is always
+yes. The developer is not an idiot. Asking wastes time and is insulting.
+
+When debugging a fix that doesn't seem to work:
+1. **Assume** the rebuild and restart happened.
+2. **Investigate** the actual cause (logs, code paths, missed edge cases).
+3. If truly stuck, add diagnostic logging and ask the developer to reproduce with logs.
+
+---
+
 ## 10. No patches, fix the architecture
 
 When a bug reveals a design flaw, **fix the design** — do not patch around it. Patches

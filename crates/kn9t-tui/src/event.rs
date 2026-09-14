@@ -114,14 +114,14 @@ impl TickControl {
 /// Spawn tick thread — only sends when streaming.
 pub fn spawn_tick_thread(tx: Sender<Event>, interval: Duration) -> TickControl {
     let streaming = Arc::new(AtomicBool::new(false));
-    let flag = streaming.clone();
 
     thread::spawn(move || loop {
         thread::sleep(interval);
-        if flag.load(Ordering::Relaxed)
-            && tx.send(Event::Tick).is_err() {
-                break;
-            }
+        // Always send ticks — the main loop decides whether to redraw.
+        // This is needed for the plugins loading spinner on the welcome screen.
+        if tx.send(Event::Tick).is_err() {
+            break;
+        }
     });
 
     TickControl { streaming }

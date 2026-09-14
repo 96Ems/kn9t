@@ -9,7 +9,7 @@
 use std::io;
 use std::sync::mpsc::Sender;
 
-use crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::{backend::CrosstermBackend, Terminal};
@@ -309,6 +309,13 @@ pub enum Screen {
     Chat,
 }
 
+/// 96E-45: A prompt queued for later sending (during plugins loading or streaming).
+#[derive(Debug, Clone)]
+pub struct QueuedPrompt {
+    pub text: String,
+    pub images: Vec<String>,
+}
+
 /// Hit area for tool card click detection.
 #[derive(Debug, Clone)]
 pub struct ToolHitArea {
@@ -365,12 +372,14 @@ pub struct App {
     // Pending images (base64-encoded, to be sent with next prompt).
     pub staged_images: Vec<String>,
 
-    // Queued message: when user types during streaming, we queue the message
-    // to be sent automatically when the turn ends (agent goes idle).
-    // This enables "queuing" behavior: fire-and-forget follow-up prompts.
-    pub queued_message: Option<String>,
-    // Queued images to send with queued_message.
-    pub queued_images: Vec<String>,
+    // 96E-45: Steering buffer — injected into the current/next turn.
+    // When streaming: added as steer messages to the current turn.
+    // When plugins loading: sent as first message(s) when ready.
+    pub steering: Vec<QueuedPrompt>,
+
+    // 96E-45: Queue buffer — sent sequentially, one per turn.
+    // Each message triggers a new turn after the previous one completes.
+    pub queue: std::collections::VecDeque<QueuedPrompt>,
 
     // State.
     pub streaming: bool,
@@ -508,8 +517,8 @@ impl App {
             prompt_history: PromptHistory::new(),
             prompt_stash: PromptStash::new(),
             staged_images: Vec::new(),
-            queued_message: None,
-            queued_images: Vec::new(),
+            steering: Vec::new(),
+            queue: std::collections::VecDeque::new(),
             ui_directives: Vec::new(),
             subagents: Vec::new(),
             attached_subagent: None,
@@ -709,9 +718,10 @@ impl App {
     }
 
     /// Poll server to check if plugins are ready. Called periodically from main loop.
-    pub fn poll_plugins_ready(&mut self) {
+    /// Returns true if state changed (for forcing redraw).
+    pub fn poll_plugins_ready(&mut self, tx: &Sender<Event>) -> bool {
         if self.plugins_ready {
-            return;
+            return false;
         }
         let is_ready = self
             .client
@@ -727,7 +737,58 @@ impl App {
                 self.client = Some(client);
             }
             crate::log!("plugins ready, refreshed tools");
+
+            // 96E-45: Process any steering/queue that was waiting for plugins.
+            self.process_pending_on_ready(tx);
+            return true; // State changed, force redraw
         }
+        false
+    }
+
+    /// 96E-45: Process steering and queue buffers when plugins become ready.
+    /// Sends all steering as a single fused message, then triggers the first queue item.
+    fn process_pending_on_ready(&mut self, tx: &Sender<Event>) {
+        // Nothing to do if both buffers are empty.
+        if self.steering.is_empty() && self.queue.is_empty() {
+            return;
+        }
+
+        // Need a session. If none, create one.
+        if self.session.state.session_id.is_empty() {
+            if let Err(e) = self.create_new_session(tx.clone()) {
+                crate::log!("PENDING: failed to create session: {:?}", e);
+                return;
+            }
+        }
+
+        // Send all steering messages fused into one prompt.
+        if !self.steering.is_empty() {
+            let steering = std::mem::take(&mut self.steering);
+            let fused_text: String = steering.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join("\n\n");
+            let fused_images: Vec<String> = steering.into_iter().flat_map(|p| p.images).collect();
+
+            let session_id = self.session.state.session_id.clone();
+            let lease = self.session.state.lease.clone();
+            if let (Some(client), Some(holder)) = (&self.client, lease) {
+                let image_count = fused_images.len();
+                self.transcript.push(Message::with_images("user", &fused_text, image_count));
+                match client.prompt(&session_id, &holder, &fused_text, fused_images) {
+                    Ok(_) => {
+                        crate::log!("PENDING: sent {} steering messages", image_count);
+                        self.streaming = true;
+                        self.tick_ctl.set_streaming(true);
+                    }
+                    Err(e) => {
+                        crate::log!("PENDING: failed to send steering: {:?}", e);
+                        self.transcript.push(Message::new("error", format!("Failed to send: {}", e)));
+                    }
+                }
+            }
+            return; // Queue will be processed on TurnEnded.
+        }
+
+        // No steering, but queue has items — send the first one.
+        self.process_next_queue_item();
     }
 
     /// Refresh tools sidebar from server (GET /tools?session= — Phase 4).
@@ -779,9 +840,9 @@ impl App {
         self.active_approval_id = None;
         self.active_interaction_id = None;
 
-        // Clear any queued message (don't carry over to new session).
-        self.queued_message = None;
-        self.queued_images.clear();
+        // 96E-45: Clear steering and queue (don't carry over to new session).
+        self.steering.clear();
+        self.queue.clear();
         self.ui_directives.clear();
         self.subagents.clear();
         self.attached_subagent = None;
@@ -1077,6 +1138,11 @@ impl App {
         // Mark this session as active in the list.
         self.session.mark_active(session_id);
 
+        // 96E-45: If we have pending steering/queue and agent is idle, send now.
+        if !self.streaming && self.has_pending_messages() {
+            self.process_next_queue_item();
+        }
+
         Ok(())
     }
 
@@ -1174,16 +1240,21 @@ impl App {
                         self.phrase_idx = self.phrase_idx.wrapping_add(1);
                     }
                     // Poll for plugins ready (every ~500ms = every 5 ticks at 100ms)
+                    let mut plugins_just_ready = false;
                     if !self.plugins_ready && self.spinner_frame.is_multiple_of(5) {
-                        self.poll_plugins_ready();
+                        plugins_just_ready = self.poll_plugins_ready(&tx);
                     }
                     // 96E-43: Process Lua panel commands (show/hide/toggle/register)
                     self.process_lua_panels();
-                    // Only redraw on tick if streaming OR if we have visible Lua panels
-                    // OR if plugins are still loading (to show loading indicator).
-                    // With 100ms ticks (10 FPS), we render each frame.
-                    // The spinner has 10 frames, so one full cycle takes ~1 second.
-                    needs_redraw = self.streaming || !self.lua_panels.is_empty() || !self.plugins_ready;
+                    // Redraw on tick if:
+                    // - streaming (spinner/content updates)
+                    // - visible Lua panels
+                    // - plugins still loading (spinner)
+                    // - plugins just became ready (clear loading indicator)
+                    needs_redraw = self.streaming 
+                        || !self.lua_panels.is_empty() 
+                        || !self.plugins_ready
+                        || plugins_just_ready;
                 }
                 Event::SseError(session_id, e) => {
                     // Phase 4 fix: R-TUI-230 — reconnect from last_seq instead of lying.
@@ -1357,79 +1428,22 @@ impl App {
 
         // Slash command mode handling.
         if self.slash.active {
-            match key.code {
-                KeyCode::Esc => {
-                    self.slash.deactivate();
-                    // Clear the "/" from input.
-                    if self.input.starts_with('/') {
-                        self.input.clear();
-                        self.cursor_col = 0;
-                    }
-                    return;
-                }
-                KeyCode::Enter | KeyCode::Tab => {
-                    // Execute selected command.
-                    if let Some(cmd) = self.slash.selected_command() {
-                        let cmd_name = cmd.name.clone();
-                        if cmd.is_lua {
-                            let lua_id = cmd.lua_id.clone();
-                            let args = self
-                                .input
-                                .trim_start_matches('/')
-                                .trim_start_matches(cmd_name.as_str())
-                                .trim()
-                                .to_string();
-                            self.run_lua_command(&lua_id, &args, tx);
-                        } else {
-                            self.execute_slash_command(&cmd_name, tx);
-                        }
-                    }
-                    self.slash.deactivate();
-                    self.input.clear();
-                    self.cursor_col = 0;
-                    return;
-                }
-                KeyCode::Up => {
-                    self.slash.select_prev();
-                    return;
-                }
-                KeyCode::Down => {
-                    self.slash.select_next();
-                    return;
-                }
-                KeyCode::Backspace => {
-                    if self.input.len() <= 1 {
-                        // Just "/" left, deactivate.
-                        self.slash.deactivate();
-                        self.input.clear();
-                        self.cursor_col = 0;
-                    } else {
-                        // Remove last char and update query.
-                        self.input.pop();
-                        self.cursor_col = self.cursor_col.saturating_sub(1);
-                        let query = self.input.trim_start_matches('/');
-                        self.slash.set_query(query);
-                    }
-                    return;
-                }
-                KeyCode::Char(c) => {
-                    self.input.push(c);
-                    self.cursor_col += 1;
-                    let query = self.input.trim_start_matches('/');
-                    self.slash.set_query(query);
-                    return;
-                }
-                _ => return,
+            if self.handle_slash_key(key, tx) {
+                return;
             }
         }
 
-        // Check for modifier+Enter for newline.
-        // Shift+Enter and Alt+Enter insert newline.
-        // Ctrl+Enter is reserved for Queue action (handled by keybinds).
+        // Check for modifier+Enter.
+        // 96E-45: Shift+Enter = Queue (add to queue buffer, reliable cross-platform).
+        // Alt+Enter = insert newline.
         if key.code == KeyCode::Enter {
-            let is_newline = key.modifiers.contains(KeyModifiers::SHIFT)
-                || key.modifiers.contains(KeyModifiers::ALT);
-            if is_newline {
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                // Shift+Enter: queue message
+                self.queue_prompt();
+                return;
+            }
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                // Alt+Enter: insert newline
                 self.insert_newline();
                 return;
             }
@@ -2241,69 +2255,14 @@ impl App {
             }
         }
 
-        // Slash command handling (same as chat).
+        // Slash command handling (shared with chat).
         if self.slash.active {
-            match key.code {
-                KeyCode::Esc => {
-                    self.slash.deactivate();
-                    self.input.clear();
-                    self.cursor_col = 0;
-                    return;
-                }
-                KeyCode::Enter | KeyCode::Tab => {
-                    if let Some(cmd) = self.slash.selected_command() {
-                        let cmd_name = cmd.name.clone();
-                        if cmd.is_lua {
-                            let lua_id = cmd.lua_id.clone();
-                            let args = self
-                                .input
-                                .trim_start_matches('/')
-                                .trim_start_matches(cmd_name.as_str())
-                                .trim()
-                                .to_string();
-                            self.run_lua_command(&lua_id, &args, tx);
-                        } else {
-                            self.execute_slash_command(&cmd_name, tx);
-                        }
-                    }
-                    self.slash.deactivate();
-                    self.input.clear();
-                    self.cursor_col = 0;
-                    return;
-                }
-                KeyCode::Up => {
-                    self.slash.select_prev();
-                    return;
-                }
-                KeyCode::Down => {
-                    self.slash.select_next();
-                    return;
-                }
-                KeyCode::Backspace => {
-                    if self.input.len() <= 1 {
-                        self.slash.deactivate();
-                        self.input.clear();
-                        self.cursor_col = 0;
-                    } else {
-                        self.input.pop();
-                        self.cursor_col = self.cursor_col.saturating_sub(1);
-                        let query = self.input.trim_start_matches('/');
-                        self.slash.set_query(query);
-                    }
-                    return;
-                }
-                KeyCode::Char(c) => {
-                    self.input.push(c);
-                    self.cursor_col += 1;
-                    let query = self.input.trim_start_matches('/');
-                    self.slash.set_query(query);
-                    return;
-                }
-                _ => return,
+            if self.handle_slash_key(key, tx) {
+                return;
             }
         }
 
-        // Check keybinds for word navigation and model cycling actions.
+        // Check keybinds for word navigation, model cycling, and queue actions.
         if let Some(action) = self.keybinds.match_key(key) {
             match action {
                 Action::WordLeft => {
@@ -2328,6 +2287,11 @@ impl App {
                 }
                 Action::CycleModelPrev => {
                     self.cycle_model_prev();
+                    return;
+                }
+                // 96E-45: Queue action works on welcome screen too.
+                Action::Queue => {
+                    self.queue_prompt();
                     return;
                 }
                 // Ignore other actions on welcome screen
@@ -2393,48 +2357,74 @@ impl App {
                 self.cursor_col += 1;
             }
             KeyCode::Enter => {
-                if self.input.is_empty() {
-                    // No input - create new empty session immediately (Phase 4.4c: no queued buffers).
-                    crate::log!("ENTER: creating new session (empty input)");
-                    if let Err(e) = self.create_new_session(tx.clone()) {
-                        self.transcript.push(Message::new(
-                            "error",
-                            format!("Failed to create session: {}", e),
-                        ));
+                // 96E-45: Handle Enter on welcome screen.
+                
+                // First: check for slash commands (they work even during plugin loading).
+                if self.input.starts_with('/') {
+                    if let Some(handled) = self.try_execute_slash_input(tx) {
+                        if handled {
+                            self.input.clear();
+                            self.cursor_col = 0;
+                            return;
+                        }
                     }
-                } else {
-                    // Has input - create session and send message immediately.
-                    let msg = self.input.clone();
-                    crate::log!("ENTER: creating session with message: {}", &msg);
-                    self.input.clear();
+                }
+                
+                if self.input.is_empty() && self.staged_images.is_empty() {
+                    // Empty input — create empty session if plugins ready.
+                    if self.plugins_ready {
+                        crate::log!("ENTER: creating new session (empty input)");
+                        if let Err(e) = self.create_new_session(tx.clone()) {
+                            self.transcript.push(Message::new(
+                                "error",
+                                format!("Failed to create session: {}", e),
+                            ));
+                        }
+                    }
+                    // If plugins not ready, do nothing — user can type something first.
+                } else if !self.plugins_ready {
+                    // Has input but plugins not ready — add to steering.
+                    crate::log!("WELCOME ENTER: plugins loading, buffering to steering");
+                    let text = std::mem::take(&mut self.input);
+                    let images = std::mem::take(&mut self.staged_images);
                     self.cursor_col = 0;
+                    self.prompt_history.add(text.clone());
+                    self.steering.push(QueuedPrompt { text, images });
+                } else {
+                    // Has input AND plugins ready — create session and send.
+                    let msg = std::mem::take(&mut self.input);
+                    let images = std::mem::take(&mut self.staged_images);
+                    self.cursor_col = 0;
+                    self.prompt_history.add(msg.clone());
+                    crate::log!("WELCOME ENTER: creating session and sending: {}", &msg);
+                    
                     match self.create_new_session(tx.clone()) {
                         Ok(()) => {
-                            crate::log!("Sending first message: {}", &msg);
-                            let images = std::mem::take(&mut self.staged_images);
                             let image_count = images.len();
-                            self.transcript
-                                .push(Message::with_images("user", &msg, image_count));
+                            self.transcript.push(Message::with_images("user", &msg, image_count));
                             let session_id = self.session.state.session_id.clone();
                             let lease = self.session.state.lease.clone().unwrap_or_default();
                             if let Some(client) = &self.client {
                                 match client.prompt(&session_id, &lease, &msg, images) {
                                     Ok(_) => {
-                                        crate::log!("prompt OK");
+                                        crate::log!("WELCOME ENTER: prompt sent OK");
                                         self.streaming = true;
                                         self.tick_ctl.set_streaming(true);
                                     }
                                     Err(e) => {
-                                        crate::log!("prompt FAILED: {:?}", e);
+                                        crate::log!("WELCOME ENTER: prompt failed: {:?}", e);
                                         self.transcript.push(Message::new(
                                             "error",
-                                            format!("Failed to send message: {}", e),
+                                            format!("Failed to send: {}", e),
                                         ));
                                     }
                                 }
                             }
                         }
                         Err(e) => {
+                            // Session creation failed — put the message back in steering
+                            // so it can be sent when ready.
+                            self.steering.push(QueuedPrompt { text: msg, images });
                             self.transcript.push(Message::new(
                                 "error",
                                 format!("Failed to create session: {}", e),
@@ -2537,7 +2527,17 @@ impl App {
         match action {
             Action::Quit => self.quit = true,
             Action::Abort => {
-                if self.streaming && !self.aborting {
+                // 96E-45: Escape priority — cancel pending first, then abort turn.
+                // 1. If steering/queue has items, cancel last and restore to input.
+                // 2. Otherwise, if streaming, abort the turn.
+                if self.has_pending_messages() {
+                    if let Some(text) = self.cancel_last_pending() {
+                        // Restore to input for editing.
+                        self.input = text;
+                        self.cursor_col = self.input.chars().count();
+                        self.cursor_row = 0;
+                    }
+                } else if self.streaming && !self.aborting {
                     let session_id = self.session.state.session_id.clone();
                     let lease = self.session.state.lease.clone();
                     if let (Some(client), Some(holder)) = (&self.client, lease) {
@@ -2551,15 +2551,10 @@ impl App {
                 self.command_palette.open(&self.lua_commands);
                 self.overlay = Some(Overlay::CommandPalette);
             }
-            Action::Send => self.send_prompt(),
+            Action::Send => self.send_prompt(tx),
             Action::Queue => {
-                // Shift+Enter: always queue (don't steer), useful to schedule follow-up
-                if self.streaming {
-                    self.queue_prompt();
-                } else {
-                    // Not streaming: just send normally
-                    self.send_prompt();
-                }
+                // 96E-45: Ctrl+Enter always queues (for sequential execution).
+                self.queue_prompt();
             }
             Action::ScrollUp => self.transcript.scroll_up(3),
             Action::ScrollDown => self.transcript.scroll_down(3),
@@ -3120,6 +3115,29 @@ impl App {
     }
 
     fn handle_sse(&mut self, frame: SseFrame) {
+        // 96E-45: If we receive a user message, clear matching item from steering buffer
+        // and add to transcript (since reducer ignores user messages to avoid duplicates,
+        // but for steered messages we haven't added them to transcript yet).
+        if let SseFrame::MessageAppended { ref msg, .. } = frame {
+            if msg.role == "user" && !self.steering.is_empty() {
+                // Extract text from content blocks.
+                let text: String = msg.content.iter()
+                    .filter_map(|c| match c {
+                        crate::wire::WireContent::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                // Remove the first steering item whose text matches (FIFO order).
+                if let Some(idx) = self.steering.iter().position(|p| text.contains(&p.text) || p.text.contains(&text)) {
+                    let prompt = self.steering.remove(idx);
+                    crate::log!("STEER CONFIRMED: removed '{}' from steering buffer", &prompt.text[..prompt.text.len().min(30)]);
+                    // Now add to transcript since reducer won't
+                    self.transcript.push(Message::with_images("user", &prompt.text, prompt.images.len()));
+                }
+            }
+        }
+
         // Pure reducer owns the state machine — App is a thin shell that syncs
         // tick_ctl/aborting on top (fix 4.5: live path now delegates to reducer).
         let needs_tick_sync = matches!(
@@ -3182,10 +3200,9 @@ impl App {
             }
         }
 
-        // Queuing: if turn just ended (was_streaming && !streaming) and we have a queued message,
-        // send it now to retrigger the agent.
-        if was_streaming && !self.streaming && self.queued_message.is_some() {
-            self.process_queued_message();
+        // 96E-45: If turn just ended, process any pending steering/queue.
+        if was_streaming && !self.streaming {
+            self.process_next_queue_item();
         }
 
         // R-PLUG2-110: refresh tools if a plugin re-declared (done last to avoid borrow issues)
@@ -3207,60 +3224,344 @@ impl App {
         }
     }
 
-    fn send_prompt(&mut self) {
+    /// 96E-45: Send prompt (Enter key).
+    /// - First: parse slash commands (e.g. `/queue hello`, `/model gpt-4`)
+    /// - If plugins loading: add to steering buffer (sent when ready).
+    /// - If streaming: call /steer immediately to inject into current turn.
+    /// - If idle: send as new prompt.
+    /// Handle key events when slash dropdown is active. Returns true if handled.
+    fn handle_slash_key(&mut self, key: KeyEvent, tx: &Sender<Event>) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.slash.deactivate();
+                if self.input.starts_with('/') {
+                    self.input.clear();
+                    self.cursor_col = 0;
+                }
+                true
+            }
+            KeyCode::Enter | KeyCode::Tab => {
+                // If command expects args: prefill and let user type.
+                // If no args expected: execute directly.
+                if let Some(cmd) = self.slash.selected_command() {
+                    let cmd_name = cmd.name.clone();
+                    let expects_args = !cmd.args.is_empty();
+                    let is_lua = cmd.is_lua;
+                    let lua_id = cmd.lua_id.clone();
+                    
+                    self.slash.deactivate();
+                    
+                    if expects_args {
+                        // Prefill input with `/command ` and let user type args.
+                        self.input = format!("/{} ", cmd_name);
+                        self.cursor_col = self.input.chars().count();
+                    } else {
+                        // Execute directly (no args needed).
+                        if is_lua {
+                            self.run_lua_command(&lua_id, "", tx);
+                        } else {
+                            self.execute_slash_command_with_args(&cmd_name, "", tx);
+                        }
+                        self.input.clear();
+                        self.cursor_col = 0;
+                    }
+                }
+                true
+            }
+            KeyCode::Up => {
+                self.slash.select_prev();
+                true
+            }
+            KeyCode::Down => {
+                self.slash.select_next();
+                true
+            }
+            KeyCode::Backspace => {
+                if self.input.len() <= 1 {
+                    // Just "/" left, deactivate.
+                    self.slash.deactivate();
+                    self.input.clear();
+                    self.cursor_col = 0;
+                } else {
+                    // Remove last char and update query.
+                    self.input.pop();
+                    self.cursor_col = self.cursor_col.saturating_sub(1);
+                    let query = self.input.trim_start_matches('/');
+                    self.slash.set_query(query);
+                }
+                true
+            }
+            KeyCode::Char(c) => {
+                self.input.push(c);
+                self.cursor_col += 1;
+                let query = self.input.trim_start_matches('/');
+                self.slash.set_query(query);
+                true
+            }
+            _ => true, // Consume all other keys while in slash mode
+        }
+    }
+
+    fn send_prompt(&mut self, tx: &Sender<Event>) {
         // Allow sending with just images (no text required).
         if self.input.trim().is_empty() && self.staged_images.is_empty() {
             return;
         }
+
+        // Parse slash commands first: `/command args`
+        if self.input.starts_with('/') {
+            if let Some(handled) = self.try_execute_slash_input(tx) {
+                if handled {
+                    self.input.clear();
+                    self.cursor_row = 0;
+                    self.cursor_col = 0;
+                    return;
+                }
+            }
+        }
+
+        let text = std::mem::take(&mut self.input);
+        let images = std::mem::take(&mut self.staged_images);
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+
+        // Add to prompt history
+        self.prompt_history.add(text.clone());
+
+        // Clear undo/redo history for new prompt
+        self.input_history.clear();
+
+        // 96E-45: If plugins not ready, buffer to steering (sent when ready).
+        if !self.plugins_ready {
+            crate::log!("STEERING: plugins loading, buffering message");
+            self.steering.push(QueuedPrompt { text, images });
+            return;
+        }
+
         let session_id = self.session.state.session_id.clone();
         let lease = self.session.state.lease.clone();
-        if let (Some(client), Some(holder)) = (&self.client, lease) {
-            let text = std::mem::take(&mut self.input);
-            let images = std::mem::take(&mut self.staged_images);
-            let image_count = images.len();
-            self.cursor_row = 0;
-            self.cursor_col = 0;
 
-            // Add to prompt history
-            self.prompt_history.add(text.clone());
-
-            // Clear undo/redo history for new prompt
-            self.input_history.clear();
-
-            // If agent is currently streaming: steer (inject into current turn).
-            // The message appears in the next loop iteration before the next LLM call.
-            if self.streaming {
-                crate::log!("STEER: injecting message while streaming");
-                // Add user message locally (SSE will echo it back with seq).
-                self.transcript
-                    .push(Message::with_images("user", &text, image_count));
-                // Steer: POST /session/{id}/steer (images not supported for steer, only text).
+        // If agent is currently streaming: STEER immediately (inject into current turn).
+        if self.streaming {
+            if let (Some(client), Some(holder)) = (&self.client, lease) {
+                crate::log!("STEER: injecting message into current turn");
+                // Don't add to transcript yet — keep in steering buffer as "pending".
+                // It will appear muted in the "── Steering ──" section until confirmed.
+                // Call /steer to inject into the agent's current turn
                 match client.steer(&session_id, &holder, &text) {
                     Ok(seq) => {
                         crate::log!("STEER: success seq={}", seq);
+                        // Keep in steering buffer — it's now "pending injection".
+                        // The server will send a UserAppended event when it's actually
+                        // added to the context, and we'll remove it from steering then.
+                        self.steering.push(QueuedPrompt { text, images });
                     }
                     Err(e) => {
-                        crate::log!("STEER: failed {:?}, falling back to queue", e);
-                        // If steer fails (e.g., turn just ended), queue for next turn.
-                        self.queued_message = Some(text);
-                        self.queued_images = images;
+                        // Steer failed (turn may have just ended) — queue for next turn
+                        crate::log!("STEER: failed {:?}, queueing for next turn", e);
+                        self.queue.push_back(QueuedPrompt { text, images });
                     }
                 }
-                return;
             }
+            return;
+        }
 
-            // Normal case: agent is idle, send prompt.
-            // Add user message locally with image count (don't wait for SSE).
-            self.transcript
-                .push(Message::with_images("user", &text, image_count));
-
-            // Send to server.
-            let _ = client.prompt(&session_id, &holder, &text, images);
+        // Normal case: agent is idle, send prompt directly.
+        if let (Some(client), Some(holder)) = (&self.client, lease) {
+            let image_count = images.len();
+            self.transcript.push(Message::with_images("user", &text, image_count));
+            match client.prompt(&session_id, &holder, &text, images) {
+                Ok(_) => {
+                    // Mark as streaming immediately so queue doesn't try to send.
+                    self.streaming = true;
+                    self.tick_ctl.set_streaming(true);
+                }
+                Err(e) => {
+                    crate::log!("PROMPT: failed {:?}", e);
+                    self.transcript.push(Message::new("error", format!("Failed to send: {}", e)));
+                }
+            }
+        }
+    }
+    
+    /// Try to execute input as a slash command. Returns Some(true) if handled,
+    /// Some(false) if it looks like a command but wasn't found, None if not a command.
+    fn try_execute_slash_input(&mut self, tx: &Sender<Event>) -> Option<bool> {
+        let input = self.input.trim();
+        if !input.starts_with('/') {
+            return None;
+        }
+        
+        // Parse: `/command args` or `/command`
+        let without_slash = &input[1..];
+        let (cmd_name, args) = match without_slash.find(' ') {
+            Some(idx) => (&without_slash[..idx], without_slash[idx+1..].trim()),
+            None => (without_slash, ""),
+        };
+        let cmd_name = cmd_name.to_string();
+        let args = args.to_string();
+        
+        crate::log!("SLASH: parsing '{}' -> cmd='{}' args='{}'", input, cmd_name, args);
+        
+        // Check built-in commands
+        let is_builtin = crate::slash::COMMANDS.iter().any(|c| c.name == cmd_name);
+        
+        // Check Lua commands
+        let lua_cmd_id = self.lua_commands.iter().find(|c| {
+            c.slash.as_ref().map(|s| s.trim_start_matches('/')).unwrap_or("") == cmd_name
+        }).map(|c| c.id.clone());
+        
+        if is_builtin {
+            // Execute built-in command with args
+            self.execute_slash_command_with_args(&cmd_name, &args, tx);
+            return Some(true);
+        }
+        
+        if let Some(cmd_id) = lua_cmd_id {
+            self.run_lua_command(&cmd_id, &args, tx);
+            return Some(true);
+        }
+        
+        // Not a recognized command — let it be sent as a normal message
+        None
+    }
+    
+    /// Execute a built-in slash command with parsed args.
+    fn execute_slash_command_with_args(&mut self, cmd: &str, args: &str, tx: &Sender<Event>) {
+        crate::log!("SLASH EXEC: cmd='{}' args='{}'", cmd, args);
+        match cmd {
+            "queue" | "q" => {
+                if args.is_empty() {
+                    self.transcript.push(Message::new("system", "Usage: /queue <message>"));
+                } else {
+                    self.queue.push_back(QueuedPrompt {
+                        text: args.to_string(),
+                        images: Vec::new(),
+                    });
+                    crate::log!("QUEUE: message queued via /queue ({} total)", self.queue.len());
+                }
+            }
+            "session" => {
+                self.overlay = Some(Overlay::SessionSelect {
+                    selected: 0,
+                    filter: String::new(),
+                });
+            }
+            "models" | "model" => {
+                if !args.is_empty() {
+                    // Direct model switch: /model <id>
+                    // TODO: implement direct model selection
+                }
+                self.overlay = Some(Overlay::ModelSelect {
+                    selected: self.model_sel.selected(),
+                    filter: String::new(),
+                });
+            }
+            "new" => {
+                self.reset_session_state();
+                if let Err(e) = self.create_new_session(tx.clone()) {
+                    self.transcript.push(Message::new(
+                        "error",
+                        format!("Failed to create session: {}", e),
+                    ));
+                }
+            }
+            "help" => {
+                self.which_key_panel = WhichKeyPanel::new();
+                self.overlay = Some(Overlay::WhichKey);
+            }
+            "quit" => {
+                self.quit = true;
+            }
+            "abort" => {
+                if self.streaming && !self.aborting {
+                    let session_id = self.session.state.session_id.clone();
+                    let lease = self.session.state.lease.clone();
+                    if let (Some(client), Some(holder)) = (&self.client, lease) {
+                        let _ = client.abort(&session_id, &holder);
+                        self.aborting = true;
+                    }
+                }
+            }
+            "compact" => {
+                let sid = self.session.state.session_id.clone();
+                let lease = self.session.state.lease.clone();
+                if sid.is_empty() {
+                    self.transcript.push(Message::new("system", "No active session to compact."));
+                } else if let (Some(client), Some(holder)) = (&self.client, lease) {
+                    match client.compact_session(&sid, &holder) {
+                        Ok(()) => self.transcript.push(Message::new("system", "Compaction started...")),
+                        Err(e) => self.transcript.push(Message::new("system", format!("Compact failed: {}", e))),
+                    }
+                }
+            }
+            "export" => {
+                let sid = self.session.state.session_id.clone();
+                if sid.is_empty() {
+                    self.transcript.push(Message::new("system", "No active session to export."));
+                } else if let Some(client) = &self.client {
+                    match client.export_session(&sid) {
+                        Ok(val) => {
+                            let out_path = if args.is_empty() {
+                                format!("{}.json", &sid[..8.min(sid.len())])
+                            } else {
+                                args.to_string()
+                            };
+                            if let Err(e) = std::fs::write(&out_path, serde_json::to_string_pretty(&val).unwrap_or_default()) {
+                                self.transcript.push(Message::new("system", format!("Write failed: {}", e)));
+                            } else {
+                                self.transcript.push(Message::new("system", format!("Exported to {}", out_path)));
+                            }
+                        }
+                        Err(e) => self.transcript.push(Message::new("system", format!("Export failed: {}", e))),
+                    }
+                }
+            }
+            "search" => {
+                self.open_search();
+            }
+            "keys" => {
+                self.which_key_panel = WhichKeyPanel::new();
+                self.overlay = Some(Overlay::WhichKey);
+            }
+            "palette" => {
+                self.command_palette.open(&self.lua_commands);
+                self.overlay = Some(Overlay::CommandPalette);
+            }
+            "stash" => {
+                self.stash_prompt();
+            }
+            "pop" | "unstash" | "stashpop" => {
+                self.unstash_prompt();
+            }
+            "rename" => {
+                let sid = self.session.state.session_id.clone();
+                if sid.is_empty() {
+                    self.transcript.push(Message::new("system", "No active session to rename."));
+                } else if args.is_empty() {
+                    self.transcript.push(Message::new("system", "Usage: /rename <new title>"));
+                } else if let Some(client) = &self.client {
+                    match client.rename_session(&sid, args) {
+                        Ok(_) => {
+                            self.session.set_session_title(Some(args.to_string()));
+                            if let Some(s) = self.session.sessions.iter_mut().find(|s| s.id == sid) {
+                                s.name = args.to_string();
+                            }
+                            self.transcript.push(Message::new("system", format!("Renamed to '{}'", args)));
+                        }
+                        Err(e) => self.transcript.push(Message::new("system", format!("Rename failed: {}", e))),
+                    }
+                }
+            }
+            _ => {
+                // Unknown command — show error
+                self.transcript.push(Message::new("system", format!("Unknown command: /{}", cmd)));
+            }
         }
     }
 
-    /// Queue a message to be sent when the agent goes idle.
-    /// Unlike steer (which injects into the current turn), queue waits for turn end.
+    /// 96E-45: Queue a message (Ctrl+Enter key).
+    /// Adds to the queue buffer — will be sent one-per-turn when agent goes idle.
     fn queue_prompt(&mut self) {
         if self.input.trim().is_empty() && self.staged_images.is_empty() {
             return;
@@ -3277,50 +3578,75 @@ impl App {
         // Clear undo/redo history
         self.input_history.clear();
 
-        // Store for later (will be sent when TurnEnded is received)
-        self.queued_message = Some(text.clone());
-        self.queued_images = images;
-
-        // Visual feedback: show the queued message in transcript with a marker
-        self.transcript.push(Message::new(
-            "system",
-            format!("⏳ Queued: {}", &text[..text.len().min(50)]),
-        ));
-        crate::log!("QUEUE: message queued for post-idle send");
+        // Add to queue buffer
+        self.queue.push_back(QueuedPrompt { text, images });
+        crate::log!("QUEUE: message queued ({} total)", self.queue.len());
     }
 
-    /// Process any queued message after turn ends. Called from handle_sse on TurnEnded.
-    fn process_queued_message(&mut self) {
-        if let Some(text) = self.queued_message.take() {
-            let images = std::mem::take(&mut self.queued_images);
-            let session_id = self.session.state.session_id.clone();
-            let lease = self.session.state.lease.clone();
+    /// 96E-45: Process the next queued item after turn ends.
+    /// Called when streaming ends (TurnEnded).
+    fn process_next_queue_item(&mut self) {
+        // Safety: don't send if already streaming (409 conflict).
+        if self.streaming {
+            crate::log!("QUEUE: skipping, still streaming");
+            return;
+        }
+        
+        // Pop the next queued message.
+        let Some(prompt) = self.queue.pop_front() else {
+            return;
+        };
 
-            if let (Some(client), Some(holder)) = (&self.client, lease) {
-                let image_count = images.len();
-                crate::log!("QUEUE: sending queued message now that turn ended");
+        let session_id = self.session.state.session_id.clone();
+        let lease = self.session.state.lease.clone();
 
-                // Add user message locally
-                self.transcript
-                    .push(Message::with_images("user", &text, image_count));
+        if let (Some(client), Some(holder)) = (&self.client, lease) {
+            let image_count = prompt.images.len();
+            crate::log!("QUEUE: sending queued message ({} remaining)", self.queue.len());
 
-                // Send to server
-                match client.prompt(&session_id, &holder, &text, images) {
-                    Ok(_) => {
-                        crate::log!("QUEUE: prompt sent successfully");
-                        self.streaming = true;
-                        self.tick_ctl.set_streaming(true);
-                    }
-                    Err(e) => {
-                        crate::log!("QUEUE: prompt failed: {:?}", e);
-                        self.transcript.push(Message::new(
-                            "error",
-                            format!("Failed to send queued message: {}", e),
-                        ));
-                    }
+            // Send to server first, only add to transcript on success
+            match client.prompt(&session_id, &holder, &prompt.text, prompt.images.clone()) {
+                Ok(_) => {
+                    crate::log!("QUEUE: prompt sent successfully");
+                    self.transcript.push(Message::with_images("user", &prompt.text, image_count));
+                    self.streaming = true;
+                    self.tick_ctl.set_streaming(true);
+                }
+                Err(crate::client::ClientError::TurnRunning) => {
+                    // 409 = turn still running, just re-queue silently and wait for TurnEnded.
+                    crate::log!("QUEUE: turn still running, will retry on TurnEnded");
+                    self.queue.push_front(prompt);
+                }
+                Err(e) => {
+                    crate::log!("QUEUE: prompt failed: {:?}", e);
+                    // Real error - put it back and show error to user.
+                    self.queue.push_front(prompt);
+                    self.transcript.push(Message::new(
+                        "error",
+                        format!("Failed to send queued message (will retry): {}", e),
+                    ));
                 }
             }
         }
+    }
+    /// 96E-45: Cancel the last item from steering (if any), then queue.
+    /// Returns the cancelled prompt text to restore to input, or None if both empty.
+    fn cancel_last_pending(&mut self) -> Option<String> {
+        // Priority: steering first, then queue.
+        if let Some(prompt) = self.steering.pop() {
+            crate::log!("CANCEL: removed last steering message");
+            return Some(prompt.text);
+        }
+        if let Some(prompt) = self.queue.pop_back() {
+            crate::log!("CANCEL: removed last queued message");
+            return Some(prompt.text);
+        }
+        None
+    }
+
+    /// 96E-45: Check if there are any pending messages (steering or queue).
+    pub fn has_pending_messages(&self) -> bool {
+        !self.steering.is_empty() || !self.queue.is_empty()
     }
 
     fn respond_approval(&mut self, decision: &str) {
@@ -3906,169 +4232,6 @@ impl App {
             pos += line.len() + 1;
         }
         self.input.len()
-    }
-
-    fn execute_slash_command(&mut self, cmd: &str, tx: &Sender<Event>) {
-        match cmd {
-            "session" => {
-                self.overlay = Some(Overlay::SessionSelect {
-                    selected: 0,
-                    filter: String::new(),
-                });
-            }
-            "models" | "model" => {
-                self.overlay = Some(Overlay::ModelSelect {
-                    selected: self.model_sel.selected(),
-                    filter: String::new(),
-                });
-            }
-            "new" => {
-                self.reset_session_state();
-                if let Err(e) = self.create_new_session(tx.clone()) {
-                    self.transcript.push(Message::new(
-                        "error",
-                        format!("Failed to create session: {}", e),
-                    ));
-                }
-            }
-            "clear" => {
-                // Disabled - users never want to clear conversation.
-            }
-            "help" => {
-                self.which_key_panel = WhichKeyPanel::new();
-                self.overlay = Some(Overlay::WhichKey);
-            }
-            "quit" => {
-                self.quit = true;
-            }
-            "abort" => {
-                if self.streaming && !self.aborting {
-                    let session_id = self.session.state.session_id.clone();
-                    let lease = self.session.state.lease.clone();
-                    if let (Some(client), Some(holder)) = (&self.client, lease) {
-                        let _ = client.abort(&session_id, &holder);
-                        self.aborting = true;
-                    }
-                }
-            }
-            "compact" => {
-                // Fire-and-forget: POST /session/{id}/compact triggers background compaction.
-                // Result comes via SSE Event::Compacted (handled by reducer).
-                let sid = self.session.state.session_id.clone();
-                let lease = self.session.state.lease.clone();
-                if sid.is_empty() {
-                    self.transcript
-                        .push(Message::new("system", "No active session to compact."));
-                } else if let (Some(client), Some(holder)) = (&self.client, lease) {
-                    match client.compact_session(&sid, &holder) {
-                        Ok(()) => self
-                            .transcript
-                            .push(Message::new("system", "Compaction started...")),
-                        Err(e) => self
-                            .transcript
-                            .push(Message::new("system", format!("Compact failed: {}", e))),
-                    }
-                } else {
-                    self.transcript.push(Message::new(
-                        "system",
-                        "No lease — cannot compact (acquire lease first).",
-                    ));
-                }
-            }
-            "export" => {
-                // Phase 4: GET /session/{id}/export (replaces placeholder).
-                let sid = self.session.state.session_id.clone();
-                if sid.is_empty() {
-                    self.transcript
-                        .push(Message::new("system", "No active session to export."));
-                } else if let Some(client) = &self.client {
-                    // Support `/export <path>` args in raw input.
-                    let raw = self.input.clone();
-                    let arg_path = raw.trim_start_matches('/').trim_start_matches(cmd).trim();
-                    match client.export_session(&sid) {
-                        Ok(val) => {
-                            let out_path = if arg_path.is_empty() {
-                                format!("/tmp/kn9t-export-{}.json", &sid[..8.min(sid.len())])
-                            } else {
-                                arg_path.to_string()
-                            };
-                            let json =
-                                serde_json::to_string_pretty(&val).unwrap_or_else(|_| "{}".into());
-                            match std::fs::write(&out_path, json) {
-                                Ok(_) => self.transcript.push(Message::new(
-                                    "system",
-                                    format!("Exported to {}", out_path),
-                                )),
-                                Err(e) => self.transcript.push(Message::new(
-                                    "system",
-                                    format!("Export write failed: {}", e),
-                                )),
-                            }
-                        }
-                        Err(e) => self
-                            .transcript
-                            .push(Message::new("system", format!("Export failed: {}", e))),
-                    }
-                }
-            }
-            "search" => {
-                self.open_search();
-            }
-            "keys" => {
-                self.which_key_panel = WhichKeyPanel::new();
-                self.overlay = Some(Overlay::WhichKey);
-            }
-            "palette" => {
-                self.command_palette.open(&self.lua_commands);
-                self.overlay = Some(Overlay::CommandPalette);
-            }
-            "theme" => {
-                // TODO: theme selector overlay
-                self.transcript.push(Message::new(
-                    "system",
-                    "Theme selector is planned for a future release. \
-                     Configure theme in ~/.kn9t/config.toml",
-                ));
-            }
-            "stash" => {
-                self.stash_prompt();
-            }
-            "pop" | "unstash" | "stashpop" => {
-                self.unstash_prompt();
-            }
-            "rename" => {
-                // Parse `/rename <title>` args from raw input before it was cleared.
-                let raw = self.input.clone();
-                let title = raw
-                    .trim_start_matches('/')
-                    .trim_start_matches("rename")
-                    .trim();
-                let sid = self.session.state.session_id.clone();
-                if sid.is_empty() {
-                    self.transcript
-                        .push(Message::new("system", "No active session to rename."));
-                } else if title.is_empty() {
-                    self.transcript
-                        .push(Message::new("system", "Usage: /rename <new title>"));
-                } else if let Some(client) = &self.client {
-                    match client.rename_session(&sid, title) {
-                        Ok(_) => {
-                            self.session.set_session_title(Some(title.to_string()));
-                            if let Some(s) = self.session.sessions.iter_mut().find(|s| s.id == sid)
-                            {
-                                s.name = title.to_string();
-                            }
-                            self.transcript
-                                .push(Message::new("system", format!("Renamed to '{}'", title)));
-                        }
-                        Err(e) => self
-                            .transcript
-                            .push(Message::new("system", format!("Rename failed: {}", e))),
-                    }
-                }
-            }
-            _ => {}
-        }
     }
 
     fn execute_palette_command(&mut self, cmd_id: &str, tx: &Sender<Event>) {

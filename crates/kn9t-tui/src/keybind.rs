@@ -147,8 +147,9 @@ impl Keybinds {
 
         // ─── Core ───
         bindings.insert(kp(KeyCode::Enter, false, false, false), Action::Send); // Enter: send (steers if streaming)
-        bindings.insert(kp(KeyCode::Enter, true, false, false), Action::Queue); // Ctrl+Enter: queue for post-idle
-                                                                                // Note: Shift+Enter and Alt+Enter insert newline (handled before keybinds)
+        bindings.insert(kp(KeyCode::Enter, false, false, true), Action::Queue); // Shift+Enter: queue
+        bindings.insert(kp(KeyCode::Enter, false, true, false), Action::Queue); // Alt+Enter: queue (fallback)
+        bindings.insert(kp(KeyCode::Enter, true, false, false), Action::Queue); // Ctrl+Enter: queue (fallback)
         bindings.insert(kp(KeyCode::Esc, false, false, false), Action::Abort); // Esc: abort turn
         bindings.insert(kp(KeyCode::Char('c'), true, false, false), Action::Quit); // Ctrl+C: quit
         bindings.insert(kp(KeyCode::Char('q'), true, false, false), Action::Quit); // Ctrl+Q: quit

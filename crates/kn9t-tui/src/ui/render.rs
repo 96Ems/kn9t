@@ -66,6 +66,8 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             app.streaming,
             app.model_sel.current_model(),
             app.plugins_ready,
+            app.steering.len(),
+            app.queue.len(),
         );
         runtime.update_context(&stats);
 
@@ -433,6 +435,22 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             }
         }
 
+        // 96E-45: Plugins loading indicator.
+        if !app.plugins_ready {
+            let spinner = SPINNER[app.spinner_frame % SPINNER.len()];
+            let loading_text = format!("{} plugins loading...", spinner);
+            let loading_y = sub_y + 1;
+            let loading_x = start_x + (content_width.saturating_sub(loading_text.len() as u16)) / 2;
+            for (i, ch) in loading_text.chars().enumerate() {
+                let x = loading_x + i as u16;
+                if x < area.x + area.width && loading_y < area.y + area.height {
+                    buf[(x, loading_y)]
+                        .set_char(ch)
+                        .set_fg(theme.warning);
+                }
+            }
+        }
+
         // Model display (above input).
         let model_y = center_y.saturating_sub(2);
         let model_text = format!("Model: {}", app.current_model_name());
@@ -531,6 +549,73 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                 if x < area.x + area.width && sessions_y < area.y + area.height {
                     buf[(x, sessions_y)].set_char(ch).set_fg(theme.muted);
                 }
+            }
+        }
+
+        // 96E-45: Show steering/queue sections if any pending messages.
+        let pending_start_y = hints_y + 4;
+        let mut pending_y = pending_start_y;
+
+        if !app.steering.is_empty() {
+            let header = "── Steering ──";
+            let header_x = start_x + (content_width.saturating_sub(header.len() as u16)) / 2;
+            for (i, ch) in header.chars().enumerate() {
+                let x = header_x + i as u16;
+                if x < area.x + area.width && pending_y < area.y + area.height {
+                    buf[(x, pending_y)].set_char(ch).set_fg(theme.success);
+                }
+            }
+            pending_y += 1;
+
+            for (i, prompt) in app.steering.iter().enumerate() {
+                if pending_y >= area.y + area.height {
+                    break;
+                }
+                let preview: String = if prompt.text.len() > 40 {
+                    format!("{}. {}...", i + 1, &prompt.text[..37])
+                } else {
+                    format!("{}. {}", i + 1, &prompt.text)
+                };
+                let preview_x = start_x + (content_width.saturating_sub(preview.len() as u16)) / 2;
+                for (j, ch) in preview.chars().enumerate() {
+                    let x = preview_x + j as u16;
+                    if x < area.x + area.width {
+                        buf[(x, pending_y)].set_char(ch).set_fg(theme.muted);
+                    }
+                }
+                pending_y += 1;
+            }
+            pending_y += 1; // spacing
+        }
+
+        if !app.queue.is_empty() {
+            let header = "── Queue ──";
+            let header_x = start_x + (content_width.saturating_sub(header.len() as u16)) / 2;
+            for (i, ch) in header.chars().enumerate() {
+                let x = header_x + i as u16;
+                if x < area.x + area.width && pending_y < area.y + area.height {
+                    buf[(x, pending_y)].set_char(ch).set_fg(theme.muted);
+                }
+            }
+            pending_y += 1;
+
+            for (i, prompt) in app.queue.iter().enumerate() {
+                if pending_y >= area.y + area.height {
+                    break;
+                }
+                let preview: String = if prompt.text.len() > 40 {
+                    format!("{}. {}...", i + 1, &prompt.text[..37])
+                } else {
+                    format!("{}. {}", i + 1, &prompt.text)
+                };
+                let preview_x = start_x + (content_width.saturating_sub(preview.len() as u16)) / 2;
+                for (j, ch) in preview.chars().enumerate() {
+                    let x = preview_x + j as u16;
+                    if x < area.x + area.width {
+                        buf[(x, pending_y)].set_char(ch).set_fg(theme.muted);
+                    }
+                }
+                pending_y += 1;
             }
         }
     } // End of buffer borrow
@@ -1027,6 +1112,44 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             format!("  ✗ {}", app.turn_status_msg),
             Style::default().fg(theme.error),
         )));
+    }
+
+    // 96E-45: Render Steering section (muted, at bottom before queue).
+    if !app.steering.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "── Steering ──",
+            Style::default().fg(theme.muted),
+        )));
+        for (i, prompt) in app.steering.iter().enumerate() {
+            let preview = if prompt.text.len() > 60 {
+                format!("{}...", &prompt.text[..57])
+            } else {
+                prompt.text.clone()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {}. {}", i + 1, preview),
+                Style::default().fg(theme.muted),
+            )));
+        }
+    }
+
+    // 96E-45: Render Queue section (muted, at bottom).
+    if !app.queue.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "── Queue ──",
+            Style::default().fg(theme.muted),
+        )));
+        for (i, prompt) in app.queue.iter().enumerate() {
+            let preview = if prompt.text.len() > 60 {
+                format!("{}...", &prompt.text[..57])
+            } else {
+                prompt.text.clone()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {}. {}", i + 1, preview),
+                Style::default().fg(theme.muted),
+            )));
+        }
     }
 
     // Scroll logic:
