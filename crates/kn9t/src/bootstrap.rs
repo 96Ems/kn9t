@@ -1,7 +1,5 @@
-//! First-run bootstrap — auto-creates `~/.kn9t/` with a config template and token.
-//!
-//! Call `ensure_home()` once, before any server interaction. It is a no-op if the
-//! directory and files already exist. GI-5: no async.
+//! First-run bootstrap: auto-creates ~/.kn9t/ with config template and token.
+//! Call ensure_home() once before server interaction; idempotent if files exist.
 
 use std::fs;
 use std::io::{self, Write};

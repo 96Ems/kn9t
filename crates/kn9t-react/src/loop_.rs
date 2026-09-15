@@ -1,9 +1,5 @@
-//! R-RCT-010 .. R-RCT-130 -- the ReAct loop driver.
-//!
-//! The loop owns only trait objects (R-RCT-010, GI-1) and per-run parameters; it never
-//! names a concrete `Provider`, `Tool`, `Store`, or `Approver`. One turn executes the exact
-//! sequence of R-RCT-020 / DESIGN sec.9. Everything money-related (provider calls,
-//! `UsageRecorded`) happens here and only here (DESIGN sec.3).
+//! ReAct loop driver: turns, provider calls, tool batches, context management, and hooks.
+//! This is the sole place where money is spent (provider calls and usage records).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,19 +11,16 @@ use kn9t_provider_core::{
     ToolRegistry,
 };
 
-/// SPEC-OPEN (DESIGN sec.18.9) -- truncation give-up count and reminder ladder. Values,
-/// not interfaces; tunable freely.
+/// Truncation and compaction configuration: attempt limits and context cutoff ladder.
 #[derive(Clone)]
 pub struct ReactConfig {
-    /// R-RCT-070 -- max truncation re-issues before giving up (default 4).
+    /// Max truncation attempts before giving up (default 4).
     pub truncation_attempts: u32,
-    /// R-RCT-070 -- write-size line ladder (default 150,100,50,25,10).
+    /// Token cutoff ladder for truncation retries (default 150,100,50,25,10).
     pub truncation_ladder: Vec<u32>,
-    /// R-RCT-080/090 -- compaction re-plans allowed (exactly one, R-RCT-090).
+    /// Max compaction re-plans when context overflows (default 1).
     pub max_context_replans: u32,
-    /// R-RCT-020 -- max turns in one run before the loop refuses to continue (default 100).
-    ///
-    /// The turn loop's only other exit when the model keeps emitting tool calls is
+    /// Max turns in one run before loop gives up (default 100).
     /// `should_stop_after_turn`, whose default is `false` (R-RCT-100) and whose panic
     /// fallback is also `false` (R-RCT-110). A model stuck re-issuing the same call would
     /// therefore spend money indefinitely. This is the backstop: high enough that no real

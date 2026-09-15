@@ -1,14 +1,8 @@
-//! R-CORE-120 — tool specification.
-//!
-//! Tools declare their own policy via `ToolPolicy`. This replaces the hardcoded
-//! bash classifier with a generic, plugin-extensible system.
+//! Tool specifications: schema, effects, and approval policy for execution control.
 
 use serde::{Deserialize, Serialize};
 
-/// R-CORE-120 — the `schema` value MUST NOT be produced from a `HashMap`; object
-/// key order is stable across processes (GI-3). `serde_json::Value::Object` is
-/// `BTreeMap`-backed by default, which satisfies this as long as `preserve_order`
-/// is off.
+/// Effect kind: Shell, FsRead, FsWrite, or Network operation.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectKind {
@@ -20,32 +14,25 @@ pub enum EffectKind {
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct Effect {
-    /// JSON field name in `args` (e.g. `"cmd"` or `"path"`), or JSON pointer
-    /// with leading `/` (e.g. `"/command"`). Bare string is treated as top-level key.
+    /// Field in args containing the effect: bare name or JSON pointer path.
     pub field: String,
     pub kind: EffectKind,
 }
 
-/// Default policy when no user config exists for this tool.
+/// Default approval policy: Allow (safe), Ask (default), or Deny (blocked).
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DefaultPolicy {
-    /// Safe tool, auto-allow without prompting (e.g. "read", "glob", "grep").
     Allow,
-    /// Needs user approval by default (most tools).
     #[default]
     Ask,
-    /// Blocked unless explicitly allowed in user config.
     Deny,
 }
 
-/// Policy declaration for a tool. Plugins declare this to control approval behavior
-/// without hardcoding tool names in the server.
+/// Tool policy: pattern field, default approval, and allow/deny pattern lists.
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
 pub struct ToolPolicy {
-    /// Field to extract from args for pattern matching.
-    /// e.g. "cmd" for bash, "path" for read/write, "url" for web_fetch.
-    /// If None, the tool doesn't support pattern matching.
+    /// Field in args for pattern matching (e.g., "cmd", "path", "url").
     #[serde(default)]
     pub pattern_field: Option<String>,
 
@@ -53,15 +40,11 @@ pub struct ToolPolicy {
     #[serde(default)]
     pub default_policy: DefaultPolicy,
 
-    /// Built-in allow patterns declared by the tool author.
-    /// These are checked AFTER user deny patterns but BEFORE user allow patterns,
-    /// so users can override them. Example: `["git log *", "git status *"]` for a git tool.
+    /// Built-in allow patterns: tool author's safe defaults (user can override).
     #[serde(default)]
     pub builtin_allow: Vec<String>,
 
-    /// Built-in deny patterns (always deny, even if user allows).
-    /// Example: `["rm -rf /", "sudo *"]` for bash.
-    /// These are "hard deny" — no approval prompt, just rejected.
+    /// Built-in deny patterns: hard deny (never shown in approval prompt).
     #[serde(default)]
     pub builtin_deny: Vec<String>,
 }
@@ -70,19 +53,15 @@ pub struct ToolPolicy {
 pub struct ToolSpec {
     pub name: String,
     pub description: String,
-    /// Hand-written `json!({...})`, ordered.
+    /// JSON schema for tool arguments (must be ordered).
     pub schema: serde_json::Value,
-    /// If true, tool is registered but not shown in the initial system prompt.
-    /// Used for lazy tool discovery: hidden tools can still be executed once
-    /// the agent discovers them via a meta-tool like `mcp_search_tools`.
+    /// If true, tool is registered but hidden from initial system prompt (lazy discovery).
     #[serde(default)]
     pub hidden: bool,
-    /// Effects declared by the plugin (ADR-0002). Empty = strictest default
-    /// (ask_on_mutation → Ask, deny_all → HardDeny).
+    /// Effects declared by plugin: side effects for approval policy.
     #[serde(default)]
     pub effects: Vec<Effect>,
-    /// Policy declaration — controls approval behavior.
-    /// If absent, uses `DefaultPolicy::Ask` with no pattern matching.
+    /// Approval policy: controls ask/allow/deny behavior.
     #[serde(default)]
     pub policy: ToolPolicy,
 }

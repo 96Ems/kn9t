@@ -1,7 +1,5 @@
-//! Q26 / §13.8 — RemoteProvider: adapts a PluginHost into kn9t_core::Provider.
-//!
-//! The host sends `{"t":"hook","hook":"provider_complete","payload":<Request>}`.
-//! The plugin streams `Chunk` messages then a `Done` with stop + usage.
+//! RemoteProvider: adapts PluginHost into Provider trait.
+//! Sends request to plugin subprocess and collects streaming chunks.
 
 use kn9t_core::safe_expect;
 use crate::codec::{write_host_msg, HostMsg};
@@ -17,14 +15,14 @@ use std::time::Duration;
 /// Six-hundred second timeout for a full streaming call.
 const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Adapts a `PluginHost` (subprocess) into the `Provider` trait (Q26).
+/// Adapts PluginHost subprocess into Provider trait.
 pub struct RemoteProvider {
     pub(crate) host: Arc<PluginHost>,
     provider_id: String,
 }
 
 impl RemoteProvider {
-    /// Create from a plugin host. `provider_id` comes from `ProviderDecl::id`.
+    /// Creates RemoteProvider from PluginHost and provider ID.
     pub fn new(host: Arc<PluginHost>, provider_id: String) -> Self {
         Self { host, provider_id }
     }

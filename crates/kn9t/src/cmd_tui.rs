@@ -1,4 +1,4 @@
-//! `kn9t tui` — TUI configuration management.
+//! kn9t tui: manage TUI settings and configuration.
 //!
 //! Subcommands:
 //!   kn9t tui reset [--force]   — Reset TUI config to defaults

@@ -1,4 +1,4 @@
-//! `kn9t cost` — GET /cost (+ GET /budget summary).
+//! kn9t cost: display session costs and budget summary.
 
 pub fn run(args: &[String], port: u16, server_token: &str) {
     let host = format!("127.0.0.1:{port}");

@@ -1,8 +1,4 @@
-//! `kn9t install-plugins` — install project plugins into ~/.kn9t/plugins/.
-//!
-//! Scans `<project>/plugins/` for plugin crates, auto-builds if needed, and
-//! copies executables to `~/.kn9t/plugins/`. Python plugins get a `[[plugin]]`
-//! entry in `~/.kn9t/config.toml` instead.
+//! kn9t install-plugins: scan project plugins, build, and install to ~/.kn9t/plugins/.
 //!
 //! This is an **explicit user action** (not auto-discovery), so it respects
 //! ADR-0004: clone-and-run is safe, but `kn9t install-plugins` trusts the project.

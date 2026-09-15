@@ -1,19 +1,16 @@
-//! `kn9t` — launcher: ensures the server is running, then starts the TUI.
+//! kn9t launcher: ensures server is running, then starts the TUI or runs CLI commands.
 //!
-//! Usage:
+//! Subcommands:
 //!   kn9t [model-id]               — start TUI (default)
-//!   kn9t chat [--model p/id] <prompt>  — single-turn or REPL via the server
+//!   kn9t chat [--model p/id] <prompt>  — single-turn or REPL via server
 //!   kn9t sessions                 — list sessions
 //!   kn9t history [session-id]     — print transcript
-//!   kn9t attach  [session-id]     — attach to a running session (REPL)
-//!   kn9t status                   — server health (no lease)
+//!   kn9t attach [session-id]      — attach to running session (REPL)
+//!   kn9t status                   — server health
 //!   kn9t models                   — list configured models
 //!   kn9t cost                     — cost analytics
 //!   kn9t tools                    — list registered tools
 //!   kn9t stop                     — stop server
-//!
-//! GI-1: external crates only (serde_json). No workspace crate deps.
-//! GI-5: no async.
 
 mod bootstrap;
 mod chat;

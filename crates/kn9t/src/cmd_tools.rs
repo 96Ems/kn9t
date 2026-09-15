@@ -1,4 +1,4 @@
-//! `kn9t tools` — GET /tools.
+//! kn9t tools: list registered tools and their specs.
 
 pub fn run(port: u16, server_token: &str) {
     let host = format!("127.0.0.1:{port}");

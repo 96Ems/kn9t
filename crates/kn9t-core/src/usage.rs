@@ -1,12 +1,10 @@
-//! R-CORE-100, R-CORE-110 — usage and stop reasons.
+//! Token usage tracking and turn stop reasons.
 
 use crate::model::ModelRef;
 use serde::{Deserialize, Serialize};
 
-/// R-CORE-100 — a **partition, not an overlap**: `input` counts only tokens after
-/// the last cache breakpoint. Total context is `input + cache_read + cache_write`
-/// (§8.4.3). Providers that do not report a counter leave it `0`, which costs
-/// correctly by construction.
+/// Token breakdown: input (after last cache breakpoint), output, cache_read, cache_write, reasoning.
+/// Input is a partition, not overlap: total context = input + cache_read + cache_write.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tokens {
     pub input: u32,
@@ -16,14 +14,14 @@ pub struct Tokens {
     pub reasoning: u32,
 }
 
-/// R-CORE-100
+/// Usage event: token counts and model reference.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Usage {
     pub tokens: Tokens,
     pub model: ModelRef,
 }
 
-/// R-CORE-110
+/// Reason a turn ended: normal stop, tool use requested, context length, aborted, or refused.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {

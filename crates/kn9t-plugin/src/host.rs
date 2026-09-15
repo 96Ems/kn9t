@@ -1,8 +1,5 @@
-//! R-PLUG-040/060/080/090 / R-PLUG2-040/050 — PluginHost: manages one plugin subprocess.
-//!
-//! Protocol v2: reader thread forwards Chunk, Done, and Result messages.
-//! Host can send Cancel for in-flight calls on cancelable plugins.
-//! Accepts `Box<dyn Read+Send>` + `Box<dyn Write+Send>` so tests wire in-process pipes.
+//! PluginHost: subprocess management, message protocol, and call routing.
+//! Reader thread forwards chunks and results; host can cancel in-flight calls.
 
 use kn9t_core::safe_expect;
 use crate::codec::{
@@ -13,9 +10,9 @@ use crate::host_api::HostApi;
 /// Internal channel message — what the reader thread delivers per-call.
 #[derive(Debug)]
 enum ReaderMsg {
-    /// A complete (atomic or final streaming) body for this call id.
+    /// Final body for call (atomic or last streaming chunk).
     Final { body: serde_json::Value },
-    /// A streaming chunk for this call id.
+    /// Streaming chunk for call.
     Chunk { body: serde_json::Value },
     /// Parse or I/O error.
     Err { reason: String },

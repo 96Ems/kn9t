@@ -1,8 +1,4 @@
-//! 96E-36 — the CLI's one HTTP client.
-//!
-//! Seven commands previously carried their own `TcpStream` helper with its own request
-//! formatting, its own bearer header, and its own response parsing. Six copies of `get_json`
-//! had already drifted: three spellings of the connect-error branch, two of the `format!`,
+//! HTTP utilities: unified client for all CLI commands.
 //! and per-command `eprintln!` prefixes. None were covered by a test, because
 //! `crates/kn9t/` had none.
 //!

@@ -1,5 +1,5 @@
-//! R-CORE-140 .. R-CORE-160 — events (the wire, the log, the truth) and the fork
-//! snapshot.
+//! Events are the durable log: session state is reconstructed by folding events in seq order.
+//! Each variant is marked as durable (carries `seq`) or transient (live only).
 
 use crate::ids::{ApprovalId, CallId, MsgId, SessionId};
 use crate::message::Message;
@@ -8,15 +8,14 @@ use crate::usage::{StopReason, Tokens};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// R-CORE-250 — serde-friendly range (not `std::ops::Range`, which serializes
-/// awkwardly and is not `Copy`). Defined here because `Event::Compacted` needs it.
+/// Serde-friendly range for compaction events: holds start/end seq numbers.
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct SeqRange {
     pub start: u64,
     pub end: u64,
 }
 
-/// R-CORE-150
+/// Categorizes the type of token usage tracked in a UsageRecorded event.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UsageKind {
@@ -26,8 +25,7 @@ pub enum UsageKind {
     Title,
 }
 
-/// R-CORE-155 — one variant per hook in the plugin surface (PLUG §13.3); `on_event`
-/// is a subscription, not a hook, and is absent.
+/// Hooks that plugins can implement in the session lifecycle.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HookName {
@@ -41,7 +39,7 @@ pub enum HookName {
     GetApiKey,
 }
 
-/// R-CORE-160 — reason a session was derived from another.
+/// Reason a session was forked from another: fork, rewind, subagent, or tree.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ForkReason {
@@ -51,8 +49,7 @@ pub enum ForkReason {
     Tree,
 }
 
-/// R-CORE-160 — `SessionForked` (seq 0 of every derived session) carries a snapshot
-/// captured **at copy time**, never recomputed.
+/// Snapshot captured at session fork time: preserves origin, cost, and state needed for session resumption.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ForkSnapshot {
     pub origin_session: SessionId,
@@ -60,7 +57,7 @@ pub struct ForkSnapshot {
     pub reason: ForkReason,
     #[serde(default)]
     pub inherited_cost_usd: f64,
-    /// 96E-14: integer micros, source of truth.
+    /// Integer microseconds: the authoritative unit for budget comparison.
     #[serde(default)]
     pub inherited_cost_micros: i64,
     pub inherited_tokens_in: u64,
@@ -77,17 +74,15 @@ pub struct ForkSnapshot {
     pub cwd_at_fork: PathBuf,
 }
 
-/// 96E-16 — one entry of a structured handoff summarization.
+/// Summary of a tool call during a structured handoff between sessions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandoffSummary {
     pub id: CallId,
     pub summary: String,
 }
 
-/// Validate that every `CallId` cited in a `Handoff` exists in `known`.
-/// Host-side validation (96E-16 § gaps → open question): prevents a buggy/malicious
-/// compactor plugin from citing hallucinated IDs. Called by the store/host before
-/// persisting a `Handoff` produced by a compactor.
+/// Validates that all CallIds in a Handoff event exist in the known set.
+/// Prevents a compactor from citing non-existent IDs.
 pub fn validate_handoff(event: &Event, known: &[CallId]) -> Result<(), String> {
     if let Event::Handoff {
         keep,
@@ -117,12 +112,8 @@ pub fn validate_handoff(event: &Event, known: &[CallId]) -> Result<(), String> {
     Ok(())
 }
 
-/// R-CORE-140 — the one `Event` enum. A variant is **durable** iff it carries a
-/// `seq: u64` field; **transient** otherwise. Durable variants folded in `seq`
-/// order reconstruct a session exactly (§5).
-///
-/// Wire format: `{"kind": "snake_case_variant", ...}` — all JSON uses snake_case
-/// per project convention (AGENTS.md §JSON).
+/// Main event enum. Durable variants carry `seq: u64` and fold in order to reconstruct session state.
+/// Transient variants are live-only and not persisted. Wire format uses snake_case.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
@@ -144,10 +135,8 @@ pub enum Event {
         replaced: SeqRange,
         summary: Message,
     },
-    /// 96E-16 — structured handoff between sessions (ID-based keep/summarize/drop
-    /// plus resume actions). Durable, append-only, but not projected into
-    /// `messages` (like `ModelChanged`); the resumed session reconstructs from it
-    /// explicitly. Distinct from `Compacted` which is in-session reduction.
+    /// Structured handoff to resume a session from a fork: keep/summarize/drop tool calls
+    /// with resume actions. Not projected into messages; resumer reads it explicitly.
     Handoff {
         seq: u64,
         keep: Vec<CallId>,
@@ -156,12 +145,8 @@ pub enum Event {
         drop_ids: Vec<CallId>,
         resume_actions: Vec<String>,
     },
-    /// The set of tools currently DISABLED for this session, carried as the full
-    /// list (not a diff) so a replay is idempotent: the last `ToolsToggled` wins,
-    /// exactly like `ModelChanged`. Durable but not projected into any row (§ like
-    /// `ModelChanged`); reconstructed by reading the latest event. The tools array
-    /// sent to the provider is left byte-identical — blocking happens at execution
-    /// time in the loop, so the level-1 cache prefix is never disturbed.
+    /// Disabled tools for this session: full list (not a diff) so replays are idempotent.
+    /// Blocking enforced at execution time; provider still sees all specs for cache integrity.
     ToolsToggled {
         seq: u64,
         disabled: Vec<String>,
@@ -170,23 +155,17 @@ pub enum Event {
         seq: u64,
         provider: String,
         model: String,
-        // Spec bug DB-01: the Rust field is `kind` per R-CORE-140, but the enum's
-        // internal tag is also "kind"; serde forbids the collision. The field name
-        // stays `kind` (specs 03/06 use it); only its wire key is disambiguated.
+        // Serde field renamed to "usage_kind" to avoid collision with enum tag.
         #[serde(rename = "usage_kind")]
         kind: UsageKind,
         tokens: Tokens,
         price_snapshot: Price,
-        /// 96E-14: deterministic integer micros (1_000_000 micros = 1 USD).
-        /// New writes populate `cost_micros`; `cost_usd` is kept for reading old rows
-        /// (migration) and written as well for wire compat, but `cost_micros` is the
-        /// source of truth for budget/comparison.
+        /// Cost in integer microseconds (source of truth; cost_usd kept for wire compat).
         #[serde(default)]
         cost_micros: i64,
         #[serde(default)]
         cost_usd: f64,
-        /// R-CORE-142 — `true` when inferred after an abort cut the stream before
-        /// usage arrived (§9.1), `false` when provider-reported.
+        /// True when usage is inferred after stream abort; false when provider-reported.
         estimated: bool,
     },
 
@@ -226,9 +205,7 @@ pub enum Event {
         tool: String,
         args: serde_json::Value,
         cwd: PathBuf,
-        /// ADR-0008 — the policy plugin's explanation, shown in the prompt so the user sees
-        /// *why* approval is being asked. `#[serde(default)]` keeps events written before
-        /// ADR-0008 replayable (GI-4: the log is append-only, old rows are never rewritten).
+        /// Policy plugin's explanation shown in prompt. Default for backward compat.
         #[serde(default)]
         reason: String,
     },
@@ -247,9 +224,7 @@ pub enum Event {
     Error {
         message: String,
     },
-    /// R-PCORE-060 retry — transient progress while the provider pre-stream retries
-    /// (429/5xx/connect). Emitted before the backoff sleep so the TUI can show
-    /// "retry 1/3 in 500ms (429)" instead of a silent spinner.
+    /// Retry attempt progress: emitted before backoff so TUI can show countdown.
     RetryAttempt {
         attempt: u32,
         max: u32,
@@ -257,10 +232,7 @@ pub enum Event {
         delay_ms: u64,
         retry_kind: String,
     },
-    /// Phase sync — explicit server-driven turn phase so TUI spinner can't lie.
-    /// `phase` is one of `thinking|streaming|tool|retrying|failed|idle`.
-    /// Emitted alongside existing `TurnStarted`/`TextDelta`/`ThinkingDelta`/`ToolStarted`/`TurnEnded`
-    /// to give the TUI a single source of truth for status-bar and spinner text.
+    /// Turn phase sync: single source of truth for TUI status bar and spinner.
     TurnStatus {
         phase: String,
         #[serde(default)]
@@ -279,35 +251,22 @@ pub enum Event {
         plugin: String,
         payload: serde_json::Value,
     },
-    /// 96E-23 — structured plugin→TUI UI directive (transient, session-scoped).
-    /// Distinct from `PluginNotification` (free-text) — carries a non-text
-    /// structured payload routed via the same session-scoped dispatch fixed in
-    /// 96E-21 (must NOT broadcast). `target`/`op` are host-validated; `payload`
-    /// is opaque and forwarded verbatim to the TUI.
+    /// Structured UI directive from plugin: session-scoped, not broadcast. Payload forwarded verbatim.
     UiDirective {
         plugin: String,
         target: String,
         op: String,
         payload: serde_json::Value,
     },
-    /// R-PLUG2-110 — a plugin sent `declare` to hot-update its tools/hooks/capabilities.
-    /// Transient, broadcast via SSE so TUI clients can refresh their tool lists.
-    /// `tools_added`/`tools_removed` are the tool names that changed.
+    /// Plugin hot-update notification: tool/hook/capability changes broadcast to TUI clients.
     PluginDeclared {
         plugin: String,
         tools_added: Vec<String>,
         tools_removed: Vec<String>,
     },
-    /// 96E-47 — a plugin's run state changed: stopped, started, reloaded, or crashed.
-    ///
-    /// Transient, and delivered to *both* SSE clients and subscribed plugins. It exists so
-    /// that reacting to the plugin set is not a server responsibility: whoever cares (a TUI
-    /// panel, a plugin that reveals its own lifecycle tools) observes the fact and decides
-    /// on its own. `state` is `"stopped" | "started" | "reloaded" | "crashed"`.
-    ///
-    /// `error` is empty unless the transition was involuntary (a host the reader poisoned),
-    /// following every other frame here — no SSE payload uses an optional field, since an
-    /// absent key and an empty one would be two ways to say the same nothing.
+    /// Plugin lifecycle state changed: stopped/started/reloaded/crashed.
+    /// Delivered to clients and subscribed plugins so they can react independently.
+    /// Error field non-empty only on involuntary transitions.
     PluginState {
         plugin: String,
         state: String,
@@ -316,7 +275,7 @@ pub enum Event {
 }
 
 impl Event {
-    /// R-CORE-145 — `Some` iff the variant is durable (carries `seq`).
+    /// Returns seq if the event is durable; None for transient events.
     pub fn seq(&self) -> Option<u64> {
         match self {
             Event::SessionForked { seq, .. }
@@ -330,17 +289,12 @@ impl Event {
         }
     }
 
-    /// R-CORE-145
+    /// True if the event carries a seq number (is durable).
     pub fn is_durable(&self) -> bool {
         self.seq().is_some()
     }
 
-    /// Stamp the authoritative sequence number onto a durable variant, consuming
-    /// and returning the event. The store assigns `seq` at append time; callers
-    /// construct durable events with a placeholder `seq` (conventionally `0`) and
-    /// the store overwrites it via this setter before persisting and projecting,
-    /// so `events.payload` and every projection row carry the true, gapless seq
-    /// (§3.1, §5). A no-op on transient variants.
+    /// Sets the authoritative sequence number on a durable event. No-op for transient variants.
     pub fn with_seq(mut self, new_seq: u64) -> Self {
         match &mut self {
             Event::SessionForked { seq, .. }
@@ -356,10 +310,7 @@ impl Event {
     }
 }
 
-/// 96E-12 — distinct type for transient (live) events only.
-/// `EventSink::emit` accepts only this type, so durable variants cannot be
-/// emitted through the live path at compile time. Durable events must go
-/// through `Store::append(Event::...)` (R-CORE-225).
+/// Type-safe wrapper for transient events only. Durable events go through Store::append.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LiveEvent {
@@ -401,11 +352,7 @@ pub enum LiveEvent {
         #[serde(default)]
         reason: String,
     },
-    /// Internal event emitted just before TurnEnded.
-    /// The server intercepts this to clear the turn state (abort handle),
-    /// then emits TurnEnded to clients. This avoids a race condition where
-    /// the client receives TurnEnded before the server has cleared the turn,
-    /// causing 409 Conflict on the next prompt.
+    /// Internal server coordination: emitted before TurnEnded to clear turn state before clients see the end.
     TurnFinishing {
         turn: u32,
         stop: StopReason,
@@ -441,17 +388,13 @@ pub enum LiveEvent {
         #[serde(flatten)]
         payload: serde_json::Value,
     },
-    /// 96E-28 — generic client→host interaction request (transient). The host does
-    /// not interpret `payload`; it is the plugin's own shape (question/choices,
-    /// form schema, etc.) forwarded verbatim to the client. The client responds
-    /// via `POST /ui-respond {id, payload}`.
+    /// Generic plugin→client interaction request. Host passes payload verbatim; client responds via /ui-respond.
     InteractionRequest {
         id: u64,
         plugin: String,
         payload: serde_json::Value,
     },
-    /// 96E-23 — structured UI directive (transient, session-scoped), same dispatch
-    /// guarantees as InteractionRequest (no broadcast, plugin in payload).
+    /// Structured UI directive: session-scoped, no broadcast, same dispatch as InteractionRequest.
     UiDirective {
         plugin: String,
         target: String,
@@ -461,28 +404,13 @@ pub enum LiveEvent {
 }
 
 impl LiveEvent {
-    /// True for events that exist only to coordinate the host with itself and MUST NOT be
-    /// forwarded to a client.
-    ///
-    /// `TurnFinishing` is the only one: the server intercepts it to clear the turn's abort
-    /// handle *before* `TurnEnded` reaches anyone, so the next `/prompt` cannot race a
-    /// still-registered turn and 409.
-    ///
-    /// This is a property of the event, not of one sink. `ReactLoop::bus` is an
-    /// `Arc<dyn EventSink>` and several sinks in the workspace are not the server's
-    /// `SessionSink` — `Bus` itself (R-CORE-230), the test recorder, the plugin host's
-    /// no-op sink. Every one of them must be able to drop an internal event silently
-    /// instead of tripping over it.
+    /// True for internal events that coordinate the host with itself and must not reach clients.
+    /// Only TurnFinishing is internal: it clears turn state before TurnEnded broadcasts.
     pub fn is_internal(&self) -> bool {
         matches!(self, LiveEvent::TurnFinishing { .. })
     }
 
-    /// The durable-shaped `Event` an observer should see, or `None` when the event is
-    /// internal ([`LiveEvent::is_internal`]).
-    ///
-    /// This is the total, non-panicking conversion. `From<LiveEvent> for Event` is kept for
-    /// the callers that already handle internal events themselves, but it cannot represent
-    /// "nothing to publish", so anything on a publish path should use this instead.
+    /// Converts to the durable Event form, or None if internal. Use on publish paths.
     pub fn to_observable_event(self) -> Option<Event> {
         if self.is_internal() {
             return None;
@@ -567,16 +495,8 @@ impl From<LiveEvent> for Event {
                 op,
                 payload,
             },
-            // R-CORE-230: internal (`LiveEvent::is_internal`). `Event` has no representation
-            // for "publish nothing", and this conversion used to `panic!` here on the theory
-            // that only the server's `SessionSink` would ever reach it. That theory was
-            // false — `Bus` itself is an `EventSink`, and a panic on the turn thread left the
-            // server's `aborts` map populated forever, wedging the session at 409.
-            //
-            // Publish paths must use `to_observable_event()`, which returns `None` for these.
-            // For the callers that still go through `From`, degrade to the client-visible
-            // sibling (`TurnEnded` carries the same turn/stop) rather than unwinding: a
-            // duplicate end-of-turn marker is recoverable, a dead turn thread is not.
+            // Internal event: degrade to client-visible TurnEnded to avoid panic.
+            // Publish paths should use to_observable_event() which returns None for internal events.
             LiveEvent::TurnFinishing { turn, stop } => Event::TurnEnded { turn, stop },
         }
     }

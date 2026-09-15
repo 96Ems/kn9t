@@ -1,8 +1,4 @@
-//! `kn9t status` — server health (GET /health, no lease).
-//!
-//! Shows whether the server is up, how long idle, how many SSE clients
-//! and running turns. Useful as `kn9t status` did not exist before and
-//! previously fell through to the TUI.
+//! kn9t status: check server health and readiness (uptime, idle duration, active turns).
 
 use serde_json::Value;
 

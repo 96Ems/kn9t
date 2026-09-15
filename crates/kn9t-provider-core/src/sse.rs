@@ -1,8 +1,5 @@
-//! R-PCORE-040 — SSE line splitter. Buffers across Read-boundary splits.
-//!
-//! 96E-40: `sse_lines` now accepts `Option<Cancel>` and checks cancel at each
-//! parsed event, not just at read() boundaries. This fixes the intermittent
-//! cancel bug caused by BufReader buffering multiple events in one read().
+//! SSE line splitter: buffers across read boundaries and respects cancel tokens.
+//! Checks cancel at each parsed event, not just at read() boundaries.
 
 use kn9t_core::Cancel;
 use std::io::{self, BufRead, BufReader, Read};
@@ -33,8 +30,7 @@ impl<R: Read> Iterator for SseIter<R> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            // 96E-40: Check cancel at EACH iteration, not just at read() boundaries.
-            // This catches cancel even when processing already-buffered data.
+            // Check cancel at each iteration to catch it even in buffered data.
             if let Some(ref cancel) = self.cancel {
                 if cancel.cancelled() {
                     return Some(Err(io::Error::new(

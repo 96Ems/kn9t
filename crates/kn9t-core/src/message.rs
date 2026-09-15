@@ -1,9 +1,9 @@
-//! R-CORE-050 .. R-CORE-064 — messages and content blocks.
+//! Messages and content blocks: text, images, tool calls, results, and thinking.
 
 use crate::ids::{CallId, MsgId};
 use serde::{Deserialize, Serialize};
 
-/// R-CORE-050
+/// Message role: System, User, Assistant, or Tool.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -13,39 +13,33 @@ pub enum Role {
     Tool,
 }
 
-/// R-CORE-050
+/// Message: id, role, content blocks, and silent flag (if not displayed in TUI).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     #[serde(default)]
     pub id: MsgId,
     pub role: Role,
     pub content: Vec<Content>,
-    /// If true, this message is persisted and sent to LLM but not displayed in TUI.
-    /// Used by plugins that inject context (e.g., AGENTS.md) and handle their own
-    /// user-facing notification via events.
+    /// If true, message is persisted and sent to LLM but hidden from TUI.
+    /// Used by plugins that inject context and handle their own notifications.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub silent: bool,
 }
 
-/// R-CORE-060 — one flat enum covering every provider's block types.
-///
-/// R-CORE-062: `ToolCall::args_json` holds the provider's exact bytes, stored
-/// verbatim; no code path parses and re-serializes it back into `args_json`.
-///
-/// R-CORE-064: `Thinking::signature` is opaque and provider-owned; the stored
-/// form is always verbatim (including `None`).
+/// Content block: flat enum covering text, image, tool call, tool result, and thinking.
+/// ToolCall args_json is stored verbatim from provider; Thinking signature is opaque.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Content {
     Text {
         text: String,
     },
-    /// Never inline bytes: a `sha256:<hex>` ref into `blobs` (STOR / §12.4).
+    /// Image: stored as sha256 hash reference, not inline bytes.
     Image {
         sha256: String,
         mime: String,
     },
-    /// `args_json` holds the provider's exact bytes; see R-CORE-062.
+    /// Tool call: id, name, and args_json (stored verbatim from provider).
     ToolCall {
         id: CallId,
         name: String,
@@ -56,7 +50,7 @@ pub enum Content {
         content: Vec<Content>,
         is_error: bool,
     },
-    /// `signature` is opaque and provider-owned; see R-CORE-064.
+    /// Thinking: text and optional provider-owned signature.
     Thinking {
         text: String,
         signature: Option<String>,

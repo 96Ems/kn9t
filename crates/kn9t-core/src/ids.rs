@@ -1,7 +1,5 @@
-//! R-CORE-040, R-CORE-045 — identifier newtypes and a dependency-free ULID.
-//!
-//! ULID (not UUID) is used for `SessionId`/`MsgId` because lexical order equals
-//! creation order, which the store relies on (R-CORE-045).
+//! Identifier newtypes and ULID generation.
+//! ULID maintains lexical ordering = creation ordering for store consistency.
 
 use kn9t_macros::safe_expect;
 use serde::{Deserialize, Serialize};
@@ -12,21 +10,21 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// R-CORE-040
+/// Session identifier: ULID for lexical ordering.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub String);
-/// R-CORE-040
+/// Message identifier: ULID for lexical ordering.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MsgId(pub String);
-/// R-CORE-040 — the provider's tool-call id, stored verbatim, never regenerated.
+/// Tool call ID from provider: stored verbatim, never regenerated.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CallId(pub String);
-/// R-CORE-040 — process-local monotonic approval id.
+/// Process-local monotonic approval ID.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ApprovalId(pub u64);
 
 impl SessionId {
-    /// R-CORE-045 — fresh ULID.
+    /// Generates a fresh ULID.
     pub fn new() -> Self {
         SessionId(ulid())
     }
@@ -38,7 +36,7 @@ impl SessionId {
 }
 
 impl MsgId {
-    /// R-CORE-045 — fresh ULID.
+    /// Generates a fresh ULID.
     pub fn new() -> Self {
         MsgId(ulid())
     }
@@ -162,9 +160,7 @@ thread_local! {
     static SEED: Cell<u64> = const { Cell::new(0) };
 }
 
-/// splitmix64, seeded once per thread from wall-clock nanos + a global counter.
-/// Not cryptographic — IDs only need uniqueness, and timestamp ordering carries
-/// monotonicity (R-CORE-045).
+/// Splitmix64 seeded from wall-clock nanos + global counter: fast and unique, not cryptographic.
 fn next_rand() -> u64 {
     SEED.with(|s| {
         let mut x = s.get();
@@ -189,7 +185,7 @@ fn next_rand() -> u64 {
     })
 }
 
-/// Canonical 26-char Crockford-base32 ULID: 48-bit ms timestamp + 80 random bits.
+/// Generates canonical 26-char Crockford-base32 ULID: 48-bit ms timestamp + 80 random bits.
 fn ulid() -> String {
     let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)

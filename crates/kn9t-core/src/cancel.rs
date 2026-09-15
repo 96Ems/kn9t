@@ -1,4 +1,4 @@
-//! R-CORE-240 — per-turn cancellation.
+//! Per-turn cancellation: atomic flag with waiter support for graceful shutdown.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -11,12 +11,8 @@ struct CancelInner {
     cv: Condvar,
 }
 
-/// R-CORE-240 — scoped to one turn, created by the ReAct loop at turn start, passed
-/// to `Provider::stream` and every `Tool::execute`. Never a bus message.
-///
-/// `Cancel` is `Send + Sync + Clone` (clones share one flag). It is the one type in
-/// core holding an `Arc`; it is never an `Event` payload, so R-CORE-030 is not
-/// violated.
+/// Per-turn cancellation token: created at turn start, passed to provider and all tools.
+/// Clones share one flag; used to gracefully abort streaming and tool execution.
 #[derive(Clone)]
 pub struct Cancel(Arc<CancelInner>);
 
@@ -34,21 +30,15 @@ impl Cancel {
         self.0.flag.load(Ordering::Acquire)
     }
 
-    /// Idempotent; wakes waiters.
+    /// Sets the cancel flag and wakes all waiters (idempotent).
     pub fn cancel(&self) {
-        // Hold the lock across the store so a waiter cannot check the flag and
-        // begin waiting in the gap before we notify.
+        // Lock held across store/notify to prevent race condition on flag check.
         let _guard = safe_expect!(self.0.lock.lock(), "cancel mutex poisoned");
         self.0.flag.store(true, Ordering::Release);
         self.0.cv.notify_all();
     }
 
-    /// Returns `true` if cancelled (either already, or before `d` elapsed).
-    ///
-    /// Loops until the flag is set or the deadline passes: a `Condvar` may wake
-    /// spuriously, so a single `wait_timeout` can return with neither condition
-    /// met. Observed in practice returning after 219us on a 10ms timeout, which
-    /// made callers poll far more often than requested (96E-38).
+    /// Waits for cancel flag or timeout. Loops to handle spurious wakeups from Condvar.
     pub fn wait_timeout(&self, d: Duration) -> bool {
         if self.cancelled() {
             return true;

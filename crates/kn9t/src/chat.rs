@@ -1,11 +1,5 @@
-//! `kn9t chat` subcommand — single-turn CLI over the kn9t-server HTTP/SSE API.
-//!
-//! Takes the same path as the TUI:
-//!   1. POST /session              → session_id
-//!   2. POST /session/{id}/lease   → lease token
-//!   3. GET  /session/{id}/events  (SSE, background thread)
-//!   4. POST /session/{id}/prompt  [X-Lease: <token>]
-//!   5. Stream events: print TextDelta to stdout, tool activity to stderr.
+//! kn9t chat subcommand: single-turn or REPL CLI over HTTP/SSE API.
+//! Creates session, acquires lease, streams events, and displays output.
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal;

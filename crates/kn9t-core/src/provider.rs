@@ -1,4 +1,4 @@
-//! R-CORE-170 .. R-CORE-190 — the provider interface.
+//! Provider interface: streaming chunks from language model APIs.
 
 use crate::cache::Cache;
 use crate::cancel::Cancel;
@@ -10,9 +10,7 @@ use crate::toolspec::ToolSpec;
 use crate::usage::{StopReason, Usage};
 use serde::{Deserialize, Serialize};
 
-/// R-CORE-170 — defined **once**, carrying the cache breakpoints. A borrowing view;
-/// **not** `Serialize` (it is never persisted, only its constituent parts are).
-/// This is the one non-payload struct in the crate.
+/// Provider request: model, system prompt, messages, tools, thinking, and cache breakpoints.
 pub struct Request<'a> {
     pub model: &'a ModelSpec,
     pub system: Option<&'a str>,
@@ -20,12 +18,11 @@ pub struct Request<'a> {
     pub tools: &'a [ToolSpec],
     pub thinking: Thinking,
     pub max_tokens: Option<u32>,
-    /// Priority order, deduplicated, capped (R-CORE-200). NOT positional.
+    /// Cache breakpoints: priority order (not positional).
     pub cache: &'a [Cache],
 }
 
-/// R-CORE-180 — `Serialize/Deserialize` so the replay provider (02) can store
-/// decoded chunks for its own unit tests, even though fixtures are raw bytes.
+/// Chunk from provider: text, thinking, tool call, tool args, usage, or stop reason.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "chunk", rename_all = "snake_case")]
 pub enum Chunk {
@@ -42,7 +39,7 @@ pub enum Chunk {
         id: CallId,
         name: String,
     },
-    /// Raw JSON fragments.
+    /// Tool arguments: raw JSON fragments for streaming assembly.
     ToolArgs {
         idx: u32,
         delta: String,
@@ -51,10 +48,8 @@ pub enum Chunk {
     Stop(StopReason),
 }
 
-/// R-CORE-190 — the returned iterator's `next()` blocks on socket I/O (this is why
-/// threads, not async, §1). Connection/HTTP-status retry happens **before the first
-/// chunk is yielded** (PCORE §8.1); a mid-stream error is yielded as
-/// `Err(ProvErr::Stream)` and is fatal to the turn.
+/// Language model provider: streams chunks from the model. Iterator's next() blocks on I/O.
+/// Connection retries happen before first chunk; mid-stream errors are fatal to the turn.
 pub trait Provider: Send + Sync {
     fn name(&self) -> &str;
     fn stream(
@@ -62,9 +57,7 @@ pub trait Provider: Send + Sync {
         req: &Request,
         cancel: &Cancel,
     ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr>;
-    /// Same as `stream` but may emit `Event::RetryAttempt` / `Event::TurnStatus` via `sink`
-    /// before each retry sleep so the TUI can show progress instead of a silent spinner.
-    /// Default impl delegates to `stream` without emitting (backward compat for tests/fakes).
+    /// Like stream() but emits retry events to sink for TUI progress display.
     fn stream_with_sink(
         &self,
         req: &Request,

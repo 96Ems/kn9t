@@ -1,4 +1,4 @@
-//! `kn9t sessions` — list all sessions from the server.
+//! kn9t sessions: list all sessions from the server.
 
 use serde_json::Value;
 use std::io::{BufReader, Read, Write};

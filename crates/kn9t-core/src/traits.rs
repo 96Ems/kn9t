@@ -1,5 +1,5 @@
-//! R-CORE-250 .. R-CORE-270 -- Store, Tool, and Policy traits (defined in core so
-//! `kn9t-react` sees only `dyn Trait`, GI-1; implemented in later stages).
+//! Core traits: Store, Tool, Compactor, and Approver. Defined here so kn9t-react
+//! depends only on the trait interface, not the implementations.
 
 use crate::cache::Cache;
 use crate::cancel::Cancel;
@@ -17,14 +17,14 @@ use std::time::SystemTime;
 
 // -- R-CORE-250: Store --
 
-/// R-CORE-250
+/// Range of events to be compacted and the replacement message.
 #[derive(Clone)]
 pub struct CompactSpan {
     pub replaced: SeqRange,
     pub messages: Vec<Message>,
 }
 
-/// R-CORE-250
+/// Request assembly: system prompt, messages, tools, and optional compaction.
 pub struct RequestPlan {
     pub system: Option<String>,
     pub messages: Vec<Message>,
@@ -34,40 +34,36 @@ pub struct RequestPlan {
     pub compact: Option<CompactSpan>,
 }
 
-/// R-CORE-250
+/// Current session state snapshot for plan assembly.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SessionSnapshot {
     pub head_seq: u64,
     pub ctx_tokens: u32,
-    /// This session's own spend, excludes inherited. 96E-14: micros is truth.
+    /// Session's own cost (excludes inherited); stored in micros.
     #[serde(default)]
     pub cost_usd: f64,
     #[serde(default)]
     pub cost_micros: i64,
     pub model: ModelRef,
-    /// Tools DISABLED for this session (from the latest `ToolsToggled` event).
-    /// Blocking is enforced at execution time in the loop; the provider still sees
-    /// every tool spec so the level-1 cache prefix is unchanged. `#[serde(default)]`
-    /// keeps snapshots written before this field readable (empty = nothing disabled).
+    /// Disabled tools for this session (from latest ToolsToggled). Blocking enforced at runtime.
     #[serde(default)]
     pub disabled_tools: Vec<String>,
 }
 
-/// R-CORE-250 -- `plan_request` also computes cache breakpoints (it already walks
-/// the messages and holds `ModelSpec`); §7.5.
+/// Persistent session storage: planning, appending events, and snapshots.
 pub trait Store: Send + Sync {
     fn plan_request(&self, session: &SessionId) -> Result<RequestPlan, StoreErr>;
-    /// Assigns seq, writes events + projections in one txn, returns the seq (§3.1).
+    /// Appends event, assigns seq, writes atomically, returns assigned seq.
     fn append(&self, session: &SessionId, event: Event) -> Result<u64, StoreErr>;
     fn snapshot(&self, session: &SessionId) -> Result<SessionSnapshot, StoreErr>;
 }
 
-// -- R-CORE-260: Tool --
+// Tool execution interface
 
 /// 32-byte content hash used by the edit staleness guard.
 pub type Sha256 = [u8; 32];
 
-/// R-CORE-260
+/// Result of tool execution: model-visible content, full details, and error flag.
 pub struct ToolOutput {
     /// What the MODEL sees, truncated.
     pub content: Vec<Content>,
@@ -76,9 +72,7 @@ pub struct ToolOutput {
     pub is_error: bool,
 }
 
-/// R-CORE-260 -- `read`'s `HashMap` is internal shared state, never serialized
-/// (GI-3 concerns serialization only); the lock is held only for lookup/insert,
-/// never across I/O (§11.2).
+/// Context passed to tool execute: cwd, file cache, event sink, and call ID.
 pub struct ToolCtx {
     pub cwd: PathBuf,
     pub read: Arc<Mutex<HashMap<PathBuf, (Sha256, SystemTime)>>>,
@@ -88,7 +82,7 @@ pub struct ToolCtx {
     pub call_id: CallId,
 }
 
-/// R-CORE-260
+/// Tool execution interface: spec, execute, parallelism, and ownership info.
 pub trait Tool: Send + Sync {
     fn spec(&self) -> &ToolSpec;
     fn execute(
@@ -100,9 +94,7 @@ pub trait Tool: Send + Sync {
     fn parallel_safe(&self) -> bool {
         false
     }
-    /// Declared name of the plugin that owns this tool, if any. Built-in / in-process
-    /// tools return `None`; plugin-backed tools (`RemoteTool`) return their host's
-    /// declared name so the TUI can group tools by plugin and toggle a whole plugin.
+    /// Plugin name if this tool is plugin-backed; None for built-in tools.
     fn plugin(&self) -> Option<&str> {
         None
     }
@@ -145,9 +137,7 @@ pub trait PluginKv: Send + Sync {
 
 // -- 96E-16: pluggable compaction --
 
-/// 96E-16 — data for a structured handoff (ID-based keep/summarize/drop + resume actions).
-/// This is the *data* half of `Event::Handoff` without the `seq`; `Compactor` returns it
-/// and the host stamps `seq` via `Event::Handoff { seq, .. }`.
+/// Handoff plan: which calls to keep/summarize/drop and resume actions.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandoffPlanData {
     pub keep: Vec<CallId>,
@@ -157,31 +147,22 @@ pub struct HandoffPlanData {
     pub resume_actions: Vec<String>,
 }
 
-/// 96E-16 — result of a compaction delegation.
+/// Result of compaction: summary message and optional structured handoff.
 #[derive(Clone)]
 pub struct CompactionPlan {
     pub summary: Message,
     pub handoff: Option<HandoffPlanData>,
 }
 
-/// 96E-16/17 — pluggable compaction delegate, analogous to `PluginProvider`.
-///
-/// When set, `ReactLoop::run_compaction` delegates to this trait; `validate_handoff`
-/// is applied host-side before any `Handoff` is persisted (host-side is safer — cannot
-/// be bypassed by a buggy/malicious compactor).
-///
-/// 96E-17: when no compactor is installed (`None`), compaction is **fail-closed** — the
-/// turn errors with `ReactError::CompactionUnavailable` and nothing is persisted. The
-/// hardcoded inline-prompt fallback was removed; without a compactor plugin a session
-/// simply ends when its context window is exhausted.
+/// Compaction delegate: reduces context by summarizing or dropping old messages.
+/// When no compactor is installed, compaction is fail-closed: turns error on context overflow.
 pub trait Compactor: Send + Sync {
     fn compact(&self, span: CompactSpan, model: &ModelRef) -> Result<CompactionPlan, String>;
 }
 
-// -- R-CORE-270: approval (ADR-0008) --
+// Tool execution approval and policy
 
-/// R-CORE-270 -- the dispatch-time view (fully accumulated args, no `Content`
-/// wrapper); distinct from `Content::ToolCall`.
+/// Tool call at dispatch time: id, name, and accumulated args as JSON string.
 #[derive(Clone)]
 pub struct ToolCall {
     pub id: CallId,
@@ -189,9 +170,7 @@ pub struct ToolCall {
     pub args_json: String,
 }
 
-/// R-CORE-270 — the outcome of an approval request. Also the wire type of
-/// `POST /approve` (`{"decision":"allow"}`), which is why it keeps `Ask`/`HardDeny`
-/// even though ADR-0008 removed the code that used to *derive* them.
+/// Approval outcome: Allow, Deny, Ask, or HardDeny.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(tag = "decision", rename_all = "lowercase")]
 pub enum Decision {
@@ -201,35 +180,13 @@ pub enum Decision {
     HardDeny { reason: String },
 }
 
-/// R-CORE-270 → ADR-0008 — the **approval mechanism**, not the approval decision.
-///
-/// Before ADR-0008 this trait judged risk (`check(call, cwd) -> Decision`, with the
-/// server combining `ToolSpec.effects` and classifying shell commands). That judgement now
-/// belongs to a policy plugin via `HookVeto` on `before_tool_call`; what remains here is
-/// the part a subprocess cannot own: showing the request to the user and blocking the turn
-/// until an answer arrives.
-///
-/// The server implementation emits `Event::ApprovalRequest` on the session bus, waits on a
-/// `Condvar` until `POST /approve` resolves it, and applies the `once|session|always`
-/// scope. `kn9t-react` only sees `dyn Approver` (GI-1) — it cannot reach the bus, the
-/// write lease, or `~/.kn9t/config.toml` itself, which is precisely why this seam exists.
-///
-/// `reason` is the plugin's explanation, shown to the user so the prompt says *why*.
-///
-/// `ctx` carries the session and its event sink explicitly (96E-33). These used to travel
-/// through thread-local storage in the server, which meant `request` only reached the right
-/// client when it happened to run on the thread that started the turn. That assumption was
-/// already false on one path: `host_api`'s `tool_execute` runs on an API worker, saw no TLS,
-/// and so denied every approval with "no sink". Passing them in makes the requirement
-/// visible to the compiler instead of leaving it to be rediscovered.
+/// Approval mechanism: blocks a turn until the user approves or denies a tool call.
+/// Reason from the policy plugin is shown to the user. Context carries session and sink.
 pub trait Approver: Send + Sync {
     fn request(&self, call: &ToolCall, cwd: &Path, reason: &str, ctx: &ApprovalCtx) -> Decision;
 }
 
-/// R-CORE-270 — what an [`Approver`] needs beyond the call itself: which session to prompt,
-/// and where to emit the prompt. Borrowed rather than owned so the caller keeps its `Arc`.
-///
-/// 96E-39: `cancel` added so approval waits can be aborted when the user hits ESC.
+/// Context for approval: session id, event sink for prompting, cancel token for ESC.
 pub struct ApprovalCtx<'a> {
     pub session: &'a str,
     pub sink: &'a dyn crate::bus::EventSink,

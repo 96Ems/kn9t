@@ -1,9 +1,9 @@
-//! R-CORE-200, R-CORE-210 — cache placement types and the pure `breakpoints()` fn.
+//! Cache placement: where to insert cache breakpoints and how to select them.
 
 use crate::message::{Message, Role};
 use serde::{Deserialize, Serialize};
 
-/// R-CORE-200
+/// Cache breakpoint location: system prompt or after a message.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "at", rename_all = "snake_case")]
 pub enum Cache {
@@ -13,7 +13,7 @@ pub enum Cache {
     AfterMessage { idx: usize },
 }
 
-/// R-CORE-200
+/// Cache mode: explicit breakpoints, automatic selection, or disabled.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub enum CacheMode {
@@ -25,16 +25,8 @@ pub enum CacheMode {
     None,
 }
 
-/// R-CORE-210 — provider-independent cache-breakpoint selection, mirroring the
-/// opencode plugin's `applyCaching`.
-///
-/// 1. returns empty for `CacheMode::None`;
-/// 2. for `Automatic`, uses default breakpoints (4 max);
-/// 3. builds candidates in this exact order: `System`, `AfterMessage(last_user)`,
-///    `AfterMessage(len-2)`, `AfterMessage(len-1)`, skipping any that don't exist;
-/// 4. deduplicates positions;
-/// 5. returns the first `max_breakpoints` survivors, **in priority order — NOT
-///    sorted by position**.
+/// Selects cache breakpoints from messages: system prompt, last user message, and final messages.
+/// Returns breakpoints in priority order (not position order); deduplicates and respects max limits.
 pub fn breakpoints(messages: &[Message], mode: &CacheMode) -> Vec<Cache> {
     let max_breakpoints: u8 = match mode {
         CacheMode::Explicit {

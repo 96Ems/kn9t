@@ -1,4 +1,4 @@
-//! Provider attempt + tool batch + store/hook helpers for [`ReactLoop`] (R-RCT-020..130).
+//! Provider attempt and tool execution: streaming, batching, and result assembly.
 
 use std::thread;
 
@@ -11,11 +11,7 @@ use crate::assembler::{assemble, Assembled};
 use crate::loop_::{ReactError, ReactLoop, RunParams};
 use crate::turn::Attempt;
 
-/// Handle for a parallel tool execution: (index, name, args, call_id, result channel).
-///
-/// B8: this used to carry a `thread::JoinHandle` and the collection loop was a bare
-/// `join()`. A channel is used instead so the batch can wait with a deadline — a
-/// `JoinHandle` offers no timed join, which is what let one hung tool freeze the turn.
+/// Handle for parallel tool execution: index, name, args, call_id, and result channel.
 type ParallelToolHandle = (
     usize,
     String,
@@ -27,7 +23,7 @@ type ParallelToolHandle = (
 /// Poll interval while collecting a parallel result.
 const PARALLEL_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// Why a parallel tool produced no value.
+/// Reason a parallel tool produced no value.
 enum ParallelFailure {
     /// The worker thread died (panic) — the channel closed without a send.
     Panicked,

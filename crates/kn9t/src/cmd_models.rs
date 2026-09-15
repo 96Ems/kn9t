@@ -1,4 +1,4 @@
-//! `kn9t models` — GET /models.
+//! kn9t models: list configured models and their specs.
 
 use serde_json::Value;
 

@@ -1,7 +1,4 @@
-//! `kn9t stop` — request a graceful shutdown of the running server.
-//!
-//! Sends POST /stop to the server. The server finishes any in-flight turn,
-//! then exits cleanly. The port file is removed by the server on exit.
+//! kn9t stop: request graceful server shutdown (finishes in-flight turns then exits).
 
 use std::fs;
 use std::io::{BufReader, Read, Write};

@@ -1,5 +1,4 @@
-//! R-CORE-220 .. R-CORE-230 — the broadcast bus (transient events only) and the
-//! `EventSink` trait.
+//! Broadcast bus for transient events: delivers to all subscribers via bounded ring buffers.
 
 use crate::event::{Event, LiveEvent};
 use kn9t_macros::safe_expect;
@@ -7,16 +6,13 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
-/// R-CORE-230 — the transient-event sink used by `assemble()` (PCORE) and tools
-/// (TOOL) to emit deltas/progress without knowing about the bus or store. Durable
-/// events MUST NOT be emitted through an `EventSink`.
-/// 96E-12: type-safe — accepts only `LiveEvent` (transient), never durable `Event`.
+/// Type-safe transient event sink: accepts only LiveEvent, never durable Event.
+/// Used by providers and tools to emit progress without knowing about bus/store internals.
 pub trait EventSink: Send + Sync {
     fn emit(&self, e: LiveEvent);
 }
 
-/// Shared per-subscriber ring buffer. Bounded; when full, `push` drops the oldest
-/// so the newest is retained (R-CORE-220).
+/// Per-subscriber ring buffer: bounded, drops oldest on overflow.
 struct Ring {
     queue: Mutex<RingState>,
     cv: Condvar,
@@ -25,8 +21,7 @@ struct Ring {
 
 struct RingState {
     buf: VecDeque<Event>,
-    /// Set when the owning `Bus` is dropped so blocked receivers wake and return
-    /// `None`.
+    /// True when Bus is dropped, wakes all blocked receivers.
     closed: bool,
 }
 

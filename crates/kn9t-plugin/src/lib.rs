@@ -1,7 +1,4 @@
-//! kn9t-plugin — Stage 08: stdio plugin host, 8 hooks, subagent spawn.
-//!
-//! GI-1: depends only on `kn9t-core` (plus `serde_json` which is not a workspace member).
-//! GI-5: no tokio, no async fn, no .await.
+//! Plugin host: manages subprocess plugins, hook dispatch, tool/provider/compactor remoting, and subagent spawning.
 
 pub mod codec;
 pub mod composed;

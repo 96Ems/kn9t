@@ -1,5 +1,4 @@
-//! `kn9t history [session-id]` — print the full transcript of a session.
-//! If no id is given, uses the session with the highest head_seq (most active).
+//! kn9t history: print transcript of a session (or latest if no id given).
 
 use serde_json::Value;
 

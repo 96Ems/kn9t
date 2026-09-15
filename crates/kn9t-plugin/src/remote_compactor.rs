@@ -1,15 +1,6 @@
-//! 96E-16/17 — RemoteCompactor: a `kn9t_core::Compactor` backed by a plugin
-//! that declared the `compactor` capability.
-//!
-//! The host delegates the `CompactSpan → CompactionPlan` step to the plugin
-//! over the standard hook wire (`hook: "compactor_compact"`). The plugin is
-//! free to run an agent turn of its own (using the host_api ops:
-//! `session_read` + `provider_complete`) and returns the plan as a plain
-//! `result`. CallId validation stays host-side (`validate_handoff`) — it can
-//! never be bypassed by a buggy or malicious compactor.
-//!
-//! If no plugin declares the capability, the ReactLoop stays fail-closed
-//! (96E-17): no compactor = no compaction = session ends on context overflow.
+//! RemoteCompactor delegates compaction to a plugin subprocess.
+//! The plugin receives a span and model, runs its own agent turn if needed,
+//! and returns a CompactionPlan. CallId validation stays host-side.
 
 use crate::host::PluginHost;
 use kn9t_core::{CompactSpan, CompactionPlan, Compactor, HandoffPlanData, Message, ModelRef};
@@ -32,8 +23,7 @@ impl RemoteCompactor {
 
 impl Compactor for RemoteCompactor {
     fn compact(&self, span: CompactSpan, model: &ModelRef) -> Result<CompactionPlan, String> {
-        // Session id rides in the payload (TLS session lives on the turn thread,
-        // but the plugin needs it to issue session_read / provider_complete ops).
+        // Session ID included in payload so plugin can use host_api ops.
         let payload = serde_json::json!({
             "session": self.host.session_id(),
             "model": model,
