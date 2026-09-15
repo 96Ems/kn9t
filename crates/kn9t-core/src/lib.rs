@@ -1,10 +1,5 @@
-//! # kn9t-core
-//!
-//! The vocabulary crate of kn9t: every type on the wire, in the log, and across
-//! every trait boundary. Contains **no I/O, no threads spawned, no provider, no
-//! store** -- only data types, trait definitions, the bus, and pure functions.
-//!
-//! Dependencies are exactly `serde` + `serde_json` (GI-2). No async anywhere (GI-5).
+//! kn9t-core: vocabulary crate with all wire types, traits, and core abstractions.
+//! No I/O, no threads, no async. Only data types, traits, bus, and pure functions.
 
 mod bus;
 mod cache;

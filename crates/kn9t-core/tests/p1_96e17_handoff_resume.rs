@@ -1,8 +1,4 @@
-//! 96E-17: handoff seam — keep/summarize/drop + resume reconstruction.
-//! Validates the four acceptance criteria without requiring a live LLM:
-//! - unknown CallId rejected (compact_tool_select equivalent)
-//! - summarize never leaks full output (host keeps verbatim, LLM sees previews)
-//! - resume-from-handoff reconstructs expected context.
+//! Handoff seam test: validates keep/summarize/drop and resume reconstruction.
 
 use kn9t_core::{CallId, Content, Event, HandoffSummary, Message, MsgId, Role};
 

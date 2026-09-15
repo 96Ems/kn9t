@@ -1,5 +1,4 @@
-//! 96E-15 regression: double-UTF8 mojibake must not exist in crate sources.
-//! Run: cargo test -p kn9t-core --test mojibake -- --nocapture
+//! Regression test: detects double-encoded UTF8 mojibake in sources.
 
 use std::path::Path;
 

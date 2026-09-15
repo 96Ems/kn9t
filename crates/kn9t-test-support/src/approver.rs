@@ -1,10 +1,10 @@
-//! Test doubles for the Approver trait.
+//! Test approver implementations: AllowAll and DenyAll.
 
 use std::path::Path;
 use kn9t_core::{Approver, Decision, ToolCall};
 use kn9t_provider_core::ApprovalCtx;
 
-/// Approver that approves whatever it is asked (ADR-0008).
+/// Approver that approves all requests.
 pub struct AllowAll;
 
 impl Approver for AllowAll {
@@ -19,7 +19,7 @@ impl Approver for AllowAll {
     }
 }
 
-/// Approver that refuses whatever it is asked, with a fixed reason.
+/// Approver that denies all requests.
 pub struct DenyAll(pub String);
 
 impl Approver for DenyAll {

@@ -1,5 +1,4 @@
-//! Stage 01 acceptance tests. Wrapped in `mod core` so each test's path is
-//! `core::<name>`, matching the spec's `cargo test core::<name>` accept lines.
+//! Stage 01 acceptance tests for core vocabulary types.
 
 mod core {
     use kn9t_core::*;

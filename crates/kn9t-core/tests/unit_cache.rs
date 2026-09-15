@@ -1,5 +1,4 @@
-//! Unit tests for R-CORE-200, R-CORE-210 — Cache, CacheMode, and breakpoints().
-//! Extracted from src/cache.rs #[cfg(test)] mod tests.
+//! Unit tests for cache placement and breakpoint selection.
 
 use kn9t_core::{
     breakpoints, Cache, CacheMode, Content, Message, MsgId, Role,

@@ -4,8 +4,7 @@ use std::sync::{Arc, Mutex};
 use kn9t_core::{EventSink, LiveEvent};
 use crate::tags::live_event_tag;
 
-/// A bus that records every published event for assertions.
-/// 96E-12: stores `LiveEvent` (transient only); durable events are asserted via `StubStore::appended`.
+/// Recording bus: captures all emitted LiveEvents for test assertions.
 #[derive(Clone, Default)]
 pub struct RecordingBus {
     pub events: Arc<Mutex<Vec<LiveEvent>>>,

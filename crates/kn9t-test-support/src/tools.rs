@@ -1,4 +1,4 @@
-//! Tools plugin helper for integration tests (R-PLUG2-110).
+//! Integration test helper: locates and spawns kn9t-tools plugin.
 
 use std::env;
 use std::path::PathBuf;
@@ -7,17 +7,7 @@ use std::sync::Arc;
 use kn9t_core::{Tool, ToolRegistry, ToolSpec};
 use kn9t_plugin::{PluginHost, RemoteTool, NoOpPluginKv};
 
-/// Locate the built `kn9t-tools` plugin binary.
-///
-/// NOTE — this is **build-time artifact location, NOT runtime plugin discovery**.
-/// The server discovers plugins only in `~/.kn9t/plugins/` (ADR-0004); it NEVER
-/// scans the repo's `plugins/` directory. These tests handshake the plugin
-/// *directly* (no server) to validate the ReAct loop, so they must locate the
-/// cargo build artifact. Searching `plugins/kn9t-tools/target/` here is fine —
-/// that is a build artifact path, not a runtime scan.
-///
-/// Search order:
-///   1. `plugins/kn9t-tools/target/{debug,release}/kn9t-tools[.exe]` — the
+/// Locates the built kn9t-tools plugin binary from cargo artifacts (not runtime discovery).
 ///      standalone crate build. `kn9t-tools` is no longer a workspace member;
 ///      build it with `cd plugins/kn9t-tools && cargo build`.
 ///   2. `target/{debug,release}/kn9t-tools[.exe]` — legacy: in case the binary

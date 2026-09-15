@@ -1,5 +1,4 @@
-//! Unit tests for R-CORE-220 .. R-CORE-230 — Bus and EventSink.
-//! Extracted from src/bus.rs #[cfg(test)] mod tests.
+//! Unit tests for Bus and EventSink: broadcast and subscription.
 
 use kn9t_core::{Bus, EventSink, Event, LiveEvent, Message, MsgId, Role};
 use std::sync::Arc;

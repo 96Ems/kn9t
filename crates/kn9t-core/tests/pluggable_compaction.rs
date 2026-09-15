@@ -1,4 +1,4 @@
-//! 96E-16 regression: compaction must be pluggable (PluginCompactor) and Handoff must exist.
+//! Compaction regression test: pluggable compactors and Handoff event.
 
 #[test]
 fn p1_96e16_handoff_event_is_durable() {

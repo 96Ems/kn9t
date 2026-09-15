@@ -1,5 +1,4 @@
-//! Unit tests for R-CORE-040, R-CORE-045 — identifier newtypes and ULID.
-//! Extracted from src/ids.rs #[cfg(test)] mod tests.
+//! Unit tests for identifier types and ULID generation.
 
 use kn9t_core::{ApprovalId, CallId, MsgId, SessionId};
 

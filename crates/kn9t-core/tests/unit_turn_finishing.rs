@@ -1,13 +1,4 @@
-//! B1 — `LiveEvent::TurnFinishing` must never panic on its way through an `EventSink`.
-//!
-//! `TurnFinishing` is an *internal* signal: the server intercepts it to clear the turn's
-//! abort handle before `TurnEnded` reaches any client (see `kn9t-server/src/bus.rs`). The
-//! conversion to a durable `Event` used to `panic!` on it, on the theory that only
-//! `SessionSink` would ever see one.
-//!
-//! That theory is false. `ReactLoop::bus` is an `Arc<dyn EventSink>` and several sinks in the
-//! workspace are not `SessionSink` — `Bus` itself (R-CORE-230), the test recorder, the plugin
-//! host's `NoopSink`. Any of them panics at the *end of every turn*, and because the panic
+//! LiveEvent::TurnFinishing regression test: must not panic on conversion to Event.
 //! lands on the turn thread the server never clears `aborts`, so `is_turn_running()` stays
 //! true forever and every later `/prompt` is a 409. A transient display event must not be
 //! able to brick a session.

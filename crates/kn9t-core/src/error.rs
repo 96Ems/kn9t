@@ -1,10 +1,9 @@
-//! R-CORE-130, R-CORE-135 — error types.
+//! Error types for provider, store, and tool execution.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// R-CORE-130 — load-bearing: retry (PCORE §8.1), compaction trigger (§7.5), and
-/// truncation policy (RCT §8.6.6) all branch on these variants.
+/// Provider error: determines retry behavior, compaction triggers, and truncation policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ProvErr {
     /// Pre-stream; retried inside `stream()`.
@@ -36,7 +35,7 @@ impl fmt::Display for ProvErr {
 
 impl std::error::Error for ProvErr {}
 
-/// R-CORE-135
+/// Store error: session, event, or persistence failures.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreErr(pub String);
 
@@ -47,7 +46,7 @@ impl fmt::Display for StoreErr {
 }
 impl std::error::Error for StoreErr {}
 
-/// R-CORE-135
+/// Tool execution error: returned by tools on failure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolErr(pub String);
 
