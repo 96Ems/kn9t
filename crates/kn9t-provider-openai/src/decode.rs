@@ -33,9 +33,17 @@ pub(crate) fn decode_delta(
     let v: Value =
         serde_json::from_slice(json_bytes).map_err(|e| ProvErr::Decode(format!("json: {e}")))?;
 
-    // Error from API.
+    // Error from API. An overflow can also arrive in-band on a 200 stream (the gateway
+    // opened the stream, then rejected the prompt), so classify it the same way the
+    // pre-stream path does — otherwise the identical condition is recoverable on one path
+    // and fatal on the other. `400` is passed because `is_context_overflow` gates on a
+    // client-error status and this frame is semantically a rejected request.
     if let Some(err) = v.get("error") {
-        return Err(ProvErr::Stream(err.to_string()));
+        let text = err.to_string();
+        if kn9t_provider_core::is_context_overflow(400, &text) {
+            return Err(ProvErr::ContextOverflow);
+        }
+        return Err(ProvErr::Stream(text));
     }
 
     let mut chunks = Vec::new();

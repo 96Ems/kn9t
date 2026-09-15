@@ -156,6 +156,92 @@ pub struct RawServer {
     /// Seconds of inactivity (no attached clients, no running turns) before the
     /// server exits. Default: 1800 (30 min). Set to 0 to disable auto-exit.
     pub idle_exit_secs: Option<u64>,
+    /// Seconds a tool call may wait for a human approval decision before it is denied.
+    /// Default: 1800 (30 min). `0` disables the deadline (wait forever).
+    ///
+    /// A backstop, not a nudge: a user is allowed to think. It exists so a client that
+    /// disappears mid-prompt cannot pin the turn thread for the life of the process.
+    pub approval_timeout_secs: Option<u64>,
+    /// Seconds a plugin's `interaction_request` may wait for a client answer, when the
+    /// session has a live cancellable turn. Default: 1800 (30 min). `0` disables.
+    pub interaction_timeout_secs: Option<u64>,
+    /// Seconds an `interaction_request` may wait when NO cancellable turn is registered.
+    /// Default: 120 (2 min). `0` disables — not advised.
+    ///
+    /// Nothing can interrupt such a wait (there is no reachable `Cancel`), so this deadline
+    /// is the only exit and is deliberately much tighter than the cancellable case.
+    pub interaction_timeout_no_cancel_secs: Option<u64>,
+    /// Milliseconds a cancelled tool batch waits for a `parallel_safe` tool to notice
+    /// `Cancel` before abandoning it. Default: 1500.
+    ///
+    /// Raise it if your tools are slow to react to cancellation; lowering it makes ESC feel
+    /// snappier at the cost of abandoning threads sooner.
+    pub tool_cancel_grace_ms: Option<u64>,
+}
+
+/// Server-side timing knobs resolved from `[server]`, with defaults applied.
+///
+/// Grouped in one struct so a new knob does not mean a new field on `ResolvedConfig` and a
+/// new argument at every call site. `None` means "no deadline" for the timeout fields, which
+/// is what `0` in the config maps to.
+#[derive(Debug, Clone, Copy)]
+pub struct ServerTimeouts {
+    pub approval: Option<std::time::Duration>,
+    pub interaction: Option<std::time::Duration>,
+    pub interaction_no_cancel: Option<std::time::Duration>,
+    pub tool_cancel_grace: std::time::Duration,
+}
+
+impl Default for ServerTimeouts {
+    fn default() -> Self {
+        ServerTimeouts {
+            approval: Some(std::time::Duration::from_secs(30 * 60)),
+            interaction: Some(std::time::Duration::from_secs(30 * 60)),
+            interaction_no_cancel: Some(std::time::Duration::from_secs(2 * 60)),
+            tool_cancel_grace: std::time::Duration::from_millis(1500),
+        }
+    }
+}
+
+impl ServerTimeouts {
+    /// Resolve from the raw `[server]` block. `Some(0)` means "disabled" (no deadline);
+    /// absent means the default.
+    fn from_raw(raw: &RawServer) -> Self {
+        let d = ServerTimeouts::default();
+        // A configured 0 disables the deadline; anything else is a duration in seconds.
+        let secs = |v: Option<u64>, fallback: Option<std::time::Duration>| match v {
+            Some(0) => None,
+            Some(n) => Some(std::time::Duration::from_secs(n)),
+            None => fallback,
+        };
+        ServerTimeouts {
+            approval: secs(raw.approval_timeout_secs, d.approval),
+            interaction: secs(raw.interaction_timeout_secs, d.interaction),
+            interaction_no_cancel: secs(
+                raw.interaction_timeout_no_cancel_secs,
+                d.interaction_no_cancel,
+            ),
+            tool_cancel_grace: raw
+                .tool_cancel_grace_ms
+                .map(std::time::Duration::from_millis)
+                .unwrap_or(d.tool_cancel_grace),
+        }
+    }
+}
+
+/// Parse just the `[server]` timing knobs out of a config document.
+///
+/// Exposed so the knobs can be tested without a full `load()` (which spawns provider
+/// subprocesses and fetches `/v1/models`).
+pub fn parse_server_timeouts(toml_text: &str) -> Result<ServerTimeouts, String> {
+    #[derive(Deserialize, Default)]
+    struct JustServer {
+        #[serde(default)]
+        server: RawServer,
+    }
+    let parsed: JustServer =
+        toml::from_str(toml_text).map_err(|e| format!("parse [server]: {e}"))?;
+    Ok(ServerTimeouts::from_raw(&parsed.server))
 }
 
 #[derive(Debug, Deserialize)]
@@ -285,6 +371,9 @@ pub struct ResolvedConfig {
     /// Idle-exit duration from `[server] idle_exit_secs`. `None` → use default (30 min).
     /// `Some(0)` → disable auto-exit.
     pub idle_exit: Option<std::time::Duration>,
+    /// Server-side timing knobs from `[server]` (approval/interaction deadlines, tool
+    /// cancellation grace), with defaults already applied.
+    pub timeouts: ServerTimeouts,
     /// Resolved policy mode.
     pub policy_mode: PolicyMode,
     /// User tool plugins to spawn at startup.
@@ -653,6 +742,8 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         .idle_exit_secs
         .map(std::time::Duration::from_secs);
 
+    let timeouts = ServerTimeouts::from_raw(&raw.server);
+
     // Resolve [policy] — DESIGN §10.1. Absent → defaults (ask_on_mutation + BashPolicy::default).
     let policy_mode = match &raw.policy.mode {
         None => PolicyMode::AskOnMutation,
@@ -712,6 +803,7 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         models,
         default_model_id,
         idle_exit,
+        timeouts,
         policy_mode,
         plugins,
     })

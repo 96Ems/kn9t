@@ -227,3 +227,24 @@ price_out = 0.40
 
 # [server]
 # idle_exit_secs = 1800
+
+# Seconds a tool call may wait for a human approval decision before it is DENIED.
+# Default 1800 (30 min). `0` = wait forever.
+# A backstop, not a nudge: without it, a client that disappears mid-prompt pins the
+# turn thread for the life of the process.
+# approval_timeout_secs = 1800
+
+# Seconds a plugin's `interaction_request` may wait for a client answer while the
+# session has a live (cancellable) turn. Default 1800. `0` = wait forever.
+# interaction_timeout_secs = 1800
+
+# Same, but when NO cancellable turn is registered. Default 120 (2 min).
+# Nothing can interrupt such a wait, so this deadline is the only exit — keep it
+# tight. `0` disables it, which risks wedging the plugin's worker thread.
+# interaction_timeout_no_cancel_secs = 120
+
+# Milliseconds a cancelled tool batch waits for a `parallel_safe` tool to notice
+# the cancellation before abandoning it. Default 1500.
+# Raise it for tools that are slow to react; lower it to make ESC feel snappier at
+# the cost of abandoning threads sooner.
+# tool_cancel_grace_ms = 1500

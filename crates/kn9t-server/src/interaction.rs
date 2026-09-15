@@ -77,7 +77,28 @@ impl InteractionRegistry {
     ///
     /// 96E-39: Now accepts a `Cancel` to allow the turn to abort a pending
     /// interaction request when the user hits ESC. Returns `None` if cancelled.
+    ///
+    /// Prefer [`InteractionRegistry::wait_until`] at call sites that cannot guarantee their
+    /// `Cancel` is reachable by anyone (B10).
     pub fn wait(&self, handle: &InteractionSlotHandle, cancel: &Cancel) -> Option<Value> {
+        self.wait_until(handle, cancel, None)
+    }
+
+    /// As [`InteractionRegistry::wait`], but giving up after `deadline` when one is supplied.
+    ///
+    /// B10: `wait` had cancellation as its only exit, and callers reached it as
+    /// `get_cancel(session).unwrap_or_else(Cancel::new)`. That fallback is a `Cancel` nobody
+    /// else holds a clone of, so it can never fire. With no timeout either, a wait taken
+    /// outside a live turn — or after the turn was released — blocked the plugin's worker
+    /// thread for the life of the process, and every op that plugin serialises on that
+    /// thread with it. A wait must end one of three ways: response, cancel, or deadline.
+    pub fn wait_until(
+        &self,
+        handle: &InteractionSlotHandle,
+        cancel: &Cancel,
+        deadline: Option<Duration>,
+    ) -> Option<Value> {
+        let expires_at = deadline.map(|d| std::time::Instant::now() + d);
         let mut guard = handle
             .slot
             .response
@@ -92,12 +113,17 @@ impl InteractionRegistry {
             // 96E-39: Check cancel at each iteration
             if cancel.cancelled() {
                 eprintln!("[interaction] wait id={} cancelled", handle.id);
-                // Clean up the pending slot
-                self.inner
-                    .lock()
-                    .expect("interaction.rs: InteractionRegistry::wait cleanup lock poisoned")
-                    .remove(&handle.id);
+                drop(guard);
+                self.discard(handle.id);
                 return None;
+            }
+            if let Some(at) = expires_at {
+                if std::time::Instant::now() >= at {
+                    eprintln!("[interaction] wait id={} expired", handle.id);
+                    drop(guard);
+                    self.discard(handle.id);
+                    return None;
+                }
             }
 
             let (new_guard, _timeout) = handle
@@ -111,12 +137,18 @@ impl InteractionRegistry {
         let v = guard
             .clone()
             .expect("interaction.rs: wait loop must have Some");
+        drop(guard);
         // Clean up after wait so `has_pending` reflects reality.
+        self.discard(handle.id);
+        Some(v)
+    }
+
+    /// Drop a pending slot. Idempotent, so response/cancel/expiry share one path.
+    fn discard(&self, id: u64) {
         self.inner
             .lock()
-            .expect("interaction.rs: InteractionRegistry::wait cleanup lock poisoned")
-            .remove(&handle.id);
-        Some(v)
+            .expect("interaction.rs: InteractionRegistry cleanup lock poisoned")
+            .remove(&id);
     }
 
     /// Resolve `id` with `response`, waking any waiter. Returns `true` if a pending

@@ -161,9 +161,16 @@ impl Default for Bus {
 }
 
 /// R-CORE-230 — a `Bus` is an `EventSink`; its `emit` delegates to `publish` via conversion.
+///
+/// Internal events (`LiveEvent::is_internal`, i.e. `TurnFinishing`) are dropped rather than
+/// published: they coordinate the host with itself and no subscriber should observe one. This
+/// used to panic instead, which killed the turn thread of any run whose bus was not the
+/// server's intercepting `SessionSink`.
 impl EventSink for Bus {
     fn emit(&self, e: LiveEvent) {
-        self.publish(Event::from(e));
+        if let Some(event) = e.to_observable_event() {
+            self.publish(event);
+        }
     }
 }
 

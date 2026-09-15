@@ -102,6 +102,46 @@ pub fn is_retryable(e: &ProvErr) -> bool {
     )
 }
 
+/// Does this HTTP failure mean "the prompt does not fit"?
+///
+/// `ProvErr::ContextOverflow` is the only input that reaches `Attempt::ContextOverflow` and
+/// therefore the only way the ReAct loop can recover a too-long prompt by compacting
+/// (R-RCT-080/090). Providers do not signal it structurally: an overflow arrives as an
+/// ordinary 400 (or 413 on some gateways) whose *body* carries the reason. Without this
+/// classification every real overflow became `ProvErr::Http`, which the loop treats as a
+/// hard failure — the compaction machinery existed but was unreachable, and the session
+/// died where it could have continued.
+///
+/// Matching is on substrings of the raw body, lowercased, because the shape of the JSON
+/// differs per vendor (`error.code`, `error.message`, `error.error.message`) while the
+/// wording is stable. Deliberately conservative: a false positive sends the loop into a
+/// compaction re-plan that cannot help and hides the real error, so anything ambiguous
+/// (notably 429s that mention tokens) is left alone.
+pub fn is_context_overflow(status: u16, body: &str) -> bool {
+    // Only client-side rejections can be overflow. A 429 is a throttle even when it talks
+    // about tokens, and 5xx is retried; treating either as overflow would swap a
+    // recoverable condition for an unrecoverable one.
+    if !matches!(status, 400 | 413 | 422) {
+        return false;
+    }
+    let b = body.to_ascii_lowercase();
+    // OpenAI's machine-readable code, and the phrasings its gateways reword it into.
+    b.contains("context_length_exceeded")
+        || b.contains("context length exceeded")
+        || b.contains("maximum context length")
+        || b.contains("context limit")
+        || b.contains("reduce the length of the messages")
+        // Anthropic.
+        || b.contains("prompt is too long")
+        || b.contains("too many tokens")
+        // Local runtimes and self-hosted gateways (llama.cpp, vLLM wrappers, llama_index)
+        // say "context window" rather than "context length". Both halves are required:
+        // "context window" alone appears in perfectly ordinary capability messages, so
+        // matching it bare would turn an unrelated 400 into a pointless compaction re-plan.
+        || (b.contains("context window")
+            && (b.contains("exceed") || b.contains("too long") || b.contains("too large")))
+}
+
 /// Iterator that wraps an inner iterator. Once the first chunk is consumed,
 /// mid-stream errors are passed through as-is (no retry).
 struct OnceStartedIter<I: Iterator<Item = Result<Chunk, ProvErr>>> {

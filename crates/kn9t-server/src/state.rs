@@ -191,7 +191,21 @@ pub struct ServerState {
     /// instances in one test process share an abort map, and it was global for the same
     /// reason the policy sink was thread-local — a signature that did not carry what it
     /// needed. It lives here now because it is per-server state, like every other map above.
-    pub aborts: Mutex<HashMap<String, Cancel>>,
+    ///
+    /// B5/B6: the value is a `(turn_id, Cancel)` pair, not a bare `Cancel`. Keyed by session
+    /// alone this map could not tell two overlapping turns apart: turn A's teardown removed
+    /// turn B's registration (so `is_turn_running` reported idle while B was mid-stream and a
+    /// concurrent `/prompt` was accepted), and an ESC raised against A fired B's `Cancel`.
+    /// Every write is now a compare-and-swap on the id, so a stale handle is inert. The
+    /// lifecycle belongs to `turn::TurnSlot`, whose `Drop` is the only deregistration path.
+    pub aborts: Mutex<HashMap<String, (u64, Cancel)>>,
+    /// B5/B6 — monotonic turn id source. Server-wide rather than per-session so an id is
+    /// never ambiguous, even across sessions.
+    pub(crate) next_turn_id: AtomicU64,
+    /// Server-side timing knobs from `[server]` (approval/interaction deadlines, tool
+    /// cancellation grace). These used to be `const`s buried in `policy.rs` / `host_api.rs`;
+    /// the right value depends on the deployment's tools and users, not on kn9t.
+    pub timeouts: crate::config::ServerTimeouts,
     /// ADR-0008 -- an in-process `HookHost` that replaces the composed plugin hooks.
     ///
     /// Since ADR-0008 an `Ask` can only originate from a policy plugin, so exercising the
@@ -287,6 +301,8 @@ impl ServerState {
             plugin_spawn: Mutex::new(HashMap::new()),
             provider_hosts: Mutex::new(Vec::new()),
             aborts: Mutex::new(HashMap::new()),
+            next_turn_id: AtomicU64::new(1),
+            timeouts: crate::config::ServerTimeouts::default(),
             hooks_override: Mutex::new(None),
             pending_reactivation: Mutex::new(HashMap::new()),
             pending_steering: Mutex::new(HashMap::new()),
@@ -1045,6 +1061,19 @@ impl ServerState {
         self.idle = IdleTracker::new(d);
         self
     }
+    /// Install the `[server]` timing knobs (approval/interaction deadlines, tool cancel
+    /// grace). Defaults apply when this is never called.
+    pub fn with_timeouts(mut self, t: crate::config::ServerTimeouts) -> Self {
+        self.timeouts = t;
+        self
+    }
+    /// The `ReactConfig` a turn runs under, carrying the configured tool-cancellation grace.
+    pub fn react_config(&self) -> kn9t_react::ReactConfig {
+        kn9t_react::ReactConfig {
+            tool_cancel_grace: self.timeouts.tool_cancel_grace,
+            ..Default::default()
+        }
+    }
     pub fn with_provider(self, p: Arc<dyn Provider>) -> Self {
         *self.provider.write().expect("provider poisoned") = Some(p);
         self
@@ -1060,12 +1089,13 @@ impl ServerState {
         interactive: bool,
         registry: &Arc<ApprovalRegistry>,
         cache: &Arc<ApprovalCache>,
+        timeouts: &crate::config::ServerTimeouts,
     ) -> Arc<dyn Approver> {
         if interactive {
-            Arc::new(InteractiveApprover::with_cache(
-                registry.clone(),
-                cache.clone(),
-            ))
+            Arc::new(
+                InteractiveApprover::with_cache(registry.clone(), cache.clone())
+                    .with_timeout(timeouts.approval),
+            )
         } else {
             Arc::new(NonInteractiveApprover::new(cache.clone()))
         }

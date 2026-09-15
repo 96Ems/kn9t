@@ -460,6 +460,37 @@ pub enum LiveEvent {
     },
 }
 
+impl LiveEvent {
+    /// True for events that exist only to coordinate the host with itself and MUST NOT be
+    /// forwarded to a client.
+    ///
+    /// `TurnFinishing` is the only one: the server intercepts it to clear the turn's abort
+    /// handle *before* `TurnEnded` reaches anyone, so the next `/prompt` cannot race a
+    /// still-registered turn and 409.
+    ///
+    /// This is a property of the event, not of one sink. `ReactLoop::bus` is an
+    /// `Arc<dyn EventSink>` and several sinks in the workspace are not the server's
+    /// `SessionSink` — `Bus` itself (R-CORE-230), the test recorder, the plugin host's
+    /// no-op sink. Every one of them must be able to drop an internal event silently
+    /// instead of tripping over it.
+    pub fn is_internal(&self) -> bool {
+        matches!(self, LiveEvent::TurnFinishing { .. })
+    }
+
+    /// The durable-shaped `Event` an observer should see, or `None` when the event is
+    /// internal ([`LiveEvent::is_internal`]).
+    ///
+    /// This is the total, non-panicking conversion. `From<LiveEvent> for Event` is kept for
+    /// the callers that already handle internal events themselves, but it cannot represent
+    /// "nothing to publish", so anything on a publish path should use this instead.
+    pub fn to_observable_event(self) -> Option<Event> {
+        if self.is_internal() {
+            return None;
+        }
+        Some(Event::from(self))
+    }
+}
+
 impl From<LiveEvent> for Event {
     fn from(live: LiveEvent) -> Self {
         match live {
@@ -536,11 +567,17 @@ impl From<LiveEvent> for Event {
                 op,
                 payload,
             },
-            LiveEvent::TurnFinishing { .. } => {
-                // TurnFinishing is internal — intercepted by SessionSink before reaching here.
-                // If we get here, something is wrong.
-                panic!("TurnFinishing should be intercepted by SessionSink, not converted to Event")
-            }
+            // R-CORE-230: internal (`LiveEvent::is_internal`). `Event` has no representation
+            // for "publish nothing", and this conversion used to `panic!` here on the theory
+            // that only the server's `SessionSink` would ever reach it. That theory was
+            // false — `Bus` itself is an `EventSink`, and a panic on the turn thread left the
+            // server's `aborts` map populated forever, wedging the session at 409.
+            //
+            // Publish paths must use `to_observable_event()`, which returns `None` for these.
+            // For the callers that still go through `From`, degrade to the client-visible
+            // sibling (`TurnEnded` carries the same turn/stop) rather than unwinding: a
+            // duplicate end-of-turn marker is recoverable, a dead turn thread is not.
+            LiveEvent::TurnFinishing { turn, stop } => Event::TurnEnded { turn, stop },
         }
     }
 }

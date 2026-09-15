@@ -135,22 +135,27 @@ impl SessionSink {
 
 impl EventSink for SessionSink {
     fn emit(&self, e: LiveEvent) {
-        // Intercept TurnFinishing to clear the turn state BEFORE publishing.
-        // This avoids a race where the client receives TurnEnded and sends
-        // the next prompt before the server has cleared is_turn_running().
+        // Intercept TurnFinishing and release the turn's registration BEFORE publishing
+        // anything. `TurnEnded` follows immediately, and a client that prompts the instant
+        // it sees that must not race a slot still marked as running (a 409 on a legitimate
+        // prompt). B5/B6: the release is scoped to the turn actually registered — this used
+        // to `remove()` by session id, so a late `TurnFinishing` from a finished turn
+        // deregistered its successor while that successor was still streaming.
         if matches!(e, LiveEvent::TurnFinishing { .. }) {
-            crate::log!("[SessionSink] TurnFinishing intercepted, clearing cancel for session={}", self.session.0);
             if let Some(state) = &self.state {
-                crate::turn::clear_cancel(state, &self.session.0);
-                crate::log!("[SessionSink] clear_cancel done");
-            } else {
-                crate::log!("[SessionSink] WARNING: no state, cannot clear_cancel!");
+                if let Some(id) = crate::turn::running_turn_id(state, &self.session.0) {
+                    crate::turn::release_turn(state, &self.session.0, id);
+                }
             }
-            // Don't publish TurnFinishing to clients — it's internal.
+            // Internal event (`LiveEvent::is_internal`): never published to clients.
             return;
         }
-        
+
         self.salvage(&e);
-        self.bus.publish(Event::from(e));
+        // Internal events have no client-visible form; `Event::from` used to panic on
+        // exactly one of them, which killed the turn thread.
+        if let Some(event) = e.to_observable_event() {
+            self.bus.publish(event);
+        }
     }
 }

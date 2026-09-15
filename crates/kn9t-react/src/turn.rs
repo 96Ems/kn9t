@@ -28,6 +28,26 @@ impl ReactLoop {
     pub fn run(&self, mut params: RunParams) -> Result<StopReason, ReactError> {
         let mut turn: u32 = 0;
         loop {
+            // R-RCT-020: refuse an unbounded run. `should_stop_after_turn` defaults to
+            // "continue" (R-RCT-100) and its panic fallback does too (R-RCT-110), so a model
+            // that keeps emitting tool calls has no other stopping condition and would spend
+            // money indefinitely. Checked before the provider is contacted, so `max_turns` is
+            // the number of turns actually spent rather than one more.
+            if turn >= params.config.max_turns {
+                self.bus.emit(LiveEvent::TurnStatus {
+                    phase: "failed".into(),
+                    message: format!("turn limit reached ({} turns)", params.config.max_turns),
+                });
+                self.bus.emit(LiveEvent::Error {
+                    message: format!(
+                        "turn limit reached after {} turns without going idle; the run was \
+                         stopped to avoid an unbounded loop",
+                        params.config.max_turns
+                    ),
+                });
+                self.end_turn(turn, StopReason::Aborted);
+                return Err(ReactError::TurnLimit);
+            }
             turn += 1;
             self.bus.emit(LiveEvent::TurnStarted { turn });
             // Phase "thinking" is emitted by one_attempt when the provider is actually contacted
@@ -43,10 +63,7 @@ impl ReactLoop {
                         phase: "idle".into(),
                         message: String::new(),
                     });
-                    // Emit TurnFinishing first — the server intercepts this to clear
-                    // the turn state before relaying TurnEnded to clients.
-                    self.bus.emit(LiveEvent::TurnFinishing { turn, stop: stop.clone() });
-                    self.bus.emit(LiveEvent::TurnEnded { turn, stop });
+                    self.end_turn(turn, stop);
                     return Ok(stop);
                 }
                 Err(e) => {
@@ -57,20 +74,22 @@ impl ReactLoop {
                     self.bus.emit(LiveEvent::Error {
                         message: format!("{e:?}"),
                     });
-                    // Emit TurnFinishing first — the server intercepts this to clear
-                    // the turn state before relaying TurnEnded to clients.
-                    self.bus.emit(LiveEvent::TurnFinishing {
-                        turn,
-                        stop: StopReason::Aborted,
-                    });
-                    self.bus.emit(LiveEvent::TurnEnded {
-                        turn,
-                        stop: StopReason::Aborted,
-                    });
+                    self.end_turn(turn, StopReason::Aborted);
                     return Err(e);
                 }
             }
         }
+    }
+
+    /// Close out a run: `TurnFinishing` then `TurnEnded`, in that order.
+    ///
+    /// The server intercepts `TurnFinishing` to clear the turn's abort handle *before*
+    /// `TurnEnded` reaches clients, so a client that prompts the instant it sees `TurnEnded`
+    /// cannot race a still-registered turn and take a 409. Every exit from `run` goes through
+    /// here: one that skipped it would leave the session wedged.
+    fn end_turn(&self, turn: u32, stop: StopReason) {
+        self.bus.emit(LiveEvent::TurnFinishing { turn, stop });
+        self.bus.emit(LiveEvent::TurnEnded { turn, stop });
     }
 
     fn execute_turn(

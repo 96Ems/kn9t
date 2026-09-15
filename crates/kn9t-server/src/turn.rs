@@ -11,6 +11,7 @@
 
 use kn9t_macros::safe_expect;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ use kn9t_core::{
     Request, Role, SessionId, Store, Thinking, Tokens, Usage, UsageKind,
 };
 use kn9t_plugin::ComposedHookHost;
-use kn9t_react::{ReactConfig, ReactLoop, RunParams};
+use kn9t_react::{ReactLoop, RunParams};
 
 use crate::bus::SessionSink;
 use crate::state::ServerState;
@@ -126,7 +127,7 @@ impl kn9t_react::ToolSource for LiveTools {
 
 /// 96E-17: the first plugin host that declared the `compactor` capability
 /// becomes the compaction delegate. None when no plugin provides it — the loop
-/// is then fail-closed (compaction demanded → turn ends, session cannot
+/// is then fail-closed (compaction demanded â†’ turn ends, session cannot
 /// continue). The plugin drives its own agent turn via the host_api ops.
 fn compactor_from_hosts(
     hosts: &[Arc<kn9t_plugin::PluginHost>],
@@ -139,43 +140,151 @@ fn compactor_from_hosts(
         })
 }
 
-/// Per-session cancellation handles for `abort` (R-SRV-060 command). A running turn
-/// registers its `Cancel`; `abort` fires it.
-fn register_cancel(state: &Arc<ServerState>, session: &str, cancel: Cancel) {
-    state
-        .aborts
-        .lock()
-        .expect("aborts poisoned")
-        .insert(session.to_owned(), cancel);
+/// B5/B6 — one turn's registration in `ServerState::aborts`, released on `Drop`.
+///
+/// The map behind this used to be written from three unrelated places: `register_cancel` at
+/// spawn, `clear_cancel` from `SessionSink` when it saw `TurnFinishing`, and `clear_cancel`
+/// again as a "fallback" at the end of the thread. None of them checked *which* turn they
+/// were talking about, and the whole scheme depended on a transient event being emitted at
+/// the right moment. Two consequences, both live bugs:
+///
+/// * turn A's teardown deregistered turn B, so `is_turn_running` reported idle for a session
+///   with a provider stream open — and `/prompt` accepted a user message mid-batch, which is
+///   the transcript corruption that 409 exists to prevent;
+/// * an ESC raised against A fired B's `Cancel`, killing a turn that had done nothing.
+///
+/// A guard fixes both by construction: the id makes every write a compare-and-swap, and
+/// `Drop` runs on the normal path, on `?`, and during a panic unwind — so a registration
+/// cannot outlive its turn even if the thread dies. That last case used to wedge the session
+/// at 409 forever, because nothing else ever cleared the entry.
+pub struct TurnSlot {
+    state: Arc<ServerState>,
+    session: String,
+    id: u64,
+    cancel: Cancel,
 }
-/// Clear the abort handle for a session, marking the turn as no longer running.
-/// Called from SessionSink when TurnFinishing is received.
-pub fn clear_cancel(state: &Arc<ServerState>, session: &str) {
-    state
-        .aborts
-        .lock()
-        .expect("aborts poisoned")
-        .remove(session);
+
+impl TurnSlot {
+    /// Claim `session`'s turn slot with a fresh `Cancel`, displacing any previous holder.
+    pub fn register(state: &Arc<ServerState>, session: &str) -> Self {
+        Self::register_with(state, session, Cancel::new())
+    }
+
+    /// As [`TurnSlot::register`], but adopting an existing `Cancel` — used where the caller
+    /// must hold the handle before the turn starts (a sub-agent inheriting its parent's).
+    pub fn register_with(state: &Arc<ServerState>, session: &str, cancel: Cancel) -> Self {
+        let id = state.next_turn_id.fetch_add(1, Ordering::SeqCst);
+        safe_expect!(state.aborts.lock(), "aborts poisoned")
+            .insert(session.to_owned(), (id, cancel.clone()));
+        // Paired with the `turn_ended()` in `Drop`, so the idle counter cannot drift from the
+        // registration it mirrors. These were two independent calls: `running_turns` and
+        // `aborts` could disagree (GET /health misreported), and an early return that skipped
+        // `turn_ended()` left the counter high forever — which pins the process alive, since
+        // `IdleTracker::should_exit` refuses to exit while a turn is "running".
+        state.idle.turn_started();
+        crate::log!("[turn] registered session={} turn_id={}", session, id);
+        TurnSlot {
+            state: state.clone(),
+            session: session.to_owned(),
+            id,
+            cancel,
+        }
+    }
+
+    /// This turn's id, so an `abort` can name the turn it meant.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The `Cancel` this turn runs under.
+    pub fn cancel(&self) -> &Cancel {
+        &self.cancel
+    }
+}
+
+/// B5/B6 — release `session`'s slot only if `id` still owns it.
+///
+/// Shared by `TurnSlot::drop` and the `TurnFinishing` interception in `SessionSink`, which
+/// is why it is idempotent: whichever runs first releases, the other becomes a no-op. The
+/// sink still needs to be the *early* path, because the release must be visible before
+/// `TurnEnded` reaches a client that may prompt the instant it sees it.
+pub(crate) fn release_turn(state: &Arc<ServerState>, session: &str, id: u64) {
+    let mut map = safe_expect!(state.aborts.lock(), "aborts poisoned");
+    match map.get(session) {
+        Some((cur, _)) if *cur == id => {
+            map.remove(session);
+            crate::log!("[turn] released session={} turn_id={}", session, id);
+        }
+        _ => crate::log!(
+            "[turn] stale release ignored session={} turn_id={}",
+            session,
+            id
+        ),
+    }
+}
+
+impl Drop for TurnSlot {
+    fn drop(&mut self) {
+        // Idempotent: `SessionSink` normally releases on `TurnFinishing`, before `TurnEnded`
+        // goes out. This is the backstop that also covers a compose failure, an early
+        // return, and a panic unwind — the cases that used to leave the slot claimed and
+        // wedge the session at 409 forever.
+        release_turn(&self.state, &self.session, self.id);
+        // The idle count is this guard's too, so it falls exactly once per turn whatever the
+        // exit path. `release_turn` is idempotent (the sink may have run first); this is not,
+        // which is why it lives here and not there.
+        self.state.idle.turn_ended();
+    }
 }
 
 /// Check if a turn is currently running for `session`.
 pub fn is_turn_running(state: &Arc<ServerState>, session: &str) -> bool {
-    state
-        .aborts
-        .lock()
-        .expect("aborts poisoned")
-        .contains_key(session)
+    safe_expect!(state.aborts.lock(), "aborts poisoned").contains_key(session)
 }
 
-/// Fire the cancel for `session`'s running turn, if any.
-pub fn abort(state: &Arc<ServerState>, session: &str) {
-    crate::log!("[DEBUG abort] session={}", session);
-    if let Some(c) = safe_expect!(state.aborts.lock(), "aborts poisoned").get(session) {
-        crate::log!("[DEBUG abort] firing cancel for session={}", session);
-        c.cancel();
-    } else {
-        crate::log!("[DEBUG abort] no cancel registered for session={}", session);
+/// Fire the cancel for `session`'s running turn.
+///
+/// `turn_id` scopes the abort to one turn: `Some(id)` cancels only if that turn is still the
+/// registered one (so an ESC arriving after its turn ended is a no-op instead of killing the
+/// successor), `None` means "whatever is running now" — what `POST /abort` wants, since the
+/// user is aiming at the turn they can see.
+///
+/// The `Cancel` is fired with the lock held. Cloning it out first left a window in which the
+/// turn could finish and a new one register, and the ESC then landed on the newcomer.
+pub fn abort_turn(state: &Arc<ServerState>, session: &str, turn_id: Option<u64>) {
+    let map = safe_expect!(state.aborts.lock(), "aborts poisoned");
+    match map.get(session) {
+        Some((id, cancel)) if turn_id.is_none_or(|want| want == *id) => {
+            crate::log!("[abort] firing cancel session={} turn_id={}", session, id);
+            cancel.cancel();
+        }
+        Some((id, _)) => crate::log!(
+            "[abort] stale abort ignored session={} running_turn={} requested={:?}",
+            session,
+            id,
+            turn_id
+        ),
+        None => crate::log!("[abort] no turn registered session={}", session),
     }
+}
+
+/// Fire the cancel for `session`'s running turn, whichever it is (`POST /abort`).
+pub fn abort(state: &Arc<ServerState>, session: &str) {
+    abort_turn(state, session, None)
+}
+
+/// Test seam for [`release_turn`], which is crate-private because only the sink and the guard
+/// may call it. Exposed so a test can reproduce the sink's early release without a bus.
+#[doc(hidden)]
+pub fn release_turn_for_test(state: &Arc<ServerState>, session: &str, id: u64) {
+    release_turn(state, session, id)
+}
+
+/// The id of the turn currently registered for `session`, if any.
+pub(crate) fn running_turn_id(state: &Arc<ServerState>, session: &str) -> Option<u64> {
+    safe_expect!(state.aborts.lock(), "aborts poisoned")
+        .get(session)
+        .map(|(id, _)| *id)
 }
 
 /// Get the Cancel for `session`'s running turn, if any.
@@ -183,7 +292,7 @@ pub fn abort(state: &Arc<ServerState>, session: &str) {
 pub fn get_cancel(state: &Arc<ServerState>, session: &str) -> Option<Cancel> {
     safe_expect!(state.aborts.lock(), "aborts poisoned")
         .get(session)
-        .cloned()
+        .map(|(_, c)| c.clone())
 }
 
 /// Record an approval decision (R-SRV-010 `/approve`).
@@ -498,15 +607,70 @@ pub(crate) fn run_session_turn(
     let session_cwd = get_session_cwd(state, session);
     let (loop_, _sink) = compose_loop(state, session, &model, tool_names, &session_cwd)?;
 
-    // Watchdog: the loop aborts at its next cancel checkpoint when the timeout
-    // fires (the plugin's worker thread stays responsive).
-    // 96E-39: use parent_cancel if provided, so ESC on parent aborts the subagent.
-    let cancel = parent_cancel.unwrap_or_else(Cancel::new);
-    let cancel_watch = cancel.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(timeout_s));
-        cancel_watch.cancel();
-    });
+    // B11: the child gets its OWN `Cancel`, and the parent's is only *observed*.
+    //
+    // This used to be `parent_cancel.unwrap_or_else(Cancel::new)` with the watchdog armed
+    // on the result — so in the normal case (a parent cancel is supplied) the timeout timer
+    // was set on the *parent's* handle. The watchdog thread is never joined or stopped, so
+    // `timeout_s` later (600 s by default) it cancelled the parent turn, long after the
+    // sub-agent had returned. A sub-agent early in a long session killed that session ten
+    // minutes later, with nothing to point at.
+    //
+    // Propagation is still required (96E-39: ESC on the parent must abort the sub-agent),
+    // so a watcher polls the parent and forwards a cancellation down. Both threads exit as
+    // soon as the child is done, which is what makes the timeout scoped to this turn.
+    let cancel = Cancel::new();
+    let child_done = Arc::new(AtomicBool::new(false));
+
+    // Watchdog: the loop aborts at its next cancel checkpoint when the timeout fires (the
+    // plugin's worker thread stays responsive). Fires on the child only.
+    {
+        let cancel_watch = cancel.clone();
+        let done = child_done.clone();
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(timeout_s);
+            while std::time::Instant::now() < deadline {
+                if done.load(Ordering::SeqCst) {
+                    return; // child finished; never touch its cancel
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if !done.load(Ordering::SeqCst) {
+                cancel_watch.cancel();
+            }
+        });
+    }
+
+    // ESC propagation: parent cancelled -> child cancelled. One-directional, so the child
+    // can never cancel its parent.
+    if let Some(parent) = parent_cancel {
+        let child = cancel.clone();
+        let done = child_done.clone();
+        std::thread::spawn(move || {
+            while !done.load(Ordering::SeqCst) {
+                if parent.cancelled() {
+                    child.cancel();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+    }
+
+    // Releases both helper threads on every exit path below, including the `?`s.
+    struct DoneGuard(Arc<AtomicBool>);
+    impl Drop for DoneGuard {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let _done_guard = DoneGuard(child_done.clone());
+
+    // B6: the child session gets its own registration, so `/abort` on the child id works
+    // and `is_turn_running` is honest about it. Previously only the parent was registered,
+    // which made a sub-agent turn invisible to both.
+    let _child_slot = TurnSlot::register_with(state, &session.0, cancel.clone());
+
     let (disabled_tools, reactivation_reminder) = tool_gating_for_session(state, session);
     let params = RunParams {
         session: session.clone(),
@@ -514,7 +678,7 @@ pub(crate) fn run_session_turn(
         thinking: Thinking::Off,
         max_tokens: Some(model.max_out),
         cwd: session_cwd.clone(),
-        config: ReactConfig::default(),
+        config: state.react_config(),
         read_map: Arc::new(Mutex::new(std::collections::HashMap::new())),
         system: Some(system_prompt::default_system_prompt()),
         cancel: Some(cancel),
@@ -606,9 +770,13 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
     );
 
     std::thread::spawn(move || {
-        state.idle.turn_started();
-        let cancel = Cancel::new();
-        register_cancel(&state, &session.0, cancel.clone());
+        // B6: one guard owns the "a turn is running" fact, its `Cancel`, and the idle count,
+        // and releases all three on every exit path including a panic. The old code
+        // registered here and relied on `SessionSink` seeing `TurnFinishing` to deregister,
+        // with a best-effort second call at the end — a transient event driving state that
+        // `/prompt` gates on.
+        let slot = TurnSlot::register(&state, &session.0);
+        let cancel = slot.cancel().clone();
 
         // The model spec must be registered with the store so `plan_request` can
         // compute cache breakpoints and the compaction threshold.
@@ -626,8 +794,7 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             Ok(v) => v,
             Err(e) => {
                 crate::log!("[spawn_turn] compose failed: {e}");
-                clear_cancel(&state, &session.0);
-                state.idle.turn_ended();
+                // `slot` drops here, releasing the registration and the idle count.
                 return;
             }
         };
@@ -639,7 +806,7 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             thinking: Thinking::Off,
             max_tokens: Some(model.max_out),
             cwd: session_cwd,
-            config: ReactConfig::default(),
+            config: state.react_config(),
             read_map: Arc::new(Mutex::new(HashMap::new())),
             system: Some(system_prompt::default_system_prompt()),
             cancel: Some(cancel.clone()),
@@ -654,15 +821,13 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             Err(e) => crate::log!("turn error: session={} error={e:?}", session.0),
         }
 
-        // Note: clear_cancel is now called by SessionSink when it receives TurnFinishing,
-        // BEFORE TurnEnded is published to clients. This avoids the race condition where
-        // the client sends the next prompt before the server has cleared is_turn_running().
-        // We keep a fallback here in case TurnFinishing wasn't emitted (shouldn't happen).
-        clear_cancel(&state, &session.0);
-        state.idle.turn_ended();
-
         // R-SRV-100: after the first assistant turn of a nameless session, title it.
+        // `slot` is still alive here on purpose: it holds the idle count, so `should_exit()`
+        // cannot reap the process mid-titling. The `aborts` entry was already released by the
+        // sink on `TurnFinishing`, so a new `/prompt` is accepted meanwhile — the two facts
+        // have different lifetimes and now say so.
         maybe_autotitle(&state, &session);
+        drop(slot);
     });
 }
 
@@ -903,13 +1068,13 @@ pub fn spawn_compact(
     compact_span: kn9t_core::CompactSpan,
 ) {
     std::thread::spawn(move || {
-        state.idle.turn_started();
         crate::log!("[spawn_compact] starting: session={}", session.0);
 
-        // Registering a cancel makes the compaction abortable via /abort AND makes
-        // `is_turn_running` reject a concurrent /prompt — a user message landing
-        // mid-compaction would race the Compacted event over the same span.
-        register_cancel(&state, &session.0, Cancel::new());
+        // Registering makes the compaction abortable via /abort AND makes `is_turn_running`
+        // reject a concurrent /prompt — a user message landing mid-compaction would race the
+        // Compacted event over the same span. B6: the guard releases on every exit path,
+        // including the early `return` below and a panic.
+        let _slot = TurnSlot::register(&state, &session.0);
 
         // Get model for compaction
         let model_ref = state
@@ -974,8 +1139,7 @@ pub fn spawn_compact(
                         message: format!("Compaction failed: {e}"),
                     },
                 );
-                clear_cancel(&state, &session.0);
-                state.idle.turn_ended();
+                // `_slot` drops here, releasing the registration and the idle count.
                 return;
             }
         };
@@ -1005,8 +1169,10 @@ pub fn spawn_compact(
                 );
             }
         }
-
-        clear_cancel(&state, &session.0);
-        state.idle.turn_ended();
+        // `_slot` drops here: registration and idle count released together.
     });
 }
+
+
+
+

@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use kn9t_core::{
-    cost_micros, Cancel, Decision, Event, Message, ModelSpec, Request, SessionId, Store, Thinking,
+    cost_micros, Decision, Event, Message, ModelSpec, Request, SessionId, Store, Thinking,
     ToolCall, ToolCtx, UsageKind,
 };
 use kn9t_plugin::HostApi;
@@ -467,11 +467,27 @@ impl ServerHostApi {
         });
         // Block on condvar until `POST /ui-respond` resolves it.
         // 96E-39: get the session's Cancel so ESC can abort the wait.
-        let cancel = crate::turn::get_cancel(&self.state, session)
-            .unwrap_or_else(Cancel::new);
-        match self.state.interaction_registry.wait(&handle, &cancel) {
+        //
+        // B10: a `None` here means no turn is registered, and the old
+        // `unwrap_or_else(Cancel::new)` fallback produced a handle nobody else holds — so
+        // nothing could ever fire it and the wait was unbounded, taking out the plugin's
+        // worker thread permanently. When there is no reachable `Cancel`, the deadline is
+        // the only way out, so it is mandatory in that case.
+        let live_cancel = crate::turn::get_cancel(&self.state, session);
+        let deadline = match &live_cancel {
+            // A live turn can be cancelled by the user, but a client that simply walks away
+            // must not pin the worker thread either — cap it regardless.
+            Some(_) => self.state.timeouts.interaction,
+            None => self.state.timeouts.interaction_no_cancel,
+        };
+        let cancel = live_cancel.unwrap_or_default();
+        match self
+            .state
+            .interaction_registry
+            .wait_until(&handle, &cancel, deadline)
+        {
             Some(response) => Ok(json!({ "payload": response })),
-            None => Err("interaction cancelled".to_string()),
+            None => Err("interaction cancelled or timed out".to_string()),
         }
     }
 
@@ -534,9 +550,10 @@ impl ServerHostApi {
             max_tokens,
             cache: &[],
         };
-        // 96E-39: use session's Cancel so ESC can abort the provider call
-        let cancel = crate::turn::get_cancel(&self.state, session)
-            .unwrap_or_else(Cancel::new);
+        // 96E-39: use session's Cancel so ESC can abort the provider call.
+        // B10: an unfireable fallback `Cancel` is acceptable here — a provider call is bounded
+        // by its own HTTP/stream behaviour, not by cancellation, so it cannot wait forever.
+        let cancel = crate::turn::get_cancel(&self.state, session).unwrap_or_default();
         let chunks = provider
             .stream_with_sink(&req, &cancel, Some(sink.as_ref()))
             .map_err(|e| format!("provider stream: {e:?}"))?;
@@ -770,8 +787,10 @@ impl ServerHostApi {
         // here and every approval fell through to "no sink" -> Deny. Now the prompt actually
         // reaches the session's SSE stream.
         // 96E-39: use session's cancel so ESC can abort the approval wait and tool execution.
-        let cancel = crate::turn::get_cancel(&self.state, session)
-            .unwrap_or_else(Cancel::new);
+        // B10: `None` here yields a `Cancel` nobody can fire. That is no longer a hang: the
+        // approver's own deadline (`[server] approval_timeout_secs`) bounds the wait and
+        // denies on expiry, so the worst case is a refused call rather than a dead thread.
+        let cancel = crate::turn::get_cancel(&self.state, session).unwrap_or_default();
         let approval_sink = self.sink(session);
         let ctx = kn9t_core::ApprovalCtx {
             session,

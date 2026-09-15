@@ -317,6 +317,24 @@ fn handle_sse(state: &Arc<ServerState>, req: Request, session: &str, query: &str
         for frame in &prelude.frames {
             writer.write_all(frame.as_bytes())?;
         }
+        // B9: a durable echo was evicted from this subscriber's ring, so the frames above
+        // have a hole. §5.1 self-healing covers transient loss only, so the client cannot
+        // repair this itself — tell it the last seq it can trust and let it re-fetch
+        // `GET /session/{id}`. Emitted after the prelude, so everything that *did* arrive
+        // has already been seen.
+        if prelude.gap_detected {
+            crate::log!(
+                "SSE gap: session={} contiguous_through={} head_seq={}",
+                session,
+                prelude.contiguous_through,
+                prelude.head_seq
+            );
+            let frame = format!(
+                "event: gap\ndata: {{\"contiguous_through\":{},\"reason\":\"durable event dropped from a full subscriber ring; re-snapshot from contiguous_through\"}}\n\n",
+                prelude.contiguous_through
+            );
+            writer.write_all(frame.as_bytes())?;
+        }
         writer.flush()?;
         sse::run_live_loop(&mut writer, &sub, &mut on_alive)
     })();

@@ -25,6 +25,23 @@ pub struct ReactConfig {
     pub truncation_ladder: Vec<u32>,
     /// R-RCT-080/090 -- compaction re-plans allowed (exactly one, R-RCT-090).
     pub max_context_replans: u32,
+    /// R-RCT-020 -- max turns in one run before the loop refuses to continue (default 100).
+    ///
+    /// The turn loop's only other exit when the model keeps emitting tool calls is
+    /// `should_stop_after_turn`, whose default is `false` (R-RCT-100) and whose panic
+    /// fallback is also `false` (R-RCT-110). A model stuck re-issuing the same call would
+    /// therefore spend money indefinitely. This is the backstop: high enough that no real
+    /// task reaches it, finite so a rut always ends.
+    pub max_turns: u32,
+    /// R-RCT-130 -- how long a cancelled batch waits for a `parallel_safe` tool to notice
+    /// `Cancel` before abandoning it (default 1.5s).
+    ///
+    /// Tools are expected to poll `Cancel` and return promptly (R-CORE-240). One that does
+    /// not -- blocked in a syscall, or a wedged plugin subprocess -- must not hold the turn
+    /// open: past this grace the call gets a synthesized result so the transcript stays
+    /// 7.5-clean and the turn can end. Configurable because the right value depends on the
+    /// installed tools, not on kn9t.
+    pub tool_cancel_grace: std::time::Duration,
 }
 
 impl Default for ReactConfig {
@@ -33,6 +50,8 @@ impl Default for ReactConfig {
             truncation_attempts: 4,
             truncation_ladder: vec![150, 100, 50, 25, 10],
             max_context_replans: 1,
+            max_turns: 100,
+            tool_cancel_grace: std::time::Duration::from_millis(1500),
         }
     }
 }
@@ -82,6 +101,9 @@ pub enum ReactError {
     CompactionUnavailable,
     /// Truncation ladder exhausted (R-RCT-070).
     TruncationGaveUp,
+    /// R-RCT-020 -- `ReactConfig::max_turns` reached. The model kept asking for another turn
+    /// (typically re-issuing tool calls) and nothing else was going to stop it.
+    TurnLimit,
 }
 
 /// R-RCT-010 -- the loop driver. Owns only trait objects and the ordered tool registry

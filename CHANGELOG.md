@@ -9,6 +9,177 @@ pointer current.
 
 ---
 
+## Session -- 2026-09-16 -- Reliability audit: eleven first-order bugs in the loop and the harness
+
+**Next session starts here:** one gap is left open deliberately. B8's fix abandons a hung
+`parallel_safe` tool rather than killing it -- Rust cannot kill a thread from outside, so the orphan
+lives until the process exits. The turn ends correctly and the session stays usable (the property
+that matters), but a plugin that hangs repeatedly leaks threads. The real fix is in `PluginHost`:
+kill the subprocess, which drops the pipe, which ends the thread. Untouched here -- different seam.
+
+Audit of the ReAct loop and the client/server harness, looking specifically for what could wedge the
+agent, desynchronise client from server, or make transient and durable state disagree. Eleven bugs
+found; each reproduced by a failing test before being fixed. Test count 815 -> 863.
+
+### The pattern behind four of them
+
+`ServerState::aborts` did two jobs: cancellation registry (`abort`, `get_cancel`) *and* the
+"is a turn running" flag (`/prompt`, `/steer`, `/compact` all gate on it). It was keyed by session id
+alone, with `insert`/`remove` and no identity check, and its lifecycle was driven by a **transient
+event** -- `SessionSink` clearing it on `LiveEvent::TurnFinishing`, plus a best-effort second call at
+the end of the thread. That is the "transient and durable state that don't match" shape, and it
+produced four distinct failures (B1, B5, B6, and B8's blast radius).
+
+The fix is one owner: `turn::TurnSlot`, a guard holding `(turn_id, Cancel)` plus the `IdleTracker`
+count, released on `Drop`. Every write to `aborts` is a compare-and-swap on the id, so a stale handle
+is inert; `Drop` covers the normal path, `?`, and a panic unwind.
+
+**Two facts, two lifetimes -- now explicit.** The sink still releases `aborts` early (before
+`TurnEnded` reaches clients, so a client prompting the instant it sees that event does not take a
+409), but the idle count falls only on `Drop`, after `maybe_autotitle`. Reaping the process
+mid-titling was possible before; `release_turn` is idempotent for that reason and the idle decrement
+deliberately is not.
+
+### B1 -- a transient event could kill the turn thread
+
+`Event::from(LiveEvent::TurnFinishing)` was `panic!("should be intercepted by SessionSink")`. But
+`ReactLoop::bus` is `Arc<dyn EventSink>` and several sinks in the workspace are not `SessionSink`:
+`Bus` itself (R-CORE-230), the test recorder, the plugin host's no-op sink. Any run on one of those
+panicked at the *end of every turn*, skipping the release and leaving the session answering 409
+**forever**. The assumption "only SessionSink reaches this" was never true.
+
+Replaced with `LiveEvent::is_internal()` + `to_observable_event() -> Option<Event>`: publish paths
+drop internal events instead of tripping over them. `From` is kept for existing callers but degrades
+to `TurnEnded` rather than unwinding -- a duplicate end-of-turn marker is recoverable, a dead turn
+thread is not.
+
+### B2/B3 -- the compaction escape hatch was unreachable, and unbounded
+
+`grep ContextOverflow crates/kn9t-provider-core crates/kn9t-provider-openai` returned **nothing**.
+`ProvErr::ContextOverflow` existed and `Attempt::ContextOverflow` was handled, but no provider ever
+produced it: an overflow arrives as an ordinary 400 whose *body* carries the reason, so it became
+`ProvErr::Http` -> `ReactError::Provider` -> fatal. The compaction machinery was dead code and a
+session died where it could have continued.
+
+`is_context_overflow(status, body)` now classifies it, wired both pre-stream (`provider.rs`) and
+in-band (`decode.rs` -- a gateway can open a 200 stream then reject the prompt; the same condition
+must not be recoverable on one path and fatal on the other).
+
+That made B3 urgent rather than theoretical. `turn.rs` answers `ContextOverflow` with a bare
+`continue`, and `replans` was only charged when `plan.compact.is_some()`. When the provider says
+"too long" but the store's local estimate (`0.80 * ctx_window`) says "nothing to compact" -- a stale
+or wrong `ctx_window`, exactly what `reload_config` warns about -- the request is byte-identical
+every iteration and the loop bills a provider call forever, with `cancel` only read after the stream
+so ESC never lands. `exec.rs` now charges the same `replans` budget in that case and fails once spent.
+
+### B4 -- no turn ceiling at all
+
+`run()` was `loop { turn += 1; ... }`. The only exit when the model keeps emitting tool calls is
+`should_stop_after_turn`, whose default is `false` (R-RCT-100) *and* whose panic fallback is `false`
+(R-RCT-110). `ReactConfig` bounded truncation retries and compaction replans but not turns. Added
+`max_turns` (100) + `ReactError::TurnLimit`, and factored `end_turn()` so every exit emits the
+`TurnFinishing`/`TurnEnded` pair -- one that skipped it would wedge the session.
+
+### B5/B6 -- see "the pattern" above
+
+Two symptoms worth naming. `abort` cloned the `Cancel` out of the map, dropped the lock, then fired
+it: a turn finishing in that window had its ESC swallowed, and the *next* turn inherited it. And
+`clear_cancel` removed by session id without comparing identity, so turn A's teardown deregistered
+turn B -- `is_turn_running` then reported idle for a session with a live provider stream, and
+`/prompt` accepted a user message mid-batch, precisely the transcript corruption the 409 exists to
+prevent. `abort_turn(session, Option<turn_id>)` now scopes the abort, and the cancel fires with the
+lock held.
+
+### B7 -- lease tokens were guessable
+
+`mint_holder` was `format!("lease-{}-{}", counter, Instant::now().elapsed().as_nanos())`.
+`Instant::now().elapsed()` measures from *now*: measured 3 distinct values across 20 samples, mostly
+`0`. Tokens collapsed to `lease-{n}-0` with `n` restarting at 1 each server start, defeating the
+token's stated purpose -- telling the current holder from a stale former one after a takeover. Now
+suffixed with `auth::generate_token()`.
+
+**Method note.** The first version of this test passed on the first run. Looping it 25 times gave
+**12 failures**: the bug was real but the test was flaky. After the fix, 0/30. A test for
+non-determinism has to be run in a loop before it is believed.
+
+### B8 -- one hung tool froze the turn for the life of the process
+
+`run_tool_batch` collected parallel results with a bare `h.join()`. The sequential path checks
+`cancel.cancelled()` before dispatch (R-RCT-060); the parallel path never did -- not before
+`thread::spawn`, not during, and `JoinHandle` offers no timed join. A wedged plugin subprocess froze
+the batch permanently: ESC could not land (already inside `join`), no `TurnFinishing` was emitted, so
+the turn slot stayed claimed and every later prompt 409'd.
+
+Swapped to a channel with `recv_parallel_result`: unbounded while the batch is live (a slow tool is
+legitimate), then a grace period once `cancel` fires, after which the call is abandoned with a
+synthesized result so DESIGN A7.5 still holds (every `ToolCall` has its `ToolResult`). The `Err(_)`
+join arm also used to bypass `after_tool_call`, contradicting the comment claiming both paths share
+one lifecycle.
+
+### B9 -- the SSE dedup rule assumed a ring that never drops
+
+`build_attach_prelude` discards buffered events with `seq <= head_seq` because "durable seqs are
+gapless". True in the store -- but the bus ring is bounded and evicts the *oldest*, and since 96E-18
+durable echoes ride that same ring. On a slow attach a `MessageAppended` can be evicted: never
+replayed (the replay already ran), never re-delivered (it is gone). A5.1 self-healing explicitly does
+not cover durable events, so the hole is permanent.
+
+The prelude now reports `contiguous_through` and `gap_detected`, and the SSE route emits an
+`event: gap` frame naming the last seq the client can trust so it can re-snapshot. Transient loss is
+still fine and is not reported as a gap.
+
+### B10/B11 -- waits nobody could end, and a watchdog aimed at the wrong turn
+
+Every host_api call site read `get_cancel(session).unwrap_or_else(Cancel::new)`. That fallback is a
+`Cancel` **nobody holds a clone of** -- it can never fire. With no timeout either, an
+`interaction_request` or approval taken outside a live turn blocked the plugin's worker thread for the
+life of the process, and with it every op that plugin serialises there. Both registries gained
+`wait_until(deadline)`; an expired approval denies, consistent with the fail-closed posture
+(DESIGN A13.5).
+
+B11 was the same class of mistake in reverse. `run_session_turn` did
+`parent_cancel.unwrap_or_else(Cancel::new)` and armed the timeout watchdog on the result -- so in the
+normal case it set a timer on the **parent's** handle. The thread is never joined, so `timeout_s`
+later (600 s default) it cancelled the parent turn, long after the sub-agent returned. A sub-agent
+early in a long session killed that session ten minutes later with nothing to point at. The child now
+gets its own `Cancel`, a one-directional watcher forwards parent cancellation down, and a `DoneGuard`
+releases both helper threads. The child session also registers its own `TurnSlot`, so `/abort` on a
+sub-agent works and `is_turn_running` is honest about it.
+
+### Follow-ups from review
+
+**Two facts, one owner.** `state.idle.turn_started()/turn_ended()` were five hand-placed calls
+independent of the registration they mirror, so `running_turns` and `aborts` could disagree
+(`GET /health` misreported). Worse: `IdleTracker::should_exit` refuses to exit while a turn is
+"running", so a *single* skipped decrement -- a panic, or a `?` added later -- disabled idle-exit
+permanently and pinned the process alive. `TurnSlot` owns both now.
+
+**The deadlines are configuration.** The hardcoded constants moved to `[server]`:
+`approval_timeout_secs`, `interaction_timeout_secs`, `interaction_timeout_no_cancel_secs`,
+`tool_cancel_grace_ms`, grouped behind `config::ServerTimeouts` so a new knob is not a new field on
+`ResolvedConfig` plus an argument at every call site. Defaults match the previous constants exactly,
+so nothing changes without user action.
+
+`0` means **no deadline**, not "expire immediately" -- taken literally, `approval_timeout_secs = 0`
+would deny every approval instantly, a plausible config that would break everything silently. A test
+asserts the distinction. `tool_cancel_grace` reaches the loop via `state.react_config()`, and a test
+proves the knob *acts* (200 ms configured produces an abandon well under the old 1.5 s) rather than
+merely being stored.
+
+### Deviations and notes
+
+- **Fail-closed on timeout (new).** An approval that expires denies. This extends DESIGN A13.5's
+  posture ("a policy that cannot answer is not permission") to "a human who cannot answer is not
+  permission". Recorded because it is a new failure mode, not one the spec named.
+- **`event: gap` is an addition to the SSE surface**, not to `schema/http.json` -- SSE frames are not
+  schema-generated. Clients that ignore unknown event names are unaffected.
+- No new dependency. `auth::generate_token()` was reused for lease tokens rather than adding a UUID
+  crate (DESIGN A15 budget).
+- `plugins/kn9t-tools/src/{bash,edit,read,write}.rs` carry pre-existing uncommitted edits from an
+  earlier session; untouched and left out of this commit.
+
+---
+
 ## Session -- 2026-09-15 -- Plugin lifecycle the agent can drive, session tree the user can walk
 
 **Next session starts here:** two ends are deliberately left open. (1) `p1_96e47_plugin_stop_start`

@@ -89,6 +89,21 @@ pub struct AttachPrelude {
     pub frames: Vec<String>,
     /// Watermark used for dedup; also the point the live loop continues from.
     pub head_seq: u64,
+    /// B9 — the highest seq this prelude delivered with **no hole below it**.
+    ///
+    /// A client must advance its `from` cursor to this, not to the newest seq it saw: the two
+    /// differ exactly when a durable echo was evicted from the subscriber ring, and resuming
+    /// past the hole would skip that event permanently.
+    pub contiguous_through: u64,
+    /// B9 — true when a durable event was delivered above a missing one.
+    ///
+    /// The dedup rule ("`seq <= head_seq` was already emitted in step 2") is sound only if
+    /// the ring delivered everything above the watermark. The ring is bounded and drops the
+    /// *oldest* on overflow, and since 96E-18 durable echoes ride it too, so a slow attach
+    /// can lose one. §5.1 self-healing covers transient loss only — a lost durable event is a
+    /// permanent hole in the client's transcript unless it refetches. This flag is how the
+    /// client learns it must.
+    pub gap_detected: bool,
 }
 
 /// Step 2–4 of the attach race. The caller has already performed step 1
@@ -112,14 +127,36 @@ pub fn build_attach_prelude(
     // Step 4: flush the buffer accumulated since step 1, discarding anything with
     // seq <= head_seq (exact dedup; durable seqs are gapless). Transient events
     // (no seq) are always forwarded.
+    //
+    // B9: track continuity while flushing. Durable seqs are gapless *in the store*, so a
+    // jump in what the ring hands us means the ring evicted something — the one case the
+    // dedup rule cannot absorb, because the skipped event is neither replayed (the replay
+    // already ran) nor re-delivered (it is gone from the ring).
+    let mut contiguous_through = head_seq;
+    let mut gap_detected = false;
     while let Some(ev) = sub.try_recv() {
         match ev.seq() {
             Some(seq) if seq <= head_seq => continue, // already emitted in step 2
-            _ => frames.push(sse_frame(&ev)),
+            Some(seq) => {
+                if seq == contiguous_through + 1 {
+                    contiguous_through = seq;
+                } else if seq > contiguous_through + 1 {
+                    // Evicted echo(es) between contiguous_through and seq.
+                    gap_detected = true;
+                }
+                frames.push(sse_frame(&ev));
+            }
+            // Transient: droppable by design (§5.1), never a durable gap.
+            None => frames.push(sse_frame(&ev)),
         }
     }
 
-    AttachPrelude { frames, head_seq }
+    AttachPrelude {
+        frames,
+        head_seq,
+        contiguous_through,
+        gap_detected,
+    }
 }
 
 /// Read durable events with `seq > from`, ordered, and the session's current

@@ -11,14 +11,60 @@ use crate::assembler::{assemble, Assembled};
 use crate::loop_::{ReactError, ReactLoop, RunParams};
 use crate::turn::Attempt;
 
-/// Handle for a parallel tool execution: (index, name, args, call_id, join_handle).
+/// Handle for a parallel tool execution: (index, name, args, call_id, result channel).
+///
+/// B8: this used to carry a `thread::JoinHandle` and the collection loop was a bare
+/// `join()`. A channel is used instead so the batch can wait with a deadline — a
+/// `JoinHandle` offers no timed join, which is what let one hung tool freeze the turn.
 type ParallelToolHandle = (
     usize,
     String,
     serde_json::Value,
     CallId,
-    thread::JoinHandle<(Vec<Content>, bool)>,
+    std::sync::mpsc::Receiver<(Vec<Content>, bool)>,
 );
+
+/// Poll interval while collecting a parallel result.
+const PARALLEL_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Why a parallel tool produced no value.
+enum ParallelFailure {
+    /// The worker thread died (panic) — the channel closed without a send.
+    Panicked,
+    /// Cancelled, and the tool did not return within [`CANCEL_ABANDON_GRACE`].
+    Abandoned,
+}
+
+/// Wait for one parallel tool's result.
+///
+/// Blocks indefinitely while the batch is live: a long-running tool is legitimate and must
+/// not be cut short. Once `cancel` fires, the tool is given `grace` to observe it and return;
+/// past that the wait gives up. Without this bound a tool that ignores `Cancel` froze
+/// `run_tool_batch` for the life of the process (B8).
+fn recv_parallel_result(
+    rx: &std::sync::mpsc::Receiver<(Vec<Content>, bool)>,
+    cancel: &Cancel,
+    grace: std::time::Duration,
+) -> Result<(Vec<Content>, bool), ParallelFailure> {
+    let mut give_up_at: Option<std::time::Instant> = None;
+    loop {
+        match rx.recv_timeout(PARALLEL_POLL) {
+            Ok(v) => return Ok(v),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(ParallelFailure::Panicked)
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if cancel.cancelled() {
+                    let deadline =
+                        *give_up_at.get_or_insert_with(|| std::time::Instant::now() + grace);
+                    if std::time::Instant::now() >= deadline {
+                        return Err(ParallelFailure::Abandoned);
+                    }
+                }
+            }
+        }
+    }
+}
 
 impl ReactLoop {
     /// One provider attempt: plan (compaction decided here), before_request hook, stream,
@@ -35,6 +81,11 @@ impl ReactLoop {
             .store
             .plan_request(&params.session)
             .map_err(|e| ReactError::Store(e.0))?;
+
+        // Did the store offer a span to compact this round? If it did not, nothing about the
+        // request will differ on the next iteration of the attempt loop — which is what makes
+        // a provider-reported overflow unrecoverable (see the guard after `provider_attempt`).
+        let store_offered_compaction = plan.compact.is_some();
 
         // R-RCT-020 step 3 / R-RCT-090: run the compaction sub-turn then re-plan once.
         // 96E-11: compaction reuses the provider_attempt abstraction so cancellation,
@@ -121,6 +172,42 @@ impl ReactLoop {
 
         // R-RCT-020 step 4: stream + assemble via reusable abstraction (96E-11).
         let attempt = self.provider_attempt(&req, cancel, &params.model.r#ref)?;
+
+        // R-RCT-080 bound. `turn.rs` answers `Attempt::ContextOverflow` with a bare
+        // `continue`, trusting that the next `plan_request` will offer a compaction span and
+        // that the branch above will charge `replans`. That trust only holds when the store
+        // agrees the context is full. It computes that locally, from its own token count
+        // against `0.80 * ctx_window`, so a stale or wrong `ctx_window` (a config edit, a
+        // model re-registered with a different window — see `ServerState::reload_config`)
+        // makes the provider say "too long" while the store says "nothing to compact".
+        //
+        // In that state the request is byte-identical every iteration: same messages, same
+        // tools, same cache prefix. The loop would re-issue it forever, billing a provider
+        // call each time, and `cancel` is only read after the stream returns so ESC never
+        // lands. Charge the same `replans` budget the compaction path uses and fail once it
+        // is spent — a turn that cannot make progress must end, not spin.
+        if matches!(attempt, Attempt::ContextOverflow) && !store_offered_compaction {
+            *replans += 1;
+            if *replans > params.config.max_context_replans {
+                self.bus.emit(LiveEvent::Error {
+                    message: "context overflow reported by the provider, but the store has \
+                              nothing left to compact (check the model's ctx_window); ending \
+                              the turn instead of retrying an identical request"
+                        .into(),
+                });
+                return Err(ReactError::Provider(
+                    "provider reported context overflow with no compaction available".into(),
+                ));
+            }
+            self.bus.emit(LiveEvent::TurnStatus {
+                phase: "retrying".into(),
+                message: format!(
+                    "provider reported context overflow — re-plan {}/{}",
+                    *replans, params.config.max_context_replans
+                ),
+            });
+        }
+
         Ok(attempt)
     }
 
@@ -350,31 +437,43 @@ impl ReactLoop {
                             call_id: call.id.clone(),
                         };
                         let cancel = cancel.clone();
-                        let args = args.clone();
+                        // The worker takes ownership of these; the handle keeps its own
+                        // copies so `after_tool_call` can be applied at collection time.
+                        let worker_args = args.clone();
                         let name = call.name.clone();
                         let id = call.id.clone();
                         let bus = self.bus.clone();
+                        // B8: cancel is checked before dispatch here too, matching the
+                        // sequential path (R-RCT-060). A batch cancelled before its threads
+                        // were spawned used to launch them anyway.
+                        if cancel.cancelled() {
+                            continue;
+                        }
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        thread::spawn(move || {
+                            bus.emit(LiveEvent::ToolStarted {
+                                call_id: id.clone(),
+                                name: name.clone(),
+                            });
+                            let out = tool.execute(&worker_args, &ctx, &cancel);
+                            let (inner, is_error) = match out {
+                                Ok(o) => (o.content, o.is_error),
+                                Err(e) => (vec![Content::Text { text: e.0 }], true),
+                            };
+                            bus.emit(LiveEvent::ToolFinished {
+                                call_id: id.clone(),
+                                is_error,
+                            });
+                            // The receiver is gone if the batch abandoned this call; the
+                            // send then fails and the thread simply exits.
+                            let _ = tx.send((inner, is_error));
+                        });
                         handles.push((
                             i,
-                            name.clone(),
+                            call.name.clone(),
                             args.clone(),
-                            id.clone(),
-                            thread::spawn(move || {
-                                bus.emit(LiveEvent::ToolStarted {
-                                    call_id: id.clone(),
-                                    name: name.clone(),
-                                });
-                                let out = tool.execute(&args, &ctx, &cancel);
-                                let (inner, is_error) = match out {
-                                    Ok(o) => (o.content, o.is_error),
-                                    Err(e) => (vec![Content::Text { text: e.0 }], true),
-                                };
-                                bus.emit(LiveEvent::ToolFinished {
-                                    call_id: id.clone(),
-                                    is_error,
-                                });
-                                (inner, is_error)
-                            }),
+                            call.id.clone(),
+                            rx,
                         ));
                     }
                 }
@@ -391,9 +490,11 @@ impl ReactLoop {
             results[i] = Some(self.execute_one(params, &registry, call, &plans[i], cancel));
         }
 
-        // Join parallel handles in call order and apply after_tool_call sequentially.
-        for (i, name, args, id, h) in handles {
-            let content = match h.join() {
+        // Collect parallel results in call order and apply after_tool_call sequentially.
+        // B8: bounded — see `recv_parallel_result`. A tool that ignores `Cancel` is
+        // abandoned rather than waited on, so the batch always returns and the turn can end.
+        for (i, name, args, id, rx) in handles {
+            let content = match recv_parallel_result(&rx, cancel, params.config.tool_cancel_grace) {
                 Ok((inner, is_error)) => {
                     let patched = self.hook_after_tool_call(&name, &args, &params.cwd, inner);
                     Content::ToolResult {
@@ -402,9 +503,33 @@ impl ReactLoop {
                         is_error,
                     }
                 }
-                Err(_) => synth_error(&id, "tool thread panicked"),
+                Err(ParallelFailure::Panicked) => synth_error(&id, "tool thread panicked"),
+                Err(ParallelFailure::Abandoned) => {
+                    // R-RCT-060: the call never answered, so synthesize its result rather
+                    // than leaving the ToolCall open (DESIGN §7.5). The orphaned thread is
+                    // left to exit on its own; its `send` will fail harmlessly.
+                    self.bus.emit(LiveEvent::Error {
+                        message: format!(
+                            "tool '{}' (call {}) did not stop after cancellation; abandoning it",
+                            name, id.0
+                        ),
+                    });
+                    self.bus.emit(LiveEvent::ToolFinished {
+                        call_id: id.clone(),
+                        is_error: true,
+                    });
+                    synth_error(&id, "aborted by user (tool did not stop; abandoned)")
+                }
             };
             results[i] = Some(content);
+        }
+
+        // B8: a call skipped at dispatch (cancelled before its thread was spawned) still
+        // owes a result. R-RCT-060 again: no ToolCall may be left without a ToolResult.
+        for (i, call) in calls.iter().enumerate() {
+            if results[i].is_none() {
+                results[i] = Some(synth_error(&call.id, "aborted by user"));
+            }
         }
 
         results

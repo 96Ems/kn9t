@@ -46,10 +46,23 @@ impl LeaseMap {
         }
     }
 
+    /// Mint an opaque, unguessable holder token.
+    ///
+    /// B7: this used to be
+    /// `format!("lease-{}-{}", counter, Instant::now().elapsed().as_nanos())`.
+    /// `Instant::now().elapsed()` measures from *now*, so it is ~0 on every call (measured:
+    /// 3 distinct values across 20 samples, mostly 0) — the token collapsed to
+    /// `lease-{n}-0`, with `n` restarting at 1 on each server start. That defeats the
+    /// token's only purpose (see the module header): telling the current holder from a
+    /// stale former one after a takeover. A former holder — or anyone who guessed
+    /// `lease-1-0` — was accepted as the session's single writer.
+    ///
+    /// The counter is kept so two tokens minted in the same instant still differ; the
+    /// random suffix is what makes one unguessable, and unrepeatable across runs.
     fn mint_holder(&self) -> String {
-        let mut c =safe_expect!(self.counter.lock(), "lease counter poisoned");
+        let mut c = safe_expect!(self.counter.lock(), "lease counter poisoned");
         *c += 1;
-        format!("lease-{}-{}", *c, Instant::now().elapsed().as_nanos())
+        format!("lease-{}-{}", *c, crate::auth::generate_token())
     }
 
     /// R-SRV-060 — acquire `session`'s lease. If free (or the current holder has

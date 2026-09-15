@@ -10,6 +10,48 @@ Legend: `☐` pending · `▣` in progress · `☑` done (acceptance test passin
 
 ## Current position
 
+**2026-09-16 (reliability audit, 11 bugs):** audit of the ReAct loop + client/server harness for
+wedge / desync / transient-vs-durable failures. Eleven first-order bugs, each reproduced by a
+failing test before the fix. `cargo test --workspace --no-fail-fast`: **863 passed, 0 failed,
+3 ignored**. `cargo clippy --workspace --all-targets`: 0 errors, 0 warnings in touched files.
+`check-gi1.sh` / `check-mojibake.sh` / `check-schema.sh` / `check-unwrap-trend.sh` all green.
+
+| Bug | What was wrong | Fix | Tests |
+|---|---|---|---|
+| B1 | `Event::from(TurnFinishing)` panicked on any non-`SessionSink` bus -> turn thread died -> session 409 forever | `is_internal()` + `to_observable_event() -> Option<Event>` | `unit_turn_finishing` 5 |
+| B2 | No provider ever produced `ProvErr::ContextOverflow`; compaction was unreachable code | `is_context_overflow()` wired pre-stream + in-band | `unit_overflow_classify` |
+| B3 | Provider overflow + nothing to compact = identical request re-billed forever | charge `replans` in that case, fail once spent | `unit_context_overflow` 4 |
+| B4 | `run()` had no turn ceiling; `should_stop` defaults false and fails false | `ReactConfig::max_turns` + `ReactError::TurnLimit`, `end_turn()` factored | `unit_max_turns` 5 |
+| B5 | `abort` fired outside the lock; ESC swallowed, or applied to the next turn | `abort_turn(session, Option<id>)`, cancel fired under lock | `unit_turn_registry` 6 |
+| B6 | `aborts` keyed by session only; turn A's teardown deregistered turn B | `TurnSlot` guard, compare-and-swap on `turn_id` | `unit_turn_registry`, `unit_turn_lifecycle` 9 |
+| B7 | `Instant::now().elapsed()` ~= 0 -> lease tokens were `lease-{n}-0`, guessable | random suffix via `auth::generate_token()` | `unit_lease` +3 |
+| B8 | `h.join()` unbounded; one hung `parallel_safe` tool froze the turn permanently | channel + `recv_parallel_result` with cancel grace, synthesized result | `unit_parallel_hang` 4 |
+| B9 | SSE dedup assumed the ring never drops; an evicted durable echo = permanent hole | `contiguous_through` + `gap_detected` + `event: gap` frame | `unit_sse_gap` 3 |
+| B10 | `unwrap_or_else(Cancel::new)` is unfireable + no deadline -> plugin worker wedged for life | `wait_until(deadline)` on both registries; expiry denies | `unit_interaction_deadline` 5 |
+| B11 | Sub-agent watchdog armed on the **parent's** `Cancel`; killed the parent 600 s later | child gets its own `Cancel`, one-way watcher, `DoneGuard`, own `TurnSlot` | covered by the refactor |
+
+**Architecture note.** Four of the eleven (B1, B5, B6, and B8's blast radius) share one root cause:
+`ServerState::aborts` was both the cancellation registry and the "turn running" flag that `/prompt`
+gates on, keyed by session id alone, with its lifecycle driven by a *transient* event
+(`SessionSink` on `TurnFinishing`) plus a best-effort fallback. `turn::TurnSlot` now owns the
+registration, the `Cancel`, and the `IdleTracker` count as one lifetime released on `Drop`. The two
+facts keep different lifetimes on purpose: `aborts` is released early so the next prompt is not
+409'd, the idle count only on `Drop` so idle-exit cannot reap the process during `maybe_autotitle`.
+
+**Config note.** The deadlines introduced by B10 (and B8's grace) are `[server]` knobs, not
+constants: `approval_timeout_secs`, `interaction_timeout_secs`,
+`interaction_timeout_no_cancel_secs`, `tool_cancel_grace_ms`, behind `config::ServerTimeouts`.
+Defaults equal the previous hardcoded values, and `0` means *no deadline* rather than "expire
+immediately" (a literal reading would deny every approval instantly).
+
+**Known gap:** B8 abandons a hung tool thread rather than killing it (Rust cannot kill a thread from
+outside). The turn ends and the session stays usable, but a repeatedly-hanging plugin leaks threads.
+The real fix belongs in `PluginHost` (kill the subprocess, which drops the pipe).
+
+---
+
+## Previous position
+
 **2026-09-15 (96E-46 + 96E-51 epics, 8 tickets):** plugin lifecycle is now agent-drivable and
 session forks are navigable. `cargo test --workspace --no-fail-fast`: **815 passed, 0 failed,
 2 ignored** (both Windows-only `#[ignore]`: `srv::plugin_reload` and the new

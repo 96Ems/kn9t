@@ -269,9 +269,24 @@ impl ApprovalRegistry {
             .remove(&id);
     }
 
-    /// Block until `id` is resolved or `cancel` fires.
+    /// Block until `id` is resolved, `cancel` fires, or `deadline` elapses.
+    ///
     /// 96E-39: Returns Deny if cancelled (ESC during pending approval = abort).
-    fn wait(&self, slot: Arc<ApprovalSlot>, id: u64, cancel: &Cancel) -> Decision {
+    ///
+    /// B10: the deadline is the third exit, and the reason it must exist is that callers can
+    /// reach this with a `Cancel` nobody else holds — `get_cancel(..).unwrap_or_else(Cancel::new)`
+    /// when no turn is registered — so an approval nobody answers used to block the calling
+    /// thread for the life of the process. Timing out denies, consistent with the rest of the
+    /// approval posture (DESIGN §13.5): a question that could not be answered is not
+    /// permission.
+    fn wait(
+        &self,
+        slot: Arc<ApprovalSlot>,
+        id: u64,
+        cancel: &Cancel,
+        deadline: Option<std::time::Duration>,
+    ) -> Decision {
+        let expires_at = deadline.map(|d| std::time::Instant::now() + d);
         let mut guard = slot
             .decision
             .lock()
@@ -283,18 +298,21 @@ impl ApprovalRegistry {
             // 96E-39: Check cancel at each iteration
             if cancel.cancelled() {
                 eprintln!("[approval] wait id={} cancelled", id);
-                // Clean up the pending slot
-                self.inner
-                    .lock()
-                    .expect("policy.rs: ApprovalRegistry::wait cleanup lock poisoned")
-                    .remove(&id);
-                self.meta
-                    .lock()
-                    .expect("policy.rs: ApprovalRegistry::wait meta cleanup lock poisoned")
-                    .remove(&id);
+                drop(guard);
+                self.remove(id);
                 return Decision::Deny {
                     reason: "cancelled".to_string(),
                 };
+            }
+            if let Some(at) = expires_at {
+                if std::time::Instant::now() >= at {
+                    eprintln!("[approval] wait id={} timed out", id);
+                    drop(guard);
+                    self.remove(id);
+                    return Decision::Deny {
+                        reason: "approval timed out with no answer".to_string(),
+                    };
+                }
             }
 
             let (new_guard, _timeout) = slot
@@ -413,16 +431,37 @@ fn extract_cmd(args_json: &str) -> Option<String> {
 pub struct InteractiveApprover {
     pub registry: Arc<ApprovalRegistry>,
     pub cache: Arc<ApprovalCache>,
+    /// B10 — how long to wait for a human decision before denying. `None` waits forever.
+    ///
+    /// From `[server] approval_timeout_secs`. It has to be *some* finite value by default,
+    /// because `ApprovalCtx::cancel` may be a handle nobody can fire (the `Cancel::new()`
+    /// fallback in `host_api` when no turn is registered), and the turn thread then blocks
+    /// for the life of the process.
+    pub timeout: Option<std::time::Duration>,
 }
 
 impl InteractiveApprover {
     pub fn new(registry: Arc<ApprovalRegistry>) -> Self {
         let cache = Arc::new(ApprovalCache::new(crate::config::global_config_path()));
-        InteractiveApprover { registry, cache }
+        InteractiveApprover {
+            registry,
+            cache,
+            timeout: crate::config::ServerTimeouts::default().approval,
+        }
     }
 
     pub fn with_cache(registry: Arc<ApprovalRegistry>, cache: Arc<ApprovalCache>) -> Self {
-        InteractiveApprover { registry, cache }
+        InteractiveApprover {
+            registry,
+            cache,
+            timeout: crate::config::ServerTimeouts::default().approval,
+        }
+    }
+
+    /// Override the human-decision deadline (`[server] approval_timeout_secs`).
+    pub fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        self.timeout = timeout;
+        self
     }
 }
 
@@ -458,7 +497,11 @@ impl Approver for InteractiveApprover {
         // *after* the hook returned — so a user taking their time cannot trip the plugin's
         // 30 s hook timeout (ADR-0008).
         // 96E-39: pass cancel so ESC can abort the approval wait.
-        let decision = self.registry.wait(slot, id, ctx.cancel);
+        // B10: and a deadline, because `ctx.cancel` may be a handle nobody can fire (the
+        // `Cancel::new()` fallback in host_api when no turn is registered). Denying on
+        // timeout keeps the fail-closed posture. Configurable via
+        // `[server] approval_timeout_secs`; `None` restores the old wait-forever behaviour.
+        let decision = self.registry.wait(slot, id, ctx.cancel, self.timeout);
         self.registry.remove(id);
         decision
     }

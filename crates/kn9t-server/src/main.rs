@@ -47,6 +47,7 @@ fn run() -> std::io::Result<()> {
             models: Vec::new(),
             default_model_id: None,
             idle_exit: None,
+            timeouts: config::ServerTimeouts::default(),
             policy_mode: config::PolicyMode::default(),
             plugins: Vec::new(),
         }
@@ -79,6 +80,23 @@ fn run() -> std::io::Result<()> {
     // Plugins load in background; session creation blocked until ready.
     let mut state = ServerState::new(store.clone(), token, ToolRegistry::new(), Vec::new());
     state.set_plugins_loading(true);
+    // B10: the approval/interaction deadlines and the tool-cancellation grace come from
+    // `[server]`. Installed before the approver is built, since it captures the deadline.
+    state = state.with_timeouts(resolved.timeouts);
+    kn9t_server::log!(
+        "timeouts: approval={:?} interaction={:?} interaction_no_cancel={:?} tool_cancel_grace={:?}",
+        resolved.timeouts.approval,
+        resolved.timeouts.interaction,
+        resolved.timeouts.interaction_no_cancel,
+        resolved.timeouts.tool_cancel_grace
+    );
+    let approver = ServerState::approver_for(
+        true,
+        &state.approval_registry.clone(),
+        &state.approval_cache.clone(),
+        &resolved.timeouts,
+    );
+    state = state.with_approver(approver);
 
     // ADR-0008: policy decisions moved to plugin. Log mode for info.
     kn9t_server::log!(

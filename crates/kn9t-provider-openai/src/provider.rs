@@ -151,6 +151,18 @@ impl OpenAiProvider {
                 "[{}] HTTP {} body: {}",
                 self.config.name, resp.status, snippet
             );
+            // R-RCT-080: a too-long prompt is recoverable — the loop can compact and
+            // re-plan — but only if it is reported as `ContextOverflow`. Providers signal
+            // it as an ordinary 400 whose body carries the reason, so classify here rather
+            // than letting it fall through as an opaque `Http` failure (which the loop
+            // treats as fatal, killing a session that could have continued).
+            if kn9t_provider_core::is_context_overflow(resp.status, &body) {
+                eprintln!(
+                    "[{}] classified as context overflow -> compaction re-plan",
+                    self.config.name
+                );
+                return Err(ProvErr::ContextOverflow);
+            }
             return Err(ProvErr::Http {
                 status: resp.status,
                 body,
