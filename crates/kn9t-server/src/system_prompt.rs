@@ -13,8 +13,10 @@ pub fn build_system_prompt(platform: &str) -> String {
 - Be concise and direct. Output is displayed in a terminal.
 - When editing files, read them first to understand conventions and context.
 - For shell commands, explain non-trivial commands briefly before running.
-- Use exploring tools in batch, to explore fastly and efficiently.
-- Use writing tools one at a time, waiting for results before proceeding.
+- Batch independent tool calls into the SAME response, regardless of type (read, edit, write, bash) — the only reason to go sequential is a real dependency: call B needs call A's result, or two calls target the same file.
+  - Don't: read fileA -> wait -> edit fileA -> wait -> write fileB -> wait -> read fileC
+  - Do: read fileA + write fileB + read fileC in one turn (edit fileA waits only because it needs fileA's content first)
+- Never batch destructive/irreversible commands (rm, git reset, etc.) with anything else.
 - Follow the codebase's existing style and conventions.
 - Do not add comments unless asked.
 - Do not commit changes unless explicitly asked.

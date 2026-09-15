@@ -9,6 +9,84 @@ pointer current.
 
 ---
 
+## Session -- 2026-09-15 -- Plugin lifecycle the agent can drive, session tree the user can walk
+
+**Next session starts here:** two ends are deliberately left open. (1) `p1_96e47_plugin_stop_start`
+is `#[ignore]`d on Windows for the same reason `srv::plugin_reload` is -- the dummy plugin is a
+POSIX shell script -- so the stop/start HTTP contract is unverified on the dev platform; a
+`.cmd`/`.exe` dummy would unignore both at once. (2) `kn9t-plugin-manager` re-hides itself only on
+request: an automatic close after N quiet turns needs a turn counter the plugin does not have, and
+96E-50 explicitly allowed manual close for V1.
+
+### 96E-46 -- plugin lifecycle, surfaced to the agent
+
+Four things existed already and were reused rather than re-invented: `reload_plugin`'s
+cancel/wait/shutdown sequence, `disabled_tools`' execution-time blocking, `ToolSpec.hidden` +
+`visible_specs()`, and the `host_api` op dispatch.
+
+**Stop is not reload (96E-47).** `reload_plugin` always respawns, so there was no way to cut a
+plugin and leave it off. `stop_plugin` reuses its steps 1--3 and stops there; `start_plugin`
+delegates the respawn back to `reload_plugin` rather than growing a second copy that could drift.
+The cache decision is the substance: a stopped plugin's tools **stay in the registry and stay in
+the `tools` array**, and `blocked_tools()` refuses the calls. Filtering them out would rewrite the
+level-1 cache prefix (§8.4.2) for a condition meant to be temporary. `blocked_tools()` is derived
+from `Tool::plugin()` on each read, not stored as a name list, so a reload cannot leave a stale
+block behind.
+
+**The registry had to become live (96E-48).** `compose_loop` called `state.tools_snapshot()` once
+per `run_session_turn` and moved the result into `ReactLoop { tools }`, so a stop/start/reload
+during a multi-tool-call turn was observed only by the *next* prompt. `exec.rs` already rebuilt
+`visible_specs()` per model call, so the hook existed -- what was missing was a live source behind
+it. `ReactLoop.tools` is now `Arc<dyn ToolSource>` (GI-1 holds: the loop still sees only a
+`&dyn Trait`, like `Provider`/`Store`/`Approver`). One subtlety worth keeping: `run_tool_batch`
+takes **one** snapshot for the whole batch. Re-reading per call would let two calls in the same
+batch resolve against different registries, making results depend on thread scheduling.
+
+**Lifecycle as tools (96E-49).** DESIGN §13.9 puts zero tools in the core -- even `bash` lives in
+the `kn9t-tools` plugin -- so this is `plugins/kn9t-plugin-manager`, five tools relaying to
+`host_api` ops that call the *same* `state.*` functions the HTTP routes call. One implementation,
+two callers (human over HTTP, agent over a tool call).
+
+**Visibility is the plugin's business, not the server's (96E-50).** The first attempt put
+`const PLUGIN_MANAGER: &str = "kn9t-plugin-manager"` in `state.rs` and had the server reveal that
+plugin on discovery/crash. Emeric rejected it, correctly: the server must not special-case one
+external plugin. Replaced with two generic primitives -- `plugin_health` (what the server observed
+about each subprocess) and `tool_visibility` (a plugin sets `hidden` on **its own** tools; `plugin`
+comes from the host's dispatch, never the payload, so nobody can reveal or bury another plugin's
+tools) -- plus `Event::PluginState` fanned out to subscribed plugins by `notify_plugins`. The
+server now states facts and holds no opinion; the policy lives in the plugin's `visibility.rs`.
+This is the better design *and* the smaller server.
+
+### 96E-51 -- session navigation as a tree
+
+The store side was already done and tested (`fork_session`, `ForkReason`, the single generic
+`POST /session/{id}/fork`). Everything here was the missing client half.
+
+`GET /session` projected five columns and not the three that had been written by every fork since
+R-STOR-120 (96E-52), so no client could tell a branch from a root. `build_forest` (96E-53) is a
+pure module over `SessionEntry`, shared by the sidebar and the `/tree` overlay so the tree exists
+once. Two decisions in it are load-bearing: an orphan (parent deleted, or filtered out by the
+picker's search) is **promoted to a root** rather than dropped, because indexing strictly by parent
+would hide sessions that match the user's filter; and `picker_order` is one function called by both
+the renderer and the key handler, which is 96E-19's rule -- two independent loops mean `selected`
+highlights one row while Enter opens another.
+
+`/fork` and `/undo` (96E-55) are the same call with a different `reason`: the log is append-only,
+so "drop the last message" is a branch that stops short of it, never an edit in place. The switch
+is silent by design -- announcing "new session created" would describe the mechanism when the user
+asked to step back one message.
+
+### Process note
+
+`state.rs` was corrupted mid-session by editing it through PowerShell: `Get-Content -Raw` reads
+cp1252 on PS 5.1, so a round-trip destroyed 54 em-dash/§ characters into U+FFFD (irreversibly --
+`EF BF BD` does not carry the original byte). `check-mojibake.sh` caught it. Repaired with the
+`edit` tool; `339585d` is the safety commit and `f6eb2a7` the repair. The rule this proves:
+`bash` reads and runs, `edit` edits. Never round-trip a source file through PowerShell string
+handling.
+
+---
+
 ## Session -- 2026-09-07 -- TUI: make the Lua API real, delete the pre-Lua chrome
 
 **Next session starts here:** the overlays (`render_model_select`, `render_session_select`,

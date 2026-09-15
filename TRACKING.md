@@ -10,6 +10,31 @@ Legend: `☐` pending · `▣` in progress · `☑` done (acceptance test passin
 
 ## Current position
 
+**2026-09-15 (96E-46 + 96E-51 epics, 8 tickets):** plugin lifecycle is now agent-drivable and
+session forks are navigable. `cargo test --workspace --no-fail-fast`: **815 passed, 0 failed,
+2 ignored** (both Windows-only `#[ignore]`: `srv::plugin_reload` and the new
+`srv::p1_96e47_plugin_stop_start`, same POSIX-shell-dummy-plugin reason). `cargo clippy
+--workspace --all-targets`: 0 errors, 0 warnings in the new files. `check-gi1.sh` / `check-schema.sh`
+/ `check-mojibake.sh` all green. Commits `339585d` (wip) + `f6eb2a7` (encoding repair).
+
+| Ticket | What shipped | Tests |
+|---|---|---|
+| 96E-47 | `stop_plugin`/`start_plugin` + `stopped_plugins`; `POST /plugin/{n}/stop\|start`, `GET /plugin`. Stopped plugins keep their specs in the `tools` array (level-1 prefix intact) and are refused via `blocked_tools()` | `plugin_lifecycle::*` 13, `srv::p1_96e47_plugin_stop_start` (Windows-ignored) |
+| 96E-48 | `ToolSource` trait in kn9t-react; `ReactLoop.tools: Arc<dyn ToolSource>` re-snapshotted per model call; `FilteredTools` keeps the subagent grant live | `live_tools::*` 8 |
+| 96E-49 | `plugins/kn9t-plugin-manager` (5 tools) + host_api ops `plugin_list/stop/start/reload/load` delegating to the same `state.*` the routes use | covered via the ops in `plugin_lifecycle::*` |
+| 96E-50 | `HiddenOverride` + `set_tool_hidden`/`set_plugin_hidden`; generic ops `plugin_health` + `tool_visibility` (caller-scoped); `Event::PluginState` fanned out by `notify_plugins` | `plugin_lifecycle::*` (hidden/override cases) |
+| 96E-52 | `origin_session`/`origin_seq`/`fork_reason` projected by `GET /session` and `GET /session/{id}` | `srv::p1_96e52_session_list_exposes_fork_parentage` |
+| 96E-53 | `kn9t-tui/src/session_tree.rs` (`build_forest`, `picker_order`, `reason_badge`) + indented sidebar with reason badges | `unit_session_tree::*` 12 |
+| 96E-54 | `Overlay::SessionTree` git-graph view, keyboard switch, degrades cleanly on a single session | shares the `build_forest` fixtures |
+| 96E-55 | `/fork [seq]`, `/undo [n]`, `/tree` in `COMMANDS`; `plan_fork()` (pure) + `fork_into()`; silent switch via the `/new` sequence | `unit_session_tree::*` 10 (`plan_fork` rules) |
+
+**Architecture note (96E-50).** The first cut hardcoded `"kn9t-plugin-manager"` in `state.rs` so the
+server could reveal that plugin's tools on discovery/crash. Rejected in review: the server must not
+special-case an external plugin. The shipped design gives the server two generic primitives
+(`plugin_health` reports what it observed; `tool_visibility` lets a plugin change **its own** tools,
+scoped by the host's dispatch so no plugin can touch another's) and moves the reveal policy into the
+plugin. Smaller server, and no privileged plugin name in core.
+
 **Stage:** PLAN.md post-v1 improvements (P1–P4 complete). Architecture cleanup 2026-08-30,
 Phase 0–2 done (docs scaffolding, classifier+approvals, schema-first API contract).
 **Last gate green:** stage 09 — R-CP-900 / R-ANTH-900 green. **ADR-0008 landed 2026-08-31** — policy
