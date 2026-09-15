@@ -12,5 +12,6 @@ fn main() {
 
 mod bash;
 mod edit;
+mod path;
 mod read;
 mod write;

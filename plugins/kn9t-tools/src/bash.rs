@@ -194,13 +194,24 @@ impl PluginTool for Bash {
             ("sh", "-c")
         };
 
-        let mut child = match Command::new(shell)
+        let mut cmd_builder = Command::new(shell);
+        cmd_builder
             .arg(flag)
             .arg(&cmd)
-            .stdin(Stdio::null())  // Don't inherit stdin — prevents hangs on interactive prompts
+            .stdin(Stdio::null()) // Don't inherit stdin — prevents hangs on interactive prompts
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+
+        // Run in the *session's* directory, not the plugin process's. A plugin is a
+        // long-lived subprocess spawned by the server, so its own cwd is wherever the
+        // server was started — unrelated to the session the command belongs to, and shared
+        // by every session at once. `ctx.cwd` is the per-session value the host sends with
+        // each call. `None` (a host that reported none) keeps the inherited cwd.
+        if let Some(cwd) = &ctx.cwd {
+            cmd_builder.current_dir(cwd);
+        }
+
+        let mut child = match cmd_builder.spawn()
         {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(format!("spawn failed: {e}")),

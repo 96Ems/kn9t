@@ -10,7 +10,6 @@
 
 use kn9t_plugin_sdk::{ctx::ToolCallCtx, traits::{PluginTool, ToolOutput}, wire::{DefaultPolicy, Effect, EffectKind, ToolPolicy, ToolSpec}};
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::read::read_map;
@@ -263,7 +262,8 @@ impl PluginTool for Edit {
 
     fn execute(&self, args: &Value, ctx: &ToolCallCtx) -> ToolOutput {
         let path = match args.get("path").and_then(|p| p.as_str()) {
-            Some(p) => PathBuf::from(p),
+            // Relative to the session's cwd, not the plugin process's (see `crate::path`).
+            Some(p) => crate::path::resolve(p, ctx.cwd.as_ref()),
             None => return ToolOutput::error("missing 'path'"),
         };
         let old = match args.get("old_string").and_then(|s| s.as_str()) {

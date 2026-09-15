@@ -101,7 +101,8 @@ impl PluginTool for Read {
 
     fn execute(&self, args: &Value, ctx: &ToolCallCtx) -> ToolOutput {
         let path = match args.get("path").and_then(|p| p.as_str()) {
-            Some(p) => PathBuf::from(p),
+            // Relative to the session's cwd, not the plugin process's (see `crate::path`).
+            Some(p) => crate::path::resolve(p, ctx.cwd.as_ref()),
             None => return ToolOutput::error("missing 'path' argument"),
         };
         let offset = args.get("offset").and_then(|o| o.as_u64()).unwrap_or(1).max(1) as usize;
