@@ -59,6 +59,17 @@ impl Tool for RemoteTool {
             // 96E-17: the calling session — plugin tools that spawn sessions
             // (fork/prompt) need it. Set by the server per turn via TLS.
             "session": self.host.session_id(),
+            // The session's working directory, as the ReAct loop resolved it.
+            //
+            // Without this the SDK's `ToolCallCtx::cwd` was always `None`, so a plugin tool
+            // fell back to its own process cwd — the directory the *server* was started in,
+            // shared by every session. `bash` ran there and relative paths resolved there,
+            // which is why `pwd` disagreed with the session while hooks (which do receive
+            // `cwd`) reported it correctly.
+            //
+            // `ctx.cwd` is authoritative: the loop takes it from `RunParams`, which the
+            // server fills from the session row.
+            "cwd": ctx.cwd.to_string_lossy(),
         });
 
         // Clone what we need for the closure.
