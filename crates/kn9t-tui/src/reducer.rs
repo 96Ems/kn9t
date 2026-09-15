@@ -569,10 +569,8 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                 "reloaded" => format!("Plugin '{plugin}' reloaded."),
                 // A crash is the case worth naming the cause for: the agent may have just
                 // lost tools it was using, and the reason is the only clue why.
-                "crashed" => match error {
-                    Some(e) => format!("Plugin '{plugin}' crashed: {e}"),
-                    None => format!("Plugin '{plugin}' crashed."),
-                },
+                "crashed" if !error.is_empty() => format!("Plugin '{plugin}' crashed: {error}"),
+                "crashed" => format!("Plugin '{plugin}' crashed."),
                 other => format!("Plugin '{plugin}': {other}"),
             };
             state.transcript.push(Message::new("system", msg));

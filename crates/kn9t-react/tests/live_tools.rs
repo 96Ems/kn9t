@@ -56,7 +56,8 @@ struct Counted {
 }
 
 impl Counted {
-    fn new(name: &str, hits: Arc<AtomicUsize>) -> Arc<dyn Tool> {
+    /// Hands back an `Arc<dyn Tool>` — what the registry takes — so it is not `new`.
+    fn boxed(name: &str, hits: Arc<AtomicUsize>) -> Arc<dyn Tool> {
         Arc::new(Counted {
             spec: ToolSpec {
                 name: name.into(),
@@ -200,7 +201,7 @@ fn a_tool_added_after_the_loop_was_built_is_dispatchable() {
     );
 
     // A plugin loads mid-turn.
-    source.set(ToolRegistry::from_tools(vec![Counted::new(
+    source.set(ToolRegistry::from_tools(vec![Counted::boxed(
         "late",
         hits.clone(),
     )]));
@@ -215,7 +216,7 @@ fn a_tool_added_after_the_loop_was_built_is_dispatchable() {
 #[test]
 fn a_tool_removed_mid_turn_stops_resolving() {
     let hits = Arc::new(AtomicUsize::new(0));
-    let source = MutableTools::new(ToolRegistry::from_tools(vec![Counted::new(
+    let source = MutableTools::new(ToolRegistry::from_tools(vec![Counted::boxed(
         "doomed",
         hits.clone(),
     )]));
@@ -240,8 +241,8 @@ fn a_tool_removed_mid_turn_stops_resolving() {
 fn one_batch_dispatches_against_a_single_snapshot() {
     let hits = Arc::new(AtomicUsize::new(0));
     let source = MutableTools::new(ToolRegistry::from_tools(vec![
-        Counted::new("a", hits.clone()),
-        Counted::new("b", hits.clone()),
+        Counted::boxed("a", hits.clone()),
+        Counted::boxed("b", hits.clone()),
     ]));
     let counter = source.snapshots.clone();
     counter.store(0, Ordering::SeqCst);
@@ -264,7 +265,7 @@ fn one_batch_dispatches_against_a_single_snapshot() {
 #[test]
 fn a_blocked_tool_is_refused_before_execution() {
     let hits = Arc::new(AtomicUsize::new(0));
-    let source = MutableTools::new(ToolRegistry::from_tools(vec![Counted::new(
+    let source = MutableTools::new(ToolRegistry::from_tools(vec![Counted::boxed(
         "gone",
         hits.clone(),
     )]));
@@ -292,8 +293,8 @@ fn a_blocked_tool_is_refused_before_execution() {
 fn blocking_does_not_remove_the_tool_from_the_advertised_set() {
     let hits = Arc::new(AtomicUsize::new(0));
     let source = MutableTools::new(ToolRegistry::from_tools(vec![
-        Counted::new("kept", hits.clone()),
-        Counted::new("blocked", hits.clone()),
+        Counted::boxed("kept", hits.clone()),
+        Counted::boxed("blocked", hits.clone()),
     ]));
     source.block("blocked");
 
@@ -314,8 +315,8 @@ fn blocking_does_not_remove_the_tool_from_the_advertised_set() {
 fn blocking_one_tool_leaves_its_siblings_runnable() {
     let hits = Arc::new(AtomicUsize::new(0));
     let source = MutableTools::new(ToolRegistry::from_tools(vec![
-        Counted::new("ok", hits.clone()),
-        Counted::new("nope", hits.clone()),
+        Counted::boxed("ok", hits.clone()),
+        Counted::boxed("nope", hits.clone()),
     ]));
     source.block("nope");
     let looop = loop_with(source, Arc::new(RecordingBus::new()));
@@ -335,7 +336,7 @@ fn blocking_one_tool_leaves_its_siblings_runnable() {
 #[test]
 fn filtered_source_grants_a_subset_yet_stays_live() {
     let hits = Arc::new(AtomicUsize::new(0));
-    let inner = MutableTools::new(ToolRegistry::from_tools(vec![Counted::new(
+    let inner = MutableTools::new(ToolRegistry::from_tools(vec![Counted::boxed(
         "granted",
         hits.clone(),
     )]));
@@ -352,8 +353,8 @@ fn filtered_source_grants_a_subset_yet_stays_live() {
 
     // A tool added later that is NOT in the grant stays invisible to this loop.
     inner.set(ToolRegistry::from_tools(vec![
-        Counted::new("granted", hits.clone()),
-        Counted::new("sneaky", hits.clone()),
+        Counted::boxed("granted", hits.clone()),
+        Counted::boxed("sneaky", hits.clone()),
     ]));
     let out = looop.run_tool_batch(&p, &[call("c2", "sneaky")], &Cancel::new());
     assert!(is_error(&out[0]), "the grant is still enforced");
@@ -363,7 +364,7 @@ fn filtered_source_grants_a_subset_yet_stays_live() {
 #[test]
 fn static_tools_wraps_a_registry_and_blocks_nothing() {
     let hits = Arc::new(AtomicUsize::new(0));
-    let src = kn9t_react::static_tools(ToolRegistry::from_tools(vec![Counted::new(
+    let src = kn9t_react::static_tools(ToolRegistry::from_tools(vec![Counted::boxed(
         "t",
         hits.clone(),
     )]));

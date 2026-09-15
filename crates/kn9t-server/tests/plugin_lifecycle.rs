@@ -24,7 +24,8 @@ struct FakeTool {
 }
 
 impl FakeTool {
-    fn new(name: &str, plugin: &str, hidden: bool) -> Arc<dyn Tool> {
+    /// Hands back an `Arc<dyn Tool>` — what the registry takes — so it is not `new`.
+    fn boxed(name: &str, plugin: &str, hidden: bool) -> Arc<dyn Tool> {
         Arc::new(FakeTool {
             spec: ToolSpec {
                 name: name.into(),
@@ -100,7 +101,7 @@ fn stop_on_unknown_plugin_is_not_found() {
 /// cannot bring back.
 #[test]
 fn stop_without_a_spawn_recipe_is_refused() {
-    let state = state_with(vec![FakeTool::new("t", "p", false)]);
+    let state = state_with(vec![FakeTool::boxed("t", "p", false)]);
     // No host registered either, so this is the earliest guard — still an error, never a
     // silent success that leaves the caller thinking the plugin is down.
     assert!(state.stop_plugin("p").is_err());
@@ -108,7 +109,7 @@ fn stop_without_a_spawn_recipe_is_refused() {
 
 #[test]
 fn a_plugin_is_running_until_it_is_stopped() {
-    let state = state_with(vec![FakeTool::new("t", "p", false)]);
+    let state = state_with(vec![FakeTool::boxed("t", "p", false)]);
     assert!(!state.is_plugin_stopped("p"));
 }
 
@@ -121,8 +122,8 @@ fn a_plugin_is_running_until_it_is_stopped() {
 #[test]
 fn stopped_plugin_tools_stay_advertised_but_become_blocked() {
     let state = state_with(vec![
-        FakeTool::new("alpha", "p1", false),
-        FakeTool::new("beta", "p2", false),
+        FakeTool::boxed("alpha", "p1", false),
+        FakeTool::boxed("beta", "p2", false),
     ]);
     assert!(state.blocked_tools().is_empty(), "nothing blocked initially");
 
@@ -141,7 +142,7 @@ fn stopped_plugin_tools_stay_advertised_but_become_blocked() {
 /// a reload that renames or drops a tool cannot leave a stale block behind.
 #[test]
 fn blocked_tools_is_derived_from_current_registry() {
-    let state = state_with(vec![FakeTool::new("alpha", "p1", false)]);
+    let state = state_with(vec![FakeTool::boxed("alpha", "p1", false)]);
     assert!(state.blocked_tools().is_empty());
     assert_eq!(state.plugin_tool_names("p1"), vec!["alpha"]);
     assert!(state.plugin_tool_names("nobody").is_empty());
@@ -154,7 +155,7 @@ fn blocked_tools_is_derived_from_current_registry() {
 /// plugin the server cannot act on would invite a call that always fails.
 #[test]
 fn inventory_lists_hosts_not_tool_claims() {
-    let state = state_with(vec![FakeTool::new("alpha", "ghost", false)]);
+    let state = state_with(vec![FakeTool::boxed("alpha", "ghost", false)]);
     assert!(
         state.plugin_inventory().is_empty(),
         "no spawned host, nothing to manage"
@@ -177,8 +178,8 @@ fn health_reports_nothing_when_no_plugin_is_loaded() {
 #[test]
 fn hidden_tools_are_registered_but_not_advertised() {
     let state = state_with(vec![
-        FakeTool::new("visible", "p", false),
-        FakeTool::new("secret", "p", true),
+        FakeTool::boxed("visible", "p", false),
+        FakeTool::boxed("secret", "p", true),
     ]);
     let snap = state.tools_snapshot();
     assert_eq!(snap.len(), 2, "both registered");
@@ -189,7 +190,7 @@ fn hidden_tools_are_registered_but_not_advertised() {
 
 #[test]
 fn set_tool_hidden_reveals_and_re_hides() {
-    let state = state_with(vec![FakeTool::new("secret", "p", true)]);
+    let state = state_with(vec![FakeTool::boxed("secret", "p", true)]);
     let names = |s: &Arc<ServerState>| -> Vec<String> {
         s.tools_snapshot()
             .visible_specs()
@@ -211,9 +212,9 @@ fn set_tool_hidden_reveals_and_re_hides() {
 #[test]
 fn revealing_a_tool_preserves_registry_order() {
     let state = state_with(vec![
-        FakeTool::new("a", "p", false),
-        FakeTool::new("b", "p", true),
-        FakeTool::new("c", "p", false),
+        FakeTool::boxed("a", "p", false),
+        FakeTool::boxed("b", "p", true),
+        FakeTool::boxed("c", "p", false),
     ]);
     state.set_tool_hidden("b", false);
     let order: Vec<String> = state
@@ -228,8 +229,8 @@ fn revealing_a_tool_preserves_registry_order() {
 #[test]
 fn set_plugin_hidden_affects_only_that_plugin() {
     let state = state_with(vec![
-        FakeTool::new("mine", "p1", true),
-        FakeTool::new("theirs", "p2", true),
+        FakeTool::boxed("mine", "p1", true),
+        FakeTool::boxed("theirs", "p2", true),
     ]);
     let touched = state.set_plugin_hidden("p1", false);
     assert_eq!(touched, vec!["mine"]);
@@ -250,7 +251,7 @@ fn set_plugin_hidden_affects_only_that_plugin() {
 /// from the registry simply stops being affected — no stale entry can resurrect it.
 #[test]
 fn override_for_an_absent_tool_is_inert() {
-    let state = state_with(vec![FakeTool::new("a", "p", false)]);
+    let state = state_with(vec![FakeTool::boxed("a", "p", false)]);
     state.set_tool_hidden("does-not-exist", false);
     let names: Vec<String> = state
         .tools_snapshot()

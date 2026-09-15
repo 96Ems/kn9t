@@ -1,5 +1,5 @@
-﻿//! The five lifecycle tools. Each one forwards to a `host_api` op and renders
-//! the host's reply; none of them decides anything.
+//! The five plugin lifecycle tools. Each one forwards to a `host_api` op and
+//! renders the host's reply; none of them decides anything.
 
 use kn9t_plugin_sdk::ctx::ToolCallCtx;
 use kn9t_plugin_sdk::traits::PluginTool;
