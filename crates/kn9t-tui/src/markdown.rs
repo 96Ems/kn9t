@@ -142,10 +142,13 @@ impl<'t> MarkdownRenderer<'t> {
                 } else {
                     "◦"
                 };
+                let bullet_str = format!("{}{} ", indent, bullet);
+                let bullet_len = bullet_str.chars().count();
                 self.current_line.push(Span::styled(
-                    format!("{}{} ", indent, bullet),
+                    bullet_str,
                     Style::default().fg(self.theme.muted),
                 ));
+                self.current_line_len += bullet_len;
             }
             Tag::Emphasis => {
                 self.italic = true;
@@ -216,10 +219,13 @@ impl<'t> MarkdownRenderer<'t> {
             TagEnd::Link => {
                 // Add link indicator.
                 if !self.link_url.is_empty() {
+                    let indicator = format!(" [{}]", truncate_url(&self.link_url, 30));
+                    let indicator_len = indicator.chars().count();
                     self.current_line.push(Span::styled(
-                        format!(" [{}]", truncate_url(&self.link_url, 30)),
+                        indicator,
                         Style::default().fg(self.theme.muted),
                     ));
+                    self.current_line_len += indicator_len;
                 }
                 self.in_link = false;
                 self.link_url.clear();
@@ -334,16 +340,30 @@ impl<'t> MarkdownRenderer<'t> {
     }
 
     fn inline_code(&mut self, code: &str) {
+        let text = format!("`{}`", code);
+        let text_len = text.chars().count();
+
+        // Word-wrap inline code the same way as regular text: flush first if
+        // it doesn't fit, so a `code span` mid-sentence can't push the line
+        // past the available width undetected.
+        if self.width > 0 && self.current_line_len + text_len > self.width && self.current_line_len > 0
+        {
+            self.flush_line();
+            self.add_continuation_prefix();
+        }
+
         self.current_line.push(Span::styled(
-            format!("`{}`", code),
+            text,
             Style::default()
                 .fg(self.theme.warning)
                 .add_modifier(Modifier::DIM),
         ));
+        self.current_line_len += text_len;
     }
 
     fn soft_break(&mut self) {
         self.current_line.push(Span::raw(" "));
+        self.current_line_len += 1;
     }
 
     fn hard_break(&mut self) {
