@@ -144,9 +144,15 @@ type PendingAgentsMd struct {
 
 // Plugin holds all runtime state.  Session injection tracking is stored in the
 // host KV store (survives server restarts); only in-flight pending queues live here.
+//
+// There is deliberately no `workspaceRoot` field. A plugin is a long-lived subprocess
+// spawned by the server, so os.Getwd() inside it is wherever the *server* was started —
+// unrelated to any session, and shared by every session at once. The host sends the
+// session's own directory as `cwd` on every hook payload; that value is threaded through
+// the call instead of being cached here, so two sessions rooted in different repos cannot
+// be confused for one another.
 type Plugin struct {
-	workspaceRoot string
-	globalConfig  string
+	globalConfig string
 
 	// stdout writer — all output serialised through writerMu.
 	writer   *bufio.Writer
@@ -171,9 +177,7 @@ type Plugin struct {
 }
 
 func NewPlugin() *Plugin {
-	cwd, _ := os.Getwd()
 	p := &Plugin{
-		workspaceRoot: cwd,
 		globalConfig:  getGlobalConfigPath(),
 		writer:        bufio.NewWriter(os.Stdout),
 		kvPending:     make(map[uint64]chan kvReply),
@@ -333,7 +337,11 @@ func (p *Plugin) handleAfterToolCall(id uint64, payload json.RawMessage) {
 	}
 	paths := p.extractPaths(data.Tool, data.Args)
 	for _, path := range paths {
-		p.discoverFromPath(data.SessionID, path)
+		// The session's cwd is both how a relative tool path is resolved and where the
+		// walk-up stops. It used to stop at the startup cwd, which for any session not
+		// rooted there either ended the walk immediately or let it climb out of the
+		// project — see discoverFromPath.
+		p.discoverFromPath(data.SessionID, path, data.Cwd)
 	}
 	p.sendResult(id, map[string]any{"action": "keep"})
 }
@@ -346,11 +354,11 @@ func (p *Plugin) handleGetSteering(id uint64, payload json.RawMessage) {
 		sid = "_default"
 	}
 
-	// Use cwd from payload if available, otherwise fall back to startup cwd
-	workspaceRoot := p.workspaceRoot
-	if data.Cwd != "" {
-		workspaceRoot = data.Cwd
-	}
+	// Use cwd from payload. Without one there is no project root to resolve against,
+	// and guessing os.Getwd() would attach this session to whatever directory the
+	// *plugin process* started in — a different repo, most likely, and the same wrong
+	// one for every session at once. Global AGENTS.md still applies.
+	workspaceRoot := data.Cwd
 
 	// Ensure global + project AGENTS.md are queued for this session.
 	p.ensureInitialWithCwd(sid, workspaceRoot)
@@ -397,20 +405,33 @@ func (p *Plugin) extractPaths(tool string, argsRaw json.RawMessage) []string {
 
 // ── AGENTS.md discovery ──────────────────────────────────────────────────────
 
-// ensureInitial queues the global and project AGENTS.md for a session if they
-// have not been injected yet (checked via KV). Uses the startup workspaceRoot.
-func (p *Plugin) ensureInitial(sessionID string) {
-	p.ensureInitialWithCwd(sessionID, p.workspaceRoot)
-}
-
 // ensureInitialWithCwd queues the global and project AGENTS.md for a session,
-// using the provided cwd as the project root.
+// using the provided cwd as the project root. An empty workspaceRoot means the host
+// reported no cwd: the global file is still queued, the project one is skipped rather
+// than resolved against a guess.
 func (p *Plugin) ensureInitialWithCwd(sessionID, workspaceRoot string) {
 	p.queueIfNew(sessionID, filepath.Join(p.globalConfig, "AGENTS.md"), "global")
+	if workspaceRoot == "" {
+		return
+	}
 	p.queueIfNew(sessionID, filepath.Join(workspaceRoot, "AGENTS.md"), "project")
 }
 
-func (p *Plugin) discoverFromPath(sessionID, filePath string) {
+// discoverFromPath queues AGENTS.md for the touched file's directory and each parent up
+// to `workspaceRoot`, which is the session's cwd.
+//
+// `filePath` may be relative (the model writes `src/main.rs`), so it is resolved against
+// workspaceRoot first — otherwise os.Stat and the walk both operate on a path relative to
+// the plugin process's directory. With no workspaceRoot there is no root to stop at and a
+// relative path cannot be placed at all, so nothing is queued: an unbounded walk up from a
+// guessed directory would inject AGENTS.md files from unrelated projects.
+func (p *Plugin) discoverFromPath(sessionID, filePath, workspaceRoot string) {
+	if workspaceRoot == "" {
+		return
+	}
+	if !filepath.IsAbs(filePath) {
+		filePath = filepath.Join(workspaceRoot, filePath)
+	}
 	dir := filePath
 	if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
 		dir = filepath.Dir(filePath)
@@ -418,11 +439,11 @@ func (p *Plugin) discoverFromPath(sessionID, filePath string) {
 	current := dir
 	for {
 		p.queueIfNew(sessionID, filepath.Join(current, "AGENTS.md"), "directory")
-		if current == p.workspaceRoot {
+		if current == workspaceRoot {
 			break
 		}
 		parent := filepath.Dir(current)
-		if !strings.HasPrefix(parent, p.workspaceRoot) && parent != p.workspaceRoot {
+		if !strings.HasPrefix(parent, workspaceRoot) && parent != workspaceRoot {
 			break
 		}
 		if parent == current {

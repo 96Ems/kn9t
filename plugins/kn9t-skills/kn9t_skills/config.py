@@ -26,11 +26,10 @@ def get_config_dir() -> Path:
         return Path(home) / ".kn9t"
     if home := os.environ.get("USERPROFILE"):
         return Path(home) / ".kn9t"
-    return Path.cwd() / ".kn9t"
-
-
-def get_project_config_dir() -> Path:
-    """Get project-local config directory (.kn9t in cwd)."""
+    # No home directory at all. `Path.cwd()` here is the plugin process's directory,
+    # which is not a project root -- but this is the *global* config path, and having
+    # somewhere to look beats nothing. Project-local paths never use cwd: see
+    # `project_skill_paths`.
     return Path.cwd() / ".kn9t"
 
 
@@ -39,32 +38,39 @@ def expand_path(path_str: str) -> Path:
     return Path(os.path.expanduser(os.path.expandvars(path_str)))
 
 
-def get_default_skill_paths() -> list[Path]:
-    """Get all default skill search paths.
-    
-    Supports multiple conventions:
-    - ~/.kn9t/skills/ (global)
-    - .kn9t/skills/ (project-local, kn9t convention)
-    - .agents/skills/ (project-local, common convention)
-    - .agents/skill/ (singular variant)
-    - .skills/ (simple hidden)
-    - .skill/ (singular)
-    - skills/ (visible)
-    - skill/ (singular)
+# Directory conventions a project may use to hold skills, relative to its root.
+# One list, used by both the startup scan and per-session discovery, so the two
+# cannot drift apart.
+PROJECT_SKILL_CONVENTIONS = (
+    (".kn9t", "skills"),
+    (".agents", "skills"),
+    (".agents", "skill"),
+    (".skills",),
+    (".skill",),
+    ("skills",),
+    ("skill",),
+)
+
+
+def project_skill_paths(cwd: Path) -> list[Path]:
+    """Project-local skill directories for a session rooted at `cwd`.
+
+    `cwd` is the session's working directory as reported by the host, and it is a required
+    argument on purpose. This plugin is a long-lived subprocess serving every session at
+    once, so `Path.cwd()` is the directory the *server* was started in: one value, shared by
+    all sessions, unrelated to the one being served. Reading it here would discover another
+    project's skills and offer them to the agent as this project's.
     """
-    cwd = Path.cwd()
-    return [
-        # Global
-        get_config_dir() / "skills",
-        # Project-local variants
-        cwd / ".kn9t" / "skills",
-        cwd / ".agents" / "skills",
-        cwd / ".agents" / "skill",
-        cwd / ".skills",
-        cwd / ".skill",
-        cwd / "skills",
-        cwd / "skill",
-    ]
+    return [cwd / Path(*parts) for parts in PROJECT_SKILL_CONVENTIONS]
+
+
+def get_default_skill_paths() -> list[Path]:
+    """Global skill search paths -- those knowable before any session exists.
+
+    Only `~/.kn9t/skills`. Project-local directories are per-session and get added by
+    `project_skill_paths(cwd)` once the host says where the session is rooted.
+    """
+    return [get_config_dir() / "skills"]
 
 
 def load_config() -> SkillsConfig:
