@@ -320,11 +320,14 @@ impl PluginUiRegistry {
         let env = lua.create_table()?;
         let globals = lua.globals();
 
-        // Pure helpers only. Deliberately no `kn9t` table from globals: a
-        // plugin must not read session state or call HTTP through the UI layer.
+        // Pure helpers only, plus the sandboxed `os` (already stripped down to
+        // time/date/difftime/clock by `sandbox::apply_sandbox` on the shared globals
+        // this reads from - no `os.execute`/`os.exit`/`os.getenv` leaks through).
+        // Deliberately no `kn9t` table from globals: a plugin must not read session
+        // state or call HTTP through the UI layer.
         for name in [
-            "assert", "error", "ipairs", "math", "next", "pairs", "pcall", "select", "string",
-            "table", "tonumber", "tostring", "type", "unpack", "xpcall",
+            "assert", "error", "ipairs", "math", "next", "os", "pairs", "pcall", "select",
+            "string", "table", "tonumber", "tostring", "type", "unpack", "xpcall",
         ] {
             if let Ok(v) = globals.get::<LuaValue>(name) {
                 env.set(name, v)?;
