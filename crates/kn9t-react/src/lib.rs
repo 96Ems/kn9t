@@ -20,7 +20,10 @@ mod loop_;
 mod turn;
 
 pub use assembler::{assemble, Assembled};
-pub use loop_::{ReactConfig, ReactError, ReactLoop, ReadMap, RunParams};
+pub use loop_::{
+    static_tools, FilteredTools, ReactConfig, ReactError, ReactLoop, ReadMap, RunParams,
+    StaticTools, ToolSource,
+};
 
 // R-RCT-100: re-export the hook surface so callers can `use kn9t_react::HookHost`.
 pub use kn9t_provider_core::{HookHost, HookVeto, NextTurnPatch, NoopHookHost};

@@ -43,6 +43,48 @@ pub type SpawnRecipe = (Vec<String>, Vec<(String, String)>);
 /// Result of spawning all plugins: hosts, registry, and spawn recipes keyed by plugin name.
 pub type AllPluginsResult = (Vec<Arc<PluginHost>>, ToolRegistry, HashMap<String, SpawnRecipe>);
 
+/// 96E-50 — a tool wrapper that reports a different `hidden` flag than the plugin declared.
+///
+/// The override lives outside the plugin's own `ToolSpec` on purpose: a plugin ships the
+/// default visibility it wants, and the server's decision to reveal (or re-hide) a
+/// meta-tool must not survive a reload as if the plugin had asked for it. Everything else
+/// — name, schema, policy, execution — delegates to the wrapped tool.
+pub struct HiddenOverride {
+    inner: Arc<dyn Tool>,
+    spec: kn9t_core::ToolSpec,
+}
+
+impl HiddenOverride {
+    pub fn new(inner: Arc<dyn Tool>, hidden: bool) -> Self {
+        let mut spec = inner.spec().clone();
+        spec.hidden = hidden;
+        HiddenOverride { inner, spec }
+    }
+}
+
+impl Tool for HiddenOverride {
+    fn spec(&self) -> &kn9t_core::ToolSpec {
+        &self.spec
+    }
+
+    fn execute(
+        &self,
+        args: &serde_json::Value,
+        ctx: &kn9t_core::ToolCtx,
+        cancel: &kn9t_core::Cancel,
+    ) -> Result<kn9t_core::ToolOutput, kn9t_core::ToolErr> {
+        self.inner.execute(args, ctx, cancel)
+    }
+
+    fn parallel_safe(&self) -> bool {
+        self.inner.parallel_safe()
+    }
+
+    fn plugin(&self) -> Option<&str> {
+        self.inner.plugin()
+    }
+}
+
 /// The user plugin directory: `<KN9T_HOME|~/.kn9t>/plugins` (ADR-0004).
 ///
 /// This is the ONLY directory scanned for plugin binaries at startup. It is derived

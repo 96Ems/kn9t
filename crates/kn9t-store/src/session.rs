@@ -263,6 +263,7 @@ pub fn event_kind_name(event: &Event) -> &'static str {
         Event::InteractionRequest { .. } => "InteractionRequest",
         Event::UiDirective { .. } => "UiDirective",
         Event::PluginDeclared { .. } => "PluginDeclared",
+        Event::PluginState { .. } => "PluginState",
     }
 }
 

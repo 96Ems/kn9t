@@ -1,6 +1,9 @@
 //! Plugin management routes.
 //!
+//! - `GET  /plugin` — inventory: declared name, Running/Stopped, tools (96E-49).
 //! - `POST /plugin/{name}/reload` — hot-reload an existing plugin (R-PLUG2-100).
+//! - `POST /plugin/{name}/stop` — stop and leave it off, keeping the recipe (96E-47).
+//! - `POST /plugin/{name}/start` — respawn a stopped plugin (96E-47).
 //! - `POST /plugin/load` — hot-load a new plugin without server restart.
 //! - `POST /plugin/{name}/ui_event` — forward a UI interaction to a plugin.
 //!
@@ -42,6 +45,54 @@ pub fn reload(state: &Arc<ServerState>, name: &str) -> Reply {
             JsonResp::error(500, "reload_failed", &e).into()
         }
     }
+}
+
+/// POST /plugin/{name}/stop — 96E-47: cut a plugin and leave it off.
+///
+/// Distinct from `reload`, which always respawns. The spawn recipe is kept, so `start`
+/// can bring the same plugin back. The plugin's tools stay in the registry and stay in
+/// the `tools` array sent to the model; they are refused at execution time instead
+/// (`ServerState::blocked_tools`), so a stop never invalidates the level-1 cache prefix.
+pub fn stop(state: &Arc<ServerState>, name: &str) -> Reply {
+    match state.stop_plugin(name) {
+        Ok(stopped) => JsonResp::ok(serde_json::json!({ "stopped": stopped })).into(),
+        Err(e) if e.contains("not found") => JsonResp::error(404, "not_found", &e).into(),
+        Err(e) if e.contains("already stopped") => JsonResp::error(409, "conflict", &e).into(),
+        Err(e) => JsonResp::error(500, "stop_failed", &e).into(),
+    }
+}
+
+/// POST /plugin/{name}/start — 96E-47: respawn a stopped plugin from its known recipe.
+///
+/// A name that was never loaded is a 404, not a silent spawn: bringing a brand new
+/// command up is `POST /plugin/load`'s job.
+pub fn start(state: &Arc<ServerState>, name: &str) -> Reply {
+    match state.start_plugin(name) {
+        Ok((started, tools)) => JsonResp::ok(serde_json::json!({
+            "started": started,
+            "tools": tools
+        }))
+        .into(),
+        Err(e) if e.contains("not found") => JsonResp::error(404, "not_found", &e).into(),
+        Err(e) if e.contains("already running") => JsonResp::error(409, "conflict", &e).into(),
+        Err(e) => JsonResp::error(500, "start_failed", &e).into(),
+    }
+}
+
+/// GET /plugin — 96E-49: the plugin inventory (name, running state, tools).
+pub fn list(state: &Arc<ServerState>) -> Reply {
+    let plugins: Vec<serde_json::Value> = state
+        .plugin_inventory()
+        .into_iter()
+        .map(|(name, running, tools)| {
+            serde_json::json!({
+                "name": name,
+                "state": if running { "running" } else { "stopped" },
+                "tools": tools,
+            })
+        })
+        .collect();
+    JsonResp::ok(serde_json::json!({ "plugins": plugins })).into()
 }
 
 /// Request body for POST /plugin/load.

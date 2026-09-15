@@ -240,6 +240,13 @@ fn route(
         // ── plugin hot-reload (R-PLUG2-100) ──
         (Method::Post, ["plugin", name, "reload"]) => routes::plugin::reload(state, name),
 
+        // ── plugin stop/start, distinct from reload (96E-47) ──
+        (Method::Post, ["plugin", name, "stop"]) => routes::plugin::stop(state, name),
+        (Method::Post, ["plugin", name, "start"]) => routes::plugin::start(state, name),
+
+        // ── plugin inventory (96E-49) ──
+        (Method::Get, ["plugin"]) => routes::plugin::list(state),
+
         // ── plugin hot-load (new plugin without restart) ──
         (Method::Post, ["plugin", "load"]) => {
             match parse_json::<routes::plugin::LoadPluginReq>(req) {

@@ -4,7 +4,7 @@ use std::thread;
 
 use kn9t_provider_core::{
     CallId, Cancel, Content, Decision, Event, HookVeto, LiveEvent, Message, ModelRef, MsgId,
-    ProvErr, Request, Role, StopReason, Tokens, ToolCall, ToolCtx, Usage,
+    ProvErr, Request, Role, StopReason, Tokens, ToolCall, ToolCtx, ToolRegistry, Usage,
 };
 
 use crate::assembler::{assemble, Assembled};
@@ -106,7 +106,9 @@ impl ReactLoop {
 
         // Use visible_specs() to exclude hidden tools from the system prompt.
         // Hidden tools can still be executed once discovered via meta-tools.
-        let tool_specs = self.tools.visible_specs();
+        // 96E-48: snapshot per model call, not per turn — a plugin stop/start/reload
+        // landing between two iterations of the ReAct loop is visible immediately.
+        let tool_specs = self.tools.snapshot().visible_specs();
         let req = Request {
             model: &params.model,
             system,
@@ -320,6 +322,12 @@ impl ReactLoop {
             plans.push(self.authorize(params, call, cancel));
         }
 
+        // 96E-48: one snapshot for the whole batch — the batch must dispatch against a
+        // single coherent registry (a plugin stopped between two calls of the same batch
+        // would otherwise make results depend on scheduling). The next model call gets a
+        // fresh snapshot.
+        let registry = self.tools.snapshot();
+
         // Execute: split into parallel-safe (run concurrently) and the rest (sequential),
         // but always collect results back into call order.
         let mut results: Vec<Option<Content>> = vec![None; calls.len()];
@@ -332,7 +340,7 @@ impl ReactLoop {
         for (i, plan) in plans.iter().enumerate() {
             if let CallPlan::Execute { args } = plan {
                 let call = &calls[i];
-                if let Some(tool) = self.tools.get(&call.name) {
+                if let Some(tool) = registry.get(&call.name) {
                     if tool.parallel_safe() {
                         let tool = tool.clone();
                         let ctx = ToolCtx {
@@ -380,7 +388,7 @@ impl ReactLoop {
             if launched.contains(&i) {
                 continue;
             }
-            results[i] = Some(self.execute_one(params, call, &plans[i], cancel));
+            results[i] = Some(self.execute_one(params, &registry, call, &plans[i], cancel));
         }
 
         // Join parallel handles in call order and apply after_tool_call sequentially.
@@ -406,9 +414,11 @@ impl ReactLoop {
     }
 
     /// Sequential execution of one call given its authorization plan.
+    /// `registry` is the batch's single snapshot (96E-48).
     fn execute_one(
         &self,
         params: &RunParams,
+        registry: &ToolRegistry,
         call: &ToolCall,
         plan: &CallPlan,
         cancel: &Cancel,
@@ -420,7 +430,7 @@ impl ReactLoop {
                     // R-RCT-060: a call that never ran gets a synthesized aborted result.
                     return synth_error(&call.id, "aborted by user");
                 }
-                let Some(tool) = self.tools.get(&call.name) else {
+                let Some(tool) = registry.get(&call.name) else {
                     return synth_error(&call.id, &format!("unknown tool `{}`", call.name));
                 };
                 self.bus.emit(LiveEvent::ToolStarted {
@@ -479,6 +489,24 @@ impl ReactLoop {
             return CallPlan::Deny(format!(
                 "blocked: tool '{}' is disabled for this session. \
                  Do not retry '{}'; use another tool or ask the user to re-enable it.",
+                call.name, call.name
+            ));
+        }
+        // 96E-47: the tool belongs to a plugin that is currently stopped. Its spec is
+        // still in the `tools` array (never filtered — that would invalidate the level-1
+        // cache prefix for a temporary condition), so the model can legitimately call it.
+        // Refuse here, exactly like `disabled_tools`, and say the state is recoverable so
+        // the agent can restart the plugin instead of giving up on the capability.
+        if self.tools.blocked().contains(&call.name) {
+            self.bus.emit(LiveEvent::Error {
+                message: format!(
+                    "tool '{}' (call {}): blocked — owning plugin is stopped",
+                    call.name, call.id.0
+                ),
+            });
+            return CallPlan::Deny(format!(
+                "blocked: tool '{}' belongs to a plugin that is currently stopped. \
+                 Start the plugin again before retrying '{}'.",
                 call.name, call.name
             ));
         }

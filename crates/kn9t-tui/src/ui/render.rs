@@ -158,6 +158,9 @@ fn render_chat_overlays(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme)
             Overlay::ToolsManager { selected, filter } => {
                 render_tools_manager(f, app, *selected, filter, area, theme);
             }
+            Overlay::SessionTree { selected } => {
+                render_session_tree(f, app, *selected, area, theme);
+            }
             _ => render_overlay(f, overlay, area, theme),
         }
     }
@@ -1642,7 +1645,8 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
         | Overlay::SessionSelect { .. }
         | Overlay::WhichKey
         | Overlay::CommandPalette
-        | Overlay::ToolsManager { .. } => {
+        | Overlay::ToolsManager { .. }
+        | Overlay::SessionTree { .. } => {
             // These overlays are rendered elsewhere with access to app state.
         }
     }
@@ -1941,21 +1945,21 @@ fn render_session_select(
         }
     }
 
-    // Filter sessions (names fuzzy, ids substring — see session_matches).
-    let filtered: Vec<(usize, &crate::session_manager::SessionEntry)> = app
-        .session
-        .sessions
+    // 96E-53: rows in tree order (a branch directly under its parent), from the single
+    // shared `picker_order` the key handler also calls — they must not diverge (96E-19).
+    let ordered = crate::session_tree::picker_order(&app.session.sessions, filter);
+    let filtered: Vec<(usize, &crate::session_manager::SessionEntry)> = ordered
         .iter()
-        .enumerate()
-        .filter(|(_, s)| crate::session_manager::session_matches(s, filter))
+        .filter_map(|&(idx, _)| app.session.sessions.get(idx).map(|s| (idx, s)))
         .collect();
+    let depth_of: std::collections::HashMap<usize, usize> = ordered.iter().copied().collect();
 
     // Build rows with date headers.
     #[derive(Clone)]
     enum SessionRow<'a> {
         DateHeader(String), // "Today", "Yesterday", "Aug 27", etc.
         NewSession,
-        Session(&'a crate::session_manager::SessionEntry),
+        Session(&'a crate::session_manager::SessionEntry, usize),
     }
 
     let mut rows: Vec<SessionRow> = Vec::new();
@@ -1963,20 +1967,24 @@ fn render_session_select(
     // Add "New session" option at top.
     rows.push(SessionRow::NewSession);
 
-    // Group sessions by date.
+    // Group sessions by date. Only roots get a header: a branch belongs under the
+    // conversation it came from, not under the day it happened to be created.
     let mut current_date: Option<String> = None;
-    for (_orig_idx, session) in &filtered {
-        let date_label = session
-            .created_at
-            .as_ref()
-            .and_then(|ts| format_date_header(ts))
-            .unwrap_or_else(|| "Unknown".to_string());
+    for (orig_idx, session) in &filtered {
+        let depth = depth_of.get(orig_idx).copied().unwrap_or(0);
+        if depth == 0 {
+            let date_label = session
+                .created_at
+                .as_ref()
+                .and_then(|ts| format_date_header(ts))
+                .unwrap_or_else(|| "Unknown".to_string());
 
-        if current_date.as_ref() != Some(&date_label) {
-            current_date = Some(date_label.clone());
-            rows.push(SessionRow::DateHeader(date_label));
+            if current_date.as_ref() != Some(&date_label) {
+                current_date = Some(date_label.clone());
+                rows.push(SessionRow::DateHeader(date_label));
+            }
         }
-        rows.push(SessionRow::Session(session));
+        rows.push(SessionRow::Session(session, depth));
     }
 
     // Center overlay.
@@ -2070,7 +2078,7 @@ fn render_session_select(
                 y += 1;
                 selectable_idx += 1;
             }
-            SessionRow::Session(session) => {
+            SessionRow::Session(session, depth) => {
                 let is_selected = selectable_idx == selected;
                 let is_active = session.id == app.session.state.session_id;
 
@@ -2089,10 +2097,24 @@ fn render_session_select(
                     "  ".to_string()
                 };
 
+                // 96E-53: indent by depth and badge the reason, so a rewind reads as a
+                // step back from its parent rather than as an unrelated session.
+                let indent = "  ".repeat(*depth);
+                let badge = crate::session_tree::reason_badge(session.fork_reason.as_deref());
+                let badge = if badge.is_empty() {
+                    String::new()
+                } else {
+                    format!("{badge} ")
+                };
+                let room = (overlay_w as usize)
+                    .saturating_sub(8 + indent.len() + badge.chars().count())
+                    .max(4);
                 let line = format!(
-                    "{}{}",
+                    "{}{}{}{}",
                     prefix,
-                    truncate(&session.name, (overlay_w - 8) as usize)
+                    indent,
+                    badge,
+                    truncate(&session.name, room)
                 );
                 for (j, ch) in line.chars().enumerate() {
                     let x = overlay_x + 2 + j as u16;
@@ -2126,6 +2148,139 @@ fn render_session_select(
 
     // Footer.
     let footer = "↑/↓ select · Enter open · Del delete · Esc cancel";
+    let footer_x = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
+    let footer_y = overlay_y + overlay_h - 1;
+    for (i, ch) in footer.chars().enumerate() {
+        if footer_x + (i as u16) < overlay_x + overlay_w {
+            buf[(footer_x + i as u16, footer_y)]
+                .set_char(ch)
+                .set_fg(theme.muted)
+                .set_bg(Color::Black);
+        }
+    }
+}
+
+/// 96E-54 — the session tree as a git-style graph.
+///
+/// Nodes are sessions, edges are `origin_session` links, and the label on an edge is the
+/// fork reason. The shape comes from `session_tree::build_forest`, the same function the
+/// sidebar uses: one tree implementation, two renderings.
+fn render_session_tree(f: &mut Frame, app: &App, selected: usize, area: Rect, theme: &Theme) {
+    use crate::session_tree::{build_forest, reason_badge};
+
+    let buf = f.buffer_mut();
+
+    // Dim background, as the other full-screen overlays do.
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            buf[(x, y)].set_fg(Color::DarkGray);
+        }
+    }
+
+    let entries = &app.session.sessions;
+    let nodes = build_forest(entries).flatten();
+
+    let overlay_w = 72.min(area.width.saturating_sub(4));
+    let overlay_h = (nodes.len() as u16 + 5)
+        .min(area.height.saturating_sub(4))
+        .max(8);
+    let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
+    let overlay_y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
+
+    for y in overlay_y..overlay_y + overlay_h {
+        for x in overlay_x..overlay_x + overlay_w {
+            buf[(x, y)].set_char(' ').set_bg(Color::Black);
+        }
+    }
+
+    let title = "SESSION TREE";
+    let title_x = overlay_x + (overlay_w.saturating_sub(title.len() as u16)) / 2;
+    let mut y = overlay_y + 1;
+    for (i, ch) in title.chars().enumerate() {
+        buf[(title_x + i as u16, y)]
+            .set_char(ch)
+            .set_fg(theme.primary)
+            .set_bg(Color::Black);
+    }
+    y += 2;
+
+    // A single session and no forks is not an error state — just a tree of one. Say so
+    // rather than drawing an empty box the user has to interpret.
+    if nodes.len() <= 1 {
+        let msg = if nodes.is_empty() {
+            "No sessions."
+        } else {
+            "One session, no branches yet. /fork or /undo creates one."
+        };
+        for (i, ch) in msg.chars().enumerate() {
+            let x = overlay_x + 2 + i as u16;
+            if x < overlay_x + overlay_w - 2 {
+                buf[(x, y)]
+                    .set_char(ch)
+                    .set_fg(theme.muted)
+                    .set_bg(Color::Black);
+            }
+        }
+    }
+
+    // Rows, depth-first so a child always follows its parent.
+    let first_visible = {
+        // Keep the cursor on screen for a forest taller than the box.
+        let rows = overlay_h.saturating_sub(5) as usize;
+        if rows > 0 && selected >= rows {
+            selected + 1 - rows
+        } else {
+            0
+        }
+    };
+    for (i, node) in nodes.iter().enumerate().skip(first_visible) {
+        if y >= overlay_y + overlay_h - 1 {
+            break;
+        }
+        let Some(entry) = entries.get(node.idx) else {
+            continue;
+        };
+        let is_selected = i == selected;
+        let is_current = entry.id == app.session.state.session_id;
+        let (fg, bg) = if is_selected {
+            (theme.bg, theme.primary)
+        } else if is_current {
+            (theme.success, Color::Black)
+        } else {
+            (theme.fg, Color::Black)
+        };
+
+        // Indent by depth; the glyph marks the current session, the badge the reason this
+        // branch exists. Roots carry no badge — they were not forked from anything.
+        let indent = "  ".repeat(node.depth);
+        let marker = if is_current { "●" } else { "○" };
+        let badge = reason_badge(entry.fork_reason.as_deref());
+        let at = match entry.origin_seq {
+            Some(seq) if node.depth > 0 => format!(" @{seq}"),
+            _ => String::new(),
+        };
+        let name_room = overlay_w as usize - (indent.len() + 12).min(overlay_w as usize - 1);
+        let line = format!(
+            "{}{} {} {}{}",
+            indent,
+            marker,
+            badge,
+            truncate(&entry.name, name_room),
+            at
+        );
+        for (j, ch) in line.chars().enumerate() {
+            let x = overlay_x + 2 + j as u16;
+            if x < overlay_x + overlay_w - 2 {
+                buf[(x, y)].set_char(ch).set_fg(fg).set_bg(bg);
+            }
+        }
+        for x in (overlay_x + 2 + line.chars().count() as u16)..overlay_x + overlay_w - 2 {
+            buf[(x, y)].set_char(' ').set_bg(bg);
+        }
+        y += 1;
+    }
+
+    let footer = "↑/↓ select · Enter switch · Esc close";
     let footer_x = overlay_x + (overlay_w.saturating_sub(footer.len() as u16)) / 2;
     let footer_y = overlay_y + overlay_h - 1;
     for (i, ch) in footer.chars().enumerate() {

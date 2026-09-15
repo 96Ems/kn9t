@@ -28,6 +28,7 @@ pub fn event_tag(e: &Event) -> String {
         Event::TitleChanged { .. } => "TitleChanged",
         Event::PluginNotification { .. } => "PluginNotification",
         Event::PluginDeclared { .. } => "PluginDeclared",
+        Event::PluginState { .. } => "PluginState",
         Event::InteractionRequest { .. } => "InteractionRequest",
         Event::UiDirective { .. } => "UiDirective",
     }

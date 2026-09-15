@@ -78,6 +78,12 @@ pub enum Overlay {
         selected: usize,
         filter: String,
     },
+    /// 96E-54 — the session tree, drawn from the same `build_forest` the sidebar uses.
+    /// `selected` indexes the flattened (depth-first) node list, not `sessions`, so
+    /// moving down the view follows what is on screen rather than list order.
+    SessionTree {
+        selected: usize,
+    },
 }
 
 /// Option for choice/multi questions.
@@ -1149,8 +1155,61 @@ impl App {
     /// Create a new session and enter it.
     ///
     /// Returns `ServerLoading` error if plugins are still loading.
-    pub fn create_new_session(&mut self, tx: Sender<Event>) -> Result<(), ClientError> {
-        if !self.plugins_ready {
+    /// 96E-55 — `/fork [origin_seq]` and `/undo [n]`.
+    ///
+    /// Both are one `POST /session/{id}/fork`; only `reason` and `origin_seq` differ. The
+    /// event log is append-only, so "remove the last message" is a branch that stops short
+    /// of it (`reason: rewind`), never an edit in place.
+    ///
+    /// The switch is deliberately silent. Announcing "new session created" would describe
+    /// the mechanism rather than the intent: the user asked to go back one step, and what
+    /// they should see is a transcript one step shorter, with the cursor where they left it.
+    fn handle_fork_command(&mut self, cmd: &str, args: &str, tx: Sender<Event>) {
+        let sid = self.session.state.session_id.clone();
+        if sid.is_empty() {
+            self.transcript
+                .push(Message::new("system", "No active session."));
+            return;
+        }
+        // `last_seq` tracks the head this client has actually seen, which is what the user
+        // is looking at — more truthful here than the possibly staler value in the list.
+        let head = self
+            .session
+            .head_seq_of(&sid)
+            .unwrap_or(0)
+            .max(self.session.state.last_seq);
+
+        let (reason, origin_seq, note) =
+            match crate::session_tree::plan_fork(cmd, args, head) {
+                Ok(plan) => (plan.reason, plan.origin_seq, plan.note),
+                Err(msg) => {
+                    self.transcript.push(Message::new("system", msg));
+                    return;
+                }
+            };
+
+        let Some(client) = self.client.as_ref() else {
+            self.transcript
+                .push(Message::new("error", "Not connected."));
+            return;
+        };
+        let new_id = match self.session.fork_into(client, &sid, origin_seq, reason) {
+            Ok(id) => id,
+            Err(e) => {
+                self.transcript
+                    .push(Message::new("error", format!("/{cmd} failed: {e}")));
+                return;
+            }
+        };
+
+        // Same path as `/new` and the session picker: reset, then enter. The new session
+        // replays its own (shorter) transcript, so the screen ends up showing the rewound
+        // history rather than the one we were on.
+        self.switch_to_session(&new_id, tx);
+        self.transcript.push(Message::new("system", note));
+    }
+
+    pub fn create_new_session(&mut self, tx: Sender<Event>) -> Result<(), ClientError> {        if !self.plugins_ready {
             return Err(ClientError::ServerLoading);
         }
 
@@ -2035,14 +2094,14 @@ impl App {
 
                 // Get filtered sessions for bounds checking.
                 // Selection index 0 = "New session", 1+ = filtered sessions.
-                let filtered: Vec<usize> = self
-                    .session
-                    .sessions
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, s)| session_matches(s, filter))
-                    .map(|(i, _)| i)
-                    .collect();
+                // 96E-53: same order as the renderer (tree order, branches under their
+                // parent) via the shared `picker_order` — 96E-19's rule that these two
+                // must never compute the list independently.
+                let filtered: Vec<usize> =
+                    crate::session_tree::picker_order(&self.session.sessions, filter)
+                        .into_iter()
+                        .map(|(idx, _)| idx)
+                        .collect();
                 let total_selectable = 1 + filtered.len(); // "New session" + filtered sessions
 
                 match key.code {
@@ -2218,6 +2277,45 @@ impl App {
                     KeyCode::Char(c) => {
                         filter.push(c);
                         *selected = 0;
+                    }
+                    _ => {}
+                }
+            }
+            // 96E-54 — the tree overlay. Selection walks the *rendered* (depth-first)
+            // order, so Down always moves to the row below rather than to whatever comes
+            // next in list order.
+            Some(Overlay::SessionTree { ref mut selected }) => {
+                let nodes = crate::session_tree::build_forest(&self.session.sessions).flatten();
+                match key.code {
+                    KeyCode::Esc => {
+                        self.overlay = None;
+                    }
+                    KeyCode::Up => {
+                        if *selected > 0 {
+                            *selected -= 1;
+                        } else if !nodes.is_empty() {
+                            *selected = nodes.len() - 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if *selected + 1 < nodes.len() {
+                            *selected += 1;
+                        } else {
+                            *selected = 0;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        // Same transparent switch as `/fork` and the picker.
+                        let target = nodes
+                            .get(*selected)
+                            .and_then(|n| self.session.sessions.get(n.idx))
+                            .map(|s| s.id.clone());
+                        self.overlay = None;
+                        if let Some(id) = target {
+                            if id != self.session.state.session_id {
+                                self.switch_to_session(&id, tx.clone());
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -3464,6 +3562,17 @@ impl App {
                         "error",
                         format!("Failed to create session: {}", e),
                     ));
+                }
+            }
+            "fork" | "undo" => {
+                self.handle_fork_command(cmd, args, tx.clone());
+            }
+            "tree" => {
+                if self.session.session_count() == 0 {
+                    self.transcript
+                        .push(Message::new("system", "No sessions to show."));
+                } else {
+                    self.overlay = Some(Overlay::SessionTree { selected: 0 });
                 }
             }
             "help" => {

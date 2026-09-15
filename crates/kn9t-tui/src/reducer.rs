@@ -554,6 +554,29 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                 state.transcript.push(Message::new("system", msg));
             }
         }
+        // 96E-47: a plugin's run state changed. The tool list is unaffected by a stop (the
+        // specs stay registered, calls are refused at execution), but the *display* should
+        // say so, and a reload/start may have changed the set — hence the refresh flag.
+        SseFrame::PluginState {
+            plugin,
+            state: plugin_state,
+            error,
+        } => {
+            state.tools_need_refresh = true;
+            let msg = match plugin_state.as_str() {
+                "stopped" => format!("Plugin '{plugin}' stopped — its tools will refuse to run."),
+                "started" => format!("Plugin '{plugin}' started."),
+                "reloaded" => format!("Plugin '{plugin}' reloaded."),
+                // A crash is the case worth naming the cause for: the agent may have just
+                // lost tools it was using, and the reason is the only clue why.
+                "crashed" => match error {
+                    Some(e) => format!("Plugin '{plugin}' crashed: {e}"),
+                    None => format!("Plugin '{plugin}' crashed."),
+                },
+                other => format!("Plugin '{plugin}': {other}"),
+            };
+            state.transcript.push(Message::new("system", msg));
+        }
     }
 }
 

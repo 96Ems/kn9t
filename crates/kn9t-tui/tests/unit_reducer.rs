@@ -179,6 +179,7 @@ fn title_changed_updates_session() {
         name: "Old".into(),
         running: false,
         created_at: None,
+        ..Default::default()
     });
     reduce(
         &mut s,
@@ -1007,3 +1008,4 @@ fn subagent_multiple_concurrent_independent() {
     s.attach_subagent("c2", vec![]);
     assert_eq!(s.attached_subagent.as_ref().unwrap().0, "c2");
 }
+

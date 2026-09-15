@@ -38,6 +38,21 @@ pub const COMMANDS: &[SlashCommand] = &[
         args: "",
     },
     SlashCommand {
+        name: "fork",
+        description: "Branch the session at a checkpoint and switch to it",
+        args: "[origin_seq]",
+    },
+    SlashCommand {
+        name: "undo",
+        description: "Drop the last n messages by rewinding into a new branch",
+        args: "[n]",
+    },
+    SlashCommand {
+        name: "tree",
+        description: "Show the session tree",
+        args: "",
+    },
+    SlashCommand {
         name: "help",
         description: "Show help",
         args: "",

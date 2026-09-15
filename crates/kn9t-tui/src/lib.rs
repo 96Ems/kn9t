@@ -78,6 +78,7 @@ pub mod prompt_stash;
 pub mod render_cache;
 pub mod search;
 pub mod session_manager;
+pub mod session_tree;
 pub mod slash;
 pub mod syntax;
 pub mod theme;

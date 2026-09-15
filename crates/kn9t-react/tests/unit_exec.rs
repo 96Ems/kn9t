@@ -145,7 +145,7 @@ fn make_loop(
         provider: Arc::new(DummyProvider),
         store: Arc::new(DummyStore),
         approver: Arc::new(AllowAll),
-        tools,
+        tools: kn9t_react::static_tools(tools),
         hooks: Arc::new(CountingHook(hook_calls)),
         bus,
         compactor: None,
@@ -373,3 +373,4 @@ fn test_ensure_nonempty_content_mixed_keeps_all() {
         _ => panic!("expected Text"),
     }
 }
+

@@ -73,9 +73,16 @@ pub fn create(state: &Arc<ServerState>, req: api::CreateSessionReq) -> JsonResp 
 ///
 /// F5: `created_at` is stored as INTEGER millis; the schema pins it as an ISO8601
 /// string, so the boundary normalizes here (`millis_to_iso`).
+///
+/// 96E-52: `origin_session`/`origin_seq`/`fork_reason` are projected too. The columns were
+/// always written by `fork_session` but never returned, so no client could tell a fork from
+/// a root session — which is all a tree view needs. Additive and `null` on roots, so an
+/// older client that ignores unknown fields is unaffected.
 pub fn list(state: &Arc<ServerState>) -> JsonResp {
     let sql = "SELECT json_object('id', id, 'name', name, 'cwd', cwd, 'head_seq', head_seq, \
-               'created_at', created_at) FROM sessions ORDER BY created_at DESC";
+               'created_at', created_at, 'origin_session', origin_session, \
+               'origin_seq', origin_seq, 'fork_reason', fork_reason) \
+               FROM sessions ORDER BY created_at DESC";
     let strings = state.store.query_strings(sql, &[]).unwrap_or_default();
     let sessions: Vec<serde_json::Value> = strings
         .iter()
@@ -99,8 +106,12 @@ pub fn snapshot(state: &Arc<ServerState>, id: &str) -> JsonResp {
     };
 
     // Meta. `created_at` normalized to ISO8601 at the boundary (F5).
+    // 96E-52: same parentage fields as `list`, so the `/tree` overlay can query one node
+    // without having to fetch the whole list to learn its parent.
     let meta_sql = "SELECT json_object('id', id, 'name', name, 'cwd', cwd, \
-                    'created_at', created_at) FROM sessions WHERE id=?1";
+                    'created_at', created_at, 'origin_session', origin_session, \
+                    'origin_seq', origin_seq, 'fork_reason', fork_reason) \
+                    FROM sessions WHERE id=?1";
     let mut meta: serde_json::Value = state
         .store
         .query_strings(meta_sql, &[&id])

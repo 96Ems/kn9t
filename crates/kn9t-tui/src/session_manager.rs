@@ -9,13 +9,24 @@ use crate::config::Config;
 use crate::event::{Event, TickControl};
 
 /// Session info for sidebar display.
-#[derive(Debug, Clone)]
+///
+/// `Default` so a caller that only cares about identity (tests, and any construction site
+/// that predates the 96E-53 parentage fields) does not have to spell out four `None`s.
+#[derive(Debug, Clone, Default)]
 pub struct SessionEntry {
     pub id: String,
     pub name: String,
     pub running: bool,
     /// ISO 8601 timestamp for date grouping (e.g., "2026-08-28T10:30:00").
     pub created_at: Option<String>,
+    /// 96E-53 — the session this one was forked from, `None` for a root.
+    pub parent_id: Option<String>,
+    /// Why the fork happened: `"fork" | "rewind" | "subagent" | "tree"`.
+    pub fork_reason: Option<String>,
+    /// The parent seq this session branched at.
+    pub origin_seq: Option<u64>,
+    /// Head seq, needed by `/undo` to compute `head_seq - n` without a round-trip.
+    pub head_seq: u64,
 }
 
 /// 96E-19 — session filter used by the picker (render + key handler MUST agree).
@@ -89,6 +100,10 @@ impl SessionManager {
                     .unwrap_or_else(|| s.id[..8.min(s.id.len())].to_string()),
                 running: false,
                 created_at: s.created_at.clone(),
+                parent_id: s.origin_session.clone(),
+                fork_reason: s.fork_reason.clone(),
+                origin_seq: s.origin_seq,
+                head_seq: s.head_seq,
             })
             .collect();
         Ok(())
@@ -107,10 +122,59 @@ impl SessionManager {
                 name: "New session".into(),
                 running: false,
                 created_at: None,
+                parent_id: None,
+                fork_reason: None,
+                origin_seq: None,
+                head_seq: 0,
             },
         );
 
         Ok(session_id)
+    }
+
+    /// 96E-55 — fork `origin_id` and return the new session id.
+    ///
+    /// Mirrors `create_session` but hits `POST /session/{id}/fork`. `/fork` and `/undo` are
+    /// the same server call with a different `reason` and `origin_seq`; the log is
+    /// append-only, so "drop the last message" is a fork that stops short of it, never a
+    /// mutation (R-STOR-120).
+    ///
+    /// The entry is inserted locally so the sidebar shows the branch immediately, with the
+    /// parentage the caller already knows — the next `load_sessions` refresh confirms it.
+    pub fn fork_into(
+        &mut self,
+        client: &Client,
+        origin_id: &str,
+        origin_seq: Option<u64>,
+        reason: &str,
+    ) -> Result<String, ClientError> {
+        let new_id = client.fork_session(origin_id, origin_seq, reason)?;
+        let name = match reason {
+            "rewind" => "Rewind".to_string(),
+            _ => "Fork".to_string(),
+        };
+        self.sessions.insert(
+            0,
+            SessionEntry {
+                id: new_id.clone(),
+                name,
+                running: false,
+                created_at: None,
+                parent_id: Some(origin_id.to_string()),
+                fork_reason: Some(reason.to_string()),
+                origin_seq,
+                head_seq: origin_seq.unwrap_or(0),
+            },
+        );
+        Ok(new_id)
+    }
+
+    /// Head seq of a session as last listed. Used by `/undo` to derive `head_seq - n`.
+    pub fn head_seq_of(&self, session_id: &str) -> Option<u64> {
+        self.sessions
+            .iter()
+            .find(|s| s.id == session_id)
+            .map(|s| s.head_seq)
     }
 
     /// Stop SSE stream for current session.

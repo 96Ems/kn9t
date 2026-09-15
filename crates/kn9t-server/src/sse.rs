@@ -30,6 +30,13 @@ pub fn sse_frame(event: &Event) -> String {
     format!("event: {name}\ndata: {data}\n\n")
 }
 
+/// The wire kind string for an event, as SSE clients and plugin `events` filters
+/// both name it. One table, so a plugin subscribing to `"plugin_declared"` and an
+/// SSE client listening for `plugin_declared` can never mean different things.
+pub fn event_kind(e: &Event) -> &'static str {
+    event_name(e)
+}
+
 fn event_name(e: &Event) -> &'static str {
     match e {
         Event::SessionForked { .. } => "session_forked",
@@ -57,6 +64,7 @@ fn event_name(e: &Event) -> &'static str {
         Event::InteractionRequest { .. } => "interaction_request",
         Event::UiDirective { .. } => "ui_directive",
         Event::PluginDeclared { .. } => "plugin_declared",
+        Event::PluginState { .. } => "plugin_state",
     }
 }
 

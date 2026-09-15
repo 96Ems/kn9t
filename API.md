@@ -61,7 +61,7 @@ Write operations require an **X-Lease** header: the holder token minted by
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `sessions` | object[] | Shape: `{created_at?: string, cwd?: string, head_seq: u64, id: string, name?: object}[]` |
+| `sessions` | object[] | Shape: `{created_at?: string, cwd?: string, fork_reason?: fork\|rewind\|subagent\|tree, head_seq: u64, id: string, name?: object, origin_seq?: object, origin_session?: object}[]` |
 
 
 ### `GET /session/{id}` — Session snapshot: meta, model, head_seq, transcript
@@ -77,7 +77,7 @@ Write operations require an **X-Lease** header: the holder token minted by
 | `cost_usd` | number |  |
 | `ctx_tokens` | u64 |  |
 | `head_seq` | u64 |  |
-| `meta` | object | Shape: `{created_at?: string, cwd?: string, id: string, name?: object}` |
+| `meta` | object | Shape: `{created_at?: string, cwd?: string, fork_reason?: object, id: string, name?: object, origin_seq?: object, origin_session?: object}` |
 | `model` | ModelRef |  |
 | `transcript` | object[] |  |
 
@@ -502,6 +502,23 @@ Write operations require an **X-Lease** header: the holder token minted by
 | `reloaded` | bool |  |
 
 
+
+---
+### `GET /plugin` — 96E-49: plugin inventory — declared name, run state, and the tools each contributes.
+
+- **Lease required:** no
+
+**Request body:** none
+
+**Response `200`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `plugins` | object[] | Shape: `{name: string, state: running\|stopped, tools?: string[]}[]` |
+
+
+
+---
 ### `POST /plugin/{name}/reload` — Hot-reload a plugin by name: cancel in-flight, shutdown, respawn, re-handshake, re-register tools (R-PLUG2-100)
 
 - **Lease required:** no
@@ -514,6 +531,33 @@ Write operations require an **X-Lease** header: the holder token minted by
 |-------|------|-------------|
 | `reloaded` | string |  |
 | `tools` | u64 | total tools after reload |
+
+
+### `POST /plugin/{name}/stop` — 96E-47: stop a plugin and leave it off, keeping its spawn recipe. Unlike reload, there is no respawn. The plugin's tools stay registered and stay in the tools array sent to the model (the level-1 cache prefix is untouched); calls to them are refused at execution instead. 404 if the plugin is unknown, 409 if it is already stopped.
+
+- **Lease required:** no
+
+**Request body:** none
+
+**Response `200`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `stopped` | string |  |
+
+
+### `POST /plugin/{name}/start` — 96E-47: respawn a stopped plugin from the command it was originally loaded with, and unblock its tools. Only works on a plugin the server already knows: 404 otherwise (spawning a new command is POST /plugin/load). 409 if already running.
+
+- **Lease required:** no
+
+**Request body:** none
+
+**Response `200`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `started` | string |  |
+| `tools` | u64 | total tools after start |
 
 
 ### `POST /plugin/load` — Hot-load a new plugin without server restart. Either provide cmd inline or set from_config to reload config.toml and discover new [[plugin]] entries.
@@ -616,6 +660,7 @@ Recommended client sequence: `POST /lease` → open `GET …/events?from=<seq>&l
 | `turn_status` | `message: string`, `phase: string` | no |
 | `plugin_notification` | `message: string`, `plugin: string` | no |
 | `plugin_declared` | `plugin: string`, `tools_added: string[]`, `tools_removed: string[]` | no |
+| `plugin_state` | `error: string`, `plugin: string`, `state: string` | no |
 | `interaction_request` | `id: u64`, `payload: object`, `plugin: string` | no |
 | `ui_directive` | `op: string`, `payload: object`, `plugin: string`, `target: string` | no |
 

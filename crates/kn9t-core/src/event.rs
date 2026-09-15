@@ -298,6 +298,21 @@ pub enum Event {
         tools_added: Vec<String>,
         tools_removed: Vec<String>,
     },
+    /// 96E-47 — a plugin's run state changed: stopped, started, reloaded, or crashed.
+    ///
+    /// Transient, and delivered to *both* SSE clients and subscribed plugins. It exists so
+    /// that reacting to the plugin set is not a server responsibility: whoever cares (a TUI
+    /// panel, a plugin that reveals its own lifecycle tools) observes the fact and decides
+    /// on its own. `state` is `"stopped" | "started" | "reloaded" | "crashed"`.
+    ///
+    /// `error` is empty unless the transition was involuntary (a host the reader poisoned),
+    /// following every other frame here — no SSE payload uses an optional field, since an
+    /// absent key and an empty one would be two ways to say the same nothing.
+    PluginState {
+        plugin: String,
+        state: String,
+        error: String,
+    },
 }
 
 impl Event {

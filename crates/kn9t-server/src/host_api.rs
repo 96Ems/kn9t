@@ -254,6 +254,185 @@ impl ServerHostApi {
         Ok(json!({ "tools": names }))
     }
 
+    /// `plugin_list` — 96E-49: plugin inventory for the agent-facing plugin manager.
+    /// Reply: `{"plugins":[{"name":..,"state":"running"|"stopped","tools":[..]}]}`.
+    fn plugin_list(&self) -> Result<Value, String> {
+        let plugins: Vec<Value> = self
+            .state
+            .plugin_inventory()
+            .into_iter()
+            .map(|(name, running, tools)| {
+                json!({
+                    "name": name,
+                    "state": if running { "running" } else { "stopped" },
+                    "tools": tools,
+                })
+            })
+            .collect();
+        Ok(json!({ "plugins": plugins }))
+    }
+
+    /// `plugin_stop` / `plugin_start` / `plugin_reload` / `plugin_load` — 96E-49.
+    ///
+    /// These delegate to the same `ServerState` methods the HTTP routes call, so the human
+    /// path (`POST /plugin/...`) and the agent path (a tool call through the plugin
+    /// manager) cannot drift apart. Nothing here re-implements lifecycle logic.
+    fn plugin_stop(&self, payload: &Value) -> Result<Value, String> {
+        let name = Self::require_plugin_name(payload)?;
+        let stopped = self.state.stop_plugin(name)?;
+        Ok(json!({ "stopped": stopped }))
+    }
+
+    fn plugin_start(&self, payload: &Value) -> Result<Value, String> {
+        let name = Self::require_plugin_name(payload)?;
+        let (started, tools) = self.state.start_plugin(name)?;
+        Ok(json!({ "started": started, "tools": tools }))
+    }
+
+    fn plugin_reload(&self, payload: &Value) -> Result<Value, String> {
+        let name = Self::require_plugin_name(payload)?;
+        let (reloaded, tools) = self.state.reload_plugin(name)?;
+        Ok(json!({ "reloaded": reloaded, "tools": tools }))
+    }
+
+    fn plugin_load(&self, payload: &Value) -> Result<Value, String> {
+        if payload
+            .get("from_config")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            let loaded = self.state.load_plugins_from_config()?;
+            let plugins: Vec<Value> = loaded
+                .iter()
+                .map(|(name, tools)| json!({ "name": name, "tools": tools }))
+                .collect();
+            return Ok(json!({ "loaded": plugins }));
+        }
+        let cmd: Vec<String> = payload
+            .get("cmd")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if cmd.is_empty() {
+            return Err("plugin_load requires \"cmd\" (array) or \"from_config\": true".to_string());
+        }
+        let env: Vec<(String, String)> = payload
+            .get("env")
+            .and_then(|v| v.as_object())
+            .map(|o| {
+                o.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (name, tools) = self.state.load_plugin(cmd, env)?;
+        Ok(json!({ "loaded": name, "tools": tools }))
+    }
+
+    fn require_plugin_name(payload: &Value) -> Result<&str, String> {
+        payload
+            .get("plugin")
+            .or_else(|| payload.get("name"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "op requires a plugin name in payload (\"plugin\")".to_string())
+    }
+
+    /// `plugin_health` — 96E-50: what the *server* observed about each subprocess.
+    ///
+    /// Reply: `{"plugins":[{"name":..,"running":bool,"healthy":bool,"error":..}]}`.
+    /// `healthy: false` means this server's reader thread saw a protocol violation on that
+    /// host. It is deliberately the server reporting, not a plugin self-declaring: a plugin
+    /// that has gone silent cannot report its own silence, and a third party must not be
+    /// able to claim another is broken.
+    fn plugin_health(&self) -> Result<Value, String> {
+        let plugins: Vec<Value> = self
+            .state
+            .plugin_health()
+            .into_iter()
+            .map(|(name, running, healthy, error)| {
+                json!({
+                    "name": name,
+                    "running": running,
+                    "healthy": healthy,
+                    "error": error,
+                })
+            })
+            .collect();
+        Ok(json!({ "plugins": plugins }))
+    }
+
+    /// `tool_visibility` — 96E-50: a plugin sets the `hidden` flag on **its own** tools.
+    ///
+    /// This is the whole lazy-discovery mechanism, and it is deliberately generic: the
+    /// server holds no list of plugins that deserve special visibility treatment. A plugin
+    /// ships `hidden: true` in its handshake, watches whatever signal it cares about
+    /// (`plugin_declared` events, `plugin_health` polling, its own heuristics), and asks to
+    /// be shown when it judges it useful.
+    ///
+    /// **Scope is the caller, always.** `plugin` comes from the host's dispatch, not from
+    /// the payload, so a plugin cannot reveal — or bury — another plugin's tools. Passing a
+    /// `plugin` field is an error rather than being silently ignored, so a plugin author
+    /// finds out immediately instead of shipping a no-op.
+    ///
+    /// Optional `tools: [names]` narrows the change to a subset of the caller's own tools;
+    /// omitted, it applies to all of them. Reply: `{"tools":[affected names]}`.
+    fn tool_visibility(&self, payload: &Value, plugin: &str) -> Result<Value, String> {
+        if payload.get("plugin").is_some() {
+            return Err(
+                "tool_visibility applies to the calling plugin's own tools; remove \"plugin\""
+                    .to_string(),
+            );
+        }
+        let hidden = payload
+            .get("hidden")
+            .and_then(|v| v.as_bool())
+            .ok_or_else(|| "tool_visibility requires \"hidden\": true|false".to_string())?;
+
+        let subset: Option<Vec<String>> = payload.get("tools").and_then(|v| v.as_array()).map(|a| {
+            a.iter()
+                .filter_map(|t| t.as_str().map(str::to_string))
+                .collect()
+        });
+
+        // Resolve the caller's tools first, then intersect: a name the caller does not own
+        // must not become a way to reach another plugin's registry entry.
+        let owned = self.state.plugin_tool_names(plugin);
+        let affected: Vec<String> = match subset {
+            None => owned,
+            Some(requested) => {
+                let unknown: Vec<&String> =
+                    requested.iter().filter(|n| !owned.contains(n)).collect();
+                if !unknown.is_empty() {
+                    return Err(format!(
+                        "tool_visibility: not your tools: {}",
+                        unknown
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                requested
+            }
+        };
+        for name in &affected {
+            self.state.set_tool_hidden(name, hidden);
+        }
+        if !affected.is_empty() {
+            crate::log!(
+                "visibility: plugin '{}' set hidden={} on {} of its own tools",
+                plugin,
+                hidden,
+                affected.len()
+            );
+        }
+        Ok(json!({ "tools": affected }))
+    }
+
     /// `interaction_request` — 96E-28 generic primitive: register a pending
     /// interaction with `payload` (plugin's own opaque shape) and block until
     /// the client responds via `POST /ui-respond {id, payload}`.
@@ -646,6 +825,17 @@ impl HostApi for ServerHostApi {
             "session_create" => self.session_create(session, payload),
             "session_prompt" => self.session_prompt(session, payload),
             "tool_list" => self.tool_list(session, payload),
+            // 96E-49: plugin lifecycle as agent-callable ops. Same `state.*` functions the
+            // HTTP routes use — one implementation, two callers (human and agent).
+            "plugin_list" => self.plugin_list(),
+            "plugin_stop" => self.plugin_stop(payload),
+            "plugin_start" => self.plugin_start(payload),
+            "plugin_reload" => self.plugin_reload(payload),
+            "plugin_load" => self.plugin_load(payload),
+            // 96E-50: lazy visibility as a generic primitive. `plugin` is the caller, so a
+            // plugin can only ever change its own tools' visibility.
+            "plugin_health" => self.plugin_health(),
+            "tool_visibility" => self.tool_visibility(payload, plugin),
             "interaction_request" => self.interaction_request(session, payload, plugin),
             "ui_directive" | "ui_push" => self.ui_directive(session, payload, plugin),
             "ui_register_lua" => self.ui_register_lua(session, payload, plugin),

@@ -134,6 +134,36 @@ impl Client {
             .ok_or_else(|| ClientError::Json("missing id".into()))
     }
 
+    /// 96E-55 — fork a session: `POST /session/{id}/fork {origin_seq?, reason}`.
+    ///
+    /// One generic route serves `/fork`, `/undo`, and the tree view; only `reason` and
+    /// `origin_seq` differ (R-STOR-130). `origin_seq: None` means "at head".
+    pub fn fork_session(
+        &self,
+        origin_id: &str,
+        origin_seq: Option<u64>,
+        reason: &str,
+    ) -> Result<String, ClientError> {
+        let mut body = serde_json::json!({ "reason": reason });
+        if let Some(seq) = origin_seq {
+            body["origin_seq"] = serde_json::json!(seq);
+        }
+        let resp = self
+            .request("POST", &format!("/session/{}/fork", origin_id))
+            .send_json(&body)
+            .map_err(|e| ClientError::Http(e.to_string()))?;
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| ClientError::Json(e.to_string()))?;
+        // The route answers `{"id": ...}`; accept `session` too so a schema tweak on the
+        // server does not silently turn into "fork worked but the TUI lost the id".
+        body.get("id")
+            .or_else(|| body.get("session"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| ClientError::Json("fork: missing id in response".into()))
+    }
+
     /// Delete a session.
     pub fn delete_session(&self, session_id: &str) -> Result<(), ClientError> {
         let path = format!("/session/{}", session_id);

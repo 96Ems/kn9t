@@ -53,7 +53,10 @@
                 "name": { "type": ["string", "null"] },
                 "cwd": { "type": "string" },
                 "head_seq": { "type": "integer" },
-                "created_at": { "type": "string", "format": "date-time", "description": "ISO8601, millis since epoch normalized at boundary" }
+                "created_at": { "type": "string", "format": "date-time", "description": "ISO8601, millis since epoch normalized at boundary" },
+                "origin_session": { "type": ["string", "null"], "description": "96E-52: session this one was forked from; null on a root" },
+                "origin_seq": { "type": ["integer", "null"], "description": "96E-52: parent seq this session branched at" },
+                "fork_reason": { "type": ["string", "null"], "enum": ["fork", "rewind", "subagent", "tree", null], "description": "96E-52: how this session came to exist" }
               },
               "required": ["id", "head_seq"]
             }
@@ -70,7 +73,7 @@
       "response": {
         "type": "object",
         "properties": {
-          "meta": { "type": "object", "properties": { "id": { "type": "string" }, "name": { "type": ["string", "null"] }, "cwd": { "type": "string" }, "created_at": { "type": "string", "format": "date-time" } }, "required": ["id"] },
+          "meta": { "type": "object", "properties": { "id": { "type": "string" }, "name": { "type": ["string", "null"] }, "cwd": { "type": "string" }, "created_at": { "type": "string", "format": "date-time" }, "origin_session": { "type": ["string", "null"] }, "origin_seq": { "type": ["integer", "null"] }, "fork_reason": { "type": ["string", "null"] } }, "required": ["id"] },
           "head_seq": { "type": "integer" },
           "ctx_tokens": { "type": "integer" },
           "cost_usd": { "type": "number" },
@@ -399,11 +402,32 @@
       "response": { "type": "object", "properties": { "reloaded": { "type": "boolean" }, "providers": { "type": "integer", "description": "provider count after reload" }, "models": { "type": "integer", "description": "model count after reload" }, "default_model": { "type": "string", "description": "id of the default model after reload" } }, "required": ["reloaded", "providers", "models"] }
     },
     {
+      "method": "GET",
+      "path": "/plugin",
+      "lease": false,
+      "description": "96E-49: plugin inventory — declared name, run state, and the tools each contributes.",
+      "response": { "type": "object", "properties": { "plugins": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "state": { "type": "string", "enum": ["running", "stopped"] }, "tools": { "type": "array", "items": { "type": "string" } } }, "required": ["name", "state"] } } }, "required": ["plugins"] }
+    },
+    {
       "method": "POST",
       "path": "/plugin/{name}/reload",
       "lease": false,
       "description": "Hot-reload a plugin by name: cancel in-flight, shutdown, respawn, re-handshake, re-register tools (R-PLUG2-100)",
       "response": { "type": "object", "properties": { "reloaded": { "type": "string" }, "tools": { "type": "integer", "description": "total tools after reload" } }, "required": ["reloaded"] }
+    },
+    {
+      "method": "POST",
+      "path": "/plugin/{name}/stop",
+      "lease": false,
+      "description": "96E-47: stop a plugin and leave it off, keeping its spawn recipe. Unlike reload, there is no respawn. The plugin's tools stay registered and stay in the tools array sent to the model (the level-1 cache prefix is untouched); calls to them are refused at execution instead. 404 if the plugin is unknown, 409 if it is already stopped.",
+      "response": { "type": "object", "properties": { "stopped": { "type": "string" } }, "required": ["stopped"] }
+    },
+    {
+      "method": "POST",
+      "path": "/plugin/{name}/start",
+      "lease": false,
+      "description": "96E-47: respawn a stopped plugin from the command it was originally loaded with, and unblock its tools. Only works on a plugin the server already knows: 404 otherwise (spawning a new command is POST /plugin/load). 409 if already running.",
+      "response": { "type": "object", "properties": { "started": { "type": "string" }, "tools": { "type": "integer", "description": "total tools after start" } }, "required": ["started"] }
     },
     {
       "method": "POST",
@@ -492,6 +516,7 @@
       { "kind": "turn_status", "phase": "string", "message": "string" },
       { "kind": "plugin_notification", "plugin": "string", "message": "string" },
       { "kind": "plugin_declared", "plugin": "string", "tools_added": "string[]", "tools_removed": "string[]" },
+      { "kind": "plugin_state", "plugin": "string", "state": "string", "error": "string" },
       { "kind": "interaction_request", "id": "u64", "plugin": "string", "payload": "Value" },
       { "kind": "ui_directive", "plugin": "string", "target": "string", "op": "string", "payload": "Value" }
     ]

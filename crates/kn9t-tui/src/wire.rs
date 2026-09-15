@@ -114,6 +114,11 @@ pub enum SseFrame {
         tools_added: Vec<String>,
         tools_removed: Vec<String>,
     },
+    PluginState {
+        error: String,
+        plugin: String,
+        state: String,
+    },
     InteractionRequest {
         id: u64,
         payload: serde_json::Value,
@@ -215,9 +220,12 @@ pub struct SessionList {
 pub struct SessionInfo {
     pub created_at: Option<String>,
     pub cwd: Option<String>,
+    pub fork_reason: Option<String>,
     pub head_seq: u64,
     pub id: String,
     pub name: Option<String>,
+    pub origin_seq: Option<u64>,
+    pub origin_session: Option<String>,
 }
 
 /// Session detail response (GET /session/{id}).

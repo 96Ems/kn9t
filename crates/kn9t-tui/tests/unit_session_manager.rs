@@ -9,6 +9,7 @@ fn entry(id: &str, name: &str) -> SessionEntry {
         name: name.into(),
         running: false,
         created_at: None,
+        ..Default::default()
     }
 }
 
@@ -64,18 +65,21 @@ fn test_mark_active() {
             name: "First".into(),
             running: false,
             created_at: None,
+            ..Default::default()
         },
         SessionEntry {
             id: "session-2".into(),
             name: "Second".into(),
             running: false,
             created_at: None,
+            ..Default::default()
         },
         SessionEntry {
             id: "session-3".into(),
             name: "Third".into(),
             running: false,
             created_at: None,
+            ..Default::default()
         },
     ];
 
@@ -86,3 +90,4 @@ fn test_mark_active() {
     assert!(!manager.sessions[2].running);
     assert_eq!(manager.selected, 1);
 }
+

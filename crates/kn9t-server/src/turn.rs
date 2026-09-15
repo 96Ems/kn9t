@@ -100,6 +100,30 @@ impl HookHost for ServerHookHost {
     }
 }
 
+/// 96E-48 — `ServerState` as a live tool source for the ReAct loop.
+///
+/// The loop must not name a concrete server type (GI-1), so it sees only
+/// `Arc<dyn ToolSource>`; this is the adapter, and it delegates to the two methods the
+/// server already owns. `snapshot()` costs one registry clone (a `Vec<Arc<_>>`) per model
+/// call — cheap next to the provider round-trip it precedes.
+struct LiveTools {
+    state: Arc<ServerState>,
+}
+
+impl kn9t_react::ToolSource for LiveTools {
+    fn snapshot(&self) -> kn9t_core::ToolRegistry {
+        // 96E-47: noticing a dead plugin here — rather than on a timer — is what makes a
+        // crash observable inside the turn that is running. The scan is a cheap flag read
+        // per host and announces each failure once.
+        self.state.scan_plugin_health();
+        self.state.tools_snapshot()
+    }
+
+    fn blocked(&self) -> std::collections::HashSet<String> {
+        self.state.blocked_tools()
+    }
+}
+
 /// 96E-17: the first plugin host that declared the `compactor` capability
 /// becomes the compaction delegate. None when no plugin provides it — the loop
 /// is then fail-closed (compaction demanded → turn ends, session cannot
@@ -382,10 +406,21 @@ pub(crate) fn compose_loop(
         session: session.0.clone(),
     });
 
-    let mut tools = state.tools_snapshot(); // R-PLUG2-110: tools from plugin subprocess
-    if let Some(names) = tool_names {
-        tools = tools.filter_names(&names);
-    }
+    let tools: Arc<dyn kn9t_react::ToolSource> = {
+        // 96E-48: a live handle, not a frozen clone. `state.tools_snapshot()` used to be
+        // called once per turn here, which meant a plugin stop/start/reload landing during
+        // a multi-tool-call turn was only observed by the *next* prompt. The registry is
+        // now re-read on every model call inside the loop.
+        let live: Arc<dyn kn9t_react::ToolSource> = Arc::new(LiveTools {
+            state: state.clone(),
+        });
+        match tool_names {
+            // The sub-agent filter still applies — but per snapshot, not once, so a child
+            // session keeps observing lifecycle changes for the tools it was granted.
+            Some(names) => Arc::new(kn9t_react::FilteredTools { inner: live, names }),
+            None => live,
+        }
+    };
 
     // Get the provider for this model. Cloned out of the lock: the turn owns this
     // `Arc` for its whole lifetime, so a concurrent config reload cannot swap the

@@ -422,6 +422,180 @@ mod srv {
     }
 
     /// 96E-18 — durable appends echo on the SSE bus after commit, exactly once.
+    /// 96E-47 — `stop` and `start` are distinct from `reload`.
+    ///
+    /// Shares `plugin_reload`'s harness (and its Windows `#[ignore]`, for the same reason:
+    /// the dummy plugin is a POSIX shell script). What it pins down beyond the state-level
+    /// tests in `plugin_lifecycle.rs` is the HTTP contract — 404 vs 409 vs 200 — and that a
+    /// stopped plugin's tools stay in the registry rather than being unregistered.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "plugin lifecycle harness needs a POSIX shell script as the dummy plugin binary"
+    )]
+    fn p1_96e47_plugin_stop_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("cycle-tools");
+        write_dummy_plugin(&bin, "cycle-tools", "cycle_tool");
+
+        let (store, _tmp_store) = temp_store();
+        let token = kn9t_server::auth::generate_token();
+        let kv: Arc<dyn kn9t_core::PluginKv> = store.clone() as Arc<dyn kn9t_core::PluginKv>;
+        let host = kn9t_plugin::PluginHost::spawn(&bin, &[], kv).expect("spawn dummy plugin");
+        let host = Arc::new(host);
+        let tools = kn9t_core::ToolRegistry::from_tools(kn9t_server::tools::extract_tools_public(
+            &host,
+        ));
+        let mut state = ServerState::new(store.clone(), token.clone(), tools, vec![host.clone()]);
+        state.set_plugin_spawn(
+            "cycle-tools".to_string(),
+            vec![bin.to_string_lossy().into_owned()],
+            vec![],
+        );
+        state.set_models(vec![model_spec()]);
+        let state = Arc::new(state);
+        let h = start(state.clone());
+
+        let post = |path: &str| req_auth(&h, "POST", path, &[], serde_json::Value::Null);
+
+        // Inventory reports it running before anything happens.
+        let list = req_auth(&h, "GET", "/plugin", &[], serde_json::Value::Null);
+        assert_eq!(list.status, 200);
+        assert_eq!(
+            list.json()["plugins"][0]["state"].as_str(),
+            Some("running")
+        );
+
+        let r = post("/plugin/cycle-tools/stop");
+        assert_eq!(
+            r.status,
+            200,
+            "stop: {}",
+            String::from_utf8_lossy(&r.body)
+        );
+        assert_eq!(r.json()["stopped"].as_str(), Some("cycle-tools"));
+
+        // The tool is still registered — removing it would rewrite the `tools` array and
+        // invalidate the level-1 cache prefix for a temporary condition.
+        assert!(
+            state.tools_snapshot().get("cycle_tool").is_some(),
+            "a stopped plugin's tools stay registered"
+        );
+        // …but calls to it are refused.
+        assert!(
+            state.blocked_tools().contains("cycle_tool"),
+            "and are blocked at execution instead"
+        );
+        assert_eq!(
+            req_auth(&h, "GET", "/plugin", &[], serde_json::Value::Null).json()["plugins"][0]
+                ["state"]
+                .as_str(),
+            Some("stopped")
+        );
+
+        // Stopping twice is a conflict, not a silent success: the caller's belief about the
+        // state is wrong and should be corrected.
+        assert_eq!(post("/plugin/cycle-tools/stop").status, 409);
+
+        let r = post("/plugin/cycle-tools/start");
+        assert_eq!(
+            r.status,
+            200,
+            "start: {}",
+            String::from_utf8_lossy(&r.body)
+        );
+        assert_eq!(r.json()["started"].as_str(), Some("cycle-tools"));
+        assert!(
+            state.blocked_tools().is_empty(),
+            "restarting must unblock the tools"
+        );
+        assert_eq!(post("/plugin/cycle-tools/start").status, 409, "already running");
+
+        // A name the server never loaded is 404 on both — starting an unknown plugin must
+        // not be a way to spawn something (that is `POST /plugin/load`).
+        assert_eq!(post("/plugin/never-seen/start").status, 404);
+        assert_eq!(post("/plugin/never-seen/stop").status, 404);
+
+        h.handle.shutdown();
+    }
+
+    /// 96E-52 — `GET /session` and `GET /session/{id}` must expose parentage.
+    ///
+    /// `fork_session` has always written `origin_session`/`origin_seq`/`fork_reason`, but
+    /// neither route projected them, so no client could tell a branch from a root — which is
+    /// the one fact a tree view needs. Roots must report `null` rather than omitting the
+    /// fields inconsistently.
+    #[test]
+    fn p1_96e52_session_list_exposes_fork_parentage() {
+        let (h, _tmp) = harness();
+        let root = make_session(&h);
+
+        let fork = req_auth(
+            &h,
+            "POST",
+            &format!("/session/{root}/fork"),
+            &[],
+            serde_json::json!({ "origin_seq": 0, "reason": "rewind" }),
+        );
+        assert_eq!(
+            fork.status,
+            200,
+            "fork: {}",
+            String::from_utf8_lossy(&fork.body)
+        );
+        let child = fork.json()["id"].as_str().unwrap().to_owned();
+
+        let list = req_auth(&h, "GET", "/session", &[], serde_json::Value::Null);
+        assert_eq!(list.status, 200);
+        let sessions = list.json()["sessions"].as_array().unwrap().clone();
+
+        let find = |id: &str| -> serde_json::Value {
+            sessions
+                .iter()
+                .find(|s| s["id"].as_str() == Some(id))
+                .unwrap_or_else(|| panic!("session {id} missing from list"))
+                .clone()
+        };
+
+        let c = find(&child);
+        assert_eq!(
+            c["origin_session"].as_str(),
+            Some(root.as_str()),
+            "the child must name its origin"
+        );
+        assert_eq!(c["origin_seq"].as_u64(), Some(0));
+        assert_eq!(
+            c["fork_reason"].as_str(),
+            Some("rewind"),
+            "the reason distinguishes /undo from /fork in the tree view"
+        );
+
+        // A root carries the fields as explicit nulls: a client can then treat "absent
+        // parent" uniformly instead of guessing from a missing key.
+        let r = find(&root);
+        assert!(
+            r["origin_session"].is_null(),
+            "root origin_session should be null, got {:?}",
+            r["origin_session"]
+        );
+        assert!(r["fork_reason"].is_null());
+
+        // Same fields on the single-session route, so the overlay can query one node.
+        let snap = req_auth(
+            &h,
+            "GET",
+            &format!("/session/{child}"),
+            &[],
+            serde_json::Value::Null,
+        );
+        assert_eq!(snap.status, 200);
+        let meta = &snap.json()["meta"];
+        assert_eq!(meta["origin_session"].as_str(), Some(root.as_str()));
+        assert_eq!(meta["fork_reason"].as_str(), Some("rewind"));
+
+        h.handle.shutdown();
+    }
+
     ///
     /// Regression guard for 96E-12: `EventSink` is transient-only, so `MessageAppended`
     /// emitted by the loop/routes reach SSE observers solely through the store
@@ -430,8 +604,7 @@ mod srv {
     /// next turn start). The prompt route previously published manually; now the
     /// observer is the single publisher — this test fails if either side regresses
     /// (missing echo, or duplicate echo).
-    #[test]
-    fn p1_96e18_durable_appends_echo_on_sse_bus() {
+    #[test]    fn p1_96e18_durable_appends_echo_on_sse_bus() {
         let (state, _tmp) = fresh_state();
         let h = start(state.clone());
         let id = make_session(&h);
