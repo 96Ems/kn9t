@@ -128,8 +128,13 @@ retry. A concrete provider is expected to be ~250 lines (§2.1).
 > thinking_replay  : "verbatim" | "strip"   # from core
 > require_tools    : bool          # inject placeholder tool (NBED §8.7.4)
 > extra_body       : table         # e.g. LiteLLM metadata passthrough
+> session_header   : string        # header carrying Request::session ("" = off)
+> api              : "chat" | "responses"   # which OpenAI-family schema (default "chat")
 > ```
 > A `[[model]]` quirk block overrides the provider block, merged field-by-field (§8.3).
+> `session_header` is the one quirk whose *value* is per-request rather than per-deployment:
+> the header name is config, the id comes from `Request::session` (R-CORE-170). It cannot be
+> expressed in `[provider.X.headers]`, which the config layer resolves once at load.
 > **Accept:** `cargo test pcore::quirks_merge` — a model override replaces exactly its named
 > fields and inherits the rest.
 
@@ -256,6 +261,48 @@ configured instance (§8.7).
 > **Accept:** `cargo test nbed::onem_pair` — two registry entries, same `api_id`, different
 > `ctx` and prices.
 
+## B.5 Responses API — `api = "responses"`
+
+> One gateway fronts both OpenAI-family schemas from one base URL and one key, and a given
+> model answers on exactly one of them (OpenCode Go: `grok-4.6` rejects chat-completions
+> with `not supported for format oa-compat`, while `glm-5.3` answers only there). The wire
+> format is therefore a property of the **model**, not of the deployment, and travels as a
+> quirk (`api`, §A.5) so it inherits the per-model override of §8.3. Any value other than
+> `chat` or `responses` MUST fail config load: a value that parses but does not dispatch is
+> worse than one that is rejected.
+
+> **R-OAI-060 → DESIGN §8.2, §8.5**
+> With `api = "responses"` the request MUST be built as `POST {base_url}/responses`: the
+> system prompt as `instructions`, messages as `input` items, tools **flat**
+> (`{type, name, description, parameters, strict}` — no `function` nesting),
+> `max_output_tokens`, and `store: false`. The upstream default for `store` is `true`;
+> kn9t owns the transcript, so leaving it unset silently retains every turn.
+> Assistant tool calls MUST encode as `function_call` items and tool results as
+> `function_call_output` items keyed by `call_id`. Reasoning items MUST NOT be replayed:
+> with `store: false` an item round-trips only with
+> `include: ["reasoning.encrypted_content"]`, which is not requested (the same choice as
+> `thinking_replay = "strip"`). Items MUST preserve content order — a message's prose and
+> its calls are separate items, and reordering them misrepresents what the model produced.
+> **Accept:** `cargo test oai::responses_request_shape`, `oai::responses_tools_are_flat`.
+
+> **R-OAI-070 → DESIGN §8**
+> The response stream MUST be decoded from `response.*` events:
+> `response.output_text.delta` → text; `response.reasoning_summary_text.delta` and
+> `response.reasoning_text.delta` → thinking; `response.output_item.added` with
+> `item.type == "function_call"` → tool call; `response.function_call_arguments.delta` →
+> argument fragment, correlated by `output_index` (the fragment carries no call id);
+> `response.completed` → usage + stop; `response.incomplete` → `Length` on
+> `incomplete_details.reason == "max_output_tokens"`, `Refusal` on `content_filter`.
+> Usage MUST come from `input_tokens` / `output_tokens` with
+> `input_tokens_details.{cached_tokens,cache_write_tokens}` and
+> `output_tokens_details.reasoning_tokens`, and `input` MUST be the uncached remainder
+> (§8.4.3 partition), as on the chat path.
+> An unrecognised event MUST be ignored rather than fatal: upstream adds event kinds
+> without notice and the gateway appends a `ping`.
+> **Accept:** `cargo test oai::responses_decode_text_then_usage`,
+> `oai::responses_decode_tool_call`, `oai::responses_ignores_unknown_events`,
+> `oai::responses_incomplete_is_length`.
+
 ---
 
 ## Stage gate
@@ -264,7 +311,8 @@ configured instance (§8.7).
 > Stage 5 is **done** when: `sse_lines`/`assemble`/retry pass their boundary and pre-stream
 > tests; the OpenAI provider decodes text/tool-call/reasoning streams from replay fixtures;
 > cache encoding omits under Automatic and places under Explicit; the extra-headers hook
-> passes `oai::extra_headers`; the gateway config-headers test passes; the three
+> passes `oai::extra_headers`; the Responses codec passes `oai::responses_*` and rejects an
+> unknown `api` at config load; the gateway config-headers test passes; the three
 > rewrites, dual-field usage decoding, and the 1M pair all pass; `--dump-request` prints a
 > correct body; and the replay provider (02) has been re-pointed at `sse_lines`/`assemble`
 > (R-RPLY-070) with all stage-2 fixtures still green. GI-1/GI-5 hold. The provider crate

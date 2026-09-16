@@ -259,6 +259,14 @@ pub struct RawProvider {
     /// R-SRV-CFG-010: per-provider extra headers (openai only).
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// R-SRV-CFG-030: skip model auto-discovery for this provider. Default `true`.
+    ///
+    /// Two sources are suppressed: the `/models` fetch (`kind = "openai"`) and the model
+    /// declaration a plugin ships (`kind = "plugin"`). Both register models with no local
+    /// price and a guessed context window, and a plugin's catalog belongs to the endpoint
+    /// it was written for -- pointing it at another gateway imports a wrong one.
+    #[serde(default = "default_discover")]
+    pub discover: bool,
     #[serde(default)]
     pub tls_insecure: bool,
     #[serde(default)]
@@ -280,6 +288,9 @@ pub struct RawQuirks {
     pub require_tools: Option<bool>,
     pub streaming: Option<bool>,
     pub trim_trailing_whitespace: Option<bool>,
+    pub session_header: Option<String>,
+    /// `"chat"` | `"responses"` (R-OAI-060).
+    pub api: Option<String>,
 }
 
 impl RawQuirks {
@@ -301,6 +312,8 @@ impl RawQuirks {
             require_tools,
             streaming,
             trim_trailing_whitespace,
+            session_header,
+            api,
         } = self;
         max_tokens_field.is_some()
             || system_role.is_some()
@@ -313,6 +326,8 @@ impl RawQuirks {
             || require_tools.is_some()
             || streaming.is_some()
             || trim_trailing_whitespace.is_some()
+            || session_header.is_some()
+            || api.is_some()
     }
 }
 
@@ -345,6 +360,9 @@ pub struct RawModel {
 
 fn default_cache_mode_str() -> String {
     "automatic".into()
+}
+fn default_discover() -> bool {
+    true
 }
 fn default_breakpoints() -> u8 {
     4
@@ -480,6 +498,7 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                     .map_err(|e| format!("config: provider {name}: {e}"))?;
                 let extra_headers = resolve_headers(&rp.headers, name);
                 let quirks = build_http_quirks(&rp.quirks);
+                validate_quirks(&quirks, &format!("provider {name:?}"))?;
                 provider_quirks.insert(name.clone(), quirks.clone());
 
                 // DESIGN 8.3: a `[[model]]` block may override any quirk. One
@@ -499,6 +518,9 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                 for id in model_quirks.keys() {
                     crate::log!("[kn9t-config] model {id:?}: per-model quirk override active");
                 }
+                for (id, mq) in &model_quirks {
+                    validate_quirks(mq, &format!("provider {name:?} model {id:?}"))?;
+                }
                 let provider = OpenAiProvider::new(OpenAiConfig {
                     name: name.clone(),
                     base_url: rp.base_url.clone(),
@@ -515,18 +537,20 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                 });
 
                 // Auto-discover models from /v1/models endpoint.
-                let discovered = fetch_openai_models(
-                    &rp.base_url,
-                    if api_key.is_empty() {
-                        None
-                    } else {
-                        Some(&api_key)
-                    },
-                    &extra_headers,
-                    rp.tls_insecure,
-                    name,
-                );
-                auto_models.extend(discovered);
+                if rp.discover {
+                    let discovered = fetch_openai_models(
+                        &rp.base_url,
+                        if api_key.is_empty() {
+                            None
+                        } else {
+                            Some(&api_key)
+                        },
+                        &extra_headers,
+                        rp.tls_insecure,
+                        name,
+                    );
+                    auto_models.extend(discovered);
+                }
 
                 providers.push((
                     name.clone(),
@@ -603,8 +627,14 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
 
                         // Extract models from plugin declaration (auto-discovery).
                         let decl = host.declaration();
-                        if let Some(ref prov_decl) = decl.provider {
-                            for model_decl in &prov_decl.models {
+                        let declared = decl
+                            .provider
+                            .as_ref()
+                            .filter(|_| rp.discover)
+                            .map(|p| p.models.as_slice())
+                            .unwrap_or_default();
+                        if !declared.is_empty() {
+                            for model_decl in declared {
                                 // Try plugin-provided price, then fallback lookup, then zero.
                                 let price = model_decl
                                     .price
@@ -902,7 +932,22 @@ pub fn build_http_quirks(r: &RawQuirks) -> HttpQuirks {
         trim_trailing_whitespace: r
             .trim_trailing_whitespace
             .unwrap_or(def.trim_trailing_whitespace),
+        session_header: r.session_header.clone().unwrap_or(def.session_header),
+        api: r.api.clone().unwrap_or(def.api),
     }
+}
+
+/// Reject a wire format the provider cannot dispatch. Called on the resolved quirks so
+/// a per-model override is checked exactly like a provider-level one.
+pub fn validate_quirks(quirks: &HttpQuirks, where_: &str) -> Result<(), String> {
+    if !kn9t_provider_core::SUPPORTED_APIS.contains(&quirks.api.as_str()) {
+        return Err(format!(
+            "config: {where_}: unknown api {:?}; supported: {}",
+            quirks.api,
+            kn9t_provider_core::SUPPORTED_APIS.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 pub fn merge_quirks(base: HttpQuirks, over: &RawQuirks) -> HttpQuirks {
@@ -924,6 +969,8 @@ pub fn merge_quirks(base: HttpQuirks, over: &RawQuirks) -> HttpQuirks {
         trim_trailing_whitespace: over
             .trim_trailing_whitespace
             .unwrap_or(base.trim_trailing_whitespace),
+        session_header: over.session_header.clone().unwrap_or(base.session_header),
+        api: over.api.clone().unwrap_or(base.api),
     }
 }
 

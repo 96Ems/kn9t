@@ -127,6 +127,9 @@ fn serialise_request(req: &Request) -> Value {
         "thinking": req.thinking,
         "max_tokens": req.max_tokens,
         "cache": serde_json::to_value(req.cache).unwrap_or(Value::Null),
+        // The conversation id. A plugin needs it to publish a per-conversation routing
+        // header (R-CORE-170); env vars are fixed at spawn and cannot carry it.
+        "session": req.session,
     })
 }
 

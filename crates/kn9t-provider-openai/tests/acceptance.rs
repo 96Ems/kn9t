@@ -36,6 +36,7 @@ fn make_request(model: &ModelSpec) -> kn9t_core::Request<'_> {
         thinking: Thinking::Off,
         max_tokens: Some(512),
         cache: &[],
+        session: None,
     }
 }
 
@@ -52,6 +53,7 @@ fn oai_request_shape_default_quirks() {
         thinking: Thinking::Off,
         max_tokens: Some(1024),
         cache: &[],
+        session: None,
     };
     let quirks = Quirks::default();
     let body = build_request(&req, &quirks, &CacheMode::Automatic, false);
@@ -289,6 +291,7 @@ fn oai_tool_call_encoding() {
         thinking: Thinking::Off,
         max_tokens: Some(64),
         cache: &[],
+        session: None,
     };
     let body = build_request(&req, &quirks, &CacheMode::None, false);
     let msgs = body["messages"].as_array().expect("messages must be array");
@@ -415,6 +418,344 @@ fn oai_extra_headers() {
         gateway_url_config.extra_headers.is_empty(),
         "provider must NOT add headers based on URL — that is the config layer's job (R-OAI-050)"
     );
+}
+
+// ── oai::session_header (R-OAI-050) ─────────────────────────────────────────
+// The conversation id travels on the request, so the config layer cannot supply it
+// (it resolves extra_headers once, at load). The header *name* is still config data.
+
+#[test]
+fn oai_session_header() {
+    let model = make_model("deepseek-v4.1-flash");
+    let quirks = Quirks {
+        session_header: "x-opencode-session".into(),
+        ..Quirks::default()
+    };
+    let provider = OpenAiProvider::new(OpenAiConfig {
+        name: "opencode-go".into(),
+        extra_headers: vec![("X-User-Id".into(), "alice".into())],
+        ..OpenAiConfig::default()
+    });
+
+    let with_session = kn9t_core::Request {
+        session: Some("sess-abc"),
+        ..make_request(&model)
+    };
+    let h = provider.build_headers(&with_session, &quirks);
+    assert_eq!(h[0].0, "Content-Type");
+    assert_eq!(h[1], ("x-opencode-session".into(), "sess-abc".into()));
+    assert_eq!(h[2], ("X-User-Id".into(), "alice".into()));
+    assert_eq!(
+        h.iter().filter(|(k, _)| k == "x-opencode-session").count(),
+        1,
+        "must not duplicate the header"
+    );
+
+    // No conversation (auxiliary call): no header, but the request still goes out.
+    let no_session = make_request(&model);
+    assert!(provider
+        .build_headers(&no_session, &quirks)
+        .iter()
+        .all(|(k, _)| k != "x-opencode-session"));
+
+    // No quirk: never sent, even when the request carries a session.
+    assert!(provider
+        .build_headers(&with_session, &Quirks::default())
+        .iter()
+        .all(|(k, _)| k != "x-opencode-session"));
+}
+
+// ── oai::responses_* (R-OAI-060/070) ────────────────────────────────────────
+
+fn resp_quirks() -> Quirks {
+    Quirks {
+        api: "responses".into(),
+        reasoning: "reasoning_effort".into(),
+        ..Quirks::default()
+    }
+}
+
+#[test]
+fn oai_responses_path() {
+    use kn9t_provider_openai::responses::path;
+    assert_eq!(path(&Quirks::default()), "/chat/completions");
+    assert_eq!(path(&resp_quirks()), "/responses");
+}
+
+#[test]
+fn oai_responses_request_shape() {
+    use kn9t_core::{Content, Message, MsgId, Role};
+    use kn9t_provider_openai::responses::build_body;
+    use serde_json::json;
+
+    let model = make_model("grok-4.6");
+    let messages = vec![
+        Message {
+            id: MsgId::new(),
+            role: Role::User,
+            content: vec![Content::Text {
+                text: "hi".into(),
+            }],
+            silent: false,
+        },
+        Message {
+            id: MsgId::new(),
+            role: Role::Assistant,
+            content: vec![
+                Content::Text {
+                    text: "calling".into(),
+                },
+                Content::ToolCall {
+                    id: kn9t_core::CallId("call_1".into()),
+                    name: "get_weather".into(),
+                    args_json: "{\"city\":\"Paris\"}".into(),
+                },
+            ],
+            silent: false,
+        },
+        Message {
+            id: MsgId::new(),
+            role: Role::Tool,
+            content: vec![Content::ToolResult {
+                id: kn9t_core::CallId("call_1".into()),
+                content: vec![Content::Text {
+                    text: "22C".into(),
+                }],
+                is_error: false,
+            }],
+            silent: false,
+        },
+    ];
+    let req = kn9t_core::Request {
+        model: &model,
+        system: Some("be terse"),
+        messages: &messages,
+        tools: &[],
+        thinking: Thinking::Effort(Effort::High),
+        max_tokens: Some(1024),
+        cache: &[],
+        session: None,
+    };
+    let body = build_body(&req, &resp_quirks(), false);
+
+    assert_eq!(body["model"], json!("grok-4.6"));
+    // System prompt travels as `instructions`, never as a message.
+    assert_eq!(body["instructions"], json!("be terse"));
+    assert_eq!(body["max_output_tokens"], json!(1024));
+    assert_eq!(body["stream"], json!(true));
+    // store defaults to true upstream; kn9t owns the transcript and opts out.
+    assert_eq!(body["store"], json!(false));
+    assert_eq!(body["reasoning"]["effort"], json!("high"));
+
+    // Chat-only fields must not leak into this wire format.
+    assert!(body.get("messages").is_none());
+    assert!(body.get("max_tokens").is_none());
+    assert!(body.get("stream_options").is_none());
+
+    // input items: user text, assistant call + text, tool output.
+    let input = body["input"].as_array().unwrap();
+    assert_eq!(input.len(), 4);
+    assert_eq!(input[0]["content"][0]["type"], json!("input_text"));
+    assert_eq!(input[1]["role"], json!("assistant"));
+    assert_eq!(input[2]["type"], json!("function_call"));
+    assert_eq!(input[2]["call_id"], json!("call_1"));
+    assert_eq!(input[2]["arguments"], json!("{\"city\":\"Paris\"}"));
+    assert_eq!(input[3]["type"], json!("function_call_output"));
+    assert_eq!(input[3]["call_id"], json!("call_1"));
+    assert_eq!(input[3]["output"], json!("22C"));
+}
+
+#[test]
+fn oai_responses_tools_are_flat() {
+    use kn9t_provider_openai::responses::build_body;
+    use serde_json::json;
+
+    let model = make_model("gpt-5.6-luna");
+    let tools = vec![kn9t_core::ToolSpec {
+        name: "get_weather".into(),
+        description: "Get weather".into(),
+        schema: json!({ "type": "object", "properties": {} }),
+        hidden: false,
+        effects: vec![],
+        policy: Default::default(),
+    }];
+    let req = kn9t_core::Request {
+        model: &model,
+        system: None,
+        messages: &[],
+        tools: &tools,
+        thinking: Thinking::Off,
+        max_tokens: None,
+        cache: &[],
+        session: None,
+    };
+    let body = build_body(&req, &resp_quirks(), false);
+
+    // Responses takes a flat tool, not `{type, function:{name,...}}`.
+    assert_eq!(body["tools"][0]["type"], json!("function"));
+    assert_eq!(body["tools"][0]["name"], json!("get_weather"));
+    assert!(body["tools"][0].get("function").is_none());
+    assert_eq!(body["tools"][0]["strict"], json!(false));
+}
+
+#[test]
+fn oai_responses_decode_text_then_usage() {
+    use kn9t_provider_openai::responses::{decode_event, ResponsesState};
+    use serde_json::json;
+
+    let model_ref = ModelRef {
+        provider: "opencode-go".into(),
+        id: "grok-4.6".into(),
+    };
+    let mut st = ResponsesState::new();
+    let q = resp_quirks();
+
+    let ev = |s: &str| s.as_bytes().to_vec();
+
+    // Reasoning summary, then text, then the terminal completed event.
+    let c = decode_event(
+        &ev(&json!({"type":"response.reasoning_summary_text.delta","delta":"thinking"}).to_string()),
+        &mut st,
+        &q,
+        &model_ref,
+    )
+    .unwrap();
+    assert!(matches!(c.as_slice(), [Chunk::Thinking { .. }]));
+
+    let c = decode_event(
+        &ev(&json!({"type":"response.output_text.delta","delta":"OK"}).to_string()),
+        &mut st,
+        &q,
+        &model_ref,
+    )
+    .unwrap();
+    assert!(matches!(c.as_slice(), [Chunk::Text { .. }]));
+
+    let completed = json!({
+        "type": "response.completed",
+        "response": {
+            "status": "completed",
+            "usage": {
+                "input_tokens": 210,
+                "output_tokens": 149,
+                "total_tokens": 359,
+                "input_tokens_details": { "cached_tokens": 10, "cache_write_tokens": 0 },
+                "output_tokens_details": { "reasoning_tokens": 148 }
+            }
+        }
+    });
+    let c = decode_event(&ev(&completed.to_string()), &mut st, &q, &model_ref).unwrap();
+    assert_eq!(c.len(), 2);
+    match &c[0] {
+        Chunk::Usage(u) => {
+            // input is the uncached remainder (§8.4.3 partition).
+            assert_eq!(u.tokens.input, 200);
+            assert_eq!(u.tokens.output, 149);
+            assert_eq!(u.tokens.cache_read, 10);
+            assert_eq!(u.tokens.reasoning, 148);
+        }
+        _ => panic!("expected usage"),
+    }
+    assert!(matches!(c[1], Chunk::Stop(StopReason::Stop)));
+}
+
+#[test]
+fn oai_responses_decode_tool_call() {
+    use kn9t_provider_openai::responses::{decode_event, ResponsesState};
+    use serde_json::json;
+
+    let model_ref = ModelRef {
+        provider: "opencode-go".into(),
+        id: "grok-4.6".into(),
+    };
+    let mut st = ResponsesState::new();
+    let q = resp_quirks();
+
+    // Captured verbatim from OpenCode Go: the item arrives first with an empty
+    // `arguments`, then the fragments follow.
+    let added = json!({
+        "type": "response.output_item.added",
+        "output_index": 1,
+        "item": {
+            "id": "fc_8fb89fcb", "type": "function_call", "status": "in_progress",
+            "name": "get_weather", "call_id": "call-29184dbd", "arguments": ""
+        }
+    });
+    let c = decode_event(&added.to_string().into_bytes(), &mut st, &q, &model_ref).unwrap();
+    match &c[0] {
+        Chunk::ToolCall { idx, id, name } => {
+            assert_eq!(*idx, 1);
+            assert_eq!(id.0, "call-29184dbd");
+            assert_eq!(name, "get_weather");
+        }
+        _ => panic!("expected tool call"),
+    }
+
+    // Argument fragments carry no call id -- they correlate by output_index.
+    let delta = json!({
+        "type": "response.function_call_arguments.delta",
+        "output_index": 1,
+        "delta": "{\"city\":\"Paris\"}"
+    });
+    let c = decode_event(&delta.to_string().into_bytes(), &mut st, &q, &model_ref).unwrap();
+    match &c[0] {
+        Chunk::ToolArgs { idx, delta } => {
+            assert_eq!(*idx, 1);
+            assert_eq!(delta, "{\"city\":\"Paris\"}");
+        }
+        _ => panic!("expected tool args"),
+    }
+
+    let done = json!({ "type": "response.completed", "response": { "status": "completed" } });
+    let c = decode_event(&done.to_string().into_bytes(), &mut st, &q, &model_ref).unwrap();
+    assert!(c
+        .iter()
+        .any(|ch| matches!(ch, Chunk::Stop(StopReason::ToolUse))));
+}
+
+#[test]
+fn oai_responses_ignores_unknown_events() {
+    use kn9t_provider_openai::responses::{decode_event, ResponsesState};
+
+    let model_ref = ModelRef {
+        provider: "opencode-go".into(),
+        id: "grok-4.6".into(),
+    };
+    let mut st = ResponsesState::new();
+    // OpenCode Go appends `event: ping` / `{"type":"ping","cost":"0"}`. An unknown
+    // event must not be fatal -- upstream adds event kinds without warning.
+    for payload in [
+        r#"{"type":"ping","cost":"0"}"#,
+        r#"{"type":"response.in_progress"}"#,
+        r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"message"}}"#,
+    ] {
+        let c = decode_event(payload.as_bytes(), &mut st, &resp_quirks(), &model_ref).unwrap();
+        assert!(c.is_empty(), "unexpected chunks for {payload}");
+    }
+}
+
+#[test]
+fn oai_responses_incomplete_is_length() {
+    use kn9t_provider_openai::responses::{decode_event, ResponsesState};
+    use serde_json::json;
+
+    let model_ref = ModelRef {
+        provider: "opencode-go".into(),
+        id: "grok-4.6".into(),
+    };
+    let mut st = ResponsesState::new();
+    let ev = json!({
+        "type": "response.incomplete",
+        "response": {
+            "status": "incomplete",
+            "incomplete_details": { "reason": "max_output_tokens" },
+            "usage": { "input_tokens": 5, "output_tokens": 32 }
+        }
+    });
+    let c = decode_event(&ev.to_string().into_bytes(), &mut st, &resp_quirks(), &model_ref).unwrap();
+    assert!(c
+        .iter()
+        .any(|ch| matches!(ch, Chunk::Stop(StopReason::Length))));
 }
 
 // ── nbed::usage_fields (R-NBED-060) ──────────────────────────────────────────
@@ -553,6 +894,7 @@ fn nbed_rewrites_adaptive_thinking() {
         thinking: Thinking::Effort(Effort::High),
         max_tokens: Some(4096),
         cache: &[],
+        session: None,
     };
     let quirks = Quirks {
         reasoning: "adaptive".into(),
@@ -589,6 +931,7 @@ fn nbed_rewrites_placeholder_tool() {
         thinking: Thinking::Off,
         max_tokens: Some(512),
         cache: &[],
+        session: None,
     };
     let quirks = Quirks {
         require_tools: true,

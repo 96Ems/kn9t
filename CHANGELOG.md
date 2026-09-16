@@ -9,6 +9,172 @@ pointer current.
 
 ---
 
+## Session -- 2026-09-16c -- `/v1/messages` by reuse, and three bugs stage 09's fixtures hid
+
+**Next session starts here:** C2 is the last known-wrong thing in the config layer. `Quirks::merge`
+claims to implement R-PCORE-080's "replaces exactly its named fields and inherits the rest" but has
+no `Option`s, so an override that mentions nothing resets every string field to its default. The
+server never calls it (`config::merge_quirks` merges on `RawQuirks`, which does have `Option`s) --
+only `pcore::quirks_merge` does. Give it the `RawQuirks` shape or delete it.
+
+### Scope: one model, so no second implementation
+
+Probed `/v1/messages` across everything that fails chat-completions. Exactly one works:
+`minimax-m2.7`. `kimi-k2.5`, `glm-5`, `qwen3.5-plus`, `mimo-v2-pro`, `mimo-v2-omni`, `hy3-preview`
+and `union-alpha` answer *unavailable* on both schemas -- Go is not serving them -- and `grok-4.6`
+rejects the Anthropic format outright (`not supported for format anthropic`).
+
+Writing a Messages encoder/decoder into `kn9t-provider-openai` for one model would have been a
+second implementation of an artifact stage 09 already ships, so the gateway is reached through
+`kn9t-anthropic` instead: `[provider.opencode-go-ant] kind = "plugin"`, `discover = false`, and env
+for `ANTHROPIC_BASE_URL` / `ANTHROPIC_SESSION_HEADER`. The Messages endpoint wants `x-api-key`
+rather than `Authorization: Bearer`, which the plugin already sent.
+
+Needed along the way: the provider-call payload now carries `session` (R-CORE-170). A plugin could
+not otherwise publish a per-conversation routing header -- environment variables are fixed at spawn
+and the id changes per conversation, which is exactly why the gateway demands the header.
+
+### Three bugs, one root cause
+
+All three were invisible because a test asserted against a payload the host never produces. This is
+AGENTS.md §11.1's lesson in another crate: a unit test proving a function works in isolation says
+nothing about whether it is wired up.
+
+**D1 (high) -- the Anthropic provider could not use a single tool.** `map.rs` copied `req.tools`
+straight onto the wire. The host sends kn9t `ToolSpec`
+(`{name, description, schema, hidden, effects, policy}`); Anthropic wants
+`{name, description, input_schema}`. No `input_schema` reached the endpoint, so every request
+carrying tools was rejected: `invalid params, function parameters is empty (2013)`. Fixed, with
+R-ANTH-050 stating the mapping and a fixture built from the host's own serializer.
+
+**D2 (medium) -- R-ANTH-030 was dead code.** The plugin read `c.get("position")`, but kn9t
+serialises `Cache` tagged `at` (`{"at":"system"}` / `{"at":"after_message","idx":N}`). Nothing ever
+matched, so no `cache_control` was emitted and prompt caching never happened. The test that
+certified it used `{"position": 0}` -- a shape that exists nowhere. Now parsed correctly, with
+`System` attached to the system block; the live turn reads `cache 26%`.
+
+**D3 (high) -- `install-plugins` could delete every provider.** For a Python/Node plugin it appends
+a `[[plugin]]` entry carrying the plugin's directory. The path went into a TOML *basic* string
+unescaped, so `C:\_ddm\...` produced `Unescaped '\' in a string` at that line -- and because the
+config is parsed as a whole, **every provider and model disappeared**, not just the entry. It had
+never fired because no such plugin lived under a path with a backslash after a character TOML reads
+as an escape. Fixed with `toml_basic()` (escaping `\` and `"`), a unit test, and a live check that
+the repaired file parses.
+
+### Also
+
+`discover = false` (R-SRV-CFG-030) on a provider block suppresses both `/models` discovery and a
+plugin's declared catalog -- which is what keeps the bundled `claude-*` list out of
+`opencode-go-ant`. That also closes **C1** from 2026-09-16b. Tested against a real local `/models`
+endpoint (`srv::config_discover_false`), not a mock.
+
+---
+
+## Session -- 2026-09-16b -- OpenCode Go: a per-conversation session header quirk
+
+**Followed by 2026-09-16c**, which did the `/v1/messages` work exactly this way -- payload
+`session` plus endpoint/session-header env, one model unlocked -- and closed C1 below with
+`discover = false`.
+
+Models that no format will reach: `kimi-k2.5`, `glm-5`, `qwen3.5-plus`, `mimo-v2-pro`,
+`mimo-v2-omni`, `hy3-preview`, `grok-4.5` all answer `400 Model is unavailable` on both
+schemas -- Go is not serving them.
+
+### The header that made OpenCode Go unusable
+
+Go rejects any request without a stable per-conversation id in `x-opencode-session`:
+
+```
+400 {"error":{"type":"MissingSessionID","message":"...cannot be routed efficiently"}}
+```
+
+`[provider.X.headers]` (R-SRV-CFG-010) cannot express it: the config layer resolves that table once
+at load, and the value is per conversation, not per deployment. So the header *name* became a quirk
+and the *value* travels on the request.
+
+- `kn9t-core` -- `Request` gains `session: Option<&'a str>` (R-CORE-170). A routing hint, not auth:
+  a provider with no `session_header` configured sends nothing.
+- `kn9t-provider-core` -- `Quirks::session_header`, default `""` = off (R-PCORE-080).
+- `kn9t-provider-openai` -- `build_headers(&self, req, quirks)` injects it between `Content-Type`
+  and `extra_headers` (R-OAI-050). No header name is hard-coded; the name is config.
+- Call sites -- `kn9t-react/src/exec.rs` (the turn), `kn9t-server/src/turn.rs`
+  (`maybe_autotitle`), `kn9t-server/src/host_api.rs` (`provider_complete`).
+
+Tests: `oai::session_header` (injected once and in order; absent with no session, absent with no
+quirk), `pcore::quirks_merge` extended, and `per_model_quirks_reach_the_provider` now asserts that a
+model override naming neither header nor session does not clear the provider's.
+
+Verified live, TUI on a built binary: `/models` -> `opencode-go/deepseek-v4.1-flash`, one turn
+streamed and answered, sidebar read `ctx 1.00M` with cost accounted.
+
+### The OpenCode Go config
+
+`~/.kn9t/config.toml` gained `[provider.opencode-go]` (`https://opencode.ai/zen/go/v1`) with
+`usage_in_stream`, `reasoning = "reasoning_effort"`, `thinking_style = "reasoning_content"` and
+`session_header = "x-opencode-session"`, plus 24 `[[model]]` entries.
+
+Go's `GET /v1/models` returns `{id, object, created, owned_by}` and nothing else -- no
+`context_window` -- and prices are local by design (R-PCORE-090). Discovery alone would therefore
+register every model at 128k and price 0, which is worse than useless for a 1M-context model: the
+compaction threshold would fire at 102k. ctx, max_out and prices were taken from models.dev's
+catalog (the source OpenCode itself reads) and written into the config.
+
+`max_out` is capped at 32768 rather than copied from `limit.output`: several models declare
+`limit.output == limit.context` (`kimi-k2.7-code` 262144/262144), kn9t sends `max_out` as
+`max_tokens`, and nothing clamps `prompt + max_tokens` against the window.
+
+### The `/v1/responses` wire format (R-OAI-060/070)
+
+Where the format selector lives was the design question, and the evidence settled it: `grok-4.6`
+rejects chat-completions (`not supported for format oa-compat`) while `glm-5.3` answers only there,
+on the *same* base URL and API key. So the schema is a property of the **model**, not of the
+deployment, and it goes in `Quirks::api` — which means it inherits the §8.3 per-model override and
+one provider block still serves the whole gateway. A `kind = "openai-responses"` would have forced
+three provider names for one endpoint, and `ModelRef::provider` is what lands in events and the DB.
+
+`crates/kn9t-provider-openai/src/responses.rs` is a second encoder + event decoder behind the same
+transport, retry and `sse_lines` code:
+
+- **Request** — `instructions` instead of a system message, `input` items, flat tools
+  (`{type, name, parameters, strict}`), `max_output_tokens`, `reasoning: {effort}`.
+- **`store: false` is not optional.** The upstream default is `true`; leaving it unset retains
+  every turn for 30 days *and* is what makes stateless replay not actually stateless.
+- **Reasoning items are not replayed** — with `store: false` they round-trip only with
+  `include: ["reasoning.encrypted_content"]`, which we do not request. Same call as
+  `thinking_replay = "strip"`.
+- **Item order is preserved.** The first cut grouped an assistant message's calls after its text;
+  the API expects items in the order the model produced them, and kn9t's `Content` vector already
+  carries that order. A test caught it.
+- **Unknown events are ignored, not fatal.** The stream carries ~50 event kinds we do not act on,
+  and this gateway appends `event: ping`. Erroring on an unrecognised type turns a cosmetic
+  upstream addition into an outage.
+
+Verified live: TUI -> `/models` -> `grok-4.6`, a full tool round-trip (reasoning, `read` call,
+result re-encoded as `function_call_output`, final answer), sidebar `ctx 2.9k/500.0k`.
+
+Config: `grok-4.6`, `gpt-5.6-luna` and `muse-spark-1.2/1.3-contributor` carry
+`[model.quirks] api = "responses"` (28 opencode-go models declared in total). An unknown `api`
+is a load error, not a silent fallback.
+
+Tests: `oai::responses_path`, `oai::responses_request_shape`, `oai::responses_tools_are_flat`,
+`oai::responses_decode_text_then_usage`, `oai::responses_decode_tool_call`,
+`oai::responses_ignores_unknown_events`, `oai::responses_incomplete_is_length`, plus
+`srv::unit_config` `unknown_api_is_rejected`, `unknown_api_in_model_override_is_rejected`,
+`responses_api_is_accepted`.
+
+### Discovered bugs
+
+| # | severity | area | bug |
+|---|---|---|---|
+| C1 | low | kn9t-server | Discovery is unconditional: `fetch_openai_models` always runs for `kind = "openai"`, so the 13 models that cannot answer on chat/completions are registered anyway (128k, price 0) and shown in `/models`. A `discover = false` knob, or the wire-format work above, removes them. |
+| C2 | medium | kn9t-provider-core | R-PCORE-080 says a model override "replaces exactly its named fields and inherits the rest", but `Quirks::merge` is field-by-field **model-wins**: every string field takes the model's value, and since TOML absent-means-default, an override that never mentions `max_tokens_field` silently resets it to `"max_tokens"`. `Quirks` has no `Option`s, so "unset" is unrepresentable -- which is why the server ignores the method and merges on `RawQuirks` (`config::merge_quirks`, the path `per_model_quirks_reach_the_provider` exercises). Only `pcore::quirks_merge` calls it. `session_header` follows the same shape for consistency; making the method correct means giving it the `RawQuirks` shape or deleting it. |
+
+**Accepted cost:** DeepSeek's Go prices are time-of-day (peak is 2x on weekdays 01:00-04:00 and
+06:00-10:00 UTC) and `Price` holds one rate. The config stores the off-peak rate models.dev
+publishes, so kn9t's `/cost` agrees with OpenCode's UI and under-counts during peak.
+
+---
+
 ## Session -- 2026-09-16 -- Reliability audit: eleven first-order bugs in the loop and the harness
 
 **Next session starts here:** one gap is left open deliberately. B8's fix abandons a hung

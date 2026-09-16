@@ -288,11 +288,14 @@ fn pcore_quirks_merge() {
         streaming: true,
         extra_body: serde_json::Value::Null,
         trim_trailing_whitespace: false,
+        session_header: String::new(),
+        api: "chat".into(),
     };
     let model_override = Quirks {
         max_tokens_field: "max_completion_tokens".into(),
         system_role: "developer".into(),
         usage_in_stream: true,
+        session_header: "x-opencode-session".into(),
         ..Quirks::default()
     };
     let merged = base.merge(&model_override);
@@ -300,6 +303,7 @@ fn pcore_quirks_merge() {
     assert_eq!(merged.max_tokens_field, "max_completion_tokens");
     assert_eq!(merged.system_role, "developer");
     assert!(merged.usage_in_stream);
+    assert_eq!(merged.session_header, "x-opencode-session");
     // Unoverridden fields come from model_override (merge is model-wins, not base-fallback).
     // That's the spec: model block overrides, inheriting defaults from model_override.
     // finish_reason would be model_override's default (true).

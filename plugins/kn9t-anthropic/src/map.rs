@@ -23,17 +23,12 @@ pub fn build_body(req: &Value) -> Value {
         .and_then(|s| s.as_str())
         .filter(|s| !s.is_empty());
 
-    // R-ANTH-030: cache breakpoints from req.cache — priority order, not positional.
-    // cache is Vec<Cache> with positions; we encode cache_control at message level.
-    let cache_positions: Vec<u64> = req.get("cache")
-        .and_then(|c| c.as_array())
-        .map(|arr| arr.iter()
-            .filter_map(|c| c.get("position").and_then(|p| p.as_u64()))
-            .collect())
-        .unwrap_or_default();
+    // R-ANTH-030: cache breakpoints from req.cache. The wire shape is kn9t's `Cache`
+    // (`{"at":"system"}` / `{"at":"after_message","idx":N}`), not a bare position.
+    let cache = parse_cache(req);
 
     // Convert messages
-    let messages = build_messages(req, &cache_positions);
+    let messages = build_messages(req, &cache.messages);
 
     // Thinking / extended thinking
     let thinking = req.get("thinking").and_then(|t| t.as_str()).unwrap_or("off");
@@ -46,12 +41,38 @@ pub fn build_body(req: &Value) -> Value {
     });
 
     if let Some(sys) = system {
-        body["system"] = json!(sys);
+        // Anthropic caches the system prefix as a content block, so a `System`
+        // breakpoint rides here rather than on a message.
+        body["system"] = if cache.system {
+            json!([{ "type": "text", "text": sys, "cache_control": {"type": "ephemeral"} }])
+        } else {
+            json!(sys)
+        };
     }
 
-    // Tools
-    if let Some(tools) = req.get("tools").filter(|t| !t.is_null()) {
-        body["tools"] = tools.clone();
+    // Tools: the host sends kn9t `ToolSpec` (`schema`, `effects`, `policy`) while
+    // Anthropic wants `{name, description, input_schema}`. Passing them through
+    // unchanged made every request 400 with "function parameters is empty".
+    if let Some(tools) = req.get("tools").and_then(|t| t.as_array()) {
+        let mapped: Vec<Value> = tools
+            .iter()
+            .filter_map(|t| {
+                let name = t.get("name").and_then(|n| n.as_str())?;
+                let mut tool = json!({
+                    "name": name,
+                    "input_schema": normalize_schema(t.get("schema")),
+                });
+                if let Some(d) = t.get("description").and_then(|d| d.as_str()) {
+                    if !d.is_empty() {
+                        tool["description"] = json!(d);
+                    }
+                }
+                Some(tool)
+            })
+            .collect();
+        if !mapped.is_empty() {
+            body["tools"] = json!(mapped);
+        }
     }
 
     // Anthropic-format thinking
@@ -64,8 +85,40 @@ pub fn build_body(req: &Value) -> Value {
     body
 }
 
-fn parse_thinking_budget(req: &Value) -> Option<u32> {
-    match req.get("thinking")? {
+/// Cache breakpoints, decoded from the wire shape kn9t actually sends
+/// (`Cache` is tagged `at`: `{"at":"system"}` / `{"at":"after_message","idx":N}`).
+#[derive(Default)]
+struct Breakpoints {
+    system: bool,
+    messages: Vec<u64>,
+}
+
+fn parse_cache(req: &Value) -> Breakpoints {
+    let mut bp = Breakpoints::default();
+    for c in req.get("cache").and_then(|c| c.as_array()).into_iter().flatten() {
+        match c.get("at").and_then(|a| a.as_str()).unwrap_or("") {
+            "system" => bp.system = true,
+            "after_message" => {
+                if let Some(i) = c.get("idx").and_then(|i| i.as_u64()) {
+                    bp.messages.push(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    bp
+}
+
+/// Anthropic requires a non-empty parameter schema; a null or empty one becomes the
+/// minimal object schema rather than a 400.
+fn normalize_schema(schema: Option<&Value>) -> Value {
+    match schema {
+        Some(v @ Value::Object(m)) if !m.is_empty() => v.clone(),
+        _ => json!({ "type": "object", "properties": {} }),
+    }
+}
+
+fn parse_thinking_budget(req: &Value) -> Option<u32> {    match req.get("thinking")? {
         Value::String(s) if s == "off" => None,
         Value::Object(o) => {
             // Budget(n) variant
@@ -249,9 +302,9 @@ mod tests {
 
     #[test]
     fn cache_priority_order() {
-        // R-ANTH-030: [assistant, user] case — breakpoints [System, AfterMessage(1), AfterMessage(0)]
-        // Messages: idx 0 = user, idx 1 = assistant
-        // Breakpoint positions: 0 and 1 (both messages get cache_control)
+        // R-ANTH-030. The fixture is kn9t's tagged `Cache`, which is what the host
+        // actually sends. The earlier one used a bare `{"position":N}` the host never
+        // produces, so the mapping was dead while this test stayed green.
         let req = json!({
             "model": { "id": "claude-sonnet-4-5" },
             "system": "sys",
@@ -260,24 +313,51 @@ mod tests {
                 { "role": "assistant", "content": [{"type":"text","text":"world"}] },
             ],
             "cache": [
-                { "position": 0 },
-                { "position": 1 }
+                { "at": "system" },
+                { "at": "after_message", "idx": 1 },
             ],
             "tools": null, "thinking": "off", "max_tokens": null
         });
 
-        let cache_positions: Vec<u64> = req["cache"].as_array().unwrap()
-            .iter().filter_map(|c| c.get("position").and_then(|p| p.as_u64())).collect();
+        let body = build_body(&req);
+        // The system breakpoint lands on the system block...
+        assert_eq!(body["system"][0]["cache_control"]["type"], json!("ephemeral"));
+        // ...and the message breakpoint on that message's last content block.
+        let msgs = body["messages"].as_array().unwrap();
+        let last = msgs[1]["content"].as_array().unwrap().last().unwrap();
+        assert_eq!(last["cache_control"]["type"], json!("ephemeral"));
+        assert!(msgs[0]["content"][0].get("cache_control").is_none());
+    }
 
-        let msgs = build_messages(&req, &cache_positions);
-        let arr = msgs.as_array().unwrap();
-        // Both messages should have cache_control on their last content block
-        for msg in arr {
-            let content = msg["content"].as_array().unwrap();
-            let last = content.last().unwrap();
-            assert!(last.get("cache_control").is_some(),
-                "message {} missing cache_control", msg["role"]);
-        }
+    #[test]
+    fn tools_are_translated_to_input_schema() {
+        // The host sends kn9t `ToolSpec`; Anthropic wants `{name, description,
+        // input_schema}`. Passing the spec through unchanged made every real request
+        // 400 with "function parameters is empty".
+        let req = json!({
+            "model": { "id": "m" },
+            "system": null,
+            "messages": [],
+            "tools": [
+                { "name": "read", "description": "Read a file",
+                  "schema": { "type": "object", "properties": { "path": {"type":"string"} }, "required": ["path"] },
+                  "hidden": false, "effects": [], "policy": {} },
+                { "name": "no_args", "description": "", "schema": null,
+                  "hidden": false, "effects": [], "policy": {} },
+            ],
+            "cache": [], "thinking": "off", "max_tokens": 100
+        });
+
+        let body = build_body(&req);
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["name"], json!("read"));
+        assert_eq!(tools[0]["input_schema"]["required"], json!(["path"]));
+        assert!(tools[0].get("schema").is_none(), "kn9t field leaked");
+        assert!(tools[0].get("policy").is_none(), "kn9t field leaked");
+        // A missing schema must still be a valid non-empty schema.
+        assert_eq!(tools[1]["input_schema"]["type"], json!("object"));
+        // An empty description is omitted rather than sent blank.
+        assert!(tools[1].get("description").is_none());
     }
 
     #[test]

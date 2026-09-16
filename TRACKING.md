@@ -10,6 +10,56 @@ Legend: `☐` pending · `▣` in progress · `☑` done (acceptance test passin
 
 ## Current position
 
+**2026-09-16c (`/v1/messages` by reuse, and three latent bugs it exposed):** exactly **one**
+OpenCode Go model requires `/v1/messages` and works — `minimax-m2.7`. Every other
+chat-completions failure also fails in Messages (`kimi-k2.5`, `glm-5`, `qwen3.5-plus`,
+`mimo-v2-pro/omni`, `hy3-preview`, `union-alpha`: Go is not serving them at all), and
+`grok-4.6` is responses-only. So no second protocol implementation was written: `kn9t-anthropic`
+already speaks Messages and now points at the gateway.
+
+| what | where | test |
+|---|---|---|
+| `session` in the provider-call payload | `kn9t-plugin/src/remote_provider.rs` | (compile) |
+| gateway endpoint + session header from env; `ToolSpec` → `input_schema`; tagged-`Cache` fix (R-ANTH-050, R-ANTH-030) | `plugins/kn9t-anthropic/src/{client,map}.rs` | `map::tests` (9) |
+| `discover = false` (R-SRV-CFG-030) — also closes C1 | `kn9t-server/src/config.rs` | `srv::config_discover_false` |
+| TOML escaping when appending a plugin to config.toml | `crates/kn9t/src/cmd_install_plugins.rs` | `tests::toml_basic_escapes_windows_paths` |
+
+Live, TUI: `opencode-go-ant` → `minimax-m2.7`, full tool round-trip, sidebar `cache 26%`.
+
+Open next: **C2** — `Quirks::merge` cannot implement R-PCORE-080 (no `Option`s, so "unset" is
+unrepresentable); the server merges on `RawQuirks` instead and only `pcore::quirks_merge` calls
+the method. Optional hygiene: set `discover = false` on `opencode-go` too — 9 of its 37
+discovered models answer 400/401 on every format, so the picker still offers dead entries.
+
+---
+
+## Previous position
+
+**2026-09-16b (OpenCode Go + session header quirk, `/v1/responses`):** OpenCode Go rejects every request that omits
+a per-conversation `x-opencode-session` (`400 MissingSessionID`), which made the gateway
+unreachable from kn9t. Added `Quirks::session_header` + `Request::session` and wired them through:
+the header *name* is config, the *value* is the conversation. `~/.kn9t/config.toml` now carries
+`[provider.opencode-go]` and 24 `[[model]]` entries (ctx/max_out/prices from models.dev — Go's
+`/v1/models` returns ids only, so discovery would have registered everything at 128k/price 0).
+Verified live in the TUI (built binary): one turn on `deepseek-v4.1-flash` streamed and answered,
+sidebar read `ctx 1.00M` with cost accounted.
+
+| what | where | test |
+|---|---|---|
+| `Request::session` (R-CORE-170) | `kn9t-core/src/provider.rs` | (compile) |
+| `Quirks::session_header` (R-PCORE-080) | `kn9t-provider-core/src/quirks.rs` | pcore::quirks_merge |
+| header injection (R-OAI-050) | `kn9t-provider-openai/src/provider.rs` | oai::session_header |
+| call sites | `kn9t-react/src/exec.rs`, `kn9t-server/src/turn.rs`, `kn9t-server/src/host_api.rs` | — |
+| config passthrough | `kn9t-server/src/config.rs` (`RawQuirks`) | srv::unit_config `per_model_quirks_reach_the_provider` |
+| `Quirks::api` + `/v1/responses` codec (R-OAI-060/070) | `kn9t-provider-core/src/quirks.rs`, `kn9t-provider-openai/src/responses.rs` | `oai::responses_*` (7), srv::unit_config `unknown_api_is_rejected` |
+
+Open next: `/v1/messages` (nearly free — point `plugins/kn9t-anthropic` at the gateway and give the
+plugin protocol a `session` + config passthrough; the gateway requires `x-opencode-session` on
+`/messages` too), and the unconditional `/models` discovery that registers models which 400.
+See CHANGELOG 2026-09-16b (C1, C2).
+
+---
+
 **2026-09-16 (reliability audit, 11 bugs):** audit of the ReAct loop + client/server harness for
 wedge / desync / transient-vs-durable failures. Eleven first-order bugs, each reproduced by a
 failing test before the fix. `cargo test --workspace --no-fail-fast`: **863 passed, 0 failed,
@@ -49,8 +99,6 @@ outside). The turn ends and the session stays usable, but a repeatedly-hanging p
 The real fix belongs in `PluginHost` (kill the subprocess, which drops the pipe).
 
 ---
-
-## Previous position
 
 **2026-09-15 (96E-46 + 96E-51 epics, 8 tickets):** plugin lifecycle is now agent-drivable and
 session forks are navigable. `cargo test --workspace --no-fail-fast`: **815 passed, 0 failed,
@@ -232,12 +280,12 @@ The P1/96E batch and later live-breakage fixes are tracked here (they are not sp
 | 02 | kn9t-provider-replay | 8 / 9 | R-RPLY-900 | ☑ |
 | 03 | kn9t-react, kn9t-tools | 25 / 25 | G1 | ☑ (classifier restored in `kn9t-server/src/classify.rs`, 3 classify + `tool::`/`policy::*` green) |
 | 04 | kn9t-store | 18 / 18 | G2 | ☑ |
-| 05 | kn9t-provider-core, -openai | 22 / 22 | R-PCORE/OAI/NBED-900 | ☑ |
-| 06 | kn9t-server | 15 / 15 | R-SRV-900 | ☑ (+R-SRV-CFG-100/110 config hot-reload) |
+| 05 | kn9t-provider-core, -openai | 25 / 25 | R-PCORE/OAI/NBED-900 | ☑ |
+| 06 | kn9t-server | 16 / 16 | R-SRV-900 | ☑ (+R-SRV-CFG-100/110 config hot-reload, +R-SRV-CFG-030 discover) |
 | 07 | kn9t-tui | 2 / 27 | G3 | ▣ (most reqs have no test) |
 | 08 | kn9t-plugin | 13 / 13 | R-PLUG-900 | ☑ |
 | 08b | kn9t-plugin-sdk, kn9t-plugin (v2), internal-plugins/kn9t-tools | 12 / 12 | R-PLUG2-900 | ☑ |
-| 09 | plugins/kn9t-custom-provider (external), kn9t-anthropic (bundled), RemoteProvider | 16 / 16 | R-CP/ANTH-900 | ☑ |
+| 09 | plugins/kn9t-custom-provider (external), kn9t-anthropic (bundled), RemoteProvider | 17 / 17 | R-CP/ANTH-900 | ☑ |
 | 10 | bedrock-native, gemini (v2) | 0 / 8 | R-BEDN/GEM-900 | ☐ |
 
 **v1 release = stages 01–09 gates green.**
@@ -292,7 +340,7 @@ All 36 requirements implemented; 13 named `core::*` acceptance tests pass; build
 | R-CORE-150 | UsageKind | (compile) | ☑ |
 | R-CORE-155 | HookName (8 variants) | (compile) | ☑ |
 | R-CORE-160 | ForkReason, ForkSnapshot | core::fork_snapshot_serde | ☑ |
-| R-CORE-170 | Request (single def, cache) | (compile) | ☑ |
+| R-CORE-170 | Request (single def, cache, session) | (compile) | ☑ |
 | R-CORE-180 | Chunk enum | (compile) | ☑ |
 | R-CORE-190 | Provider trait | (compile) | ☑ |
 | R-CORE-200 | Cache, CacheMode | (compile) | ☑ |
@@ -393,7 +441,7 @@ All 18 requirements implemented; 18 named `stor::*` acceptance tests pass (plus 
 | **R-STOR-900** | **GATE G2** | all stor::* pass; reproject_check clean; no tokenizer | ☑ |
 
 ### Stage 05 — provider-core + openai + litellm-gateway  (`spec/05-provider-core-openai.md`)  — DONE (gate green)
-All 22 requirements implemented; 25 acceptance tests pass (11 pcore + 14 oai/nbed). GI-1/GI-5 hold. One SHOULD deviation (tls_insecure) recorded in CHANGELOG.
+All 25 requirements implemented; acceptance tests pass (`pcore::*`, `oai::*`, `nbed::*`). GI-1/GI-5 hold. One SHOULD deviation (tls_insecure) recorded in CHANGELOG.
 | req | subject | test | status |
 |---|---|---|---|
 | R-PCORE-010 | blocking http client | pcore::connect_timeout | ☑ |
@@ -411,6 +459,9 @@ All 22 requirements implemented; 25 acceptance tests pass (11 pcore + 14 oai/nbe
 | R-OAI-020 | decode sse | oai::decode_text_stream, oai::decode_tool_call_stream, oai::decode_reasoning_stream | ☑ |
 | R-OAI-030 | toolcall correlate by id | oai::toolcall_correlate | ☑ |
 | R-OAI-040 | cache automatic omit / explicit place | oai::cache_automatic_omits, oai::cache_explicit_places | ☑ |
+| R-OAI-050 | extra-headers hook + `session_header` injection | oai::extra_headers, oai::session_header | ☑ |
+| R-OAI-060 | responses request shape (`instructions`/`input`/flat tools/`store:false`) | oai::responses_request_shape, oai::responses_tools_are_flat | ☑ |
+| R-OAI-070 | responses SSE decode + usage partition | oai::responses_decode_text_then_usage, oai::responses_decode_tool_call, oai::responses_ignores_unknown_events, oai::responses_incomplete_is_length | ☑ |
 | R-NBED-010 | kind=openai /v1 gateway | base_url=https://llm-gateway.example.com/v1 in OpenAiConfig | ☑ |
 | R-NBED-020 | identity precedence | nbed::identity_precedence | ☑ |
 | R-NBED-030 | preflight cache + invalidate | nbed::preflight_cache_and_invalidate | ☑ |
@@ -438,6 +489,7 @@ All 22 requirements implemented; 25 acceptance tests pass (11 pcore + 14 oai/nbe
 | R-SRV-120 | budget reports both | srv::budget_reports_both | ☑ |
 | R-SRV-CFG-100 | `POST /config/reload` swaps providers+models in place; previous config kept on error | srv::config_reload_keeps_previous_on_bad_config, srv::config_reload_endpoint_routed, srv::config_reload_swaps_ctx_window | ☑ |
 | R-SRV-CFG-110 | config.toml watcher auto-reloads on change, debounced against partial writes | watch::tests::* (5) | ☑ |
+| R-SRV-CFG-030 | `discover = false` suppresses `/models` and plugin-catalog auto-discovery | srv::config_discover_false | ☑ |
 | **R-SRV-900** | **stage gate** | all above | ☑ |
 
 ### Stage 07 — kn9t-tui  (`spec/07-tui.md`)  — ▣ (G3 manual deferred, Phase 4 in progress)
@@ -523,7 +575,7 @@ Implementation complete (2026-08-26). All 10 `plug2::*` acceptance tests + 9 doc
 
 ### Stage 09 — anthropic (`spec/09-anthropic.md`) + custom plugin (`spec/09a-custom-provider.md`)  — ☑ DONE (R-CP/ANTH-900 green)
 
-Both providers ship as subprocess plugin binaries (Q31). `RemoteProvider` in `kn9t-plugin` adapts the stream into `Provider`. 10 custom-provider + 4 anth acceptance tests pass.
+Both providers ship as subprocess plugin binaries (Q31). `RemoteProvider` in `kn9t-plugin` adapts the stream into `Provider`. 10 custom-provider + 5 anth acceptance tests pass. R-ANTH-050 was added 2026-09-16c: R-ANTH-030's mapping was dead and tools were never translated, both hidden by fixtures that did not match what the host sends.
 
 | req | subject | test | status |
 |---|---|---|---|
@@ -544,6 +596,7 @@ Both providers ship as subprocess plugin binaries (Q31). `RemoteProvider` in `kn
 | R-ANTH-020 | thinking verbatim signature | anth::thinking_verbatim | ☑ |
 | R-ANTH-030 | cache message-level priority order | anth::cache_priority_order | ☑ |
 | R-ANTH-040 | usage partition, min_tokens | anth::usage_partition | ☑ |
+| R-ANTH-050 | `ToolSpec` → `input_schema` translation | map::tests::tools_are_translated_to_input_schema | ☑ |
 | **R-CP-900 / R-ANTH-900** | **stage gate** | all above | ☑ |
 
 ### Stage 10 — native bedrock + gemini (v2)  (`spec/10-bedrock-native-v2.md`)  — ☐  *(v2, not a v1 gate)*

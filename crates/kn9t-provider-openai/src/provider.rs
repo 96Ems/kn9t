@@ -84,9 +84,15 @@ impl OpenAiProvider {
             .map(|k| (self.config.auth_scheme.clone(), k.clone()))
     }
 
-    /// R-OAI-050: build outgoing headers — Content-Type first, then extra_headers verbatim.
-    fn build_headers(&self) -> Vec<(String, String)> {
+    /// R-OAI-050: Content-Type, then the session header (per-request, so it cannot
+    /// live in `extra_headers`), then extra_headers verbatim.
+    pub fn build_headers(&self, req: &Request<'_>, quirks: &Quirks) -> Vec<(String, String)> {
         let mut h = vec![("Content-Type".into(), "application/json".into())];
+        if !quirks.session_header.is_empty() {
+            if let Some(session) = req.session {
+                h.push((quirks.session_header.clone(), session.to_owned()));
+            }
+        }
         h.extend(self.config.extra_headers.iter().cloned());
         h
     }
@@ -111,16 +117,19 @@ impl OpenAiProvider {
         model_ref: ModelRef,
         cancel: Cancel,
     ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
-        let body = build_request(
-            req,
-            self.quirks_for(&req.model.r#ref),
-            &req.model.cache,
-            self.config.dump_request,
-        );
+        let quirks = self.quirks_for(&req.model.r#ref);
+        // R-OAI-060: the wire format is a property of the model. Chat-completions and
+        // Responses agree on nothing below the transport, so each has its own encoder
+        // and its own event decoder.
+        let body = if quirks.api == "responses" {
+            crate::responses::build_body(req, quirks, self.config.dump_request)
+        } else {
+            build_request(req, quirks, &req.model.cache, self.config.dump_request)
+        };
         let body_bytes =
             serde_json::to_vec(&body).map_err(|e| ProvErr::Connect(format!("serialize: {e}")))?;
 
-        let url = format!("{}/chat/completions", self.config.base_url);
+        let url = format!("{}{}", self.config.base_url, crate::responses::path(quirks));
 
         // Log the request for debugging.
         eprintln!(
@@ -130,7 +139,7 @@ impl OpenAiProvider {
         let http_req = HttpRequest {
             method: "POST".into(),
             url: url.clone(),
-            headers: self.build_headers(),
+            headers: self.build_headers(req, quirks),
             body: body_bytes,
             auth: self.auth(),
             tls_insecure: self.config.tls_insecure,
@@ -175,7 +184,7 @@ impl OpenAiProvider {
         if streaming {
             // SSE streaming path.
             // 96E-40: pass cancel to sse_lines for mid-buffer cancel support.
-            let mut state = DecodeState::new();
+            let mut state = Wire::new(&quirks.api);
             let lines = sse_lines(resp.body, Some(cancel));
             let iter = lines.flat_map(move |line_res| match line_res {
                 Err(e) => vec![Err(ProvErr::Stream(e.to_string()))],
@@ -191,7 +200,11 @@ impl OpenAiProvider {
                 std::io::read_to_string(resp.body).map_err(|e| ProvErr::Stream(e.to_string()))?;
             let v: serde_json::Value =
                 serde_json::from_str(&body_str).map_err(|e| ProvErr::Decode(e.to_string()))?;
-            let chunks = synthesize_chunks(&v, &quirks, &model_ref)?;
+            let chunks = if quirks.api == "responses" {
+                crate::responses::synthesize_chunks(&v, &quirks, &model_ref)?
+            } else {
+                synthesize_chunks(&v, &quirks, &model_ref)?
+            };
             Ok(Box::new(chunks.into_iter().map(Ok)))
         }
     }
@@ -226,6 +239,34 @@ impl Provider for OpenAiProvider {
             }
             self.attempt(req, model_ref.clone(), cancel_c.clone())
         })
+    }
+}
+
+/// Streaming decoder for the selected wire format (R-OAI-060).
+enum Wire {
+    Chat(DecodeState),
+    Responses(crate::responses::ResponsesState),
+}
+
+impl Wire {
+    fn new(api: &str) -> Self {
+        if api == "responses" {
+            Wire::Responses(crate::responses::ResponsesState::new())
+        } else {
+            Wire::Chat(DecodeState::new())
+        }
+    }
+
+    fn decode(
+        &mut self,
+        bytes: &[u8],
+        quirks: &Quirks,
+        model_ref: &ModelRef,
+    ) -> Result<Vec<Chunk>, ProvErr> {
+        match self {
+            Wire::Chat(s) => s.decode(bytes, quirks, model_ref),
+            Wire::Responses(s) => crate::responses::decode_event(bytes, s, quirks, model_ref),
+        }
     }
 }
 

@@ -807,6 +807,8 @@ Each OpenAI-compatible divergence is a silent 400 or a silent capability loss:
 | tool-call `index` in deltas? | absent, so correlate by `id` |
 | thinking as `reasoning_content` vs tag-wrapped vs dropped | thinking lost |
 | LiteLLM `metadata` passthrough, `model` as routing alias | tagging lost |
+| a required per-conversation routing id in a header | 400, every request (OpenCode Go: `MissingSessionID`) |
+| one endpoint, two request schemas (`/chat/completions` vs `/responses`) | 400/401 on every request (OpenCode Go: `not supported for format oa-compat`) |
 
 Pi auto-detects these from the base URL with manual override. That silently breaks for
 self-hosted LiteLLM at `http://litellm.internal:4000`, which matches no known pattern —
@@ -829,6 +831,8 @@ reasoning        = "reasoning_effort"    # | "budget_tokens" | "none"
 tool_result_name = false
 thinking_style   = "reasoning_content"   # | "tags" | "none"
 extra_body       = { metadata = { team = "fw" } }
+session_header   = "x-opencode-session"  # "" = off; value is the conversation id
+api              = "chat"                # | "responses" -- per model, not per endpoint
 
 [[model]]
 provider = "litellm"

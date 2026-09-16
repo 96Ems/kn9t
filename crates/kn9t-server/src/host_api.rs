@@ -549,6 +549,7 @@ impl ServerHostApi {
             thinking: Thinking::Off,
             max_tokens,
             cache: &[],
+            session: Some(session),
         };
         // 96E-39: use session's Cancel so ESC can abort the provider call.
         // B10: an unfireable fallback `Cancel` is acceptable here — a provider call is bounded

@@ -164,6 +164,7 @@ impl ReactLoop {
             thinking: params.thinking,
             max_tokens: params.max_tokens,
             cache: &plan.cache,
+            session: Some(params.session.0.as_str()),
         };
 
         // R-RCT-020 step 4: stream + assemble via reusable abstraction (96E-11).

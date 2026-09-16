@@ -354,10 +354,16 @@ no store** — only data types, trait definitions, the bus, and pure functions.
 >     pub max_tokens: Option<u32>,
 >     /// Priority order, deduplicated, capped (R-CORE-200). NOT positional.
 >     pub cache:      &'a [Cache],
+>     /// Conversation id. Published only when the provider's config names a header
+>     /// for it (`Quirks::session_header`); `None` on calls with no conversation.
+>     pub session:    Option<&'a str>,
 > }
 > ```
 > `Request` is a borrowing view and is **not** `Serialize` (it is never persisted; only its
 > constituent parts are). This is the one non-payload struct in the crate.
+> `session` exists because some gateways route and cache by conversation and reject a
+> request that omits the id (OpenCode Go: `400 MissingSessionID`). It is a hint, not auth:
+> a provider with no `session_header` configured sends nothing.
 
 > **R-CORE-180 → DESIGN §8**
 > ```rust

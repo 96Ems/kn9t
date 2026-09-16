@@ -942,6 +942,7 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
         thinking: Thinking::Off,
         max_tokens: Some(16),
         cache: &no_cache,
+        session: Some(session.0.as_str()),
     };
 
     let cancel = Cancel::new();

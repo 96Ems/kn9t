@@ -10,7 +10,7 @@ pub use abort::CancellableReader;
 pub use assemble::{assemble, AssembleResult};
 pub use http::{send, send_get, AuthScheme, HttpRequest, HttpResponse};
 pub use pricing::lookup_price;
-pub use quirks::Quirks;
+pub use quirks::{Quirks, SUPPORTED_APIS};
 pub use retry::{is_context_overflow, is_retryable, with_retry, with_retry_with_sink, Backoff};
 pub use sse::sse_lines;
 

@@ -299,6 +299,16 @@ fn install_executable(exe_path: &Path, dest_dir: &Path, name: &str) -> Result<Pa
     Ok(dest_path)
 }
 
+/// Escape a value for a TOML **basic** string.
+///
+/// Windows paths carry backslashes, which TOML reads as escapes: `"C:\_ddm"` is a parse
+/// error at that line, and because the config is parsed as a whole, every provider and
+/// model then disappears — not just the entry being written. `C:\_ddm` is exactly the
+/// shape that triggered this.
+fn toml_basic(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// Add or update a [[plugin]] entry in config.toml for Python/Node plugins.
 fn add_plugin_config(plugin: &DiscoveredPlugin) -> Result<(), String> {
     let config_path = kn9t_home_path().join("config.toml");
@@ -332,7 +342,10 @@ cmd  = ["python", "-m", "{}"]
 [plugin.env]
 PYTHONPATH = "{}"
 "#,
-                plugin.name, plugin.name, module_name, pythonpath
+                toml_basic(&plugin.name),
+                toml_basic(&plugin.name),
+                toml_basic(&module_name),
+                toml_basic(&pythonpath)
             )
         }
         PluginKind::Node => {
@@ -347,7 +360,9 @@ PYTHONPATH = "{}"
 name = "{}"
 cmd  = ["node", "{}"]
 "#,
-                plugin.name, plugin.name, entry_str
+                toml_basic(&plugin.name),
+                toml_basic(&plugin.name),
+                toml_basic(&entry_str)
             )
         }
         _ => return Ok(()), // Rust/Go don't need config entries
@@ -543,4 +558,24 @@ fn print_help() {
     println!();
     println!("Security: This is an explicit user action (ADR-0004 compliant).");
     println!("          You are trusting the project's plugins directory.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::toml_basic;
+
+    /// A Windows path written into a TOML *basic* string is a parse error, and the
+    /// config is parsed as a whole: the failure takes every provider and model with it,
+    /// not just the entry being written. This is the regression that did exactly that.
+    #[test]
+    fn toml_basic_escapes_windows_paths() {
+        assert_eq!(toml_basic(r"C:\_ddm\plugins"), r"C:\\_ddm\\plugins");
+        assert_eq!(toml_basic(r#"C:\a"b"#), r#"C:\\a\"b"#);
+        assert_eq!(toml_basic("/home/x/plugins"), "/home/x/plugins");
+        // The escaped form parses; the raw form does not (same line, both spellings).
+        assert_eq!(
+            format!("p = \"{}\"", toml_basic(r"C:\_ddm\public")),
+            r#"p = "C:\\_ddm\\public""#
+        );
+    }
 }

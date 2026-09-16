@@ -20,6 +20,9 @@ pub struct Request<'a> {
     pub max_tokens: Option<u32>,
     /// Cache breakpoints: priority order (not positional).
     pub cache: &'a [Cache],
+    /// Conversation id, for gateways that route by it (`Quirks::session_header`).
+    /// `None` on calls that belong to no conversation.
+    pub session: Option<&'a str>,
 }
 
 /// Chunk from provider: text, thinking, tool call, tool args, usage, or stop reason.

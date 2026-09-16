@@ -64,6 +64,16 @@ wrong — that is the reason to specify it.
 > **Accept:** `cargo test anth::usage_partition` — `input + cache_read + cache_write` equals
 > the real context, and a cache-effective turn has small `input`.
 
+> **R-ANTH-050 → DESIGN §8.2**
+> Tools MUST be translated from kn9t `ToolSpec` into the Anthropic shape
+> `{name, description, input_schema}`. The host sends `schema`, plus `hidden`, `effects` and
+> `policy`; forwarding the spec unchanged puts no `input_schema` on the wire and the endpoint
+> rejects the request (`invalid params, function parameters is empty`). A tool whose `schema`
+> is absent, null or empty MUST still carry the minimal non-empty object schema, and an empty
+> `description` MUST be omitted rather than sent blank.
+> **Accept:** `cargo test tools_are_translated_to_input_schema` — a kn9t `ToolSpec` reaches
+> the wire as `input_schema`, with no kn9t-only key (`schema`, `policy`) leaking through.
+
 
 ## 4. Stage gate
 

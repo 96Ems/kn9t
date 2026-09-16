@@ -28,6 +28,7 @@ api_key = "x"
 [provider.gw.quirks]
 reasoning = "none"
 max_tokens_field = "max_tokens"
+session_header = "x-opencode-session"
 
 [[model]]
 provider = "gw"
@@ -71,10 +72,147 @@ reasoning = "adaptive"
     assert_eq!(merged.reasoning, "adaptive");
     // ...while unspecified fields still inherit from the provider.
     assert_eq!(merged.max_tokens_field, "max_tokens");
+    // A model override that names neither header nor session must not clear it.
+    assert_eq!(merged.session_header, "x-opencode-session");
 
     // And resolve() must not fail on this shape.
     let resolved = resolve(raw).unwrap();
     assert_eq!(resolved.models.len(), 2);
+}
+
+#[test]
+fn unknown_api_is_rejected() {
+    // A wire format the provider cannot dispatch must fail at load. Accepting it
+    // silently would give a model that parses, appears in the picker, and 404s.
+    let raw = parse_raw(
+        r#"
+[provider.gw]
+kind = "openai"
+base_url = "http://localhost:9/v1"
+api_key = "x"
+
+[provider.gw.quirks]
+api = "grpc"
+"#,
+    );
+    match resolve(raw) {
+        Err(e) => assert!(e.contains("unknown api"), "unexpected error: {e}"),
+        Ok(_) => panic!("unknown api must be rejected"),
+    }
+}
+
+#[test]
+fn unknown_api_in_model_override_is_rejected() {
+    let raw = parse_raw(
+        r#"
+[provider.gw]
+kind = "openai"
+base_url = "http://localhost:9/v1"
+api_key = "x"
+
+[[model]]
+provider = "gw"
+id = "m"
+ctx = 1000
+max_out = 100
+cache = "none"
+cache_breakpoints = 0
+cache_min_tokens = 0
+
+[model.quirks]
+api = "grpc"
+"#,
+    );
+    match resolve(raw) {
+        Err(e) => assert!(e.contains("unknown api"), "unexpected error: {e}"),
+        Ok(_) => panic!("unknown api override must be rejected"),
+    }
+}
+
+#[test]
+fn responses_api_is_accepted() {
+    let raw = parse_raw(
+        r#"
+[provider.gw]
+kind = "openai"
+base_url = "http://localhost:9/v1"
+api_key = "x"
+
+[provider.gw.quirks]
+api = "responses"
+"#,
+    );
+    match resolve(raw) {
+        Ok(r) => assert_eq!(r.providers.len(), 1),
+        Err(e) => panic!("responses must be accepted: {e}"),
+    }
+}
+
+#[test]
+fn config_discover_false() {
+    // C1: discovery used to be unconditional, so a gateway's unusable models were
+    // registered anyway -- at a default ctx and price 0 -- and shown in the picker.
+    let base = spawn_models_server(r#"{"object":"list","data":[{"id":"discovered-model"}]}"#);
+
+    let toml = |extra: &str| {
+        format!(
+            r#"
+[provider.gw]
+kind = "openai"
+base_url = "{base}/v1"
+api_key = "x"
+{extra}
+
+[[model]]
+provider = "gw"
+id = "declared-model"
+ctx = 1000
+max_out = 100
+cache = "none"
+cache_breakpoints = 0
+cache_min_tokens = 0
+"#
+        )
+    };
+
+    let off = resolve(parse_raw(&toml("discover = false"))).unwrap();
+    let ids: Vec<&str> = off.models.iter().map(|m| m.r#ref.id.as_str()).collect();
+    assert!(ids.contains(&"declared-model"));
+    assert!(
+        !ids.contains(&"discovered-model"),
+        "discover = false must not register /models results: {ids:?}"
+    );
+
+    let on = resolve(parse_raw(&toml(""))).unwrap();
+    let ids: Vec<&str> = on.models.iter().map(|m| m.r#ref.id.as_str()).collect();
+    assert!(
+        ids.contains(&"discovered-model"),
+        "the default must still discover: {ids:?}"
+    );
+}
+
+/// Serve a canned `/models` body to the next few clients, then stop.
+fn spawn_models_server(body: &'static str) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for _ in 0..4 {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes());
+            let _ = sock.flush();
+        }
+    });
+    format!("http://{addr}")
 }
 
 #[test]

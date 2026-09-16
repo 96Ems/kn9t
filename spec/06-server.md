@@ -184,6 +184,10 @@ wiring path only (§12). `kn9t -p` is a client exactly like the TUI.
 > The config layer resolves `env:VAR` at load time and passes the resulting
 > `Vec<(String, String)>` into `OpenAiConfig::extra_headers`. No provider crate knows
 > which deployment it is serving.
+>
+> `[provider.X.quirks]` passes through verbatim as `Quirks` (spec/05 A.5), including
+> `session_header` — the header name is config, while the value comes from
+> `Request::session` per request and therefore cannot live in `[provider.X.headers]`.
 > **Accept:** `cargo test srv::config_headers` — a config with `[provider.X.headers]` results
 > in those headers being sent (verified via a local test server capturing raw requests).
 
@@ -194,6 +198,17 @@ wiring path only (§12). `kn9t -p` is a client exactly like the TUI.
 > partially keyed.
 > **Accept:** covered by `srv::config_headers` — a missing env var produces a log warning and
 > the header is absent from the request.
+
+> **R-SRV-CFG-030 → DESIGN §8.2, §8.7.3**
+> A provider block MUST accept `discover = false` (default `true`) and, when set, register
+> **no** auto-discovered models for that provider: neither the `/models` fetch
+> (`kind = "openai"`, §8.7.3) nor the model declaration a plugin ships
+> (`kind = "plugin"`). Both paths register models with no local price and a default context
+> window, and a plugin's declared catalog belongs to the endpoint it was written for —
+> pointing it at another gateway imports a wrong one. With `discover = false` the config's
+> `[[model]]` entries are the complete, exact list.
+> **Accept:** `cargo test srv::config_discover_false` — a provider with `discover = false`
+> registers only its declared models.
 
 ## 9. Stage gate
 

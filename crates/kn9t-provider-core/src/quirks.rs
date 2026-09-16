@@ -46,7 +46,29 @@ pub struct Quirks {
     /// True → trim trailing whitespace from assistant messages (Bedrock requirement).
     #[serde(default)]
     pub trim_trailing_whitespace: bool,
+    /// Header carrying `Request::session` (`""` = off, the default).
+    /// OpenCode Go requires `x-opencode-session` and 400s without it.
+    #[serde(default)]
+    pub session_header: String,
+    /// Which OpenAI-family API to speak: `"chat"` (`/chat/completions`, the default)
+    /// or `"responses"` (`/responses`).
+    ///
+    /// One gateway commonly fronts both and the format is a property of the model, not
+    /// of the deployment -- grok-4.6 on OpenCode Go answers on `/responses` and rejects
+    /// chat-completions with `not supported for format oa-compat`. Because it is a
+    /// per-model fact, it travels here and inherits the DESIGN 8.3 override machinery.
+    #[serde(default = "default_api")]
+    pub api: String,
 }
+
+fn default_api() -> String {
+    "chat".into()
+}
+
+/// Wire formats this provider can speak. Anything else is a config error, not a
+/// silent fallback -- a value that parses but does not dispatch is worse than one
+/// that is rejected at load.
+pub const SUPPORTED_APIS: [&str; 2] = ["chat", "responses"];
 
 fn default_max_tokens_field() -> String {
     "max_tokens".into()
@@ -82,6 +104,8 @@ impl Default for Quirks {
             streaming: true,
             extra_body: serde_json::Value::Null,
             trim_trailing_whitespace: false,
+            session_header: String::new(),
+            api: default_api(),
         }
     }
 }
@@ -108,6 +132,8 @@ impl Quirks {
             },
             trim_trailing_whitespace: model.trim_trailing_whitespace
                 || self.trim_trailing_whitespace,
+            session_header: model.session_header.clone(),
+            api: model.api.clone(),
         }
     }
 }

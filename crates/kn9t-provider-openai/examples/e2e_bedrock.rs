@@ -93,6 +93,7 @@ fn stream_and_assemble(
         thinking: Thinking::Off,
         max_tokens: Some(256),
         cache: &[],
+        session: None,
     };
     let chunks = provider.stream(&req, &cancel).unwrap_or_else(|e| {
         eprintln!("[{label}] FAIL stream: {e:?}");

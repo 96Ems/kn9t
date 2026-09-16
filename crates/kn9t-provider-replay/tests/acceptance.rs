@@ -46,6 +46,7 @@ mod rply {
             thinking: Thinking::Off,
             max_tokens: None,
             cache: &[],
+            session: None,
         }
     }
 

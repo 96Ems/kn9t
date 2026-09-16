@@ -10,6 +10,8 @@ struct AnthConfig {
     api_key: String,
     endpoint: String,
     version_header: String,
+    /// Conversation-derived header: `(name, value)`. Both halves must be present.
+    session_header: Option<(String, String)>,
 }
 
 impl AnthConfig {
@@ -21,10 +23,14 @@ impl AnthConfig {
             .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
             .ok_or_else(|| "missing api_key / ANTHROPIC_API_KEY".to_string())?;
 
+        // Pointing at a gateway is per-deployment, so it is read from the environment the
+        // host injects ([provider.X.env]) -- the request payload's `config` is kept first
+        // for hosts that populate it.
         let endpoint = req.get("config")
             .and_then(|c| c.get("endpoint"))
             .and_then(|e| e.as_str())
             .map(|s| s.to_string())
+            .or_else(|| non_empty_env("ANTHROPIC_BASE_URL"))
             .unwrap_or_else(|| "https://api.anthropic.com".to_string());
 
         let version_header = req.get("config")
@@ -33,8 +39,28 @@ impl AnthConfig {
             .unwrap_or("2023-06-01")
             .to_string();
 
-        Ok(AnthConfig { api_key, endpoint, version_header })
+        // Gateways that route by conversation (OpenCode Go) reject a request without this
+        // header, and its value is per conversation -- so the name is deployment config
+        // and the value arrives on the request.
+        let session_header = match (non_empty_env("ANTHROPIC_SESSION_HEADER"), session_of(req)) {
+            (Some(name), Some(value)) => Some((name, value)),
+            _ => None,
+        };
+
+        Ok(AnthConfig { api_key, endpoint, version_header, session_header })
     }
+}
+
+/// Env var that is present and not blank.
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
+fn session_of(req: &Value) -> Option<String> {
+    req.get("session")
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_owned)
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
@@ -61,13 +87,15 @@ pub fn complete(request: &Value, ctx: &ProviderCallCtx) -> ProviderResult {
     }
 
     let url = format!("{}/v1/messages", cfg.endpoint);
-    let resp = match ureq::post(&url)
+    let mut request = ureq::post(&url)
         .set("x-api-key", &cfg.api_key)
         .set("anthropic-version", &cfg.version_header)
         .set("Content-Type", "application/json")
-        .set("Accept", "text/event-stream")
-        .send_string(&body_str)
-    {
+        .set("Accept", "text/event-stream");
+    if let Some((name, value)) = &cfg.session_header {
+        request = request.set(name, value);
+    }
+    let resp = match request.send_string(&body_str) {
         Ok(r) => r,
         Err(ureq::Error::Status(status, resp)) => {
             let body_text = resp.into_string().unwrap_or_default();

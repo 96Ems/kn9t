@@ -210,9 +210,14 @@ A provider call uses `hook: "provider_complete"`. The host sends the full `Reque
   "messages":[...],
   "system":"...",
   "tools":[...],
-  "policy":{...}
+  "policy":{...},
+  "session":"01M2N..."
 }}
 ```
+
+`session` is the conversation id (R-CORE-170). A plugin needs it to publish a
+per-conversation routing header, which its own environment cannot carry: env vars are fixed at
+spawn while the id changes per conversation. It is `null` for a call with no conversation.
 
 The plugin streams token deltas as `chunk` messages, followed by a single `done`:
 
