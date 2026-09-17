@@ -168,3 +168,78 @@ fn tool_result_without_image_has_no_extra_message() {
     encode_messages(&msg, &quirks, false, &mut out);
     assert_eq!(out.len(), 1, "no image => no synthetic user message");
 }
+
+// ── R-OAI-010 / DESIGN §4.2 — thinking_replay on the chat wire ───────────────
+
+fn thinking_msg() -> Message {
+    Message {
+        id: MsgId::new(),
+        role: Role::Assistant,
+        content: vec![
+            Content::Thinking {
+                text: "let me think".into(),
+                signature: None,
+            },
+            Content::Text {
+                text: "the answer".into(),
+            },
+        ],
+        silent: false,
+    }
+}
+
+/// `strip` must remove the block. Chat has no reasoning content part, so leaving it in
+/// 400s DeepSeek (`unknown variant 'thinking'`) — and since the block is persisted, it
+/// repeats on every later turn.
+#[test]
+fn thinking_replay_strip_drops_persisted_thinking() {
+    let quirks = Quirks {
+        thinking_replay: "strip".into(),
+        ..Quirks::default()
+    };
+    let mut out = Vec::new();
+    encode_messages(&thinking_msg(), &quirks, false, &mut out);
+
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0]["content"], serde_json::json!("the answer"));
+    assert!(out[0].get("reasoning_content").is_none());
+}
+
+/// A reasoning-only turn has nothing left after `strip`; `content: []` 400s strict gateways.
+#[test]
+fn thinking_replay_strip_drops_reasoning_only_turn() {
+    let msg = Message {
+        id: MsgId::new(),
+        role: Role::Assistant,
+        content: vec![Content::Thinking {
+            text: "hmm".into(),
+            signature: None,
+        }],
+        silent: false,
+    };
+    let quirks = Quirks {
+        thinking_replay: "strip".into(),
+        ..Quirks::default()
+    };
+    let mut out = Vec::new();
+    encode_messages(&msg, &quirks, false, &mut out);
+
+    assert!(out.is_empty(), "no empty assistant message may go out");
+}
+
+/// `verbatim` keeps the block for a gateway that requires it (LiteLLM fronting Anthropic).
+#[test]
+fn thinking_replay_verbatim_keeps_the_block() {
+    let quirks = Quirks {
+        thinking_replay: "verbatim".into(),
+        ..Quirks::default()
+    };
+    let mut out = Vec::new();
+    encode_messages(&thinking_msg(), &quirks, false, &mut out);
+
+    let parts = out[0]["content"].as_array().expect("array content");
+    assert!(
+        parts.iter().any(|p| p["type"] == "thinking"),
+        "verbatim must keep the block, got {parts:?}"
+    );
+}

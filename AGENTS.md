@@ -16,8 +16,9 @@ kn9t is a from-scratch coding agent. Design goals, in priority order:
 4. **Events are the wire, the log, and the truth** — one `Event` enum is the SSE payload,
    the SQLite row, and the input to state reconstruction.
 
-The project is currently **design + spec complete, zero code written.** Your job across
-sessions is to implement it, stage by stage, following the spec exactly.
+The design and spec are complete. **What is built, and how far, is status — it lives in
+`TRACKING.md` (§5), never in this file.** Your job across sessions is to advance the
+implementation, stage by stage, following the spec exactly.
 
 ---
 
@@ -26,9 +27,11 @@ sessions is to implement it, stage by stage, following the spec exactly.
 | doc | what it is | when to read |
 |---|---|---|
 | `AGENTS.md` (this) | repo guidelines — how to proceed, rules, invariants, gates | every session, first |
-| `TRACKING.md` | live status — stage progress, per-requirement test status, SPEC-OPEN register | every session, second — it tells you where you are |
+| `TRACKING.md` | live status — stage progress, per-requirement test status, SPEC-OPEN register, 96E/P7 registers | every session, second — it tells you where you are |
+| `PLAN.md` | the post-v1 work plan — epics P1–P7; §P7 holds the TUI-polish decisions D1–D21 | when the work is a PLAN epic, not a spec stage |
 | `CHANGELOG.md` | session narrative + discovered spec/design bugs | every session; append as you work |
 | `DESIGN.md` | the *why* — decisions, rejected alternatives, accepted costs (§1–18) | when a spec requirement is unclear; it is the rationale |
+| `docs/ARCHITECTURE.md` | how the code is built *as shipped*, plus §14 "Findings" (the known-defect list) | when you need the as-built picture or the known issues |
 | `spec/README.md` | spec conventions — ID scheme, keywords, global invariants, SPEC-OPEN register | before touching any stage |
 | `spec/NN-*.md` | the *what* and *how* — per-stage requirements with signatures, DDL, wire schemas, acceptance tests | when implementing that stage |
 
@@ -41,7 +44,8 @@ and the spec is the bug — stop and flag it. If the design is silent, the spec 
 authoritative.
 
 Do **not** read the whole design or spec into context every time. Read `TRACKING.md` to
-find the current stage, then read only that stage's spec file plus `spec/README.md`.
+find where the work is, then read only that stage's spec file plus `spec/README.md` — or,
+when the work is a `PLAN.md` epic, that epic's section.
 
 ---
 
@@ -54,16 +58,21 @@ depends on the previous stage existing. Build strictly 01 → 10.
 01 kn9t-core ............ types, Event, bus, all traits, breakpoints()
 02 kn9t-provider-replay . raw-byte fixtures through the real parser   [enables offline tests]
 03 kn9t-react + tools ... loop, cancel/abort, read/write/edit/bash    [GATE G1]
+                          (the tools now ship as the `kn9t-tools` plugin — stage 08b)
 04 kn9t-store ........... SQLite schema, projections, reproject       [GATE G2]
 05 provider-core+openai . http/sse/assemble/retry, openai, litellm gateway
 06 kn9t-server .......... http surface, SSE, leases, auth, spawn
 07 kn9t-tui ............. ratatui client, links no workspace crate    [GATE G3]
-08 kn9t-plugin .......... stdio host, 8 hooks, subagent spawn
-09 kn9t-custom-provider + anthropic  external custom plugin (6 hazards), anthropic
-10 bedrock-native + gemini  SigV4/eventstream, gemini               [v2 — not in v1 gates]
+08 kn9t-plugin .......... stdio host, 8 hooks, subagent spawn (a subagent is a forked
+                          child session reached through the host_api ops — R-PLUG-110)
+09 plugins/kn9t-anthropic (external, standalone)  anthropic Messages provider
+10 kn9t-provider-bedrock + kn9t-provider-gemini  SigV4/eventstream, gemini
+                                                                    [v2 — not in v1 gates]
 ```
 
-Gates G1/G2/G3 are the three §16 checkpoints; they are hard stops (§7 below).
+Gates G1/G2/G3 are the three §16 checkpoints; they are hard stops (§7 below). This list is
+the build **order**, not a scoreboard — what is implemented and which gates are green is in
+`TRACKING.md`.
 
 ---
 
@@ -75,8 +84,9 @@ For each stage `NN`:
    that first. Never start a stage on top of a red gate.
 2. **Read `spec/NN-*.md` in full** plus `spec/README.md` (global invariants GI-1…GI-6 apply
    to every stage and are not restated per requirement).
-3. **Create the crate(s)** for that stage in a Cargo workspace at the repo root
-   (`kn9t/Cargo.toml` as `[workspace]`; crates under `kn9t/crates/`).
+3. **Create the crate(s)** for that stage in the Cargo workspace at the repository root
+   (`Cargo.toml` with `[workspace]`; crates under `crates/`, external plugins under
+   `plugins/`).
 4. **Implement requirement by requirement, in ID order.** Every requirement is
    `R-<AREA>-<NNN>`. A requirement stated as a signature / DDL / wire schema is **MUST**:
    match it exactly.
@@ -89,19 +99,28 @@ For each stage `NN`:
 8. **Record the session** in `CHANGELOG.md` — narrative of what changed, plus any
    discovered spec/design bug.
 
+Work that comes from **neither** a spec stage (a `PLAN.md` epic, or an issue in
+`TRACKING.md`'s 96E / P7 registers) has no `R-<AREA>-<NNN>` id. Record it in the matching
+register with its test and in `CHANGELOG.md`; the same "done means the named test passes"
+rule applies, it just has no requirement row to flip.
+
 ### Keywords (from `spec/README.md` §3)
 - **MUST / MUST NOT** — absolute; violation blocks the gate.
 - **SHOULD** — strong default; deviation needs a recorded reason in `CHANGELOG.md`.
 - **MAY** — optional.
 
-### Global invariants — check these every stage (CI should enforce)
-- **GI-1** no crate except `kn9t-server` has >1 workspace dependency in `[dependencies]`
-  (`[dev-dependencies]` are exempt and reported by `scripts/check-gi1.sh`).
+### Global invariants — check these every stage (CI enforces them, §13)
+- **GI-1** no crate except `kn9t-server` (the documented exception) and
+  `kn9t-test-support` (test-only helper, never linked into a shipped binary) has >1
+  workspace dependency in `[dependencies]`. `[dev-dependencies]` are exempt, and
+  `scripts/check-gi1.sh` reports every one it skips so the exemption stays auditable.
 - **GI-2** `kn9t-core` depends only on `serde`/`serde_json`; event payloads are pure data.
 - **GI-3** no `HashMap` is ever serialized into a request/cached prefix; `preserve_order` off.
 - **GI-4** `events` table is append-only; only `live_messages` is mutable-in-place.
-- **GI-5** no `tokio`, no `async fn`, no `.await` anywhere.
-- **GI-6** `kn9t-tui` does not depend on `kn9t-core` (HTTP + SSE only).
+- **GI-5** no `tokio`, no `async fn`, no `.await` anywhere (grep/review — no script covers
+  this one, so it is on you).
+- **GI-6** `kn9t-tui` does not depend on `kn9t-core` (HTTP + SSE only);
+  `scripts/check-schema.sh` asserts it after generation.
 
 ---
 
@@ -163,19 +182,31 @@ most important thing to record in the changelog.
 - OS: Windows (win32), shell PowerShell 5.1. The `bash` tool runs the host shell; risk
   judgement lives in a policy plugin, not in kn9t (ADR-0008 deleted the in-tree pwsh/POSIX
   classifiers) — see `spec/03-react-tools.md` R-TOOL-080/090.
-- Deliverables live inside `C:\_ddm\projects\Agents\kn9t\`. Never write final artifacts to
-  temp; scratch may use temp.
-- Rust toolchain: pin an edition (2021) in the workspace; build with `-D warnings`.
+- Deliverables live in the repository root (`git rev-parse --show-toplevel`). Never write
+  final artifacts to temp; scratch may use temp.
+- Rust toolchain: edition (2021) and `rust-version` are pinned in the workspace `Cargo.toml`.
+  Warnings are errors — CI builds with `RUSTFLAGS=-D warnings`
+  (`.github/workflows/ci.yml`), so a warning fails the build.
 - Do not add a dependency not already justified in DESIGN §15 without recording the reason
   in the changelog and checking it against the relevant GI.
 
-### 8.1 Running cargo — ALWAYS via Windows `cmd`
+### 8.1 Running cargo — the Windows toolchain (`cmd.exe /c` from WSL/bash)
 
 This is a **Windows** project. The toolchain is the Windows `cargo.exe`; there is no Linux
 cargo. An agent in WSL/bash will find `which cargo` returns nothing — **that does not mean
 cargo is unavailable.** Never report "cargo not on PATH" and fall back to manual review.
 
 **Rule: invoke cargo through `cmd.exe /c`. Do not call the `.exe` by its `/mnt/c/...` path.**
+
+From a **native Windows shell** (PowerShell or `cmd.exe`) this wrapper is not needed —
+`cargo` is already on `PATH`, invoke it directly (`cargo test -p kn9t-core`). The wrapper is
+for agents whose shell is WSL or git-bash, where `cargo` genuinely is not on `PATH`.
+
+The **guard scripts resolve the toolchain themselves**: `scripts/check-schema.sh` and
+`scripts/check-sse-race.sh` source `scripts/_cargo.sh`, which tries `$CARGO`, then `cargo`,
+then `cargo.exe`, then `*/.cargo/bin/cargo.exe`. It exits `2` ("cannot check") rather than
+`1` ("invariant broken") when it finds nothing, so a red run is never mistaken for a missing
+tool.
 
 ```bash
 cmd.exe /c "cargo check -p <crate>"
@@ -186,7 +217,7 @@ cmd.exe /c "cargo test --workspace"
 For a crate outside the workspace (external plugins), `cd` into it first and run the same way:
 
 ```bash
-cd plugins/kn9t-custom-provider && cmd.exe /c "cargo test"
+cd plugins/kn9t-tools && cmd.exe /c "cargo test"
 ```
 
 Rationale: `cmd.exe /c` runs cargo with a native Windows working directory. Calling
@@ -200,6 +231,11 @@ Notes:
 - **A gate is not green until a real `cargo test` run says so.** Structural checks (grep,
   reading files) are necessary but never sufficient — §6 "implemented but untested is not
   done" applies to the verification method too.
+- **A running `kn9t-tui`/`kn9t-server` locks its own test binary.** `cargo test --workspace`
+  then dies with `error: failed to remove file ...\target\debug\kn9t-tui.exe`. That is a
+  locked file, not a failing test: use `cargo test --workspace --exclude kn9t-tui` plus
+  `cargo test -p kn9t-tui --lib`, or stop the live instance. It bites exactly when the
+  developer is dogfooding.
 
 ### 8.2 NEVER edit source files with PowerShell — it corrupts UTF-8
 
@@ -256,6 +292,8 @@ provably left untouched and the script is idempotent.
   interface.
 - **Spec contradicts design, or a MUST is unimplementable?** Stop. Record it in the
   changelog as a spec bug and surface it. Do not work around it silently.
+- **Already a known defect?** Check `docs/ARCHITECTURE.md` §14 (findings F1–F8, the fixed
+  ones marked FIXED) and the bug tables in `TRACKING.md` before diagnosing from scratch.
 
 ---
 
@@ -308,6 +346,13 @@ inside the trait impl doesn't suppress the lint at the call site in all clippy v
 - `"127.0.0.1:{port}".parse().unwrap()` — static format, cannot fail
 - `lua.create_table().unwrap()` — only fails on OOM, which panics anyway
 
+**Test code is the exception.** A file-level `#![allow(clippy::unwrap_used)]` is acceptable
+in `tests/`, in `#[cfg(test)]` modules, and in the `kn9t-test-support` /
+`kn9t-tui-test-support` crates, where a panic *is* the assertion — 40 test files do this
+today. It stays forbidden on production paths: the only file-level allow in a shipping crate
+today is `clippy::too_many_arguments` (`kn9t-tui/src/ui/render.rs`), which is not a safety
+lint.
+
 **Each allow must have a comment explaining why the panic is acceptable.**
 
 ---
@@ -355,8 +400,10 @@ When implementing a TUI feature:
 - Breaks event sourcing (events are atomic facts, not diffs)
 - Complicates caching and replication
 
-Instead, use **action endpoints** (`POST /session/{id}/rename`, `POST /session/{id}/pin`) or
-**full replacement** (`PUT /session/{id}/metadata`).
+Instead, use **action endpoints** (`POST /session/{id}/rename`, `POST /session/{id}/model`,
+`POST /session/{id}/compact`, `POST /session/{id}/tools`) or **full replacement**
+(`PUT /pref/{key}`). Every one of those exists in `schema/http.json` — check there before
+naming an endpoint in prose.
 
 **The product is not released.** Every TUI limitation is feedback for API design. If the TUI
 needs something awkward, fix the API — don't ship the awkwardness.
@@ -364,24 +411,33 @@ needs something awkward, fix the API — don't ship the awkwardness.
 ### 11.1 The TUI is Lua-owned — Rust renders, Lua decides
 
 The entire screen is defined in Lua. Rust provides native views (see
-`widgets::NATIVE_VIEWS`: `transcript`, `input`, `status`, `diff`, `welcome`) and draws them
-where Lua says; **Lua owns layout, content and styling**.
+`widgets::NATIVE_VIEWS`: `transcript`, `input`, `status`, `welcome`, published to Lua as
+`kn9t.native_views`) and draws them where Lua says; **Lua owns layout, content and
+styling**. Diff review is *not* a native view — it ships as the `kn9t-git-integration`
+plugin, and `assets/default_tui.lua` says so in its own header.
 
 The goal is that a user can rice the TUI entirely from `~/.kn9t/tui.lua`, with **no
 recompile**. When you add a rendering decision, ask where it belongs: *mechanism* (markdown
 parsing, syntax highlighting, scroll maths, diff parsing, the render cache) is Rust;
 *policy* (what is shown, where, in which colour, under which key) is Lua.
 
-* **The default UI is embedded in the binary** — `crates/kn9t-tui/assets/default_tui.lua` via
-  `include_str!` (`src/lua/default_config.rs`). The binary is self-contained: running it writes
-  nothing to disk. `--print-config` / `--export-config [--force]` expose it on request.
-* **Load order is built-in first, then `~/.kn9t/tui.lua` layered on top.** A user file only
-  defines what it overrides; hot-reload re-runs the built-in first, so deleting a user function
-  restores the default rather than leaving a stale definition.
+* **The default UI is embedded in the binary, in two layers** (`src/lua/default_config.rs`).
+  The catalogue is `crates/kn9t-tui/assets/tui/*.lua` — eight files, `00_theme.lua` …
+  `90_render.lua`, compiled in as `DEFAULT_TUI_FILES` — and it is what a fresh install
+  renders. `assets/default_tui.lua` (`DEFAULT_TUI_LUA`) is the legacy single-file form: it is
+  the hot-reload baseline and what `--print-config` / `--export-config [--force]` read and
+  write. The binary is self-contained, but the first run **does** write: an empty
+  `~/.kn9t/tui/` is seeded from the catalogue so the config is immediately editable.
+* **Startup loads `~/.kn9t/tui/*.lua`, in filename order** (non-recursive, so `00_theme.lua`
+  runs before `90_render.lua`). A user file only defines what it overrides; hot-reload re-runs
+  the baseline first and then the user's files, so deleting a definition restores the default
+  rather than leaving a stale one.
 * **There is no Rust fallback layout.** `UiOutcome` is `Ok | Failed | NotDefined`; a broken
   config renders `render_lua_error_shell` (red banner naming the error + transcript + input),
   never the old Rust chrome. Silently falling back to Rust chrome hid Lua errors — do not
-  reintroduce it. When editing `default_tui.lua`, keep `assets/` and your `~/.kn9t/` copy in sync.
+  reintroduce it. When editing the built-in UI, keep `assets/tui/*.lua` and your
+  `~/.kn9t/tui/` copy in sync. The copy on disk is what startup renders, so a stale copy
+  hides your edit.
 * **A documented Lua symbol must exist at runtime.** `tests/lua_api_contract.rs` asserts that
   every symbol named in the header of `default_tui.lua` is non-nil and callable in a booted
   runtime. This test exists because three documented APIs were dead at once: `render_status()`
@@ -393,14 +449,14 @@ parsing, syntax highlighting, scroll maths, diff parsing, the render cache) is R
   `kn9t.theme`. A second copy is how `lightgreen` worked in config.toml and silently resolved to
   the theme default in Lua, killing the context gauge's warn/danger signal with no error.
 * **No second mechanism for a job Lua already does.** Lua reaches the server via
-  `kn9t.action(...)` ? Rust performs the I/O. The `kn9t.http` client was deleted for this:
+  `kn9t.action(...)` → Rust performs the I/O. The `kn9t.http` client was deleted for this:
   unused mechanisms rot (its whitelist named a nonexistent `/abort`), and a config file people
   copy from each other is the wrong place for an arbitrary HTTP client. Likewise prefer
   `{type="float"}` in `render_ui` over growing the parallel panel-placement registry.
 * **An action name that parses must dispatch.** `parse_action` accepting a name with no arm in
   `execute_action` gives a binding that looks right and does nothing (`toggle_right` did this
   for months, with a test asserting the broken behaviour).
-* **Geometry flows Lua ? Rust ? Lua.** Never derive a layout number from a Rust-side model of
+* **Geometry flows Lua → Rust → Lua.** Never derive a layout number from a Rust-side model of
   the layout. `input_height_for` used to subtract a hardcoded 24-column sidebar that no longer
   existed, so the row count published as `ctx.input_height` disagreed with the box Lua drew.
   Record what was actually rendered (`collect_natives`, `App::input_width`) and feed that back.
@@ -450,7 +506,16 @@ cargo run -p xtask -- generate   # after any schema/*.json edit
 Do **not** add a `build.rs` that regenerates on build — it would leak `preserve_order` (IndexMap) into every runtime crate via feature unification (`GI-3` `preserve_order off`, `xtask/Cargo.toml:8`), bloat the `DESIGN §15` budget, and hide API breaks from diff review. Drift is enforced at commit/CI, not at build:
 
 * `scripts/check-schema.sh` — `xtask --check` byte-identical compare; fails on drift
-* `.git/hooks/pre-commit` — runs `check-gi1.sh` + `check-schema.sh`; a drifted `wire.rs`/`api.rs` blocks the commit
+* `bash scripts/install-hooks.sh` (once per clone) — sets `core.hooksPath = .githooks`, whose
+  `pre-commit` runs `check-gi1.sh` + `check-schema.sh` + `check-mojibake.sh` +
+  `check-unwrap-trend.sh`; a drifted `wire.rs`/`api.rs` blocks the commit
+* `.github/workflows/ci.yml` — `bash scripts/check-ci.sh` (the four above, plus
+  `check-sse-race.sh`), a `-D warnings` build, and a test job per OS
+
+**Verify the hook is actually installed**: `git config core.hooksPath` must print `.githooks`
+and `.githooks/pre-commit` must exist. A `core.hooksPath` pointing at a directory without a
+`pre-commit` runs **nothing** — which is how the guards silently stopped running on a
+checkout once already (96E-29).
 
 `cargo build` passes even drifted; only the hook/CI blocks. If `check-schema.sh` fails, run `generate` and commit both schema and regenerated files together.
 
@@ -530,7 +595,8 @@ A broken or absent plugin still gets its slot and the error is drawn there. Blan
 would look like a layout bug and hide the cause.
 
 Note "sidebar" is now only a **Lua** concept (`build_sidebar` in `default_tui.lua`). Rust's
-native views are `transcript`, `input`, `status` — there is no Rust sidebar.
+native views are `transcript`, `input`, `status`, `welcome` (`widgets::NATIVE_VIEWS`) — there
+is no Rust sidebar.
 
 ### 14.2 Reference implementation: `kn9t-ask-user`
 

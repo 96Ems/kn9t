@@ -8,11 +8,61 @@ use ratatui::style::Color;
 
 use crate::config::ThemeSection;
 
+/// The mascot palette (PLAN §P7 D16).
+///
+/// Three colours carry meaning — **violet = accent, amber = alert, silver = chrome** — and
+/// green/red are reserved for diffs. Before this, the theme was a rainbow: cyan user, magenta
+/// assistant, yellow tool, magenta system. Everything shouted, so nothing stood out.
+///
+/// The values are the mascot's own colours, quantised to what a terminal can show. They are
+/// defined once here because `Theme` is the single source `kn9t.theme` publishes to Lua — a
+/// second literal in `default_tui.lua` is how a slot ends up meaning two things.
+mod palette {
+    use ratatui::style::Color;
+
+    /// Accent: selection, focus, active tab, section headings, mentions.
+    pub const VIOLET: Color = Color::Rgb(0x8B, 0x5C, 0xF6);
+    /// A darker violet for tints that sit behind text rather than on it.
+    pub const VIOLET_TINT: Color = Color::Rgb(0x1E, 0x1A, 0x2E);
+    /// Violet on a light background needs the darker end of the ramp.
+    pub const VIOLET_DEEP: Color = Color::Rgb(0x6D, 0x28, 0xD9);
+
+    /// Alert: warnings, a running tool, cost, an approval request.
+    pub const AMBER: Color = Color::Rgb(0xFB, 0xBF, 0x24);
+    /// Amber legible on white (the light theme's warning colour).
+    pub const AMBER_DEEP: Color = Color::Rgb(0xB4, 0x53, 0x09);
+
+    /// Chrome and text. The mascot's shell.
+    pub const SILVER: Color = Color::Rgb(0xD6, 0xDA, 0xE0);
+    pub const SILVER_DIM: Color = Color::Rgb(0x8A, 0x90, 0x9C);
+    pub const SILVER_DEEP: Color = Color::Rgb(0x3F, 0x46, 0x52);
+    pub const SILVER_PALE: Color = Color::Rgb(0x5C, 0x63, 0x70);
+
+    /// Diff only. Not a status colour, not a role colour.
+    pub const GREEN: Color = Color::Rgb(0x4A, 0xDE, 0x80);
+    pub const RED: Color = Color::Rgb(0xF8, 0x71, 0x71);
+    pub const GREEN_DEEP: Color = Color::Rgb(0x14, 0x7A, 0x3C);
+    pub const RED_DEEP: Color = Color::Rgb(0xB9, 0x1C, 0x1C);
+
+    /// The mascot's deep black, used behind panels rather than as the page background.
+    pub const INK: Color = Color::Rgb(0x0E, 0x0E, 0x14);
+    pub const INK_PANEL: Color = Color::Rgb(0x16, 0x17, 0x1D);
+    pub const INK_RAISED: Color = Color::Rgb(0x1B, 0x17, 0x2B);
+    pub const PAPER: Color = Color::Rgb(0xF3, 0xF4, 0xF7);
+    pub const PAPER_PANEL: Color = Color::Rgb(0xE8, 0xEA, 0xEF);
+    pub const PAPER_RAISED: Color = Color::Rgb(0xED, 0xE9, 0xFE);
+}
+
 /// Theme colors.
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub bg: Color,
     pub fg: Color,
+    /// Text colour for use *on* a solid colour block (status chips, the active tab).
+    ///
+    /// A block has to be legible, and `fg` is the page colour, so it cannot double as this:
+    /// on the violet accent, silver text is unreadable. One slot, used by every block.
+    pub ink: Color,
     pub muted: Color,
     pub primary: Color,
     pub error: Color,
@@ -36,6 +86,12 @@ pub struct Theme {
     /// Background of a tool card. A theme slot rather than a constant so a
     /// colourscheme can restyle cards without recompiling.
     pub tool_card_bg: Color,
+    /// Background of an opaque overlay panel (command palette, pickers, dialogs).
+    ///
+    /// A separate slot from `tool_card_bg` because they are different surfaces: a card is
+    /// part of the transcript, an overlay covers it. Before this, overlays painted
+    /// `Color::Black` literally, so on a light terminal every picker was a black slab.
+    pub panel_bg: Color,
     /// Background for user messages to distinguish them visually.
     pub user_msg_bg: Color,
     /// Current theme mode: "light" or "dark" (for toggling).
@@ -53,29 +109,33 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             bg: Color::Reset, // Use terminal default
-            fg: Color::White,
-            muted: Color::DarkGray,
-            primary: Color::Cyan,
-            error: Color::Red,
-            warning: Color::Yellow,
-            success: Color::Green,
-            user: Color::Cyan,
-            assistant: Color::Magenta,
-            tool: Color::Yellow,
-            diff_add: Color::Green,
-            diff_remove: Color::Red,
-            selection: Color::Rgb(60, 60, 80), // Subtle blue-gray highlight
+            fg: palette::SILVER,
+            ink: palette::INK,
+            muted: palette::SILVER_DIM,
+            primary: palette::VIOLET,
+            error: palette::RED,
+            warning: palette::AMBER,
+            success: palette::GREEN,
+            // The user speaks; the assistant answers in the page colour. Role is carried by
+            // the label prefix and the message background, not by a second accent.
+            user: palette::VIOLET,
+            assistant: palette::SILVER,
+            tool: palette::AMBER,
+            diff_add: palette::GREEN,
+            diff_remove: palette::RED,
+            selection: palette::VIOLET_TINT,
 
             // Tool card colors
-            tab_active_fg: Color::Black,
-            tab_active_bg: Color::Cyan,
-            tab_inactive_fg: Color::DarkGray,
-            tool_focus_bg: Color::Rgb(40, 44, 52), // Subtle dark highlight
-            tool_focus_border: Color::Cyan,
-            input_key: Color::Yellow,
-            input_value: Color::White,
-            tool_card_bg: Color::Rgb(30, 33, 39),
-            user_msg_bg: Color::Rgb(20, 35, 45), // Subtle teal background for user messages
+            tab_active_fg: palette::INK,
+            tab_active_bg: palette::VIOLET,
+            tab_inactive_fg: palette::SILVER_DIM,
+            tool_focus_bg: palette::INK_RAISED, // Subtle violet-tinted highlight
+            tool_focus_border: palette::VIOLET,
+            input_key: palette::AMBER,
+            input_value: palette::SILVER,
+            tool_card_bg: palette::INK_PANEL,
+            panel_bg: palette::INK_PANEL,
+            user_msg_bg: palette::INK_RAISED, // Subtle violet background for user messages
             mode: "dark".into(),
         }
     }
@@ -83,29 +143,31 @@ impl Theme {
     pub fn light() -> Self {
         Self {
             bg: Color::Reset,
-            fg: Color::Black,
-            muted: Color::DarkGray,
-            primary: Color::Blue,
-            error: Color::Red,
-            warning: Color::Rgb(180, 100, 0),
-            success: Color::Green,
-            user: Color::Blue,
-            assistant: Color::Magenta,
-            tool: Color::Rgb(180, 100, 0),
-            diff_add: Color::Green,
-            diff_remove: Color::Red,
-            selection: Color::Rgb(220, 220, 240), // Subtle blue-gray highlight
+            fg: palette::SILVER_DEEP,
+            ink: palette::PAPER,
+            muted: palette::SILVER_PALE,
+            primary: palette::VIOLET_DEEP,
+            error: palette::RED_DEEP,
+            warning: palette::AMBER_DEEP,
+            success: palette::GREEN_DEEP,
+            user: palette::VIOLET_DEEP,
+            assistant: palette::SILVER_DEEP,
+            tool: palette::AMBER_DEEP,
+            diff_add: palette::GREEN_DEEP,
+            diff_remove: palette::RED_DEEP,
+            selection: palette::PAPER_RAISED,
 
             // Tool card colors
-            tab_active_fg: Color::White,
-            tab_active_bg: Color::Blue,
-            tab_inactive_fg: Color::DarkGray,
-            tool_focus_bg: Color::Rgb(230, 235, 245), // Subtle light highlight
-            tool_focus_border: Color::Blue,
-            input_key: Color::Rgb(180, 100, 0),
-            input_value: Color::Black,
-            user_msg_bg: Color::Rgb(220, 235, 245), // Subtle light blue background for user messages
-            tool_card_bg: Color::Rgb(240, 242, 246),
+            tab_active_fg: palette::PAPER,
+            tab_active_bg: palette::VIOLET_DEEP,
+            tab_inactive_fg: palette::SILVER_PALE,
+            tool_focus_bg: palette::PAPER_RAISED,
+            tool_focus_border: palette::VIOLET_DEEP,
+            input_key: palette::AMBER_DEEP,
+            input_value: palette::SILVER_DEEP,
+            user_msg_bg: palette::PAPER_RAISED,
+            tool_card_bg: palette::PAPER_PANEL,
+            panel_bg: palette::PAPER_PANEL,
             mode: "light".into(),
         }
     }
@@ -191,6 +253,7 @@ impl Theme {
         Some(match name {
             "bg" | "background" => &mut self.bg,
             "fg" | "foreground" => &mut self.fg,
+            "ink" => &mut self.ink,
             "muted" => &mut self.muted,
             "primary" => &mut self.primary,
             "error" => &mut self.error,
@@ -210,6 +273,7 @@ impl Theme {
             "input_key" => &mut self.input_key,
             "input_value" => &mut self.input_value,
             "tool_card_bg" => &mut self.tool_card_bg,
+            "panel_bg" => &mut self.panel_bg,
             "user_msg_bg" => &mut self.user_msg_bg,
             _ => return None,
         })
@@ -222,6 +286,7 @@ impl Theme {
     pub const NAMES: &'static [&'static str] = &[
         "bg",
         "fg",
+        "ink",
         "muted",
         "primary",
         "error",
@@ -241,6 +306,7 @@ impl Theme {
         "input_key",
         "input_value",
         "tool_card_bg",
+        "panel_bg",
         "user_msg_bg",
     ];
 

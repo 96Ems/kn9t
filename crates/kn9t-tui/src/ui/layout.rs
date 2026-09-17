@@ -12,13 +12,19 @@
 
 /// Calculate required input height based on content and available width.
 /// Returns number of lines needed (minimum 1, capped at max_lines).
+///
+/// The returned count is **content rows**: the caller adds the box's own border.
+/// `INPUT_CHROME_COLS` is what the text loses to the frame — a border column on each
+/// side plus the `› ` prompt — and it has to be subtracted here too, or Lua sizes the
+/// box for one fewer wrap than the renderer draws and the last line is clipped.
+pub const INPUT_CHROME_COLS: u16 = 4;
+
 pub fn calculate_input_height(input: &str, available_width: u16, max_lines: u16) -> u16 {
     if input.is_empty() {
         return 1;
     }
 
-    // Account for prompt "› " (2 chars).
-    let content_width = available_width.saturating_sub(2) as usize;
+    let content_width = available_width.saturating_sub(INPUT_CHROME_COLS) as usize;
     if content_width == 0 {
         return 1;
     }

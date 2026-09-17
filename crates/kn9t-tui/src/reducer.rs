@@ -17,7 +17,7 @@
 //! — pure I/O glue with no branching worth unit-testing.
 
 use crate::app::Overlay;
-use crate::message_handler::{Message, ToolCard};
+use crate::message_handler::{Message, ThinkingCard, ToolCard};
 use crate::model_selector::ModelSelector;
 use crate::session_manager::SessionEntry;
 use crate::token_tracker::{TokenCounts, TokenTracker};
@@ -30,6 +30,8 @@ struct ExtractedContent {
     tool_calls: Vec<(String, String, String)>,
     /// (id, output, is_error)
     tool_results: Vec<(String, String, bool)>,
+    /// Reasoning blocks, kept out of `text` so they render as their own cards.
+    thinking: Vec<ThinkingCard>,
 }
 
 /// 96E-27 — collapsible subagent entry nested under its spawning tool call.
@@ -254,7 +256,7 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
         }
         SseFrame::ThinkingDelta { delta, .. } => {
             state.turn_phase = "thinking".into();
-            state.transcript.append_delta(&delta);
+            state.transcript.append_thinking_delta(&delta);
         }
         SseFrame::MessageAppended { msg, .. } => {
             if msg.role == "user" || msg.silent {
@@ -274,6 +276,17 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             } else {
                 extracted.text
             };
+            // Reasoning from this turn. The appended message already carries the persisted
+            // block, so the streamed copy is only a fallback for when it does not — using
+            // both renders the same reasoning twice.
+            let mut thinking = extracted.thinking;
+            let live_thinking = state.transcript.take_thinking_delta();
+            if thinking.is_empty() && !live_thinking.trim().is_empty() {
+                thinking.push(ThinkingCard {
+                    text: live_thinking,
+                    collapsed: true,
+                });
+            }
             let tools: Vec<ToolCard> = extracted
                 .tool_calls
                 .iter()
@@ -321,10 +334,10 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                     });
                 }
             }
-            if !final_content.is_empty() || !tools.is_empty() {
+            if !final_content.is_empty() || !tools.is_empty() || !thinking.is_empty() {
                 state
                     .transcript
-                    .push(Message::new(&msg.role, final_content).with_tools(tools));
+                    .push(Message::new(&msg.role, final_content).with_tools(tools).with_thinking(thinking));
             }
         }
         SseFrame::UsageRecorded {
@@ -583,10 +596,14 @@ fn extract_message_content(content: &[crate::wire::WireContent]) -> ExtractedCon
     let mut text_parts = Vec::new();
     let mut tool_calls = Vec::new();
     let mut tool_results = Vec::new();
+    let mut thinking = Vec::new();
     for c in content {
         match c {
             WireContent::Text { text } => text_parts.push(text.as_str()),
-            WireContent::Thinking { text } => text_parts.push(text.as_str()),
+            WireContent::Thinking { text } => thinking.push(ThinkingCard {
+                text: text.clone(),
+                collapsed: true,
+            }),
             WireContent::ToolCall {
                 id,
                 name,
@@ -614,6 +631,7 @@ fn extract_message_content(content: &[crate::wire::WireContent]) -> ExtractedCon
         text: text_parts.join("\n"),
         tool_calls,
         tool_results,
+        thinking,
     }
 }
 

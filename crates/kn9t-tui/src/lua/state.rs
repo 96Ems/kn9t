@@ -28,6 +28,12 @@ use crate::message_handler::ToolCard;
 pub struct StateSnapshot {
     pub session_id: String,
     pub title: String,
+    /// The session's working directory, empty when the server has not reported one.
+    ///
+    /// Published because the chrome's breadcrumb names where the agent is actually working
+    /// (PLAN §P7 D14), and because the file explorer (D3/L2) resolves against it. Both are
+    /// chrome-level facts about the session, not per-plugin state.
+    pub cwd: String,
     pub streaming: bool,
     pub aborting: bool,
     pub has_lease: bool,
@@ -132,6 +138,7 @@ impl StateSnapshot {
         Self {
             session_id: app.session.state.session_id.clone(),
             title: app.session.session_title().unwrap_or("").to_string(),
+            cwd: app.session.state.cwd.clone().unwrap_or_default(),
             streaming: app.streaming,
             aborting: app.aborting,
             has_lease: app.session.state.lease.is_some(),
@@ -202,6 +209,7 @@ pub fn update_state(lua: &Lua, snap: &StateSnapshot) -> LuaResult<()> {
     let session = lua.create_table()?;
     session.set("id", snap.session_id.as_str())?;
     session.set("title", snap.title.as_str())?;
+    session.set("cwd", snap.cwd.as_str())?;
     session.set("streaming", snap.streaming)?;
     session.set("aborting", snap.aborting)?;
     session.set("has_lease", snap.has_lease)?;
@@ -335,6 +343,7 @@ impl LazyData {
                     role: m.role.clone(),
                     content: m.content.clone(),
                     tools: m.tools.clone(),
+                    thinking: m.thinking.clone(),
                 })
                 .collect(),
             tools: app
@@ -376,6 +385,12 @@ impl LazyData {
                     .wrapping_mul(31)
                     .wrapping_add(card.output.as_ref().map_or(0, |o| o.len()) as u64);
             }
+            for card in &last.thinking {
+                v = v
+                    .wrapping_mul(31)
+                    .wrapping_add(card.collapsed as u64)
+                    .wrapping_add(card.text.len() as u64);
+            }
         }
         v
     }
@@ -385,6 +400,8 @@ pub struct LazyMessage {
     pub role: String,
     pub content: String,
     pub tools: Vec<ToolCard>,
+    /// Reasoning cards, so a Lua config can place or style them like tool cards.
+    pub thinking: Vec<crate::message_handler::ThinkingCard>,
 }
 
 pub struct LazyTool {
@@ -468,6 +485,9 @@ pub fn install_lazy_accessors(lua: &Lua, store: Arc<LazyStore>) -> LuaResult<()>
                 if !msg.tools.is_empty() {
                     m.set("tools", tool_cards_to_lua(lua, &msg.tools)?)?;
                 }
+                if !msg.thinking.is_empty() {
+                    m.set("thinking", thinking_cards_to_lua(lua, &msg.thinking)?)?;
+                }
                 out.set(n + 1, m)?;
             }
             Ok(out)
@@ -492,6 +512,22 @@ pub fn install_lazy_accessors(lua: &Lua, store: Arc<LazyStore>) -> LuaResult<()>
 
     globals.set("kn9t", kn9t)?;
     Ok(())
+}
+
+/// Reasoning cards published to Lua, mirroring `tools`: the transcript view is Rust's,
+/// but a user config may still want to place or style them.
+fn thinking_cards_to_lua(
+    lua: &Lua,
+    cards: &[crate::message_handler::ThinkingCard],
+) -> LuaResult<Table> {
+    let t = lua.create_table()?;
+    for (i, card) in cards.iter().enumerate() {
+        let c = lua.create_table()?;
+        c.set("text", card.text.as_str())?;
+        c.set("collapsed", card.collapsed)?;
+        t.set(i + 1, c)?;
+    }
+    Ok(t)
 }
 
 fn tool_cards_to_lua(lua: &Lua, cards: &[ToolCard]) -> LuaResult<Table> {

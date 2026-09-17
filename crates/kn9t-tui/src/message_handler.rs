@@ -22,6 +22,10 @@ pub struct Message {
     pub role: String,
     pub content: String,
     pub tools: Vec<ToolCard>,
+    /// Reasoning blocks, held apart from `content` so they render as their own cards.
+    /// Blending them into the answer (what the tag parser did) made the model's
+    /// scratchpad read as part of its reply.
+    pub thinking: Vec<ThinkingCard>,
     /// Number of images attached to this message (for display).
     pub image_count: usize,
 }
@@ -33,6 +37,7 @@ impl Message {
             role: role.into(),
             content: content.into(),
             tools: Vec::new(),
+            thinking: Vec::new(),
             image_count: 0,
         }
     }
@@ -47,6 +52,7 @@ impl Message {
             role: role.into(),
             content: content.into(),
             tools: Vec::new(),
+            thinking: Vec::new(),
             image_count,
         }
     }
@@ -54,6 +60,12 @@ impl Message {
     /// Add tools to a message (builder pattern).
     pub fn with_tools(mut self, tools: Vec<ToolCard>) -> Self {
         self.tools = tools;
+        self
+    }
+
+    /// Add reasoning cards to a message (builder pattern).
+    pub fn with_thinking(mut self, thinking: Vec<ThinkingCard>) -> Self {
+        self.thinking = thinking;
         self
     }
 }
@@ -72,6 +84,15 @@ pub struct ToolCard {
     pub scroll_offset: usize,
 }
 
+/// A reasoning block, rendered as its own collapsible card.
+#[derive(Debug, Clone)]
+pub struct ThinkingCard {
+    pub text: String,
+    /// Collapsed or expanded. History loads collapsed; the live card stays open while it
+    /// streams and is collapsed when the turn commits.
+    pub collapsed: bool,
+}
+
 /// Manages the message transcript.
 #[derive(Debug)]
 pub struct Transcript {
@@ -79,6 +100,9 @@ pub struct Transcript {
     messages: Vec<Message>,
     /// Live streaming delta (not yet committed to messages).
     live_delta: String,
+    /// Reasoning for the in-flight turn. Separate from `live_delta` so the answer and the
+    /// scratchpad never render as one stream.
+    live_thinking: String,
     /// Scroll position (0 = bottom, higher = scrolled up).
     scroll: usize,
 }
@@ -88,6 +112,7 @@ impl Transcript {
         Self {
             messages: Vec::new(),
             live_delta: String::new(),
+            live_thinking: String::new(),
             scroll: 0,
         }
     }
@@ -96,6 +121,7 @@ impl Transcript {
     pub fn clear(&mut self) {
         self.messages.clear();
         self.live_delta.clear();
+        self.live_thinking.clear();
         self.scroll = 0;
     }
 
@@ -122,6 +148,21 @@ impl Transcript {
     /// Clear live delta and return its contents.
     pub fn take_delta(&mut self) -> String {
         std::mem::take(&mut self.live_delta)
+    }
+
+    /// Reasoning accumulated for the in-flight turn.
+    pub fn live_thinking(&self) -> &str {
+        &self.live_thinking
+    }
+
+    /// Append to the live reasoning buffer.
+    pub fn append_thinking_delta(&mut self, delta: &str) {
+        self.live_thinking.push_str(delta);
+    }
+
+    /// Clear live reasoning and return its contents.
+    pub fn take_thinking_delta(&mut self) -> String {
+        std::mem::take(&mut self.live_thinking)
     }
 
     /// Get scroll position.
@@ -165,6 +206,7 @@ impl Transcript {
             role: "error".into(),
             content,
             tools: Vec::new(),
+            thinking: Vec::new(),
             image_count: 0,
         });
     }
@@ -175,6 +217,7 @@ impl Transcript {
             role: "system".into(),
             content,
             tools: Vec::new(),
+            thinking: Vec::new(),
             image_count: 0,
         });
     }
@@ -197,6 +240,7 @@ impl Transcript {
                 role: "assistant".into(),
                 content: String::new(),
                 tools: Vec::new(),
+                thinking: Vec::new(),
                 image_count: 0,
             });
         }
@@ -282,6 +326,7 @@ impl TranscriptParser {
 
             let mut text_parts = Vec::new();
             let mut tools = Vec::new();
+            let mut thinking = Vec::new();
             let mut image_count = 0;
 
             match content {
@@ -296,7 +341,13 @@ impl TranscriptParser {
                                 image_count += 1;
                             }
                         }
-                        Self::parse_block(block, &tool_results, &mut text_parts, &mut tools);
+                        Self::parse_block(
+                            block,
+                            &tool_results,
+                            &mut text_parts,
+                            &mut tools,
+                            &mut thinking,
+                        );
                     }
                 }
                 _ => {}
@@ -304,12 +355,14 @@ impl TranscriptParser {
 
             let content_text = text_parts.join("\n");
 
-            // Only add message if there's content or tools.
-            if !content_text.is_empty() || !tools.is_empty() || image_count > 0 {
+            // Only add message if there's content, tools, or reasoning.
+            if !content_text.is_empty() || !tools.is_empty() || !thinking.is_empty() || image_count > 0
+            {
                 messages.push(Message {
                     role: role.to_string(),
                     content: content_text,
                     tools,
+                    thinking,
                     image_count,
                 });
             }
@@ -369,6 +422,7 @@ impl TranscriptParser {
         tool_results: &HashMap<String, (String, bool)>,
         text_parts: &mut Vec<String>,
         tools: &mut Vec<ToolCard>,
+        thinking: &mut Vec<ThinkingCard>,
     ) {
         // The server is authoritative; a block without a `type` is not a content
         // block we recognize — skip it explicitly rather than matching "".
@@ -384,7 +438,10 @@ impl TranscriptParser {
             }
             "thinking" => {
                 if let Some(text) = block.get("thinking").and_then(|t| t.as_str()) {
-                    text_parts.push(text.to_string());
+                    thinking.push(ThinkingCard {
+                        text: text.to_string(),
+                        collapsed: true, // History loads collapsed; Ctrl+E expands.
+                    });
                 }
             }
             "tool_call" => {

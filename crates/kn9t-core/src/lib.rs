@@ -28,7 +28,8 @@ pub use hook::{HookHost, HookVeto, NextTurnPatch, NoopHookHost};
 pub use ids::{ApprovalId, CallId, MsgId, SessionId};
 pub use message::{Content, Message, Role};
 pub use model::{
-    cost_micros, Effort, ModelRef, ModelSpec, MoneyMicros, Price, Quirks, Thinking, ThinkingReplay,
+    cost_micros, default_thinking, Effort, ModelRef, ModelSpec, MoneyMicros, Price, Quirks,
+    Thinking, ThinkingReplay,
 };
 pub use provider::{Chunk, Provider, Request};
 pub use registry::ToolRegistry;

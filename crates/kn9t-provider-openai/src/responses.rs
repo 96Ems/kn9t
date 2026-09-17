@@ -14,8 +14,8 @@
 //!   for that. Dropping them is the same choice as `thinking_replay = "strip"`.
 
 use kn9t_provider_core::{
-    CallId, Chunk, Content, Effort, Message, ModelRef, ProvErr, Quirks, Request, Role, StopReason,
-    Thinking, Tokens, Usage,
+    CallId, Chunk, Content, Message, ModelRef, ProvErr, Quirks, Request, Role, StopReason, Tokens,
+    Usage,
 };
 use serde_json::{json, Value};
 
@@ -82,8 +82,11 @@ pub fn build_body(req: &Request<'_>, quirks: &Quirks, dump_request: bool) -> Val
 
     // Responses nests reasoning configuration. `budget_tokens` and `adaptive` are
     // chat-completions shapes with no equivalent here, so they are not translated.
+    // `Off` omits the field, as on the chat path.
     if quirks.reasoning == "reasoning_effort" {
-        body["reasoning"] = json!({ "effort": effort_str(req.thinking) });
+        if let Some(effort) = crate::encode::effort_of(req.thinking) {
+            body["reasoning"] = json!({ "effort": effort });
+        }
     }
 
     if let Value::Object(extra) = quirks.extra_body.clone() {
@@ -102,16 +105,6 @@ pub fn build_body(req: &Request<'_>, quirks: &Quirks, dump_request: bool) -> Val
     }
 
     body
-}
-
-fn effort_str(t: Thinking) -> &'static str {
-    match t {
-        Thinking::Off => "low",
-        Thinking::Effort(Effort::Low) => "low",
-        Thinking::Effort(Effort::Medium) => "medium",
-        Thinking::Effort(Effort::High) => "high",
-        Thinking::Budget(_) => "medium",
-    }
 }
 
 /// Expand one `Message` into its `input` items.

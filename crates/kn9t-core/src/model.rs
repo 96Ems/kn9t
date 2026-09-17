@@ -18,6 +18,10 @@ pub struct ModelSpec {
     pub api_id: String,
     pub ctx_window: u32,
     pub max_out: u32,
+    /// Reasoning effort requested for this model's turns. Defaults to `medium`, which is
+    /// the OpenAI-documented balance. A provider with `reasoning = "none"` never sends it.
+    #[serde(default = "default_thinking")]
+    pub thinking: Thinking,
     pub price: Price,
     /// Cache configuration: mode and minimum token threshold.
     pub cache: CacheMode,
@@ -102,6 +106,12 @@ pub enum Effort {
     Low,
     Medium,
     High,
+}
+
+/// R-CORE-090 — reasoning is on by default: `medium` is the documented balance between
+/// latency, quality and cost (OpenAI defaults its reasoning models to it).
+pub fn default_thinking() -> Thinking {
+    Thinking::Effort(Effort::Medium)
 }
 
 /// R-CORE-090

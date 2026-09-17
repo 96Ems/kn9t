@@ -208,6 +208,29 @@ mod core {
         }
     }
 
+    /// R-CORE-090 — reasoning is on by default.
+    #[test]
+    fn thinking_defaults_to_medium() {
+        assert!(default_thinking() == Thinking::Effort(Effort::Medium));
+    }
+
+    /// A stored spec written before `thinking` existed must still load, with reasoning on.
+    #[test]
+    fn model_spec_thinking_serde_default() {
+        let json = serde_json::json!({
+            "ref": { "provider": "p", "id": "m" },
+            "api_id": "m",
+            "ctx_window": 1000,
+            "max_out": 100,
+            "price": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0 },
+            "cache": { "mode": "none" },
+            "streaming": true,
+            "quirks": { "thinking_replay": "strip" }
+        });
+        let spec: ModelSpec = serde_json::from_value(json).unwrap();
+        assert!(spec.thinking == Thinking::Effort(Effort::Medium));
+    }
+
     // -- R-CORE-100 ---------------------------------------------------------
 
     #[test]

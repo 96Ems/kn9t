@@ -25,9 +25,13 @@ fn content_hash(content: &str, tool_info_hash: u64) -> u64 {
     hasher.finish()
 }
 
-/// Compute a hash of tool statuses for cache invalidation.
-/// Includes ALL state that affects rendering: expanded, scroll, status, output, progress.
-pub fn compute_tool_info_hash(tools: &[crate::message_handler::ToolCard]) -> u64 {
+/// Compute a hash of tool and reasoning state for cache invalidation.
+/// Includes ALL state that affects rendering: expanded, scroll, status, output, progress,
+/// plus each reasoning card's collapsed flag and extent.
+pub fn compute_tool_info_hash(
+    tools: &[crate::message_handler::ToolCard],
+    thinking: &[crate::message_handler::ThinkingCard],
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for t in tools {
@@ -40,6 +44,12 @@ pub fn compute_tool_info_hash(tools: &[crate::message_handler::ToolCard]) -> u64
         t.output.as_ref().map(|o| o.len()).hash(&mut hasher);
         // Hash progress lines count
         t.progress_lines.len().hash(&mut hasher);
+    }
+    for c in thinking {
+        c.collapsed.hash(&mut hasher);
+        // Length, not text: rehashing a long scratchpad every frame is the cost the cache
+        // exists to avoid.
+        c.text.len().hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -54,6 +64,27 @@ pub struct CachedToolInfo {
     pub content_end_offset: usize,
 }
 
+/// A turn's tool group header, for click detection.
+///
+/// The header is not a card: it toggles every card in the turn (PLAN §P7 D11), so it
+/// carries the call ids it owns rather than one id.
+#[derive(Debug, Clone)]
+pub struct CachedGroupInfo {
+    /// Line index of the header within the cached lines (relative to message start).
+    pub line_offset: usize,
+    /// The call ids the header expands and collapses.
+    pub calls: Vec<String>,
+}
+
+/// Reasoning header position for click detection.
+#[derive(Debug, Clone)]
+pub struct CachedThinkingInfo {
+    /// Index of the card within the message.
+    pub index: usize,
+    /// Line index of the header within the cached lines (relative to message start).
+    pub header_line_offset: usize,
+}
+
 /// Cached rendered lines for a single message.
 #[derive(Debug, Clone)]
 struct CachedMessage {
@@ -61,6 +92,10 @@ struct CachedMessage {
     lines: Vec<Line<'static>>,
     /// Tool positions relative to message start (for click detection).
     tool_infos: Vec<CachedToolInfo>,
+    /// Group-header positions relative to message start.
+    group_infos: Vec<CachedGroupInfo>,
+    /// Reasoning-header positions relative to message start.
+    thinking_infos: Vec<CachedThinkingInfo>,
 }
 
 /// Render cache for transcript messages.
@@ -102,23 +137,34 @@ impl RenderCache {
             || delta_len != self.last_delta_len
     }
 
-    /// Get cached lines and tool infos for a message, or None if not cached/stale.
+    /// Get cached lines, tool infos and group infos for a message, or None if not
+    /// cached/stale.
     pub fn get_message(
         &self,
         index: usize,
         content: &str,
         tool_info_hash: u64,
-    ) -> Option<(&[Line<'static>], &[CachedToolInfo])> {
+    ) -> Option<(
+        &[Line<'static>],
+        &[CachedToolInfo],
+        &[CachedGroupInfo],
+        &[CachedThinkingInfo],
+    )> {
         let entry = self.messages.get(&index)?;
         let hash = content_hash(content, tool_info_hash);
         if entry.content_hash == hash {
-            Some((&entry.lines, &entry.tool_infos))
+            Some((
+                &entry.lines,
+                &entry.tool_infos,
+                &entry.group_infos,
+                &entry.thinking_infos,
+            ))
         } else {
             None
         }
     }
 
-    /// Cache rendered lines for a message with tool position info.
+    /// Cache rendered lines for a message with tool and group position info.
     pub fn set_message(
         &mut self,
         index: usize,
@@ -126,6 +172,8 @@ impl RenderCache {
         tool_info_hash: u64,
         lines: Vec<Line<'static>>,
         tool_infos: Vec<CachedToolInfo>,
+        group_infos: Vec<CachedGroupInfo>,
+        thinking_infos: Vec<CachedThinkingInfo>,
     ) {
         let hash = content_hash(content, tool_info_hash);
         self.messages.insert(
@@ -134,6 +182,8 @@ impl RenderCache {
                 content_hash: hash,
                 lines,
                 tool_infos,
+                group_infos,
+                thinking_infos,
             },
         );
     }

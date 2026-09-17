@@ -154,11 +154,13 @@ fn lazy_messages_are_not_built_until_called() {
                 role: "user".into(),
                 content: "hi".into(),
                 tools: vec![],
+                thinking: vec![],
             },
             LazyMessage {
                 role: "assistant".into(),
                 content: "yo".into(),
                 tools: vec![],
+                thinking: vec![],
             },
         ],
         tools: vec![],
@@ -184,6 +186,7 @@ fn lazy_messages_window_is_clamped() {
                 role: "user".into(),
                 content: format!("m{i}"),
                 tools: vec![],
+                thinking: vec![],
             })
             .collect(),
         tools: vec![],
@@ -238,6 +241,7 @@ fn store_rebuilds_only_when_version_changes() {
                 role: "user".into(),
                 content: "hi".into(),
                 tools: vec![],
+                thinking: vec![],
             }],
             tools: vec![],
         }
@@ -270,6 +274,7 @@ fn version_changes_when_tail_message_grows() {
             role: "assistant".into(),
             content: "par".into(),
             tools: vec![],
+            thinking: vec![],
         }],
         tools: vec![],
     };
@@ -278,6 +283,7 @@ fn version_changes_when_tail_message_grows() {
             role: "assistant".into(),
             content: "partial".into(),
             tools: vec![],
+            thinking: vec![],
         }],
         tools: vec![],
     };

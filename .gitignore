@@ -28,8 +28,12 @@ custom-provider.log
 __pycache__/
 *.py[cod]
 
+# node_modules is never committed, at any depth. The old rule only covered
+# plugins/*/, which let a root node_modules/ from agent tooling go untracked
+# but unignored (caught by a stray `git add -A`).
+node_modules/
+
 # typescript plugin build (plugins/kn9t-compactor)
-plugins/*/node_modules/
 plugins/*/dist/
 
 # go plugin build output - 5 MB of binaries were committed (96E-37).

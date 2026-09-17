@@ -56,8 +56,78 @@ fn thinking_delta_handled() {
     let mut s = State::default();
     reduce(&mut s, SseFrame::TurnStarted { turn: 1 });
     reduce(&mut s, thinking_delta("thinking..."));
-    assert_eq!(s.transcript.live_delta(), "thinking...");
-    // thinking delta should not be ignored — previously only seq recorded
+    // Reasoning goes to its own buffer, not the answer's: the two are not the same thing
+    // to a reader, and mixing them is what put the scratchpad inline with the reply.
+    assert_eq!(s.transcript.live_thinking(), "thinking...");
+    assert_eq!(s.transcript.live_delta(), "");
+}
+
+/// A turn streams its reasoning and then the appended message carries the same block.
+/// Folding both rendered it twice; the card must describe it once.
+#[test]
+fn streamed_then_persisted_reasoning_yields_one_card() {
+    let mut s = State::default();
+    reduce(&mut s, SseFrame::TurnStarted { turn: 1 });
+    reduce(&mut s, thinking_delta("reasoned here"));
+    reduce(
+        &mut s,
+        SseFrame::MessageAppended {
+            seq: 2,
+            msg: WireMessage {
+                id: "m2".into(),
+                role: "assistant".into(),
+                content: vec![
+                    WireContent::Thinking {
+                        text: "reasoned here".into(),
+                    },
+                    WireContent::Text {
+                        text: "answer".into(),
+                    },
+                ],
+                silent: false,
+            },
+        },
+    );
+
+    let msg = s.transcript.messages().last().expect("message appended");
+    assert_eq!(
+        msg.thinking.len(),
+        1,
+        "one card, not the stream plus the persisted block"
+    );
+    assert_eq!(msg.thinking[0].text, "reasoned here");
+    assert_eq!(msg.content, "answer");
+    assert_eq!(
+        s.transcript.live_thinking(),
+        "",
+        "the stream buffer must not leak into the next turn"
+    );
+}
+
+/// If the appended message carries no reasoning, the streamed copy is all we have.
+#[test]
+fn streamed_reasoning_survives_a_message_without_it() {
+    let mut s = State::default();
+    reduce(&mut s, SseFrame::TurnStarted { turn: 1 });
+    reduce(&mut s, thinking_delta("only streamed"));
+    reduce(
+        &mut s,
+        SseFrame::MessageAppended {
+            seq: 2,
+            msg: WireMessage {
+                id: "m2".into(),
+                role: "assistant".into(),
+                content: vec![WireContent::Text {
+                    text: "answer".into(),
+                }],
+                silent: false,
+            },
+        },
+    );
+
+    let msg = s.transcript.messages().last().expect("message appended");
+    assert_eq!(msg.thinking.len(), 1);
+    assert_eq!(msg.thinking[0].text, "only streamed");
 }
 
 #[test]

@@ -309,6 +309,7 @@ fn stor_low_ctx_window_triggers_compaction_earlier() {
         api_id: "model".into(),
         ctx_window: ctx,
         max_out: 128,
+        thinking: kn9t_core::Thinking::Off,
         price: Price {
             input: 0,
             output: 0,

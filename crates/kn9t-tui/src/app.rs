@@ -27,7 +27,6 @@ use crate::prompt_stash::PromptStash;
 use crate::search::SearchState;
 use crate::session_manager::{session_matches, SessionManager};
 use crate::slash::{fuzzy_match, SlashState};
-use crate::thinking::ThinkingState;
 use crate::token_tracker::TokenTracker;
 use crate::ui::render::render;
 use crate::which_key::WhichKeyPanel;
@@ -326,6 +325,12 @@ pub struct QueuedPrompt {
 #[derive(Debug, Clone)]
 pub struct ToolHitArea {
     pub call_id: String,
+    /// The call ids this area owns when it is a turn's group header, empty otherwise.
+    ///
+    /// One struct for both because a click resolves the same way — find the area under
+    /// the cursor, act on the ids it names — and a header is just an area that names
+    /// several calls instead of one (PLAN §P7 D11).
+    pub group_calls: Vec<String>,
     pub header_y: u16,              // Y position of header line
     pub content_y_start: u16,       // Y start of content area (tabs + output/input)
     pub content_y_end: u16,         // Y end of content area
@@ -334,6 +339,37 @@ pub struct ToolHitArea {
     pub progress_tab_x: (u16, u16), // X range for Progress tab
     pub output_tab_x: (u16, u16),   // X range for Output tab
     pub input_tab_x: (u16, u16),    // X range for Input tab
+}
+
+impl ToolHitArea {
+    /// An area that toggles every call in a turn.
+    pub fn group(calls: Vec<String>, y: u16, x_start: u16, x_end: u16) -> Self {
+        Self {
+            call_id: String::new(),
+            group_calls: calls,
+            header_y: y,
+            content_y_start: y,
+            content_y_end: y + 1,
+            x_start,
+            x_end,
+            progress_tab_x: (0, 0),
+            output_tab_x: (0, 0),
+            input_tab_x: (0, 0),
+        }
+    }
+}
+
+/// Hit area for a reasoning card header, toggled on click.
+#[derive(Debug, Clone)]
+pub struct ThinkingHitArea {
+    /// Index of the message in the transcript.
+    pub msg_idx: usize,
+    /// Index of the card within that message.
+    pub card_idx: usize,
+    /// Screen Y of the header line.
+    pub y: u16,
+    pub x_start: u16,
+    pub x_end: u16,
 }
 
 /// Main app state.
@@ -354,6 +390,11 @@ pub struct App {
     pub tokens: TokenTracker,
     /// Transcript: messages, live_delta, scroll.
     pub transcript: Transcript,
+    /// The workspace file index — one walk feeding the explorer tree, the file viewer and
+    /// the `@` dropdown (PLAN §P7 L2 / D6). Refreshed at most once per session cwd.
+    pub file_index: crate::file_index::FileIndex,
+    /// `@path` mention completion (PLAN §P7 L2 / D19).
+    pub mention: crate::mention::MentionState,
 
     /// Tools available this session, as reported by `GET /tools`.
     pub tools: Vec<ToolEntry>,
@@ -406,14 +447,12 @@ pub struct App {
     pub tool_mode: bool,
     pub focused_tool: Option<String>,     // call_id of focused tool
     pub tool_hit_areas: Vec<ToolHitArea>, // Click detection areas from last render
+    pub thinking_hit_areas: Vec<ThinkingHitArea>, // Reasoning headers, same idea
 
     // Scrollbar hit area for transcript (x, y_start, y_end, total_lines, visible_lines).
     pub scrollbar_area: Option<(u16, u16, u16, usize, usize)>,
     // Scrollbar drag state: if Some, we're dragging from this Y position.
     scrollbar_dragging: bool,
-
-    // Thinking block collapse state (UI-local).
-    pub thinking_state: ThinkingState,
 
     // Search state (None = search bar closed).
     pub search_state: Option<SearchState>,
@@ -538,14 +577,16 @@ impl App {
             active_approval_id: None,
             active_interaction_id: None,
             slash: SlashState::new(),
+            file_index: crate::file_index::FileIndex::new(),
+            mention: crate::mention::MentionState::new(),
             quit: false,
             theme_mode,
             tool_mode: false,
             focused_tool: None,
             tool_hit_areas: Vec::new(),
+            thinking_hit_areas: Vec::new(),
             scrollbar_area: None,
             scrollbar_dragging: false,
-            thinking_state: ThinkingState::new(),
             search_state: None,
             which_key_panel: WhichKeyPanel::new(),
             command_palette: crate::command_palette::CommandPalette::new(),
@@ -857,6 +898,7 @@ impl App {
         self.tool_mode = false;
         self.focused_tool = None;
         self.tool_hit_areas.clear();
+        self.thinking_hit_areas.clear();
 
         // Clear render cache (new session = new content).
         self.render_cache.clear();
@@ -891,6 +933,32 @@ impl App {
             tool.expanded = !tool.expanded;
             if tool.expanded {
                 tool.scroll_offset = 0; // Reset scroll on expand
+            }
+        }
+    }
+
+    /// Expand or collapse every card of a turn at once (PLAN §P7 D11).
+    ///
+    /// The group is a convenience over the cards, not a separate state: whether it reads
+    /// as open is derived from the cards it owns, so a single card collapsed by hand
+    /// cannot leave the header claiming the turn is open.
+    pub fn toggle_tool_group(&mut self, calls: &[String]) {
+        let any_open = calls.iter().any(|id| {
+            self.transcript
+                .messages()
+                .iter()
+                .flat_map(|m| m.tools.iter())
+                .find(|t| &t.call_id == id)
+                .map(|t| t.expanded)
+                .unwrap_or(false)
+        });
+        let open = !any_open;
+        for id in calls {
+            if let Some(tool) = self.tool_mut(id) {
+                tool.expanded = open;
+                if open {
+                    tool.scroll_offset = 0;
+                }
             }
         }
     }
@@ -1431,6 +1499,12 @@ impl App {
         if self.overlay.is_some() {
             crate::log!("  -> overlay handler");
             self.handle_overlay_key(key, tx);
+            return;
+        }
+
+        // The `@` mention list gets the keys that mean something to it (arrows, Enter, Esc)
+        // and lets everything else through, so typing narrows the query.
+        if self.handle_mention_key(key) {
             return;
         }
 
@@ -3107,8 +3181,26 @@ impl App {
             return;
         }
 
-        // Check tool card clicks
+        // Reasoning cards precede the answer and the calls they led to, so they get first
+        // refusal on the row.
+        for hit in &self.thinking_hit_areas.clone() {
+            if y == hit.y && x >= hit.x_start && x < hit.x_end {
+                self.toggle_thinking_at(hit.msg_idx, hit.card_idx);
+                return;
+            }
+        }
+
+        // Check tool card clicks. A group header owns several calls and is checked
+        // first: it is drawn above the cards it toggles, so it must win the row.
         for hit in &self.tool_hit_areas.clone() {
+            if !hit.group_calls.is_empty() {
+                if y == hit.header_y && x >= hit.x_start && x < hit.x_end {
+                    self.toggle_tool_group(&hit.group_calls);
+                    return;
+                }
+                continue;
+            }
+
             // Click on header line - toggle expand/collapse
             if y == hit.header_y {
                 self.toggle_tool_expand(&hit.call_id);
@@ -3319,6 +3411,55 @@ impl App {
                     );
                 }
             }
+        }
+    }
+
+    /// Keep the `@` dropdown in step with the input (PLAN §P7 L2).
+    ///
+    /// The index refresh is a no-op unless the session cwd changed (it compares the root), so
+    /// this is affordable on every keystroke — and calling it here rather than from the render
+    /// path keeps "the input changed" and "the dropdown changed" in one place.
+    fn sync_mention(&mut self) {
+        if let Some(cwd) = self.session.state.cwd.clone() {
+            self.file_index.refresh(std::path::Path::new(&cwd));
+        }
+        self.mention.sync(&self.file_index, &self.input, self.cursor_col);
+    }
+
+    /// Handle keys while the mention dropdown is open. Returns true if handled.
+    ///
+    /// Unlike the slash dropdown, this does **not** swallow typing: the query is narrowed by
+    /// ordinary character input, so only the keys that mean something to the list are taken.
+    /// Consuming everything, as the slash menu does, would make the mention unusable — you
+    /// could not type the file name you are looking for.
+    fn handle_mention_key(&mut self, key: KeyEvent) -> bool {
+        if !self.mention.active {
+            return false;
+        }
+        match key.code {
+            KeyCode::Up => {
+                self.mention.select_prev();
+                true
+            }
+            KeyCode::Down => {
+                self.mention.select_next();
+                true
+            }
+            KeyCode::Enter | KeyCode::Tab => {
+                match self.mention.selected_path().map(str::to_string) {
+                    Some(path) => {
+                        self.file_index.record_open(&path);
+                        self.cursor_col = self.mention.apply(&mut self.input, &path);
+                    }
+                    None => self.mention.deactivate(),
+                }
+                true
+            }
+            KeyCode::Esc => {
+                self.mention.deactivate();
+                true
+            }
+            _ => false,
         }
     }
 
@@ -4285,38 +4426,43 @@ impl App {
         }
     }
 
-    /// Toggle collapse state for all thinking blocks.
+    /// Expand or collapse one reasoning card.
+    fn toggle_thinking_at(&mut self, msg_idx: usize, card_idx: usize) {
+        if let Some(card) = self
+            .transcript
+            .messages_mut()
+            .get_mut(msg_idx)
+            .and_then(|m| m.thinking.get_mut(card_idx))
+        {
+            card.collapsed = !card.collapsed;
+        }
+    }
+
+    /// Toggle every reasoning card: collapse them if any is open, else expand them all.
     fn toggle_all_thinking(&mut self) {
-        // Count thinking blocks in current transcript
         let mut count = 0;
+        let mut any_expanded = false;
         for msg in self.transcript.messages() {
-            if msg.role == "assistant" {
-                let segments = crate::thinking::parse_content(&msg.content);
-                for seg in segments {
-                    if matches!(seg, crate::thinking::ContentSegment::Thinking { .. }) {
-                        count += 1;
-                    }
-                }
-            }
-        }
-
-        // Also count in live delta
-        let segments = crate::thinking::parse_content(self.transcript.live_delta());
-        for seg in segments {
-            if matches!(seg, crate::thinking::ContentSegment::Thinking { .. }) {
+            for card in &msg.thinking {
                 count += 1;
+                any_expanded |= !card.collapsed;
             }
         }
-
-        // Toggle: if any expanded, collapse all. Otherwise expand all.
-        let any_expanded = (0..count).any(|i| !self.thinking_state.is_collapsed(i));
-        if any_expanded {
-            self.thinking_state.collapse_all(count);
-            crate::log!("THINKING: collapsed all {} blocks", count);
-        } else {
-            self.thinking_state.expand_all();
-            crate::log!("THINKING: expanded all {} blocks", count);
+        if count == 0 {
+            return;
         }
+
+        let collapse = any_expanded;
+        for msg in self.transcript.messages_mut() {
+            for card in &mut msg.thinking {
+                card.collapsed = collapse;
+            }
+        }
+        crate::log!(
+            "THINKING: {} {} cards",
+            if collapse { "collapsed" } else { "expanded" },
+            count
+        );
     }
 
     /// Get byte position of current line start.
@@ -4392,9 +4538,7 @@ impl App {
                 self.open_search();
             }
             "toggle_thinking" => {
-                // Toggle all thinking blocks - expand if any collapsed, collapse if all expanded
-                // For now, just expand all since we don't track count here
-                self.thinking_state.expand_all();
+                self.toggle_all_thinking();
             }
             "keybindings" => {
                 self.which_key_panel = WhichKeyPanel::new();

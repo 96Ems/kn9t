@@ -112,15 +112,23 @@ fn test_parse_color_trimmed() {
 #[test]
 fn test_theme_dark() {
     let theme = Theme::dark();
-    assert_eq!(theme.fg, Color::White);
-    assert_eq!(theme.error, Color::Red);
+    assert_eq!(theme.mode, "dark");
+    // Chrome, accent and alert must stay three distinct things, or the hierarchy the
+    // palette exists to create is gone (PLAN §P7 D16).
+    assert_ne!(theme.fg, theme.muted);
+    assert_ne!(theme.primary, theme.warning);
+    assert_ne!(theme.primary, theme.fg);
+    // Diff is the only place green and red appear, and they must be tellable apart.
+    assert_ne!(theme.diff_add, theme.diff_remove);
 }
 
 #[test]
 fn test_theme_light() {
     let theme = Theme::light();
-    assert_eq!(theme.fg, Color::Black);
-    assert_eq!(theme.error, Color::Red);
+    assert_eq!(theme.mode, "light");
+    // The two modes must actually differ, or `toggle_mode` is a no-op with a label.
+    assert_ne!(theme.fg, Theme::dark().fg);
+    assert_ne!(theme.primary, Theme::dark().primary);
 }
 
 #[test]
@@ -129,8 +137,7 @@ fn test_theme_from_config_dark() {
         mode: Some("dark".into()),
         colors: None,
     };
-    let theme = Theme::from_config(section);
-    assert_eq!(theme.fg, Color::White);
+    assert_eq!(Theme::from_config(section).fg, Theme::dark().fg);
 }
 
 #[test]
@@ -139,8 +146,7 @@ fn test_theme_from_config_light() {
         mode: Some("light".into()),
         colors: None,
     };
-    let theme = Theme::from_config(section);
-    assert_eq!(theme.fg, Color::Black);
+    assert_eq!(Theme::from_config(section).fg, Theme::light().fg);
 }
 
 #[test]
@@ -159,5 +165,5 @@ fn test_theme_from_config_with_overrides() {
 #[test]
 fn test_theme_default_is_dark() {
     let theme = Theme::default();
-    assert_eq!(theme.fg, Color::White);
+    assert_eq!(theme.mode, "dark");
 }

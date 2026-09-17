@@ -280,8 +280,35 @@ impl LuaRuntime {
     /// This always runs first so kn9t is self-contained: a bare executable with
     /// no config directory still has a complete UI. A user file layered on top
     /// only needs to define what it wants to change.
+    /// Run the built-in UI: every catalogue file, in filename order.
+    ///
+    /// The catalogue (`assets/tui/*.lua`) **is** the shipped default, so this is what a fresh
+    /// install renders — not a legacy single file that could silently drift from it. See
+    /// `default_config::DEFAULT_TUI_FILES`.
+    ///
+    /// A failing file does not stop the rest: the remaining files still define what they can,
+    /// which is what lets the error shell draw something and name the real cause. The first
+    /// failure is re-recorded after the loop, because `load_source` clears `last_error` on
+    /// every success — otherwise an error in `00_theme.lua` would be erased by
+    /// `90_render.lua` loading fine, and the screen would look like a config with no
+    /// `render_ui` instead of a broken file.
     pub fn load_builtin(&self) -> bool {
-        self.load_source(default_config::DEFAULT_TUI_LUA, "<builtin>")
+        let mut first_failure: Option<String> = None;
+        for (name, source) in default_config::DEFAULT_TUI_FILES {
+            if !self.load_source(source, &format!("<builtin:{name}>")) && first_failure.is_none() {
+                first_failure = Some(format!(
+                    "built-in UI file {name} failed to load — the remaining files were still \
+                     applied, so the screen shows the config minus this file"
+                ));
+            }
+        }
+        match first_failure {
+            Some(msg) => {
+                safe_expect!(self.inner.write(), "poisoned").last_error = Some(msg);
+                false
+            }
+            None => true,
+        }
     }
 
     /// Load and execute a user Lua config file, layered over the built-in.

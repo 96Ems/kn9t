@@ -217,8 +217,8 @@ fn bench_render_cache() {
         if msg.role == "assistant" && !msg.content.is_empty() {
             let md_lines = crate::markdown::render(&msg.content, &theme, width);
             let lines: Vec<Line<'static>> = md_lines.into_iter().collect();
-            let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools);
-            cache.set_message(idx, &msg.content, tool_info_hash, lines, vec![]);
+            let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools, &msg.thinking);
+            cache.set_message(idx, &msg.content, tool_info_hash, lines, vec![], vec![], vec![]);
         }
     }
 
@@ -227,8 +227,8 @@ fn bench_render_cache() {
         let mut lines: Vec<Line> = Vec::new();
         for (idx, msg) in transcript.messages().iter().enumerate() {
             if msg.role == "assistant" && !msg.content.is_empty() {
-                let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools);
-                if let Some((cached, _tool_infos)) =
+                let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools, &msg.thinking);
+                if let Some((cached, _tool_infos, _group_infos, _thinking_infos)) =
                     cache.get_message(idx, &msg.content, tool_info_hash)
                 {
                     for line in cached {
@@ -341,8 +341,8 @@ fn bench_cached_transcript_render() {
         if msg.role == "assistant" && !msg.content.is_empty() {
             let md_lines = crate::markdown::render(&msg.content, &theme, width);
             let lines: Vec<Line<'static>> = md_lines.into_iter().collect();
-            let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools);
-            cache.set_message(idx, &msg.content, tool_info_hash, lines, vec![]);
+            let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools, &msg.thinking);
+            cache.set_message(idx, &msg.content, tool_info_hash, lines, vec![], vec![], vec![]);
         }
     }
 
@@ -372,8 +372,8 @@ fn render_transcript_with_cache(
     for (idx, msg) in transcript.messages().iter().enumerate() {
         // Try cache first for assistant messages
         if msg.role == "assistant" && !msg.content.is_empty() {
-            let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools);
-            if let Some((cached, _tool_infos)) =
+            let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools, &msg.thinking);
+            if let Some((cached, _tool_infos, _group_infos, _thinking_infos)) =
                 cache.get_message(idx, &msg.content, tool_info_hash)
             {
                 // Role line

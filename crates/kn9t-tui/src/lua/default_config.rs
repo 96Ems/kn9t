@@ -14,6 +14,13 @@ use std::path::Path;
 
 /// The built-in UI files, compiled into the binary.
 /// Each tuple is (filename, content).
+///
+/// **This is the shipped default.** A fresh install renders these, seeded into
+/// `~/.kn9t/tui/`; there is no separate single-file fallback, so what the tests boot
+/// (`LuaRuntime::load_builtin`) and what a user sees are the same source. Two copies would
+/// drift, and the drift would be invisible — a test can be green against a default nobody
+/// renders. (It was, until PLAN §P7 L1: the catalogue and `default_tui.lua` disagreed and
+/// the test asserted the file that was not shipped.)
 pub const DEFAULT_TUI_FILES: &[(&str, &str)] = &[
     (
         "00_theme.lua",
@@ -49,9 +56,6 @@ pub const DEFAULT_TUI_FILES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Legacy single-file config for backwards compatibility.
-pub const DEFAULT_TUI_LUA: &str = include_str!("../../assets/default_tui.lua");
-
 /// Result of an explicit export request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportOutcome {
@@ -61,6 +65,32 @@ pub enum ExportOutcome {
     Exists,
     /// Failed with a message.
     Failed(String),
+}
+
+/// The whole built-in UI as one source string, for `--print-config`.
+///
+/// Concatenated with a delimiter naming each file, because the UI is a catalogue rather
+/// than a single file: printing eight files run together with no marker would read as one
+/// malformed script. For inspection only — the loader runs the files one at a time
+/// (`LuaRuntime::load_builtin`), so a syntax error is attributed to its own file.
+pub fn builtin_source() -> String {
+    let mut out = String::from(
+        "-- The built-in kn9t UI, concatenated for inspection.\n\
+         -- The loader runs these as separate files, in this order:\n",
+    );
+    for (name, _) in DEFAULT_TUI_FILES {
+        out.push_str(&format!("--   {name}\n"));
+    }
+    out.push_str("--\n-- To customise it, edit ~/.kn9t/tui/*.lua and re-run; changes hot-reload.\n\n");
+    for (name, content) in DEFAULT_TUI_FILES {
+        out.push_str(&format!(
+            "\n-- ═══════════════════════════════════════════════════════════════\n\
+             -- {name}\n\
+             -- ═══════════════════════════════════════════════════════════════\n\n"
+        ));
+        out.push_str(content);
+    }
+    out
 }
 
 /// Check if the tui/ directory is empty or missing.
@@ -119,10 +149,11 @@ pub fn ensure_tui_config(dir: &Path) -> Result<(), String> {
     }
 }
 
-/// Write the built-in config to `path` so the user can edit it.
+/// Print the whole built-in UI to `path`, for inspection.
 ///
-/// Refuses to clobber an existing file unless `force`, because an edited
-/// config is worth more than our default.
+/// The UI is a catalogue (`assets/tui/*.lua`), and this is a *rendering* of it, not the
+/// thing the loader runs — `--print-config` exists to read the default, not to edit it.
+/// Refuses to clobber an existing file unless `force`.
 pub fn export_config(path: &Path, force: bool) -> ExportOutcome {
     if path.exists() && !force {
         return ExportOutcome::Exists;
@@ -132,7 +163,7 @@ pub fn export_config(path: &Path, force: bool) -> ExportOutcome {
             return ExportOutcome::Failed(format!("could not create {}: {e}", parent.display()));
         }
     }
-    match std::fs::write(path, DEFAULT_TUI_LUA) {
+    match std::fs::write(path, builtin_source()) {
         Ok(()) => ExportOutcome::Written,
         Err(e) => ExportOutcome::Failed(format!("could not write {}: {e}", path.display())),
     }

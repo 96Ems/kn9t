@@ -35,6 +35,8 @@ api_key  = "env:OPENCODE_API_KEY"
 
 [provider.opencode-go.quirks]
 usage_in_stream = true
+# Chat has no reasoning-input form: DeepSeek 400s on a replayed `thinking` part.
+thinking_replay = "strip"
 
 [[model]]
 provider         = "opencode-go"

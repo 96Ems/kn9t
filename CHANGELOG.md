@@ -9,6 +9,202 @@ pointer current.
 
 ---
 
+## Session -- 2026-09-16f -- Reasoning: replayed where forbidden, silent where wanted
+
+**Next session starts here:** the **TUI reasoning display** is not started (the user is editing
+the TUI in parallel, which is why one `kn9t-tui` test is red — see below). Everything else here
+is implemented and green.
+
+### What shipped
+
+Three bugs, one live and two latent, all about reasoning:
+
+* **Replay (the live 400).** `kn9t-provider-openai`'s chat encoder emitted persisted
+  `Content::Thinking` as `{"type":"thinking"}` inside an OpenAI `content` array and ignored
+  `Quirks::thinking_replay` completely — the parameter was literally named `_quirks`. DeepSeek
+  behind OpenCode Go deserializes `content` against `text | image_url | file`, so it answered
+  `400 unknown variant 'thinking'` at `messages[6]`; because the block is persisted, that 400
+  repeated on **every** later turn and wedged the session. `encode_messages` now honours the
+  quirk. A reasoning-only turn that `strip` empties is not sent at all, rather than as
+  `content: []`.
+* **The default.** `thinking_replay` now defaults to `strip` in `kn9t-provider-core`: neither
+  wire format this crate speaks has a reasoning-input form. Chat has none; Responses' only form
+  is `reasoning.encrypted_content`, which R-OAI-060 deliberately does not request. `verbatim` is
+  the Anthropic **Messages** contract and is owned by the `kn9t-anthropic` plugin, so opting in
+  is explicit here — a LiteLLM gateway fronting Anthropic.
+* **Requesting reasoning.** It was hardcoded `Thinking::Off` in both turn paths, while the
+  encoder mapped `Off` to `reasoning_effort: "low"` instead of sending nothing — so reasoning
+  was silently *on* for `reasoning = "reasoning_effort"` providers and off everywhere else, and
+  the substitution is what produced the persisted blocks in the first place. `Thinking` now
+  travels on `ModelSpec` and defaults to `Effort(Medium)`; `[model] thinking` overrides it at
+  load, and `Off` omits the field.
+
+### Decisions
+
+* **`medium` as the default effort** — OpenAI documents it as the balance point and defaults its
+  own reasoning models to it.
+* **The effort lives on `ModelSpec`, not in quirks** — a desired effort is policy, not a wire
+  divergence (§8.2). `max_out` is the precedent: per-model policy the server reads at turn time.
+* **`thinking_style` and `thinking_replay` are not interchangeable.** The first gates *decoding*
+  (`reasoning_content` off the stream, so the TUI can show it); the second gates *replay*.
+  opencode-go keeps `thinking_style = "reasoning_content"` **and** sets `thinking_replay = "strip"`.
+
+### Tests
+
+`oai::thinking_replay_strip_drops_persisted_thinking`, `..._strip_drops_reasoning_only_turn`,
+`..._verbatim_keeps_the_block`, `oai::thinking_off_omits_reasoning_effort`,
+`oai::thinking_effort_maps_to_reasoning_effort`, `core::thinking_defaults_to_medium`,
+`core::model_spec_thinking_serde_default`. `cargo test --workspace` green apart from
+`kn9t-tui`'s `file_index::a_root_gitignore_contributes_plain_names`.
+
+### TUI: reasoning as a card, not inline prose
+
+The TUI had a collapsible thinking view that could never fire: `thinking::parse_content` looked
+for literal `<thinking>` tags in message content and no producer ever wrote them. Both paths
+mixed the two instead — `extract_message_content` pushed `WireContent::Thinking` into the same
+`text_parts` as the answer, and the reducer appended `ThinkingDelta` into the same live buffer
+as `TextDelta`.
+
+Reasoning is now its own card, mirroring `ToolCard`:
+
+* `Message.thinking: Vec<ThinkingCard>`, and `Transcript.live_thinking` is a buffer separate
+  from `live_delta`, so the scratchpad and the answer never render as one stream.
+* Drawn **above** the answer (it happened first): `✻ thinking …` with a spinner while the turn
+  is live, `▶ thinking (N lines)` once it commits, `▼` when opened.
+* Clicking a header toggles that card; Ctrl+E toggles them all. Header positions ride the
+  render cache (`CachedThinkingInfo`) exactly like tool cards, so a cached message stays
+  clickable.
+* `thinking.rs` lost the dead tag parser; `ThinkingState` and the index-based collapse store
+  are gone, replaced by a `collapsed` flag on each card.
+
+Found while testing: the first cut folded **both** the streamed reasoning and the persisted
+block from the appended message, so the same reasoning rendered twice. The persisted block
+wins; the stream is only a fallback.
+
+Tests: `thinking::*` (4), `streamed_then_persisted_reasoning_yields_one_card`,
+`streamed_reasoning_survives_a_message_without_it`, `thinking_delta_handled`.
+
+### Discovered bugs
+
+| # | severity | area | bug |
+|---|---|---|---|
+| C3 | high | kn9t-provider-openai | Chat encoder ignored `Quirks::thinking_replay` and sent an Anthropic `thinking` content part — a 400 on DeepSeek for every turn after the first (the session-wedging `messages[6]` failure). |
+| C4 | medium | kn9t-server | `Thinking::Off` was hardcoded in both turn paths while the encoder substituted `reasoning_effort: "low"`, so the request asked for reasoning the caller had turned off. |
+| C5 | low | kn9t-tui | `ThinkingDelta` and `TextDelta` shared one live buffer while the renderer looked for `<thinking>` tags nothing ever wrote — reasoning and answer rendered as one stream, and the collapsible view was inert. |
+
+---
+
+## Session -- 2026-09-16e -- P7-L1: the chrome, implemented and verified
+
+**Next session starts here:** P7-L1 is done and green (see the register in `TRACKING.md` for the three
+recorded deferrals). **P7-L2** is next: one Rust file index feeding the explorer tree, the centre-top
+viewer and the `@` dropdown. Before touching the layout, read the deferral note about the
+`SessionView` refactor — the tab bar switches sessions but does not multiplex them, and L2's explorer
+column changes the same `render_ui` the tabs live in.
+
+### What shipped
+
+The whole L1 chrome, in one pass, against a new deterministic harness:
+
+* **A harness instead of screenshots.** `crates/kn9t-tui/tests/chrome_layout.rs` renders the built-in
+  UI into a `TestBackend` and asserts on the frame as text — no server, no session, no MCP. This was
+  built because the `tui-control` MCP wedged mid-session (its Puppeteer frame detached when the
+  process it was tracking was killed), and it turned out to be the better tool anyway: a chrome
+  regression is a diff, not a JPEG someone has to remember. It also let the *styles* be asserted
+  (`row_has_bg`), which is the half that actually breaks — `lightgreen` once resolved to `None` and
+  the context gauge silently lost its warn/danger signal.
+* **The palette**, from the mascot: violet accent, amber alert, silver chrome, green/red reserved for
+  diffs. Two new slots were required by the design and would have been guessed wrong otherwise:
+  `ink` (text *on* a solid block — silver on violet is unreadable) and `panel_bg` (overlay surfaces).
+* **Session tabs + breadcrumb**, replacing the single header row, and the session column deleted:
+  sessions are the tabs now, so listing them in a column too was the same information twice.
+* **Tool cards grouped per turn**: a rollup header (`▸ ✓ 3 tools  bash, read, edit`), one compact line
+  per call with a `+1 -1` badge for edits, and one click on the header expands the turn.
+* **A bordered prompt**, **a segmented status bar**, **`recent calls` removed**, **overlays themed and
+  framed**.
+
+### Two things the harness caught that reading would not have
+
+**The palette order is load-bearing and was wrong in an existing test.** `install_environment` must be
+published *before* the config runs, so `kn9t.theme.<slot>` is non-nil while `default_tui.lua` builds
+its `C` table; otherwise every `T.x or "fallback"` takes the fallback. `booted()` in
+`lua_api_contract.rs` had the calls reversed, so that suite had been certifying ANSI fallbacks the TUI
+never draws. Fixed there as well, with the reason in the comment.
+
+**`App` is the only source of a frame's state.** Writing a synthetic `StateSnapshot` into the runtime
+before the draw does nothing: `render_chat` re-collects it from the app every frame, so the first
+version of the harness rendered a perfectly plausible frame of an empty session. The harness comment
+says so, because the wrong version looked right.
+
+### Deliberate non-changes
+
+`unit_theme`'s four assertions on literal colours (`fg == Color::White`) were rewritten as invariants
+(mode, and that chrome/accent/alert stay distinct). A test that breaks whenever the palette moves is
+a change detector, not a test — but it was also the only thing noticing a palette edit, so the
+replacement had to assert something real rather than nothing.
+
+---
+
+## Session -- 2026-09-16d -- TUI polish: a design grill, 26 decisions, and no code yet
+
+**Next session starts here:** PLAN §P7 is the agreed design. Start with **P7-L1** (chrome) and
+specifically the palette: `crates/kn9t-tui/src/theme.rs` (`Theme::dark`/`light`) + the `C` table in
+`assets/default_tui.lua`, violet/amber/silver per D16. Take a screenshot before and after with the
+`tui-control` MCP against `target/debug/kn9t.exe`. Before any visual verification, reset the
+personal layered config — `~/.kn9t/tui/*.lua` is loaded after the embedded default and overrides
+it wholesale.
+
+### Why there is no code in this session
+
+The work requested was "polish the TUI, make it IDE-like", which is a direction, not a
+specification. Everything downstream (panels, tabs, keybinds, palette) depends on what "IDE-like"
+means, so the session ran a 26-question design grill instead of writing code, and ended with the
+decisions written into `PLAN.md` §P7. Implementing first would have produced chrome that the next
+five decisions invalidate.
+
+### Decisions that are contractual, not stylistic
+
+`PLAN.md` §P7 carries the full table. The four that change an existing rule, and therefore need
+recording rather than silent adoption:
+
+* **D19 (`@path` is text only) contradicts R-TUI-100**, which says in MUST terms that `@path`
+  embeds the file content. R-TUI-100 must be rewritten, with this entry as the record. The
+  alternative was rejected on token cost: the agent already has `read`, and an embedding TUI
+  cannot decide what is worth attaching.
+* **D17 (native mascot view) contradicts AGENTS §11.1** ("Rust renders, Lua decides"), which
+  wants content in Lua. Accepted deliberately: the mascot is a binary asset, and
+  `Fuzzbit/src/ui.rs:416` is the working precedent for the `Canvas`+`HalfBlock` mechanism. The cost
+  is that `NATIVE_VIEWS` gains one decorative entry and the art cannot be changed without a rebuild.
+* **D3/D6 (native file explorer + file index in the TUI) sits next to AGENTS §14**, which is
+  emphatic that the diff review is a plugin and that the TUI holds no per-plugin code. The
+  dividing line now stated in the plan — *a view over host state is native; a view over external
+  data is a plugin* — is what to apply next time, rather than re-running this argument.
+* **D9/D10 (terminal) must not bypass ADR-0006.** A persistent shell at the plugin, reached
+  through the server, keeps the policy seam and the session cwd. A TUI-local spawn was rejected
+  outright: it would make a destructive command unapprovable.
+
+### Two facts confirmed while designing
+
+* **Session tabs need no lease change.** The lease is keyed per session
+  (`crates/kn9t-server/src/lease.rs`, `HashMap<String, Lease>`), so N open tabs can each hold
+  their own session's write lease. What tabs do need is one SSE stream per open session, and an
+  `App` that stops assuming a single transcript — the largest non-visual item in the plan.
+* **There is no `@` mention code today.** `R-TUI-100` has no test and `slash.rs` only implements
+  the `/` dropdown; the file finder is greenfield. This was checked rather than assumed, because
+  the requirement reads as though it were already done.
+
+### A wrong diagnosis, corrected in-session
+
+The TUI's config was first reported here as mojibake-corrupted (cp1252 double-encode), on the
+evidence of `Get-Content` output. Byte-level inspection of `~/.kn9t/tui/00_theme.lua` shows the
+correct UTF-8 em-dash (`e2 80 94`): the corruption was an artefact of PowerShell 5.1's console
+rendering, not the file. **AGENTS §8.2's warning is about writing with PowerShell; reading with it
+also mangles what you see, and a mis-read there can lead to "repairing" a file that is already
+correct.** The only real finding stands: the layered personal config will mask the new default
+until it is reset.
+
+---
+
 ## Session -- 2026-09-16c -- `/v1/messages` by reuse, and three bugs stage 09's fixtures hid
 
 **Next session starts here:** C2 is the last known-wrong thing in the config layer. `Quirks::merge`

@@ -13,6 +13,7 @@ pub mod app;
 mod bench;
 pub mod client;
 pub mod lua;
+pub mod mention;
 pub mod reducer;
 
 #[cfg(test)]
@@ -64,6 +65,7 @@ mod tui {
 pub mod command_palette;
 pub mod config;
 pub mod event;
+pub mod file_index;
 pub mod hyperlinks;
 pub mod input_history;
 pub mod keybind;

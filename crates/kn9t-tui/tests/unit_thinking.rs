@@ -1,68 +1,49 @@
-//! Unit tests for thinking — extracted from src/thinking.rs
+//! Unit tests for the reasoning card renderer.
 #![allow(clippy::unwrap_used)]
 
-use kn9t_tui::thinking::{parse_content, ContentSegment, ThinkingState};
+use kn9t_tui::theme::Theme;
+use kn9t_tui::thinking::{render_content, render_header};
+use ratatui::text::Line;
 
-#[test]
-fn test_parse_no_thinking() {
-    let segments = parse_content("Hello world");
-    assert_eq!(segments.len(), 1);
-    assert!(matches!(&segments[0], ContentSegment::Text(t) if t == "Hello world"));
+fn text_of(line: &Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
 #[test]
-fn test_parse_simple_thinking() {
-    let content = "Before <thinking>I'm thinking</thinking> After";
-    let segments = parse_content(content);
-    assert_eq!(segments.len(), 3);
-    assert!(matches!(&segments[0], ContentSegment::Text(t) if t == "Before "));
+fn live_header_spins_and_states_no_size() {
+    let text = text_of(&render_header(false, 42, true, &Theme::default()));
+    assert!(text.contains('✻'), "a live card needs a spinner, got {text:?}");
+    assert!(text.contains("thinking"), "got {text:?}");
     assert!(
-        matches!(&segments[1], ContentSegment::Thinking { tag, content } 
-        if tag == "thinking" && content == "I'm thinking")
+        !text.contains("lines"),
+        "a still-growing card cannot state a size: {text:?}"
     );
-    assert!(matches!(&segments[2], ContentSegment::Text(t) if t == " After"));
 }
 
 #[test]
-fn test_parse_ant_thinking() {
-    let content = "<antThinking>reasoning here</antThinking>";
-    let segments = parse_content(content);
-    assert_eq!(segments.len(), 1);
-    assert!(matches!(&segments[0], ContentSegment::Thinking { tag, .. } 
-        if tag == "antThinking"));
+fn collapsed_header_is_a_disclosure_with_a_size() {
+    let text = text_of(&render_header(true, 7, false, &Theme::default()));
+    assert!(text.contains('▶'), "got {text:?}");
+    assert!(text.contains("thinking"), "got {text:?}");
+    assert!(text.contains("(7 lines)"), "got {text:?}");
 }
 
 #[test]
-fn test_parse_multiple_blocks() {
-    let content = "A <thinking>first</thinking> B <reasoning>second</reasoning> C";
-    let segments = parse_content(content);
-    assert_eq!(segments.len(), 5);
+fn expanded_header_points_down() {
+    let text = text_of(&render_header(false, 7, false, &Theme::default()));
+    assert!(text.contains('▼'), "got {text:?}");
 }
 
 #[test]
-fn test_parse_unclosed_tag() {
-    let content = "Text <thinking>unclosed";
-    let segments = parse_content(content);
-    // Should treat unclosed tag as text
-    assert_eq!(segments.len(), 1);
-}
-
-#[test]
-fn test_thinking_state() {
-    let mut state = ThinkingState::new();
-    assert!(!state.is_collapsed(0));
-    state.toggle(0);
-    assert!(state.is_collapsed(0));
-    state.toggle(0);
-    assert!(!state.is_collapsed(0));
-}
-
-#[test]
-fn test_collapse_all() {
-    let mut state = ThinkingState::new();
-    state.collapse_all(3);
-    assert!(state.is_collapsed(0));
-    assert!(state.is_collapsed(1));
-    assert!(state.is_collapsed(2));
-    assert!(!state.is_collapsed(3));
+fn content_carries_a_gutter_and_keeps_line_count() {
+    let lines = render_content("first\nsecond", &Theme::default(), 40);
+    assert_eq!(lines.len(), 2);
+    for line in &lines {
+        assert!(
+            text_of(line).starts_with("│ "),
+            "every reasoning line carries the gutter"
+        );
+    }
+    assert!(text_of(&lines[0]).contains("first"));
+    assert!(text_of(&lines[1]).contains("second"));
 }

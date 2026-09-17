@@ -1,62 +1,10 @@
--- 30_sidebar_left.lua — session list sidebar.
+-- 30_sidebar_left.lua — the file explorer column.
 --
--- Generic: no plugin dependencies. Shows only sessions.
-
-local C = TUI.color
-
-local function session_row_click(id)
-    return function(x, y, btn)
-        kn9t.action("switch_session", id)
-        return true
-    end
-end
-
-local registered_session_clicks = {}
-
-local function session_list(inner_w, height)
-    local sessions = (kn9t.state and kn9t.state.sessions) or {}
-    if #sessions == 0 then
-        return {
-            type = "text",
-            content = "(no sessions yet)",
-            fg = C.dim,
-            size = { flex = 1 },
-        }
-    end
-
-    local items = {}
-    for i, s in ipairs(sessions) do
-        local id = "session_row_" .. s.id
-        if not registered_session_clicks[id] then
-            kn9t.on_click(id, session_row_click(s.id))
-            registered_session_clicks[id] = true
-        end
-        local name = s.name or s.id
-        if #name > inner_w - 2 then name = name:sub(1, inner_w - 3) .. "~" end
-        table.insert(items, {
-            id = id,
-            type = "text",
-            content = (s.is_current and "> " or "  ") .. name,
-            fg = s.is_current and C.accent or C.value,
-        })
-    end
-
-    return {
-        type = "split",
-        direction = "vertical",
-        size = { flex = 1 },
-        children = items,
-    }
-end
-
-function TUI.build_sidebar_left(height)
-    local inner_w = 32
-
-    return {
-        type = "box",
-        border = "plain",
-        border_fg = C.dim,
-        title = " [F1] Sessions ",
-        child = session_list(inner_w, height),
-    }
-end
+-- **Reserved for PLAN §P7 L2.** It is deliberately absent rather than filled with a
+-- placeholder: sessions are the tab bar now (20_header.lua), so a session list here would
+-- be the same information twice, and an empty frame would look like a bug.
+--
+-- L2 adds `TUI.build_explorer(width, height)` here, fed by the same Rust file index that
+-- backs the `@` mention dropdown and the centre-top viewer (one walk, three surfaces —
+-- PLAN §P7 D6). `90_render.lua` already reserves the column, gated on
+-- `TUI.EXPLORER_VISIBLE`.

@@ -36,6 +36,7 @@ fn test_transcript_push_messages() {
         role: "user".into(),
         content: "Hello".into(),
         tools: Vec::new(),
+        thinking: Vec::new(),
         image_count: 0,
     });
 
@@ -80,6 +81,7 @@ fn test_transcript_ensure_assistant_message() {
         role: "user".into(),
         content: "Hi".into(),
         tools: Vec::new(),
+        thinking: Vec::new(),
         image_count: 0,
     });
     transcript.ensure_assistant_message();

@@ -20,7 +20,9 @@ use kn9t_tui::event::{spawn_input_thread, spawn_tick_thread, EventLoop};
 ///
 /// Returns `Some(exit_code)` when the process should stop here.
 fn handle_cli_args() -> Option<i32> {
-    use kn9t_tui::lua::default_config::{export_config, ExportOutcome, DEFAULT_TUI_LUA};
+    use kn9t_tui::lua::default_config::{
+        builtin_source, export_config, ExportOutcome,
+    };
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let has = |name: &str| args.iter().any(|a| a == name);
@@ -47,7 +49,7 @@ fn handle_cli_args() -> Option<i32> {
     }
 
     if has("--print-config") {
-        print!("{DEFAULT_TUI_LUA}");
+        print!("{}", builtin_source());
         return Some(0);
     }
 

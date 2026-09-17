@@ -90,37 +90,6 @@ local function section_transcript(inner_w)
     }
 end
 
-local function section_recent_tools(inner_w, max_rows)
-    local tools = kn9t.state and kn9t.state.recent_tools or {}
-    local recent = {}
-
-    for i = 1, math.min(#tools, max_rows) do
-        local t = tools[i]
-        local mark = "."
-        if t.status == "running" then mark = ">"
-        elseif t.status == "done" then mark = "+"
-        elseif t.status == "error" then mark = "!"
-        end
-        local name = t.name or "?"
-        if #name > inner_w - 4 then name = name:sub(1, inner_w - 5) .. "~" end
-        table.insert(recent, mark .. " " .. name)
-    end
-
-    local content = #recent > 0 and table.concat(recent, "\n") or "(none yet)"
-    return {
-        type = "box",
-        title = " recent calls ",
-        border = true,
-        size = { flex = 1 },
-        child = {
-            type = "text",
-            content = content,
-            fg = #recent > 0 and C.value or C.dim,
-            wrap = false,
-        },
-    }
-end
-
 function TUI.build_sidebar_right(width, height)
     local ctx     = kn9t.context or {}
     local session = kn9t.state and kn9t.state.session or {}
@@ -172,11 +141,14 @@ function TUI.build_sidebar_right(width, height)
     for _, s in ipairs(head) do used = used + (s.size and s.size.fixed or 0) end
     for _, s in ipairs(foot) do used = used + (s.size and s.size.fixed or 0) end
 
+    -- Whatever is left over belongs to the plugins, not to a list the transcript already
+    -- shows. This used to be a "recent calls" panel, which repeated the tool names the
+    -- conversation's own cards carry, one column over (PLAN §P7 D7).
     local slots = math.max(1, height - 2 - used)
 
     local children = {}
     for _, s in ipairs(head) do table.insert(children, s) end
-    table.insert(children, section_recent_tools(inner_w, slots))
+    table.insert(children, { type = "spacer", size = { fixed = slots } })
     for _, s in ipairs(foot) do table.insert(children, s) end
 
     return {

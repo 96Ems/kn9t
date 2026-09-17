@@ -59,6 +59,7 @@ fn make_model(_base_url: &str, model_id: &str) -> ModelSpec {
         api_id: model_id.to_owned(),
         ctx_window: 200_000,
         max_out: 512,
+        thinking: kn9t_core::Thinking::Off,
         price: Price {
             input: 800000,
             output: 4000000,

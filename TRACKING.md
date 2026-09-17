@@ -10,6 +10,57 @@ Legend: `☐` pending · `▣` in progress · `☑` done (acceptance test passin
 
 ## Current position
 
+**2026-09-16f (reasoning: what we ask for vs what we replay):** a live 400 on DeepSeek via
+OpenCode Go (`unknown variant 'thinking'`, `messages[6]`) root-caused to `kn9t-provider-openai`:
+the chat encoder ignored `Quirks::thinking_replay` and replayed persisted thinking as an
+Anthropic content part — and since the block is persisted, every later turn repeated the 400.
+Fixed, along with the two policy bugs beside it:
+
+| what | where | test |
+|---|---|---|
+| `encode_messages` honours `thinking_replay`: `strip` drops the block (a reasoning-only turn is not sent at all), `verbatim` keeps it | `crates/kn9t-provider-openai/src/{encode,responses}.rs` | `oai::thinking_replay_*` (3) |
+| default `thinking_replay` = `strip` — no wire format this crate speaks has a reasoning-input form | `crates/kn9t-provider-core/src/quirks.rs` | `oai::thinking_*` |
+| reasoning is requested by default: `Thinking` travels on `ModelSpec` (`Effort(Medium)`), `[model] thinking = "off"\|"low"\|"medium"\|"high"` overrides it, and `Off` omits the field instead of substituting `low` | `crates/kn9t-core/src/model.rs`, `crates/kn9t-server/src/{config,turn}.rs` | `core::thinking_defaults_to_medium`, `core::model_spec_thinking_serde_default`, `oai::thinking_off_omits_reasoning_effort` |
+| reasoning renders as its own card above the answer, spinner while live, click or Ctrl+E to toggle; `ThinkingCard` mirrors `ToolCard` and rides the render cache | `crates/kn9t-tui/src/{thinking,message_handler,reducer,app,render_cache}.rs`, `src/ui/render.rs` | `thinking::*` (4), `tui::streamed_then_persisted_reasoning_yields_one_card`, `tui::streamed_reasoning_survives_a_message_without_it` |
+
+`cargo test --workspace` green **except** `kn9t-tui`'s
+`file_index::a_root_gitignore_contributes_plain_names`, which is the user's in-flight TUI work.
+
+Open next: the **TUI reasoning display** — show thinking decoupled from standard output. The
+render path already has a collapsible thinking view (`ui/render.rs`, `thinking::parse_content`),
+but it parses `<thinking>` tags out of content, while deltas now arrive as `ThinkingDelta`; check
+how the reducer routes them before adding anything.
+
+---
+
+## Position — 2026-09-16d
+
+**2026-09-16d (TUI polish — design agreed, no code yet):** the request was "polish the TUI,
+make it IDE-like", which is a direction, not a specification. So the session ran a 26-question
+design grill instead of writing code, and ended with the decisions in `PLAN.md` §P7: VS Code
+chrome whose "editor" is the conversation, session tabs, a native file explorer + centre-top
+viewer + `@` finder, a persistent-shell terminal reached through the server, tool cards grouped
+per turn, a violet/amber/silver palette, and an animated pixel-art mascot.
+
+| what | where |
+|---|---|
+| the 21 decisions (D1–D21) | `PLAN.md` §P7 |
+| the four items that change an existing rule (R-TUI-100, AGENTS §11.1, §14, ADR-0006) | `PLAN.md` §P7 "items to record" |
+| the reasoning, and a wrong diagnosis corrected in-session | `CHANGELOG.md` 2026-09-16d |
+
+Confirmed while designing, rather than assumed: the lease is keyed **per session**
+(`crates/kn9t-server/src/lease.rs`), so session tabs need no lease change — only one SSE stream
+per open session, and an `App` that stops assuming a single transcript. And `@` mentions have
+**no implementation today** (R-TUI-100 has no test; `slash.rs` only implements the `/` dropdown).
+
+Open next: **P7-L1 (chrome)**, starting with the palette in `theme.rs` + the `C` table of
+`assets/default_tui.lua`. Reset `~/.kn9t/tui/*.lua` first — they load *after* the embedded
+default and override it wholesale.
+
+---
+
+## Position — 2026-09-16c
+
 **2026-09-16c (`/v1/messages` by reuse, and three latent bugs it exposed):** exactly **one**
 OpenCode Go model requires `/v1/messages` and works — `minimax-m2.7`. Every other
 chat-completions failure also fails in Messages (`kimi-k2.5`, `glm-5`, `qwen3.5-plus`,
@@ -33,7 +84,7 @@ discovered models answer 400/401 on every format, so the picker still offers dea
 
 ---
 
-## Previous position
+## Position — 2026-09-16b
 
 **2026-09-16b (OpenCode Go + session header quirk, `/v1/responses`):** OpenCode Go rejects every request that omits
 a per-conversation `x-opencode-session` (`400 MissingSessionID`), which made the gateway
@@ -272,6 +323,79 @@ The P1/96E batch and later live-breakage fixes are tracked here (they are not sp
 
 ---
 
+## P7 register (TUI polish — `PLAN.md` §P7)
+
+These are not spec requirements (except where a row says so), so they have no per-requirement
+test row. A lot is `☑` only when its acceptance test and its before/after screenshot exist.
+
+| lot | subject | status |
+|---|---|---|
+| L1 | chrome: palette (violet/amber/silver), transcript hierarchy, tool cards grouped per turn, bordered input, segmented status bar, two-row header + session tabs, right panel without `recent calls`, overlays | ▣ **code done + verified**, three deferrals below |
+| L2 | explorer + viewer + `@` finder (one Rust file index, three surfaces) | ▣ **index done**; tree/viewer/`@` not started |
+| L3 | terminal: persistent shell in `kn9t-tools`, server exec endpoint, private-by-default + promotable | ☐ |
+| L4 | animated pixel-art mascot (native view, Fuzzbit mechanism) | ☐ |
+
+**L2 what shipped so far:** `crates/kn9t-tui/src/file_index.rs` — the single index (D6) that the tree,
+the viewer and the `@` dropdown will all read. 13 tests. Built for the hot path (it re-searches on
+every keystroke), with the three things a naive version gets wrong:
+
+| property | why |
+|---|---|
+| one arena (`paths` + an ASCII-lowercased mirror `lower`) with `(u32,u32)` ranges | 100k paths = 2 allocations, and scoring walks memory in order. A `String` per file per search was the dominant cost |
+| the lowercase mirror is built **at index time** | `to_lowercase()` per file per keystroke was the invisible killer; ASCII-only so the two buffers stay byte-aligned and share one range |
+| top-k bounded heap, not a full sort | O(n log k) per keystroke instead of O(n log n); one allocation of size `limit` |
+| frecency (hits + last-used tick) | ranks what you actually open, like VS Code's recently-opened list but applied to every result |
+| subsequence match + contiguous-run reward + gap penalty | `ktsrc` finds `crates/kn9t-tui/src`; `module1999` ranks above `module199` |
+
+Reference for the design: <https://github.com/dmtrKovalenko/fff> (resident index, one walk reused,
+frecency, arena storage). The *crate* is **not** a dependency — see the open decision below.
+
+**Open decision, raised not taken:** `fff-search` is an MIT Rust crate that does all of the above
+plus git-aware results, a background watcher and SIMD matching. Adopting it means a new dependency
+(AGENTS §8 requires a DESIGN §15 justification + changelog note) and replacing `file_index.rs`.
+The hand-rolled index exists because it needs no new dependency and covers what the three surfaces
+need; the crate would be the right call if the watcher/git-status/content-grep features are wanted.
+Whoever picks this up should ask rather than assume.
+
+**L1 what shipped** (`crates/kn9t-tui`, all verified):
+
+| change | where | test |
+|---|---|---|
+| mascot palette + `ink` slot (text on a colour block) + `panel_bg` slot (overlay surfaces) | `src/theme.rs` | `unit_theme` 16, rewritten off literals |
+| session tabs + breadcrumb `cwd ▸ title ▸ model` replace the one-row header | `assets/default_tui.lua` | `chrome_layout::header_is_tab_bar_over_breadcrumb` |
+| `cwd` published to Lua (`kn9t.state.session.cwd`) | `src/lua/state.rs` | (part of the above) |
+| segmented status bar, context chip as a solid block | `assets/default_tui.lua` | `chrome_layout::status_bar_is_segmented` |
+| `recent calls` dropped; leftover space is a spacer | `assets/default_tui.lua` | `chrome_layout::right_panel_drops_recent_calls` |
+| session column removed (sessions are tabs) | `assets/default_tui.lua` | `chrome_layout::there_is_no_session_column` |
+| bordered prompt, cursor scrolling, `INPUT_CHROME_COLS` shared with the height math | `src/ui/render.rs`, `src/ui/layout.rs` | `chrome_layout::input_is_a_boxed_prompt`, `tiny_input_falls_back_to_a_bare_prompt` |
+| tool cards grouped per turn: rollup header, one compact line per call, diff badge, group toggle | `src/ui/render.rs`, `src/app.rs`, `src/render_cache.rs` | `chrome_layout::a_turn_groups_its_tool_calls` |
+| overlays themed (86 hardcoded `Color::Black` cells) + rounded frame | `src/ui/render.rs` | `chrome_layout::overlays_are_themed_and_framed` |
+| render harness: built-in UI → `TestBackend` → text, no server needed | `tests/chrome_layout.rs` | 9 tests |
+
+**L1 deferrals, recorded rather than hidden:**
+
+1. **The tab bar switches, it does not multiplex.** Tabs read the session cache and call
+   `switch_session`; one session is live at a time (one SSE stream). N concurrent streams need the
+   `SessionView` refactor, which is the plan's largest non-visual item and was not started.
+2. **No per-turn duration in the group header.** `ToolCard` carries no timing, and a fabricated
+   `· 1.2s` was refused. Needs `started_at`/`finished_at` threaded from the SSE handler.
+3. **Overlays are themed and framed but not repositioned.** The VS Code positions (quick-open at
+   the top, full-screen help) are not done; the pickers are still centred.
+
+Also: the verification used a **renamed-aside** personal config
+(`~/.kn9t/tui` → `~/.kn9t/tui.disabled-20260916`), not a `kn9t tui reset`. The files are intact;
+restoring is a `Rename-Item` back.
+
+Spec work that must land with the matching lot, not after it:
+
+- **R-TUI-100 rewrite** — `@path` is text only (D19); the CHANGELOG 2026-09-16d entry is the record.
+- **New requirements**: session tabs · `explorer` / `viewer` native views · `@` finder ·
+  terminal exec endpoint · keybinds `Ctrl+Tab`, `Ctrl+W`, `Ctrl+J`.
+- **DESIGN note**: the native-vs-plugin dividing line (AGENTS §14) — *a view over host state is
+  native; a view over external data is a plugin*.
+
+---
+
 ## Overall progress
 
 | stage | crate(s) | reqs done / total | gate | status |
@@ -282,7 +406,7 @@ The P1/96E batch and later live-breakage fixes are tracked here (they are not sp
 | 04 | kn9t-store | 18 / 18 | G2 | ☑ |
 | 05 | kn9t-provider-core, -openai | 25 / 25 | R-PCORE/OAI/NBED-900 | ☑ |
 | 06 | kn9t-server | 16 / 16 | R-SRV-900 | ☑ (+R-SRV-CFG-100/110 config hot-reload, +R-SRV-CFG-030 discover) |
-| 07 | kn9t-tui | 2 / 27 | G3 | ▣ (most reqs have no test) |
+| 07 | kn9t-tui | 2 / 27 | G3 | ▣ (most reqs have no test) · P7 polish epic in progress (`PLAN.md` §P7) |
 | 08 | kn9t-plugin | 13 / 13 | R-PLUG-900 | ☑ |
 | 08b | kn9t-plugin-sdk, kn9t-plugin (v2), internal-plugins/kn9t-tools | 12 / 12 | R-PLUG2-900 | ☑ |
 | 09 | plugins/kn9t-custom-provider (external), kn9t-anthropic (bundled), RemoteProvider | 17 / 17 | R-CP/ANTH-900 | ☑ |

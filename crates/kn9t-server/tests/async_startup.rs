@@ -76,6 +76,7 @@ fn create_session_ok_when_ready() {
         api_id: "model".into(),
         ctx_window: 1000,
         max_out: 500,
+        thinking: kn9t_core::Thinking::Off,
         price: Price {
             input: 0,
             output: 0,

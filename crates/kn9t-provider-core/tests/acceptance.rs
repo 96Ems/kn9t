@@ -324,6 +324,7 @@ fn pcore_model_prices_required() {
         api_id: "gpt-4o".into(),
         ctx_window: 128_000,
         max_out: 4096,
+        thinking: kn9t_core::Thinking::Off,
         price: Price {
             input: 2500000,
             output: 10000000,

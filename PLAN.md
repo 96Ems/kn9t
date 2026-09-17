@@ -504,3 +504,120 @@ Total: ~5h
 | ureq 4KB buffer → max delay = time to fill buffer | Low | SSE lines short; < 5ms WAN |
 | `with_retry` retries after cancel | Medium | Add cancel check in retry loop (P6-C) |
 | Cancel listener thread leak if tool finishes first | Low | Thread exits on next poll (10ms) |
+
+---
+
+## P7 — TUI polish, VS Code-like (design-first)
+
+The TUI's "editor" is the **conversation** — transcript, tool calls, thinking. The goal is to
+give it the chrome and the navigation of an IDE without turning it into an editor. No file
+editing, no LSP, no editor pane: an IDE-shaped client for an agent.
+
+The decisions below come from a 26-question design grill (2026-09-16). They are contractual
+in the same sense as DESIGN's decisions: they were resolved against each other, so changing
+one without re-running the pair it was traded against will produce a worse UI. Do not
+re-litigate one silently.
+
+### P7 decisions
+
+| # | subject | decision |
+|---|---|---|
+| D1 | mental model | VS Code chrome; centre pane = the conversation |
+| D2 | centre tabs | tabs = **open sessions** (not views) |
+| D3 | left panel | **file** explorer — sessions are tabs, so they are not duplicated here |
+| D4 | file action | click = read-only viewer, `m` = insert `@path`, `d` = diff vs HEAD |
+| D5 | viewer placement | split of the centre column, **stacked above** the transcript (same mechanism as a `placement="main"` plugin view) |
+| D6 | file index owner | **the TUI, in Rust** — one index feeds tree + viewer + `@` dropdown |
+| D7 | right panel | context/usage/transcript as today; **`recent calls` removed**; remaining space belongs to plugin views |
+| D8 | bottom panel | an interactive **terminal**, but **no PTY** |
+| D9 | terminal execution | a **persistent shell** inside the `kn9t-tools` plugin (`-Command -` + stdin + end-of-command sentinel); commands reach it **through the server**, so the policy seam (ADR-0006) and the session cwd still apply |
+| D10 | terminal visibility | **private by default** (transient events only, never in the log); `a` promotes the current exec to a durable tool call/result the agent sees |
+| D11 | tool cards | **grouped per turn**: header `▸ 4 tools · 1.2s`, plus one compact line per call; clicking the header expands all, and each line still expands alone |
+| D12 | input | **bordered box**, Copilot-Chat shaped: mode + model in the border, actions at the right, context gauge beneath |
+| D13 | status bar | **coloured segments** (left: git/phase/model · right: ctx/cost/tok-s/contextual help) |
+| D14 | top of centre | **two rows**: session tab bar + breadcrumb `cwd ▸ session ▸ model` |
+| D15 | where the style lives | the **embedded default** (`assets/default_tui.lua` + native views); the personal layered config is reset and then re-added only where it deviates |
+| D16 | palette | **violet = accent · amber = alert · silver = chrome**; green/red reserved for diffs. Derived from the mascot; max 3 meaningful colours |
+| D17 | mascot | **native Rust view**, pixel art converted from the mascot PNG, **fully animated** in the Fuzzbit style (`Canvas` + `Marker::HalfBlock` + `Points`, colours grouped in a `BTreeMap` so draw order is deterministic — see `C:\_ddm\projects\Fuzzbit\src\ui.rs:416`) |
+| D18 | overlays | one visual grammar everywhere (rounded box, title, result count, shortcut footer, fuzzy-match highlighting) + VS Code positions: quick-open at the top, model/session pickers centred, help full-screen |
+| D19 | `@` mentions | **text only**: the TUI inserts `@path`, the agent reads the file with the `read` tool. Deliberately overrides R-TUI-100 |
+| D20 | order | chrome → explorer → terminal → mascot |
+| D21 | tracking | spec requirements + acceptance tests for everything that touches a contract; a 96E-style issue register in `TRACKING.md` for the purely visual |
+
+Two facts confirmed while designing, worth not re-deriving:
+
+* The lease is keyed **per session** (`crates/kn9t-server/src/lease.rs` — `HashMap<String, Lease>`),
+  so several open tabs can each hold their own session's write lease. Session tabs need no
+  change to the lease model; they need one SSE stream per open session.
+* `~/.kn9t/tui/*.lua` are loaded **after** the embedded default, so they override it wholesale.
+  Verification of every lot in this plan must start from a reset personal config.
+
+### P7 items to record (do not discover these in the middle)
+
+1. **R-TUI-100 is a MUST** and says `@path` must *embed the file content*. D19 contradicts it.
+   Rewrite the requirement and note the change in `CHANGELOG.md`; otherwise the next agent
+   implements the embedding.
+2. **AGENTS §11.1** says Lua owns content. D17 puts the mascot in a native view. Record the
+   reason (the mascot is a binary asset, and `Fuzzbit/src/ui.rs` is the working precedent) and
+   accept that `NATIVE_VIEWS` grows by one decorative entry.
+3. **AGENTS §14** says the diff review is a plugin and the TUI must hold no per-plugin code.
+   D6/D3 add a native file explorer. Record the **dividing line** so this is not re-litigated:
+   *a view over host state → native view; a view over external data → plugin.*
+4. New spec requirements to write before the matching code: session tabs, the `explorer` and
+   `viewer` native views, the `@` finder, the terminal-exec endpoint, the R-TUI-100 rewrite,
+   and the new keybinds (`Ctrl+Tab`, `Ctrl+W`, `Ctrl+J`).
+
+### P7 lots
+
+Each lot leaves the TUI usable. Every lot ends with the same verification: `cargo test
+--workspace`, `cargo clippy --workspace --all-targets`, `scripts/check-gi1.sh`, plus a
+before/after screenshot pair taken through the `tui-control` MCP against `target/debug/kn9t.exe`
+(the installed `~/.kn9t/kn9t.exe` is stale and must not be used for verification).
+
+#### P7-L1: chrome (the visible polish)
+
+Palette from D16 applied in `theme.rs` + the Lua palette, then, in this order, each with its
+own screenshot: transcript hierarchy (gutter, spacing, role labels) → tool cards grouped per
+turn (D11) → bordered input (D12) → segmented status bar (D13) → two-row header with session
+tabs + breadcrumb (D14) → right panel without `recent calls` (D7) → overlays (D18).
+
+**Accept:** `cargo test -p kn9t-tui` green, `lua_api_contract` still green, and a screenshot
+per sub-step showing the change.
+
+#### P7-L2: explorer, viewer, `@` finder
+
+One Rust file index (workspace walk respecting `.gitignore`), consumed by three surfaces: the
+left explorer tree (D3), the centre-top viewer (D4/D5, with `m` and `d`), and the `@` dropdown
+in the input (D19).
+
+**Accept:** `cargo test -p kn9t-tui` incl. new tests for the index (ignore rules, ordering,
+fuzzy ranking) and the `@` insertion; a screenshot of the tree + viewer; and `m` inserting
+`@path` verified live.
+
+#### P7-L3: terminal
+
+A session mode in `kn9t-tools::Bash` (persistent shell + sentinel + kill/respawn on a wedged
+command), a server endpoint to exec through the policy seam, and the panel: command input,
+output, private by default with `a` to promote (D8/D9/D10).
+
+**Accept:** spec requirement + acceptance test for the endpoint and for "a private exec writes
+no durable event"; live verification that `cd` survives between commands and that `a` makes
+the exec visible to the agent.
+
+#### P7-L4: mascot
+
+Pixel art converted from the mascot PNG, quantised to the D16 palette, shipped as a native
+animated view (D17), drawn on the welcome screen and reacting to `turn_phase`.
+
+**Accept:** a golden test for the sprite grid + a screenshot on the welcome screen and one
+while streaming.
+
+### P7 risks
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| Session tabs need an `App` refactor: one transcript, one token counter and one SSE stream become per-session | **High** | This is the largest non-visual item in L1. Introduce a `SessionView` per tab *before* the tab bar, so the tab bar has something real to switch |
+| Personal `~/.kn9t/tui/*.lua` override the new default wholesale, making the change invisible | Medium | Reset to defaults at the start of verification (`kn9t tui reset`), and re-add only the deviations that are actually wanted |
+| A private terminal exec that emits no durable event is a hole in "events are the truth" | Medium | Transient-only events already exist (`is_durable()`); document that a private exec is by definition not part of the conversation, and keep the last one in TUI memory for `a` |
+| Sentinel-based shell cannot report a command that never returns | Medium | Deadline + kill + respawn the shell, the same posture as the existing per-call timeout |
+| Animating the mascot costs a per-frame redraw it does not need today | Low | The welcome screen is already cached/rarely redrawn; keep the mascot out of the chat screen's render fingerprint |

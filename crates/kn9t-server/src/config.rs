@@ -50,7 +50,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kn9t_core::Quirks as ModelQuirks;
-use kn9t_core::{CacheMode, ModelRef, ModelSpec, Price};
+use kn9t_core::{CacheMode, Effort, ModelRef, ModelSpec, Price, Thinking};
 use kn9t_provider_core::{lookup_price, Quirks as HttpQuirks};
 use kn9t_provider_openai::{OpenAiConfig, OpenAiProvider};
 use serde::Deserialize;
@@ -339,6 +339,8 @@ pub struct RawModel {
     pub api_id: Option<String>,
     pub ctx: u32,
     pub max_out: u32,
+    /// Reasoning effort: `"off" | "low" | "medium" | "high"`. Default `"medium"`.
+    pub thinking: Option<String>,
     #[serde(default)]
     pub price_in: f64,
     #[serde(default)]
@@ -665,6 +667,7 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                                     api_id: model_decl.id.clone(),
                                     ctx_window: model_decl.ctx_window,
                                     max_out: model_decl.ctx_window / 4, // Default: 25% of context
+                                    thinking: kn9t_core::default_thinking(),
                                     price,
                                     cache: CacheMode::Automatic,
                                     streaming: true,
@@ -733,6 +736,10 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
             api_id,
             ctx_window: rm.ctx,
             max_out: rm.max_out,
+            thinking: match &rm.thinking {
+                Some(s) => parse_thinking(s)?,
+                None => kn9t_core::default_thinking(),
+            },
             price,
             cache,
             streaming: true,
@@ -974,6 +981,20 @@ pub fn merge_quirks(base: HttpQuirks, over: &RawQuirks) -> HttpQuirks {
     }
 }
 
+/// Reasoning effort for a model's turns. `off` means "send nothing", which is what makes
+/// an omitted reasoning field truthful rather than a substituted `low`.
+fn parse_thinking(s: &str) -> Result<Thinking, String> {
+    match s {
+        "off" => Ok(Thinking::Off),
+        "low" => Ok(Thinking::Effort(Effort::Low)),
+        "medium" => Ok(Thinking::Effort(Effort::Medium)),
+        "high" => Ok(Thinking::Effort(Effort::High)),
+        other => Err(format!(
+            "unknown thinking {other:?}; use \"off\", \"low\", \"medium\", or \"high\""
+        )),
+    }
+}
+
 fn parse_cache_mode(s: &str, breakpoints: u8, min_tokens: u32) -> Result<CacheMode, String> {
     match s {
         "explicit" => Ok(CacheMode::Explicit {
@@ -1174,6 +1195,7 @@ fn fetch_openai_models(
             api_id: id.clone(),
             ctx_window,
             max_out,
+            thinking: kn9t_core::default_thinking(),
             price: lookup_price(&id).unwrap_or(Price {
                 input: 0,
                 output: 0,

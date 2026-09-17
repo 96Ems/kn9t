@@ -3,7 +3,7 @@
 -- Rust renders; Lua decides layout, content and styling.
 --
 -- State, refreshed every frame (cheap - bounded size):
---   kn9t.state.session       {id, title, streaming, aborting, has_lease, last_seq}
+--   kn9t.state.session       {id, title, cwd, streaming, aborting, has_lease, last_seq}
 --   kn9t.state.usage         {turn={input,output,cache_read,cache_write},
 --                             total={...}, cost, toks_per_sec}
 --   kn9t.state.recent_tools  [{name, status}, ...] newest first, capped
@@ -43,7 +43,10 @@
 --
 -- Hooks Lua may define (all optional; absent means built-in behaviour):
 --   render_ui(width, height) -> widget      the whole screen
---   render_status()          -> spans       the status line
+--   render_status()          -> spans       the status line. A segment takes the same
+--                                           fields as a text span (text, fg, bg, bold,
+--                                           dim, reverse), so a segment can be a solid
+--                                           colour block rather than only coloured text.
 --   tool_mode(name)          -> "diff"|"output"|"summary"|"streaming"
 --
 -- Mouse:
@@ -111,22 +114,32 @@ local WARN_AT         = 0.75   -- amber past this fraction
 local DANGER_AT       = 0.90   -- red past this fraction
 
 -- ── Palette ─────────────────────────────────────────────────────────────────
--- Defaults come from the configured theme (kn9t.theme), so editing
+-- Every colour comes from the configured theme (kn9t.theme), so editing
 -- [theme.colors] in config.toml moves the whole UI. Override a slot here only
 -- to deviate from the theme on purpose.
+--
+-- Three colours carry meaning, the rest is chrome (PLAN P7 D16):
+--   accent  selection, focus, active tab, headings, mentions
+--   warn    attention: a running tool, cost, an approval, a truncation
+--   danger  failure, abort, a full context window
+-- `label` and `system` are deliberately chrome, not colours: labels are not
+-- messages, and a system notice is not an alert.
 local T = kn9t.theme or {}
 local C = {
     dim     = T.muted     or "darkgray",
-    label   = "gray",
+    label   = T.muted     or "gray",
     value   = T.fg        or "white",
+    -- Text placed *on* a solid block (status chips, the active tab). Silver on
+    -- violet is unreadable, so a block needs its own foreground.
+    ink     = T.ink       or "black",
     accent  = T.primary   or "cyan",
     ok      = T.success   or "lightgreen",
     warn    = T.warning   or "yellow",
     danger  = T.error     or "lightred",
     user    = T.user      or "cyan",
-    asst    = T.assistant or "green",
+    asst    = T.assistant or "white",
     tool    = T.tool      or "yellow",
-    system  = "magenta",
+    system  = T.muted     or "darkgray",
 }
 
 -- ── Helpers ─────────────────────────────────────────────────────────────────
@@ -267,39 +280,6 @@ local function section_transcript(inner_w)
     }
 end
 
--- Most recent tool calls, newest first. Rust pre-computes this (bounded), so
--- the sidebar costs nothing even in a very long session.
-local function section_recent_tools(inner_w, max_rows)
-    local tools = kn9t.state and kn9t.state.recent_tools or {}
-    local recent = {}
-
-    for i = 1, math.min(#tools, max_rows) do
-        local t = tools[i]
-        local mark = "."
-        if t.status == "running" then mark = ">"
-        elseif t.status == "done" then mark = "+"
-        elseif t.status == "error" then mark = "!"
-        end
-        local name = t.name or "?"
-        if #name > inner_w - 4 then name = name:sub(1, inner_w - 5) .. "~" end
-        table.insert(recent, mark .. " " .. name)
-    end
-
-    local content = #recent > 0 and table.concat(recent, "\n") or "(none yet)"
-    return {
-        type = "box",
-        title = " recent calls ",
-        border = true,
-        size = { flex = 1 },
-        child = {
-            type = "text",
-            content = content,
-            fg = #recent > 0 and C.value or C.dim,
-            wrap = false,
-        },
-    }
-end
-
 local function build_sidebar(height)
     local ctx     = kn9t.context or {}
     local session = kn9t.state and kn9t.state.session or {}
@@ -348,12 +328,17 @@ local function build_sidebar(height)
     for _, s in ipairs(head) do used = used + (s.size and s.size.fixed or 0) end
     for _, s in ipairs(foot) do used = used + (s.size and s.size.fixed or 0) end
 
-    -- -2 for this box's own border rows.
+    -- Whatever is left over belongs to the plugins, not to a list Rust already
+    -- publishes elsewhere. This used to be a "recent calls" panel, which showed
+    -- the same tool names the transcript's own cards show, one column over.
     local slots = math.max(1, height - 2 - used)
 
     local children = {}
     for _, s in ipairs(head) do table.insert(children, s) end
-    table.insert(children, section_recent_tools(inner_w, slots))
+    table.insert(children, {
+        type = "spacer",
+        size = { fixed = slots },
+    })
     for _, s in ipairs(foot) do table.insert(children, s) end
 
     return {
@@ -464,21 +449,23 @@ end
 kn9t.map("C-g", focus_cycle)
 kn9t.map("F10", focus_cycle)
 
--- Clicking the left tab bar. Only one source today, so this just keeps the
--- binding live for when a second tab lands.
-kn9t.on_click("left_tabbar", function()
-    LEFT_TAB = "sessions"
-    kn9t.invalidate()
+-- The "+ new" button on the tab bar. A session is created by the same action
+-- the Ctrl+N binding and `/new` use, so the button cannot drift from them.
+kn9t.on_click("tab_new", function()
+    kn9t.action("new_session")
     return true
 end)
 
 
--- ── Header ──────────────────────────────────────────────────────────────────
+-- ── Header: session tabs + breadcrumb ────────────────────────────────────────
 --
--- A breadcrumb on the left, an alert slot on the right. Left-aligned and
--- right-aligned groups cannot coexist in one `text` node, so this is a
--- horizontal split: breadcrumb takes the flex, the alert is sized to its own
--- content.
+-- Two rows, VS Code's grammar (PLAN P7 D14):
+--   row 1  the open sessions as tabs — the "editor group" of an agent
+--   row 2  where you are: cwd ▸ session ▸ model, with an alert slot on the right
+--
+-- Tabs are the only session navigation in this file. The left column is the file
+-- explorer (D3), so listing sessions there too would show the same thing twice.
+-- The full list (with a filter) stays reachable from the command palette.
 --
 -- `ALERT` is a plain global any config file (or a later override) can set:
 --   ALERT = { text = "reconnecting", fg = "yellow" }
@@ -486,119 +473,172 @@ end)
 -- the render cache cannot see a Lua-local variable.
 ALERT = nil
 
-local function build_header(width)
-    local left = {
-        { text = " kn9t ", fg = C.accent, bold = true },
-        { text = MAIN_VIEW == "chat" and "Chat" or MAIN_VIEW, fg = C.value },
-    }
+-- How many tabs before the bar collapses the tail into a "+N" counter. Tabs are
+-- the only session list on screen, so the cap is generous; past it the palette's
+-- session picker is the way to reach a session.
+TAB_MAX = 10
+TAB_LABEL_MAX = 22
 
-    local right = {}
-    if ALERT then
-        table.insert(right, { text = ALERT.text, fg = ALERT.fg or C.danger, bold = true })
-        table.insert(right, { text = "  ", fg = C.dim })
-    end
+-- Registered once per session id, like the old sidebar rows: rebuilding the bar
+-- every frame must not re-register the same handler.
+local registered_tab_clicks = {}
 
-    local right_w = 0
-    for _, s in ipairs(right) do right_w = right_w + #s.text end
-
-    local children = {
-        { type = "text", spans = left, size = { flex = 1 }, wrap = false },
-    }
-    if right_w > 0 then
-        table.insert(children, {
-            type = "text", spans = right, size = { fixed = right_w },
-            align = "right", wrap = false,
-        })
-    end
-
-    return {
-        type = "box",
-        border = "plain",
-        border_fg = C.dim,
-        size = { fixed = 3 },
-        child = { type = "split", direction = "horizontal", children = children },
-    }
+local function tab_label(name)
+    name = name or ""
+    if name == "" then name = "untitled" end
+    if #name > TAB_LABEL_MAX then name = name:sub(1, TAB_LABEL_MAX - 1) .. "…" end
+    return name
 end
 
-
--- ── Sessions list ───────────────────────────────────────────────────────────
---
--- `kn9t.state.sessions` is already a Rust-side cache, so reading it per frame
--- costs no HTTP call. Clicking a row calls kn9t.action("switch_session", id) -
--- the one action that carries data.
---
--- Each row is its own clickable text node rather than a `list` widget: `id=`
--- wraps a whole widget, and a list is one node with N items, so a list cannot
--- carry a per-row id today.
-
--- Registered once per session id seen, so rebuilding the sidebar every frame
--- does not re-register handlers. on_click replaces by id anyway; this just
--- avoids the churn.
-local registered_session_clicks = {}
-
-local function session_list(inner_w)
+local function tab_bar(width)
     local sessions = (kn9t.state and kn9t.state.sessions) or {}
-    if #sessions == 0 then
-        return { type = "text", content = "(no sessions yet)", fg = C.dim, size = { flex = 1 } }
-    end
+    local current  = (kn9t.state and kn9t.state.session or {}).id or ""
+    local session  = (kn9t.state and kn9t.state.session) or {}
 
-    local rows = {}
+    -- The current session leads, so switching tabs never reorders what you are
+    -- looking at; the rest keep the order Rust reported (most recent first).
+    local ordered = {}
+    local rest = {}
     for _, s in ipairs(sessions) do
-        local id = "session_row_" .. s.id
-        if not registered_session_clicks[id] then
-            local sid = s.id
-            kn9t.on_click(id, function() kn9t.action("switch_session", sid); return true end)
-            registered_session_clicks[id] = true
+        if s.id == current then table.insert(ordered, 1, s) else table.insert(rest, s) end
+    end
+    for _, s in ipairs(rest) do table.insert(ordered, s) end
+
+    local spans = {}
+    local used = 0
+    local shown = 0
+    local hidden = 0
+
+    -- Leave room for the "+ new" button on the right.
+    local budget = math.max(8, width - 6 - 4)
+
+    for _, s in ipairs(ordered) do
+        local label = tab_label(s.name or s.id)
+        local w = #label + 2
+        if used + w > budget then
+            hidden = hidden + 1
+        else
+            local id = "tab_" .. s.id
+            if not registered_tab_clicks[id] then
+                local sid = s.id
+                kn9t.on_click(id, function() kn9t.action("switch_session", sid); return true end)
+                registered_tab_clicks[id] = true
+            end
+            local active = (s.id == current)
+            table.insert(spans, {
+                text = " " .. label .. " ",
+                fg = active and C.tab_active_fg or C.dim,
+                bg = active and C.accent or nil,
+                bold = active,
+            })
+            -- Separator between tabs only: a trailing one reads as a stray glyph.
+            table.insert(spans, { text = " ", fg = C.dim })
+            used = used + w
+            shown = shown + 1
         end
-        local name = s.name or s.id
-        if #name > inner_w - 2 then name = name:sub(1, inner_w - 3) .. "~" end
-        table.insert(rows, {
-            id = id,
-            type = "text",
-            content = (s.is_current and "> " or "  ") .. name,
-            fg = s.is_current and C.accent or C.value,
-            size = { fixed = 1 },
-        })
     end
-    return { type = "split", direction = "vertical", size = { flex = 1 }, children = rows }
-end
 
-
--- ── Left sidebar: sessions ──────────────────────────────────────────────────
---
--- A tab bar so this column can host more than one source as things grow. It
--- deliberately lists no plugin names: plugin views get their own column, driven
--- entirely by kn9t.state.plugin_views, so installing a plugin never requires
--- editing this file.
-LEFT_TAB = "sessions"
-LEFT_VISIBLE = true
-LEFT_WIDTH = 32
-
-local function left_tab_bar()
-    local function tab(label, active)
-        return { text = " " .. label .. " ", fg = active and C.value or C.dim, bold = active }
+    if shown == 0 then
+        table.insert(spans, { text = " no session ", fg = C.dim })
+    elseif hidden > 0 then
+        table.insert(spans, { text = " +" .. hidden .. " ", fg = C.dim })
     end
+
+    -- The alert belongs on the busiest row, which is this one.
+    if ALERT then
+        table.insert(spans, { text = "  " .. ALERT.text, fg = ALERT.fg or C.danger, bold = true })
+    end
+
+    -- Running state is a property of the *session*, and only the active one can
+    -- be live (one SSE stream), so the indicator goes on the bar rather than a tab.
+    -- Not animated on purpose: the transcript's streaming line is Rust's and already
+    -- spins, and a second spinner for the same fact is noise, not feedback.
+    if session.streaming then
+        table.insert(spans, { text = "  ● streaming", fg = C.ok })
+    elseif session.aborting then
+        table.insert(spans, { text = "  ● aborting", fg = C.danger, bold = true })
+    end
+
     return {
-        type = "text",
-        id = "left_tabbar",
+        type = "split",
+        direction = "horizontal",
         size = { fixed = 1 },
-        align = "center",
-        spans = { tab("Sessions", LEFT_TAB == "sessions") },
-    }
-end
-
-local function build_sidebar_left(inner_w)
-    return {
-        type = "box",
-        border = "plain",
-        border_fg = C.dim,
-        child = {
-            type = "split",
-            direction = "vertical",
-            children = { left_tab_bar(), session_list(inner_w) },
+        children = {
+            { type = "text", id = "tabbar", spans = spans, size = { flex = 1 }, wrap = false },
+            {
+                type = "text",
+                id = "tab_new",
+                spans = { { text = " + new ", fg = C.accent } },
+                size = { fixed = 7 },
+                align = "right",
+                wrap = false,
+            },
         },
     }
 end
+
+-- Breadcrumb: cwd ▸ title ▸ model. Each segment is a separate span so a long
+-- path can be dimmed while the model stays legible.
+local function build_breadcrumb(width)
+    local ctx     = kn9t.context or {}
+    local session = (kn9t.state and kn9t.state.session) or {}
+
+    local cwd = session.cwd or ""
+    if #cwd > 40 then cwd = "…" .. cwd:sub(#cwd - 39) end
+    if cwd == "" then cwd = "(no cwd)" end
+
+    local title = session.title
+    if title == nil or title == "" then title = "untitled" end
+    if #title > 30 then title = title:sub(1, 29) .. "…" end
+
+    local left = {
+        { text = " " .. cwd, fg = C.dim },
+        { text = "  ▸  ", fg = C.dim },
+        { text = title, fg = C.value },
+        { text = "  ▸  ", fg = C.dim },
+        { text = ctx.model or "no model", fg = C.accent },
+    }
+
+    local phase = session.streaming and "streaming"
+        or (session.aborting and "aborting" or (ctx.phase or "idle"))
+    local right = { { text = phase .. " ", fg = session.aborting and C.danger or C.dim } }
+
+    return {
+        type = "box",
+        border = false,
+        size = { fixed = 1 },
+        child = {
+            type = "split",
+            direction = "horizontal",
+            children = {
+                { type = "text", spans = left, size = { flex = 1 }, wrap = false },
+                { type = "text", spans = right, size = { fixed = #phase + 1 }, align = "right", wrap = false },
+            },
+        },
+    }
+end
+
+local function build_header(width)
+    return {
+        type = "split",
+        direction = "vertical",
+        size = { fixed = 2 },
+        children = { tab_bar(width), build_breadcrumb(width) },
+    }
+end
+
+
+-- ── Left column: the file explorer ──────────────────────────────────────────
+--
+-- Reserved for PLAN P7 L2. It is deliberately absent rather than filled with a
+-- placeholder: sessions are the tab bar now (D2/D3), so a session list here would
+-- be the same information twice, and an empty frame would look like a bug.
+--
+-- L2 adds `build_explorer()` (fed by a Rust file index) and the column below,
+-- at EXPLORER_WIDTH. The widths are declared here now so the layout maths does
+-- not have to move when it lands.
+EXPLORER_VISIBLE = false
+EXPLORER_WIDTH   = 32
 
 
 function render_ui(width, height)
@@ -633,15 +673,6 @@ function render_ui(width, height)
 
     local plugins = plugin_views_in("sidebar")
     local columns = { main }
-
-    if LEFT_VISIBLE and width >= SIDEBAR_MIN_W then
-        table.insert(columns, 1, {
-            type = "box",
-            border = false,
-            size = { fixed = LEFT_WIDTH },
-            child = build_sidebar_left(LEFT_WIDTH - 2),
-        })
-    end
 
     if #plugins > 0 and width >= SIDEBAR_MIN_W then
         table.insert(columns, {
@@ -686,6 +717,14 @@ function render_ui(width, height)
 end
 
 -- ── Status bar ──────────────────────────────────────────────────────────────
+--
+-- A segmented bar, VS Code's grammar (PLAN P7 D13): solid blocks of state read
+-- left to right, with the contextual key hints on the right. Three colours carry
+-- meaning — accent for "where we are", amber for "watch this", danger for "this
+-- is wrong" — and the rest is chrome, so the eye lands on what changed.
+--
+-- A segment is `{text=, fg=, bg=, bold=, dim=, reverse=}`; `bg` is what makes a
+-- block rather than coloured text.
 
 function render_status()
     local ctx     = kn9t.context or {}
@@ -694,58 +733,74 @@ function render_status()
     local turn    = usage.turn or {}
 
     local seg = {}
-    local function put(text, color) table.insert(seg, { text = text, color = color }) end
-
-    -- Message mix across the context.
-    local s = ctx.system_count or 0
-    local u = ctx.user_count or 0
-    local a = ctx.assistant_count or 0
-    local t = ctx.tool_count or 0
-    local total = s + u + a + t
-    local bar = 18
-
-    put("[", C.dim)
-    if total > 0 then
-        local sl = math.floor(s / total * bar + 0.5)
-        local ul = math.floor(u / total * bar + 0.5)
-        local al = math.floor(a / total * bar + 0.5)
-        local tl = math.max(0, bar - sl - ul - al)
-        if sl > 0 then put(string.rep("#", sl), C.system) end
-        if ul > 0 then put(string.rep("#", ul), C.user) end
-        if al > 0 then put(string.rep("#", al), C.asst) end
-        if tl > 0 then put(string.rep("#", tl), C.tool) end
-    else
-        put(string.rep(".", bar), C.dim)
+    local function block(text, fg, bg, opts)
+        opts = opts or {}
+        table.insert(seg, {
+            text = text, fg = fg, bg = bg,
+            bold = opts.bold, dim = opts.dim,
+        })
     end
-    put("]", C.dim)
+    -- Chrome text: no background, reads as a label rather than a value.
+    local function text(s, fg) table.insert(seg, { text = s, fg = fg or C.dim }) end
 
-    -- Context pressure, the thing worth watching.
+    -- ── Left: what is running and where ─────────────────────────────────────
+    local phase, phase_col
+    if session.streaming then
+        phase, phase_col = "streaming", C.ok
+    elseif session.aborting then
+        phase, phase_col = "aborting", C.danger
+    else
+        phase, phase_col = (ctx.phase or "idle"), C.dim
+    end
+    block(" " .. phase .. " ", C.ink, phase_col, { bold = true })
+
+    text(" " .. (ctx.model or "no model") .. " ", C.value)
+
+    -- ── Context pressure: the number that decides when compaction bites ─────
     local live = (turn.input or 0) + (turn.cache_read or 0)
     if live == 0 then live = (ctx.tokens_in or 0) + (ctx.cache_read or 0) end
     local frac = live / context_window()
-    put(" ctx ", C.label)
-    put(string.format("%d%%", math.floor(frac * 100)), context_color(frac))
+    local pct  = math.floor(frac * 100)
+    text("  ctx ")
+    block(" " .. pct .. "% ", C.ink, context_color(frac), { bold = true })
+    text(" " .. fmt_tokens(live) .. "/" .. fmt_tokens(context_window()))
 
-    put("  ", nil)
-    put(fmt_tokens(live), C.value)
-    put("/", C.dim)
-    put(fmt_tokens(context_window()), C.dim)
+    -- ── Cost ────────────────────────────────────────────────────────────────
+    text("   $")
+    text(string.format("%.4f", usage.cost or 0), C.warn)
 
-    -- Cost.
-    put("  $", C.dim)
-    put(string.format("%.4f", usage.cost or 0), C.warn)
+    -- ── Throughput, only while it means something ───────────────────────────
+    if (usage.toks_per_sec or 0) > 0 then
+        text(string.format("  %.0f t/s", usage.toks_per_sec))
+    end
 
-    -- Live state.
-    put("  ", nil)
-    if session.streaming then
-        put("streaming", C.ok)
-        if (usage.toks_per_sec or 0) > 0 then
-            put(string.format(" %.0ft/s", usage.toks_per_sec), C.dim)
-        end
-    elseif session.aborting then
-        put("aborting", C.danger)
+    -- ── Message mix: a compact glyph strip rather than a 18-cell bar.
+    -- The bar was the loudest thing on the line and answered a question nobody
+    -- asks mid-turn; four numbers do the same job in a third of the width.
+    text("   ")
+    text(tostring(ctx.system_count or 0), C.system)
+    text("/")
+    text(tostring(ctx.user_count or 0), C.user)
+    text("/")
+    text(tostring(ctx.assistant_count or 0), C.asst)
+    text("/")
+    text(tostring(ctx.tool_count or 0), C.tool)
+
+    -- ── Right: what you can do from here ───────────────────────────────────
+    local focused = (kn9t.state and kn9t.state.focused_plugin) or ""
+    text("    ")
+    if focused ~= "" then
+        text("Esc", C.accent)
+        text(" release " .. focused, C.value)
     else
-        put(ctx.phase or "idle", C.dim)
+        text("C-p", C.accent)
+        text(" commands", C.value)
+        text("   F2", C.accent)
+        text(" panels", C.value)
+        if #((kn9t.state and kn9t.state.plugin_views) or {}) > 0 then
+            text("   F10", C.accent)
+            text(" plugins", C.value)
+        end
     end
 
     return seg
@@ -775,13 +830,12 @@ function tool_mode(name)
     return TOOL_MODES[name]
 end
 
--- Sidebar toggles, independent per side. Both call kn9t.invalidate(): the render
--- cache is fingerprinted from state Rust can see, and a Lua-local flag is not
--- part of that, so without it the next redraw reuses the stale tree.
-kn9t.map("F1", function()
-    LEFT_VISIBLE = not LEFT_VISIBLE
-    kn9t.invalidate()
-end)
+-- Panel toggles. Each calls kn9t.invalidate(): the render cache is fingerprinted
+-- from state Rust can see, and a Lua-local flag is not part of that, so without it
+-- the next redraw reuses the stale tree.
+--
+-- F1 is free: it used to toggle the session column, which the tab bar replaced.
+-- L2 binds it to the file explorer.
 kn9t.map("F2", function()
     SIDEBAR_VISIBLE = not SIDEBAR_VISIBLE
     kn9t.invalidate()

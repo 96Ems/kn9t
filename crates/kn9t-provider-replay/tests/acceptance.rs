@@ -25,6 +25,7 @@ mod rply {
             api_id: "test".into(),
             ctx_window: 200_000,
             max_out: 8_000,
+            thinking: kn9t_core::Thinking::Off,
             price: Price {
                 input: 0,
                 output: 0,

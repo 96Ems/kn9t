@@ -15,6 +15,7 @@ fn make_model(id: &str) -> ModelSpec {
         api_id: id.into(),
         ctx_window: 128_000,
         max_out: 4096,
+        thinking: kn9t_core::Thinking::Off,
         price: Price {
             input: 2500000,
             output: 10000000,
@@ -809,6 +810,7 @@ fn nbed_onem_pair() {
         api_id: "us.anthropic.claude-sonnet-4-5-20251001-v1:0".into(),
         ctx_window: 200_000,
         max_out: 16_000,
+        thinking: kn9t_core::Thinking::Off,
         price: Price {
             input: 3000000,
             output: 15000000,
@@ -830,6 +832,7 @@ fn nbed_onem_pair() {
         api_id: "us.anthropic.claude-sonnet-4-5-20251001-v1:0".into(), // same api_id
         ctx_window: 1_000_000,
         max_out: 16_000,
+        thinking: kn9t_core::Thinking::Off,
         price: Price {
             input: 6000000,
             output: 30000000,
@@ -876,6 +879,7 @@ fn nbed_rewrites_adaptive_thinking() {
         api_id: "claude-4-sonnet".into(),
         ctx_window: 200_000,
         max_out: 16_000,
+        thinking: kn9t_core::Thinking::Off,
         price: Price {
             input: 3000000,
             output: 15000000,
@@ -917,6 +921,61 @@ fn nbed_rewrites_adaptive_thinking() {
         body["thinking"].get("budget_tokens").is_none(),
         "adaptive must not use budget_tokens"
     );
+}
+
+// ── R-OAI-010 — Thinking::Off vs a requested effort ─────────────────────────
+
+fn reasoning_quirks() -> Quirks {
+    Quirks {
+        reasoning: "reasoning_effort".into(),
+        ..Quirks::default()
+    }
+}
+
+fn req_with_thinking<'a>(model: &'a ModelSpec, thinking: Thinking) -> kn9t_core::Request<'a> {
+    kn9t_core::Request {
+        model,
+        system: None,
+        messages: &[],
+        tools: &[],
+        thinking,
+        max_tokens: Some(512),
+        cache: &[],
+        session: None,
+    }
+}
+
+/// `Off` must omit the field. Substituting `low` silently forced reasoning on a turn
+/// that asked for none — which is how persisted thinking blocks appeared at all.
+#[test]
+fn oai_thinking_off_omits_reasoning_effort() {
+    let model = make_model("deepseek-v4.1-flash");
+    let body = build_request(
+        &req_with_thinking(&model, Thinking::Off),
+        &reasoning_quirks(),
+        &CacheMode::None,
+        false,
+    );
+
+    assert!(
+        body.get("reasoning_effort").is_none(),
+        "off must send nothing, got {:?}",
+        body.get("reasoning_effort")
+    );
+}
+
+/// A requested effort maps straight through to the wire field.
+#[test]
+fn oai_thinking_effort_maps_to_reasoning_effort() {
+    let model = make_model("deepseek-v4.1-flash");
+    let body = build_request(
+        &req_with_thinking(&model, Thinking::Effort(Effort::Medium)),
+        &reasoning_quirks(),
+        &CacheMode::None,
+        false,
+    );
+
+    assert_eq!(body["reasoning_effort"], json!("medium"));
 }
 
 #[test]

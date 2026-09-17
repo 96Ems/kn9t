@@ -105,19 +105,13 @@ pub fn build_request(
         body["tools"] = json!(tools_json);
     }
 
-    // Reasoning / thinking quirk.
+    // Reasoning / thinking quirk. `Off` sends nothing: omitting the field means "no
+    // reasoning", where a substituted value silently forces it on.
     match quirks.reasoning.as_str() {
         "reasoning_effort" => {
-            let effort_str = match req.thinking {
-                Thinking::Off => "low",
-                Thinking::Effort(e) => match e {
-                    Effort::Low => "low",
-                    Effort::Medium => "medium",
-                    Effort::High => "high",
-                },
-                Thinking::Budget(_) => "medium",
-            };
-            body["reasoning_effort"] = json!(effort_str);
+            if let Some(effort) = effort_of(req.thinking) {
+                body["reasoning_effort"] = json!(effort);
+            }
         }
         "budget_tokens" => {
             if let Thinking::Budget(n) = req.thinking {
@@ -126,17 +120,10 @@ pub fn build_request(
         }
         "adaptive" => {
             // R-NBED-050 §1: adaptive thinking.
-            let effort_str = match req.thinking {
-                Thinking::Off => "low",
-                Thinking::Effort(e) => match e {
-                    Effort::Low => "low",
-                    Effort::Medium => "medium",
-                    Effort::High => "high",
-                },
-                Thinking::Budget(_) => "medium",
-            };
-            body["thinking"] = json!({ "type": "adaptive" });
-            body["output_config"] = json!({ "effort": effort_str });
+            if let Some(effort) = effort_of(req.thinking) {
+                body["thinking"] = json!({ "type": "adaptive" });
+                body["output_config"] = json!({ "effort": effort });
+            }
         }
         _ => {} // "none"
     }
@@ -158,6 +145,18 @@ pub fn build_request(
     }
 
     body
+}
+
+/// `Thinking` → the reasoning-effort string the OpenAI family takes. `None` for `Off`,
+/// which omits the field entirely.
+pub(crate) fn effort_of(t: Thinking) -> Option<&'static str> {
+    match t {
+        Thinking::Off => None,
+        Thinking::Effort(Effort::Low) => Some("low"),
+        Thinking::Effort(Effort::Medium) => Some("medium"),
+        Thinking::Effort(Effort::High) => Some("high"),
+        Thinking::Budget(_) => Some("medium"),
+    }
 }
 
 /// Expand one `Message` into ≥1 wire objects, pushing into `out`.
@@ -239,10 +238,33 @@ pub fn encode_messages(msg: &Message, quirks: &Quirks, needs_cache: bool, out: &
         }
         return;
     }
-    out.push(encode_message(msg, quirks, needs_cache));
+
+    // R-OAI-010 / DESIGN §4.2: `strip` drops persisted reasoning. Chat has no reasoning
+    // content part, so DeepSeek 400s `unknown variant 'thinking'` — and the persisted
+    // block repeats that every turn. Responses makes the same choice.
+    let content: Vec<&Content> = if quirks.thinking_replay == "strip" {
+        msg.content
+            .iter()
+            .filter(|c| !matches!(c, Content::Thinking { .. }))
+            .collect()
+    } else {
+        msg.content.iter().collect()
+    };
+
+    // Nothing left to send (e.g. a reasoning-only turn); `content: []` 400s strict gateways.
+    if content.is_empty() {
+        return;
+    }
+
+    out.push(encode_message(msg, &content, quirks, needs_cache));
 }
 
-fn encode_message(msg: &Message, quirks: &Quirks, needs_cache: bool) -> Value {
+fn encode_message(
+    msg: &Message,
+    content: &[&Content],
+    quirks: &Quirks,
+    needs_cache: bool,
+) -> Value {
     let role = match msg.role {
         Role::User => "user",
         Role::Assistant => "assistant",
@@ -251,8 +273,8 @@ fn encode_message(msg: &Message, quirks: &Quirks, needs_cache: bool) -> Value {
     };
 
     // Simple text-only messages → string content (no cache needed).
-    if msg.content.len() == 1 {
-        if let Content::Text { text } = &msg.content[0] {
+    if content.len() == 1 {
+        if let Content::Text { text } = content[0] {
             // Bedrock quirk: trim trailing whitespace from assistant messages.
             let text = if quirks.trim_trailing_whitespace && msg.role == Role::Assistant {
                 text.trim_end()
@@ -277,7 +299,7 @@ fn encode_message(msg: &Message, quirks: &Quirks, needs_cache: bool) -> Value {
     // Tool result message — handled by encode_messages; should not reach here.
     // Fallback: encode first result only (safe, but encode_messages avoids this path).
     if msg.role == Role::Tool {
-        if let Some(Content::ToolResult { id, content, .. }) = msg.content.first() {
+        if let Some(Content::ToolResult { id, content, .. }) = content.first() {
             let inner_text: String = content
                 .iter()
                 .filter_map(|c| {
@@ -306,8 +328,7 @@ fn encode_message(msg: &Message, quirks: &Quirks, needs_cache: bool) -> Value {
     // Assistant message with tool calls — OpenAI wire format puts them in a top-level
     // `tool_calls` array, NOT in content parts. Content is null when only tool calls present.
     if msg.role == Role::Assistant {
-        let tool_calls: Vec<Value> = msg
-            .content
+        let tool_calls: Vec<Value> = content
             .iter()
             .filter_map(|c| {
                 if let Content::ToolCall {
@@ -329,8 +350,7 @@ fn encode_message(msg: &Message, quirks: &Quirks, needs_cache: bool) -> Value {
 
         if !tool_calls.is_empty() {
             // Collect any text parts alongside tool calls.
-            let text_parts: Vec<&str> = msg
-                .content
+            let text_parts: Vec<&str> = content
                 .iter()
                 .filter_map(|c| {
                     if let Content::Text { text } = c {
@@ -365,8 +385,7 @@ fn encode_message(msg: &Message, quirks: &Quirks, needs_cache: bool) -> Value {
     }
 
     // Multi-part content.
-    let mut parts: Vec<Value> = msg
-        .content
+    let mut parts: Vec<Value> = content
         .iter()
         .map(|c| encode_content(c, quirks))
         .collect();

@@ -15,10 +15,15 @@ use kn9t_tui::lua::{state::StateSnapshot, LuaRuntime};
 use kn9t_tui::theme::Theme;
 
 /// A runtime in the same state the TUI puts it in at startup.
+///
+/// The order is the startup order, not an arbitrary one: the palette is published
+/// before the config runs so `kn9t.theme.<slot>` is non-nil while the built-in builds
+/// its palette table. With the calls reversed the built-in silently falls back to its
+/// ANSI defaults and this suite certifies colours the TUI never draws.
 fn booted() -> LuaRuntime {
     let rt = LuaRuntime::new().expect("runtime");
-    rt.load_builtin();
     rt.install_environment(&Theme::dark());
+    rt.load_builtin();
     rt.update_state(&StateSnapshot::default());
     rt.update_context(&Default::default());
     rt
@@ -238,6 +243,19 @@ fn builtin_palette_colors_all_resolve() {
             "built-in palette colour '{name}' does not parse"
         );
     }
+}
+
+/// The built-in status bar draws solid colour chips, which needs `bg` to survive
+/// `parse_status_spans`. The comment on `call_status_spans` claims a segment supports
+/// every style a `text` node does; this is the half of that claim the bar actually uses.
+#[test]
+fn builtin_status_chips_use_a_background() {
+    let rt = booted();
+    let spans = rt.call_status_spans().expect("status bar");
+    assert!(
+        spans.iter().any(|s| s.style.bg.is_some()),
+        "no status segment carried a background, so the chips render as plain text"
+    );
 }
 
 /// `tool_mode` is how a config (and therefore a plugin's tool) picks a card

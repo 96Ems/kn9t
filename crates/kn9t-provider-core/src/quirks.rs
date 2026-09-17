@@ -31,8 +31,8 @@ pub struct Quirks {
     /// `"reasoning_content"` | `"tags"` | `"none"`
     #[serde(default = "default_thinking_style")]
     pub thinking_style: String,
-    /// `"verbatim"` | `"strip"` — how persisted thinking reaches the wire on replay.
-    #[serde(default = "default_verbatim")]
+    /// `"verbatim"` | `"strip"` replay policy. Default `strip`.
+    #[serde(default = "default_thinking_replay")]
     pub thinking_replay: String,
     /// True → inject a placeholder tool when tools array is empty (adaptive gateway quirk).
     #[serde(default)]
@@ -82,8 +82,14 @@ fn default_reasoning() -> String {
 fn default_thinking_style() -> String {
     "none".into()
 }
-fn default_verbatim() -> String {
-    "verbatim".into()
+/// R-PCORE-080 / DESIGN §4.2 — what persisted thinking does on replay.
+///
+/// Default `strip`: no wire format this crate speaks has a reasoning-input form. Chat
+/// 400s on a `thinking` part; Responses only has one via `reasoning.encrypted_content`,
+/// which R-OAI-060 does not request. `verbatim` is the Anthropic Messages contract,
+/// owned by the `kn9t-anthropic` plugin.
+fn default_thinking_replay() -> String {
+    "strip".into()
 }
 fn default_true() -> bool {
     true
@@ -99,7 +105,7 @@ impl Default for Quirks {
             reasoning: default_reasoning(),
             tool_result_name: false,
             thinking_style: default_thinking_style(),
-            thinking_replay: default_verbatim(),
+            thinking_replay: default_thinking_replay(),
             require_tools: false,
             streaming: true,
             extra_body: serde_json::Value::Null,

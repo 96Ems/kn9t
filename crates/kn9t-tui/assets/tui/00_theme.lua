@@ -6,26 +6,47 @@
 TUI = {}
 
 -- ── Palette ─────────────────────────────────────────────────────────────────
+-- Every colour comes from the configured theme (kn9t.theme), so editing
+-- [theme.colors] in config.toml moves the whole UI. Override a slot here only to
+-- deviate from the theme on purpose.
+--
+-- Three colours carry meaning, the rest is chrome (PLAN §P7 D16):
+--   accent  selection, focus, active tab, headings, mentions
+--   warn    attention: a running tool, cost, an approval, a truncation
+--   danger  failure, abort, a full context window
+-- `label` and `system` are deliberately chrome, not colours: labels are not
+-- messages, and a system notice is not an alert.
 local T = kn9t.theme or {}
 TUI.color = {
     dim     = T.muted     or "darkgray",
-    label   = "gray",
+    label   = T.muted     or "gray",
     value   = T.fg        or "white",
+    -- Text placed *on* a solid colour block (a status chip, the active tab). The page
+    -- colour cannot double as this: silver on violet is unreadable.
+    ink     = T.ink       or "black",
     accent  = T.primary   or "cyan",
     ok      = T.success   or "lightgreen",
     warn    = T.warning   or "yellow",
     danger  = T.error     or "lightred",
     user    = T.user      or "cyan",
-    asst    = T.assistant or "green",
+    asst    = T.assistant or "white",
     tool    = T.tool      or "yellow",
-    system  = "magenta",
+    system  = T.muted     or "darkgray",
 }
 
 -- ── Config ──────────────────────────────────────────────────────────────────
 TUI.SIDEBAR_WIDTH   = 34
-TUI.SIDEBAR_MIN_W   = 90
+TUI.SIDEBAR_MIN_W   = 110     -- auto-hide sidebars below this terminal width
 
-TUI.LEFT_WIDTH      = 32
+-- The file explorer column. Reserved for PLAN §P7 L2; the width is declared here so the
+-- layout maths does not have to move when the tree lands.
+TUI.EXPLORER_WIDTH   = 32
+TUI.EXPLORER_VISIBLE = false
+
+-- Session tabs (PLAN §P7 D2/D14). They are the only session list on screen, so the cap is
+-- generous; past it the command palette's session picker is the way to reach a session.
+TUI.TAB_MAX       = 10
+TUI.TAB_LABEL_MAX = 22
 
 TUI.PLUGIN_VIEW_ROWS         = 8
 TUI.PLUGIN_VIEW_ROWS_FOCUSED = 24

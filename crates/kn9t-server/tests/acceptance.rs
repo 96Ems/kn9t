@@ -45,6 +45,7 @@ fn model_spec() -> ModelSpec {
         api_id: "m1".into(),
         ctx_window: 128_000,
         max_out: 4096,
+        thinking: kn9t_core::Thinking::Off,
         price: Price {
             input: 1000000,
             output: 2000000,

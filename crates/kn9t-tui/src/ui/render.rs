@@ -5,6 +5,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -17,7 +18,8 @@ use crate::message_handler::ToolCard;
 use crate::slash::fuzzy_match;
 use crate::syntax;
 use crate::theme::Theme;
-use crate::thinking::{self, ContentSegment};
+use crate::thinking;
+use crate::ui::layout::INPUT_CHROME_COLS;
 use crate::which_key;
 use serde_json;
 
@@ -305,6 +307,9 @@ fn render_native_view(f: &mut Frame, app: &mut App, view: &str, area: Rect, them
             render_input(f, app, area, theme);
             if app.slash.active {
                 render_slash_dropdown(f, app, area, theme);
+            }
+            if app.mention.active {
+                render_mention_dropdown(f, app, area, theme);
             }
         }
         "status" => render_status(f, app, area, theme),
@@ -723,6 +728,10 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     // Track tool positions for click detection.
     // We'll calculate actual screen Y after scroll adjustment.
     let mut tool_line_info: Vec<(String, usize, usize)> = Vec::new(); // (call_id, header_line_idx, content_end_line_idx)
+    // Reasoning headers, for click-to-toggle: (message index, card index, header_line_idx).
+    let mut thinking_line_info: Vec<(usize, usize, usize)> = Vec::new();
+    // Turn group headers, same idea: (header_line_idx, call_ids it toggles).
+    let mut group_line_info: Vec<(usize, Vec<String>)> = Vec::new();
 
     // Determine which message contains the current search match.
     let current_match_msg_idx = app
@@ -748,11 +757,11 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         let can_use_cache = !(search_active || (is_last_msg && is_streaming));
 
         // Compute tool info hash - changes when tool state changes (expanded, scroll, status, etc.)
-        let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools);
+        let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools, &msg.thinking);
 
         // Try cache first
         if can_use_cache {
-            if let Some((cached_lines, cached_tools)) =
+            if let Some((cached_lines, cached_tools, cached_groups, cached_thinking)) =
                 app.render_cache
                     .get_message(msg_idx, &msg.content, tool_info_hash)
             {
@@ -767,6 +776,15 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         base_line_idx + tool_info.content_end_offset,
                     ));
                 }
+                for group in cached_groups {
+                    group_line_info.push((
+                        base_line_idx + group.line_offset,
+                        group.calls.clone(),
+                    ));
+                }
+                for t in cached_thinking {
+                    thinking_line_info.push((msg_idx, t.index, base_line_idx + t.header_line_offset));
+                }
                 continue;
             }
         }
@@ -776,6 +794,8 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
         // Track tool positions relative to message start (for caching)
         let mut msg_tool_infos: Vec<crate::render_cache::CachedToolInfo> = Vec::new();
+        let mut msg_group_infos: Vec<crate::render_cache::CachedGroupInfo> = Vec::new();
+        let mut msg_thinking_infos: Vec<crate::render_cache::CachedThinkingInfo> = Vec::new();
 
         // Is this the message containing the current search match?
         let is_current_match_msg = current_match_msg_idx == Some(msg_idx);
@@ -822,67 +842,45 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             role_line_style,
         )));
 
+        // Reasoning comes first: it happened before the answer, so it reads as the lead-in
+        // to it. Collapsed unless the reader opened it, so the answer stays the visible part.
+        for (card_idx, card) in msg.thinking.iter().enumerate() {
+            thinking_line_info.push((msg_idx, card_idx, lines.len()));
+            msg_thinking_infos.push(crate::render_cache::CachedThinkingInfo {
+                index: card_idx,
+                header_line_offset: lines.len() - lines_before,
+            });
+            let header =
+                thinking::render_header(card.collapsed, card.text.lines().count(), false, theme);
+            let mut indented = vec![Span::raw("  ")];
+            indented.extend(header.spans);
+            lines.push(Line::from(indented));
+
+            if !card.collapsed {
+                for line in thinking::render_content(&card.text, theme, inner_w.saturating_sub(2)) {
+                    let mut indented = vec![Span::raw("  ")];
+                    indented.extend(line.spans);
+                    lines.push(Line::from(indented));
+                }
+            }
+        }
+
         // Content lines — use markdown renderer for assistant, plain for user.
         if msg.role == "assistant" && !msg.content.is_empty() {
             // Width for markdown: subtract 2 for indentation.
             let md_width = inner_w.saturating_sub(2);
 
-            // Parse content for thinking blocks.
-            let segments = thinking::parse_content(&msg.content);
-            let mut thinking_idx = 0;
-
-            for segment in segments {
-                match segment {
-                    ContentSegment::Text(text) => {
-                        // Render as markdown.
-                        let md_lines = crate::markdown::render(&text, theme, md_width);
-                        for line in md_lines {
-                            // Apply search highlighting if active.
-                            let highlighted_line = if let Some(ref search) = app.search_state {
-                                search.highlight_line(line, is_current_match_msg)
-                            } else {
-                                line
-                            };
-                            let mut indented = vec![Span::raw("  ")];
-                            indented.extend(highlighted_line.spans);
-                            lines.push(Line::from(indented));
-                        }
-                    }
-                    ContentSegment::Thinking { tag, content } => {
-                        let is_collapsed = app.thinking_state.is_collapsed(thinking_idx);
-                        let line_count = content.lines().count();
-
-                        if is_collapsed {
-                            // Collapsed: show header only.
-                            let header = thinking::render_collapsed_header(&tag, line_count, theme);
-                            let mut indented = vec![Span::raw("  ")];
-                            indented.extend(header.spans);
-                            lines.push(Line::from(indented));
-                        } else {
-                            // Expanded: show header and content.
-                            let header = thinking::render_expanded_header(&tag, theme);
-                            let mut indented = vec![Span::raw("  ")];
-                            indented.extend(header.spans);
-                            lines.push(Line::from(indented));
-
-                            // Render thinking content with muted style.
-                            let thinking_lines =
-                                thinking::render_thinking_content(&content, theme, md_width);
-                            for line in thinking_lines {
-                                // Apply search highlighting if active.
-                                let highlighted_line = if let Some(ref search) = app.search_state {
-                                    search.highlight_line(line, is_current_match_msg)
-                                } else {
-                                    line
-                                };
-                                let mut indented = vec![Span::raw("  ")];
-                                indented.extend(highlighted_line.spans);
-                                lines.push(Line::from(indented));
-                            }
-                        }
-                        thinking_idx += 1;
-                    }
-                }
+            let md_lines = crate::markdown::render(&msg.content, theme, md_width);
+            for line in md_lines {
+                // Apply search highlighting if active.
+                let highlighted_line = if let Some(ref search) = app.search_state {
+                    search.highlight_line(line, is_current_match_msg)
+                } else {
+                    line
+                };
+                let mut indented = vec![Span::raw("  ")];
+                indented.extend(highlighted_line.spans);
+                lines.push(Line::from(indented));
             }
         } else {
             // Image markers [img1] etc are already inline in the text.
@@ -911,56 +909,78 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             }
         }
 
-        // Tool cards.
-        for card in &msg.tools {
-            // Track header position relative to message start (for cache)
-            let header_line_offset = lines.len() - lines_before;
-            let header_line_idx = lines.len();
+        // Tool cards, grouped per turn (PLAN §P7 D11).
+        //
+        // A turn's calls read as one unit: a header that expands them all, then either a
+        // compact line each (collapsed) or the card itself (expanded). A single-call turn
+        // gets no header — one line does not need a heading over it.
+        if !msg.tools.is_empty() {
+            if msg.tools.len() > 1 {
+                let group_line_offset = lines.len() - lines_before;
+                render_tool_group_header(&msg.tools, app, &mut lines, inner_w, theme);
+                let group_calls: Vec<String> =
+                    msg.tools.iter().map(|c| c.call_id.clone()).collect();
+                group_line_info.push((lines.len() - 1, group_calls.clone()));
+                msg_group_infos.push(crate::render_cache::CachedGroupInfo {
+                    line_offset: group_line_offset,
+                    calls: group_calls,
+                });
+            }
 
-            render_tool_card(card, app, &mut lines, inner_w, theme, area.height as usize);
+            for card in &msg.tools {
+                // Track header position relative to message start (for cache)
+                let header_line_offset = lines.len() - lines_before;
+                let header_line_idx = lines.len();
 
-            let content_end_line_idx = lines.len();
-            let content_end_offset = lines.len() - lines_before;
+                if card.expanded {
+                    render_tool_card(card, app, &mut lines, inner_w, theme, area.height as usize);
+                } else {
+                    render_tool_compact_line(card, app, &mut lines, inner_w, theme);
+                }
 
-            // Add to global tool_line_info for click detection
-            tool_line_info.push((card.call_id.clone(), header_line_idx, content_end_line_idx));
+                let content_end_line_idx = lines.len();
+                let content_end_offset = lines.len() - lines_before;
 
-            // Add to message-local tool infos for caching
-            msg_tool_infos.push(crate::render_cache::CachedToolInfo {
-                call_id: card.call_id.clone(),
-                header_line_offset,
-                content_end_offset,
-            });
+                // Add to global tool_line_info for click detection
+                tool_line_info.push((card.call_id.clone(), header_line_idx, content_end_line_idx));
 
-            // 96E-27: collapsible subagent sub-entry nested under its spawning tool call
-            if let Some(sub) = app.subagents.iter().find(|s| s.call_id == card.call_id) {
-                let collapsed = sub.collapsed;
-                let vis = sub.visibility.as_str();
-                let indicator = if collapsed { "[+]" } else { "[-]" };
-                let vis_style = match vis {
-                    "silent" => Style::default().fg(theme.muted),
-                    "full" => Style::default().fg(theme.primary),
-                    _ => Style::default().fg(theme.success),
-                };
-                let header = Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(
-                        format!("{} subagent ", indicator),
-                        Style::default().fg(theme.muted),
-                    ),
-                    Span::styled(
-                        truncate(&sub.task, inner_w.saturating_sub(20)),
-                        Style::default().fg(theme.fg).add_modifier(Modifier::ITALIC),
-                    ),
-                    Span::styled(format!(" [{}]", vis), vis_style),
-                    Span::styled(
-                        "  (a:attach ".to_string()
-                            + if collapsed { "expand" } else { "collapse" }
-                            + ")",
-                        Style::default().fg(theme.muted),
-                    ),
-                ]);
-                lines.push(header);
+                // Add to message-local tool infos for caching
+                msg_tool_infos.push(crate::render_cache::CachedToolInfo {
+                    call_id: card.call_id.clone(),
+                    header_line_offset,
+                    content_end_offset,
+                });
+
+                // 96E-27: collapsible subagent sub-entry nested under its spawning tool call
+                if let Some(sub) = app.subagents.iter().find(|s| s.call_id == card.call_id) {
+                    let collapsed = sub.collapsed;
+                    let vis = sub.visibility.as_str();
+                    let indicator = if collapsed { "[+]" } else { "[-]" };
+                    let vis_style = match vis {
+                        "silent" => Style::default().fg(theme.muted),
+                        "full" => Style::default().fg(theme.primary),
+                        _ => Style::default().fg(theme.success),
+                    };
+                    let header = Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(
+                            format!("{} subagent ", indicator),
+                            Style::default().fg(theme.muted),
+                        ),
+                        Span::styled(
+                            truncate(&sub.task, inner_w.saturating_sub(20)),
+                            Style::default().fg(theme.fg).add_modifier(Modifier::ITALIC),
+                        ),
+                        Span::styled(format!(" [{}]", vis), vis_style),
+                        Span::styled(
+                            "  (a:attach ".to_string()
+                                + if collapsed { "expand" } else { "collapse" }
+                                + ")",
+                            Style::default().fg(theme.muted),
+                        ),
+                    ]);
+                    lines.push(header);
+                }
             }
         }
 
@@ -975,6 +995,8 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                 tool_info_hash,
                 msg_lines,
                 msg_tool_infos,
+                msg_group_infos,
+                msg_thinking_infos,
             );
         }
     }
@@ -982,7 +1004,7 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     // Update cache state
     app.render_cache.update_state(
         app.transcript.messages().len(),
-        app.transcript.live_delta().len(),
+        app.transcript.live_delta().len() + app.transcript.live_thinking().len(),
         inner_w,
     );
 
@@ -1028,6 +1050,23 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             }
         }
         lines.push(Line::from(""));
+    }
+
+    // Live reasoning — an open card with a spinner, replaced by the answer when it starts.
+    if !app.transcript.live_thinking().is_empty() {
+        let header = thinking::render_header(false, 0, true, theme);
+        let mut indented = vec![Span::raw("  ")];
+        indented.extend(header.spans);
+        lines.push(Line::from(indented));
+        for line in thinking::render_content(
+            app.transcript.live_thinking(),
+            theme,
+            inner_w.saturating_sub(2),
+        ) {
+            let mut indented = vec![Span::raw("  ")];
+            indented.extend(line.spans);
+            lines.push(Line::from(indented));
+        }
     }
 
     // Live delta — render as markdown.
@@ -1173,6 +1212,35 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     // Build tool hit areas for click detection.
     // Convert line indices to screen Y positions.
     app.tool_hit_areas.clear();
+    app.thinking_hit_areas.clear();
+
+    // Reasoning headers toggle their card on click, like a tool card header.
+    for (msg_idx, card_idx, header_line_idx) in thinking_line_info {
+        if header_line_idx >= scroll_offset && header_line_idx < scroll_offset + visible {
+            let y = area.y + (header_line_idx - scroll_offset) as u16;
+            app.thinking_hit_areas.push(crate::app::ThinkingHitArea {
+                msg_idx,
+                card_idx,
+                y,
+                x_start: area.x,
+                x_end: area.x + inner_w as u16,
+            });
+        }
+    }
+
+    // Card width calculation (must match render_tool_card)
+    let card_w = inner_w.saturating_sub(TOOL_CARD_RIGHT_MARGIN).max(50);
+
+    // Group headers first: a header sits above the cards it toggles, so it must be
+    // matched before them.
+    for (group_line_idx, calls) in group_line_info {
+        if group_line_idx >= scroll_offset && group_line_idx < scroll_offset + visible {
+            let y = area.y + (group_line_idx - scroll_offset) as u16;
+            app.tool_hit_areas
+                .push(ToolHitArea::group(calls, y, area.x, area.x + card_w as u16));
+        }
+    }
+
     for (call_id, header_line_idx, content_end_line_idx) in tool_line_info {
         // Check if tool is visible on screen
         if header_line_idx >= scroll_offset && header_line_idx < scroll_offset + visible {
@@ -1192,11 +1260,9 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             // Layout: "    " + " Progress " + " " + " Output " + " " + " Input "
             let tab_base_x = area.x + 4;
 
-            // Card width calculation (must match render_tool_card)
-            let card_w = inner_w.saturating_sub(TOOL_CARD_RIGHT_MARGIN).max(50);
-
             app.tool_hit_areas.push(ToolHitArea {
                 call_id,
+                group_calls: Vec::new(),
                 header_y,
                 content_y_start,
                 content_y_end,
@@ -1268,9 +1334,164 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 }
 
 fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
+    // A boxed prompt, Copilot-Chat shaped (PLAN P7 D12): a rounded frame whose top
+    // border names the model, the text inside, and a key hint on the right of the
+    // frame. The border colour is the one piece of state the frame carries: it goes
+    // amber while aborting and accent while this client holds the write lease, so
+    // "can I type and will it send" is answerable without reading the status bar.
+    //
+    // Degenerate rects fall back to the bare prompt rather than drawing a broken
+    // frame: a 1-row area is what a very short terminal gives, and losing the text
+    // would be worse than losing the box.
+    if area.height < 3 || area.width < 8 {
+        render_input_bare(f, app, area, theme);
+        return;
+    }
+
+    let has_lease = app.session.state.lease.is_some();
+    let border_col = if app.aborting {
+        theme.error
+    } else if has_lease {
+        theme.primary
+    } else {
+        theme.muted
+    };
+
+    let model = app.current_model_name();
+    // Leave room for the borders and the right-hand hint before truncating the title.
+    let hint = " Enter send · ⇧Enter queue ";
+    let title_room = (area.width as usize).saturating_sub(hint.chars().count() + 4);
+    let title = truncate(&model, title_room.max(8));
+    let title = format!(" {title} ");
+    let show_hint = area.width as usize >= title.chars().count() + hint.chars().count() + 4;
+
     let buf = f.buffer_mut();
 
-    // Prompt indicator.
+    // ── Frame ────────────────────────────────────────────────────────────────
+    let top = area.y;
+    let bottom = area.y + area.height - 1;
+    let left = area.x;
+    let right = area.x + area.width - 1;
+
+    buf[(left, top)].set_char('╭').set_fg(border_col);
+    buf[(right, top)].set_char('╮').set_fg(border_col);
+    buf[(left, bottom)].set_char('╰').set_fg(border_col);
+    buf[(right, bottom)].set_char('╯').set_fg(border_col);
+
+    for x in (left + 1)..right {
+        buf[(x, top)].set_char('─').set_fg(border_col);
+        buf[(x, bottom)].set_char('─').set_fg(border_col);
+    }
+    for y in (top + 1)..bottom {
+        buf[(left, y)].set_char('│').set_fg(border_col);
+        buf[(right, y)].set_char('│').set_fg(border_col);
+    }
+
+    // The title interrupts the top border, which is what makes it read as a frame
+    // around the prompt rather than a separate row above it.
+    let mut x = left + 2;
+    for ch in title.chars() {
+        if x >= right {
+            break;
+        }
+        buf[(x, top)].set_char(ch).set_fg(theme.fg);
+        x += 1;
+    }
+    if show_hint {
+        let mut hx = right - hint.chars().count() as u16;
+        for ch in hint.chars() {
+            if hx >= right {
+                break;
+            }
+            buf[(hx, top)].set_char(ch).set_fg(theme.muted);
+            hx += 1;
+        }
+    }
+
+    // ── Content ──────────────────────────────────────────────────────────────
+    let content_x = area.x + 2; // border + prompt
+    let content_y = area.y + 1;
+    let content_w = area.width.saturating_sub(INPUT_CHROME_COLS) as usize;
+    let content_h = area.height.saturating_sub(2) as usize;
+    if content_w == 0 || content_h == 0 {
+        return;
+    }
+
+    let display_input = &app.input;
+    let input_char_count = app.input.chars().count();
+
+    let mut display_lines: Vec<String> = Vec::new();
+    let mut cursor_display_row: usize = 0;
+    let mut cursor_display_col: usize = 0;
+
+    for (logical_row, line) in display_input.lines().enumerate() {
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            display_lines.push(String::new());
+            if logical_row == app.cursor_row {
+                cursor_display_row = display_lines.len() - 1;
+                cursor_display_col = 0;
+            }
+        } else {
+            let mut pos = 0;
+            while pos < chars.len() {
+                let end = (pos + content_w).min(chars.len());
+                display_lines.push(chars[pos..end].iter().collect());
+
+                // The cursor is only mapped on the first logical line: the image
+                // markers appended to `display_input` have no cursor position.
+                if logical_row == app.cursor_row && logical_row == 0 {
+                    let cursor_in_line = app.cursor_col;
+                    if cursor_in_line >= pos && cursor_in_line <= input_char_count {
+                        cursor_display_row = display_lines.len() - 1;
+                        cursor_display_col = cursor_in_line.min(end) - pos;
+                    }
+                }
+                pos = end;
+            }
+        }
+    }
+
+    if display_lines.is_empty() {
+        display_lines.push(String::new());
+    }
+
+    // Keep the cursor inside the frame. Before this, a prompt longer than the box
+    // simply walked off the bottom and the cursor was set on a row that was not
+    // drawn — typing continued into somewhere invisible.
+    let scroll = cursor_display_row.saturating_sub(content_h.saturating_sub(1));
+
+    for (row, line) in display_lines.iter().enumerate().skip(scroll) {
+        let y = content_y + (row - scroll) as u16;
+        if y >= bottom {
+            break;
+        }
+
+        // The prompt marks the first *logical* line, not the first visible one, so
+        // it does not reappear when the box has scrolled.
+        if row == 0 {
+            buf[(area.x + 1, y)].set_char('›').set_fg(border_col);
+        }
+        for (i, ch) in line.chars().enumerate() {
+            let cx = content_x + i as u16;
+            if cx >= right {
+                break;
+            }
+            buf[(cx, y)].set_char(ch).set_fg(theme.fg);
+        }
+    }
+
+    // ── Cursor ───────────────────────────────────────────────────────────────
+    let cursor_x = content_x + cursor_display_col as u16;
+    let cursor_y = content_y + (cursor_display_row - scroll) as u16;
+    if cursor_y < bottom && cursor_x < right {
+        f.set_cursor_position((cursor_x, cursor_y));
+    }
+}
+
+/// Prompt without a frame, for areas too small to hold one.
+fn render_input_bare(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
+    let buf = f.buffer_mut();
     let has_lease = app.session.state.lease.is_some();
     let prompt = if has_lease { "› " } else { "○ " };
     let prompt_style = if has_lease {
@@ -1279,114 +1500,25 @@ fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         Style::default().fg(theme.muted)
     };
 
-    // Content width after prompt.
-    let prefix_width = 2; // "› "
-    let content_width = area.width.saturating_sub(prefix_width as u16) as usize;
-    if content_width == 0 {
+    if area.width < 3 || area.height == 0 {
         return;
     }
-
-    // Use input directly (image markers are already inline).
-    let display_input = &app.input;
-
-    // Build wrapped lines from input.
-    // Each logical line may wrap into multiple display lines.
-    let mut display_lines: Vec<String> = Vec::new();
-    let mut cursor_display_row: usize = 0;
-    let mut cursor_display_col: usize = 0;
-
-    // Track position for cursor mapping.
-    // logical_row tracks newlines in the original input, not display lines after wrapping.
-    let mut logical_row: usize = 0;
-    let input_char_count = app.input.chars().count();
-
-    // Use display_input (with image suffix) for rendering.
-    #[allow(clippy::explicit_counter_loop)]
-    for (line_idx, line) in display_input.lines().enumerate() {
-        let chars: Vec<char> = line.chars().collect();
-        if chars.is_empty() {
-            // Empty line.
-            display_lines.push(String::new());
-            if logical_row == app.cursor_row {
-                cursor_display_row = display_lines.len() - 1;
-                cursor_display_col = 0;
-            }
-        } else {
-            // Wrap long lines.
-            let mut pos = 0;
-            while pos < chars.len() {
-                let end = (pos + content_width).min(chars.len());
-                let segment: String = chars[pos..end].iter().collect();
-                display_lines.push(segment);
-
-                // Map cursor position (only within original input, not img suffix).
-                if logical_row == app.cursor_row && line_idx == 0 {
-                    let cursor_in_line = app.cursor_col;
-                    if cursor_in_line >= pos
-                        && cursor_in_line < end
-                        && cursor_in_line <= input_char_count
-                    {
-                        cursor_display_row = display_lines.len() - 1;
-                        cursor_display_col = cursor_in_line - pos;
-                    } else if cursor_in_line >= end && cursor_in_line <= input_char_count {
-                        // Cursor at end of input (before img suffix).
-                        cursor_display_row = display_lines.len() - 1;
-                        cursor_display_col = input_char_count.min(end) - pos;
-                    }
-                }
-
-                pos = end;
-            }
-        }
-        logical_row += 1;
-    }
-
-    // Handle empty input.
-    if display_lines.is_empty() {
-        display_lines.push(String::new());
-        cursor_display_row = 0;
-        cursor_display_col = 0;
-    }
-
-    // Render display lines.
-    for (display_row, line) in display_lines.iter().enumerate() {
-        let y = area.y + display_row as u16;
-        if y >= area.y + area.height {
+    let mut x = area.x;
+    for ch in prompt.chars() {
+        if x >= area.x + area.width {
             break;
         }
-
-        let mut x_offset = area.x;
-
-        // First display line gets the prompt.
-        if display_row == 0 {
-            // Draw prompt.
-            for ch in prompt.chars() {
-                if x_offset < area.x + area.width {
-                    buf[(x_offset, y)].set_char(ch).set_style(prompt_style);
-                    x_offset += 1;
-                }
-            }
-        } else {
-            // Continuation lines: indent to align with content.
-            x_offset += prefix_width as u16;
-        }
-
-        // Draw content.
-        for ch in line.chars() {
-            if x_offset >= area.x + area.width {
-                break;
-            }
-            buf[(x_offset, y)].set_char(ch).set_fg(theme.fg);
-            x_offset += 1;
-        }
+        buf[(x, area.y)].set_char(ch).set_style(prompt_style);
+        x += 1;
     }
-
-    // Set cursor position (account for prefix width).
-    let cursor_x = area.x + prefix_width as u16 + cursor_display_col as u16;
-    let cursor_y = area.y + cursor_display_row as u16;
-    if cursor_y < area.y + area.height && cursor_x < area.x + area.width {
-        f.set_cursor_position((cursor_x, cursor_y));
+    for ch in app.input.chars() {
+        if x >= area.x + area.width {
+            break;
+        }
+        buf[(x, area.y)].set_char(ch).set_fg(theme.fg);
+        x += 1;
     }
+    f.set_cursor_position((x.min(area.x + area.width - 1), area.y));
 }
 
 fn render_status(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
@@ -1453,7 +1585,7 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
     let buf = f.buffer_mut();
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
-            buf[(x, y)].set_fg(Color::DarkGray);
+            buf[(x, y)].set_fg(theme.muted);
         }
     }
 
@@ -1475,7 +1607,7 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
     // Clear overlay area.
     for y in overlay_y..overlay_y + overlay_h {
         for x in overlay_x..overlay_x + overlay_w {
-            buf[(x, y)].set_char(' ').set_bg(Color::Black);
+            buf[(x, y)].set_char(' ').set_bg(theme.panel_bg);
         }
     }
 
@@ -1489,7 +1621,7 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
             let border_fg = theme.warning;
             let border_style = Style::default()
                 .fg(border_fg)
-                .bg(Color::Black)
+                .bg(theme.panel_bg)
                 .add_modifier(Modifier::BOLD);
             if overlay_w >= 2 && overlay_h >= 2 {
                 buf[(overlay_x, overlay_y)]
@@ -1526,7 +1658,7 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
                 buf[(title_x + i as u16, y)]
                     .set_char(ch)
                     .set_fg(theme.warning)
-                    .set_bg(Color::Black);
+                    .set_bg(theme.panel_bg);
             }
             y += 2;
 
@@ -1541,7 +1673,7 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
                 let mut x = inner_x;
                 for span in line.spans {
                     let style = if span.style.bg.is_none() {
-                        span.style.bg(Color::Black)
+                        span.style.bg(theme.panel_bg)
                     } else {
                         span.style
                     };
@@ -1570,9 +1702,9 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
             for (i, btn) in buttons.iter().enumerate() {
                 let is_selected = *selected == i;
                 let style = if is_selected {
-                    Style::default().fg(Color::Black).bg(theme.primary)
+                    Style::default().fg(theme.ink).bg(theme.primary)
                 } else {
-                    Style::default().fg(theme.fg).bg(Color::DarkGray)
+                    Style::default().fg(theme.fg).bg(theme.selection)
                 };
 
                 let label = format!(" {} ", btn);
@@ -1598,7 +1730,7 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
                 buf[(title_x + i as u16, y)]
                     .set_char(ch)
                     .set_fg(theme.primary)
-                    .set_bg(Color::Black);
+                    .set_bg(theme.panel_bg);
             }
             y += 2;
 
@@ -1634,7 +1766,7 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
                         buf[(overlay_x + 2 + i as u16, y)]
                             .set_char(ch)
                             .set_fg(theme.fg)
-                            .set_bg(Color::Black);
+                            .set_bg(theme.panel_bg);
                     }
                 }
                 y += 1;
@@ -1652,69 +1784,158 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
     }
 }
 
+/// One row of the completion dropdown.
+///
+/// `primary` is the text that will be inserted, `secondary` an orientation hint. The slash
+/// dropdown puts `/name` and its description; the mention dropdown puts the path's basename
+/// and its directory — the same grammar, so the two cannot drift apart visually.
+struct CompletionRow {
+    primary: String,
+    secondary: String,
+}
+
+/// The completion dropdown, shared by `/` commands and `@` mentions (PLAN §P7 D18, L2).
+///
+/// One widget for both because it *is* the same interaction — a filtered list above the
+/// prompt, arrows and Enter — and the only difference is what a row means. Two renderers is
+/// how the two would drift: one ends up themed, the other keeps a hardcoded background.
+fn render_completion_dropdown(
+    f: &mut Frame,
+    rows: &[CompletionRow],
+    selected: usize,
+    input_area: Rect,
+    theme: &Theme,
+) {
+    if rows.is_empty() || input_area.y == 0 {
+        return;
+    }
+
+    let h = (rows.len() as u16).min(8);
+    // Width from the content: a fixed 40 columns silently cut off long paths, which is
+    // exactly the case the mention dropdown exists for.
+    let widest = rows
+        .iter()
+        .take(h as usize)
+        .map(|r| r.primary.chars().count() + r.secondary.chars().count() + 6)
+        .max()
+        .unwrap_or(30) as u16;
+    let w = widest.clamp(30, input_area.width.saturating_sub(4).max(30));
+    let x = input_area.x + 2;
+    let y = input_area.y.saturating_sub(h + 1);
+
+    // Keep the selection on screen: the list is capped at 8 rows and the user can walk past
+    // that, and before this the highlight simply left the box.
+    let first = selected.saturating_sub(h.saturating_sub(1) as usize);
+
+    let buf = f.buffer_mut();
+    for i in 0..h {
+        let row_idx = first + i as usize;
+        let Some(row) = rows.get(row_idx) else {
+            break;
+        };
+        let yy = y + i;
+        if yy >= input_area.y {
+            break;
+        }
+        let is_sel = row_idx == selected;
+        let (fg, bg) = if is_sel {
+            (theme.ink, theme.primary)
+        } else {
+            (theme.fg, theme.selection)
+        };
+
+        for xx in x..(x + w) {
+            if xx < input_area.x + input_area.width {
+                buf[(xx, yy)].set_char(' ').set_bg(bg);
+            }
+        }
+        for (j, ch) in row.primary.chars().enumerate() {
+            let xx = x + 1 + j as u16;
+            if xx + 1 >= x + w {
+                break;
+            }
+            buf[(xx, yy)].set_char(ch).set_fg(fg).set_bg(bg);
+        }
+        let sec_len = row.secondary.chars().count() as u16;
+        if sec_len > 0 && w > sec_len + 4 {
+            let sec_fg = if is_sel { theme.ink } else { theme.muted };
+            let sx = x + w - 2 - sec_len;
+            for (j, ch) in row.secondary.chars().enumerate() {
+                buf[(sx + j as u16, yy)].set_char(ch).set_fg(sec_fg).set_bg(bg);
+            }
+        }
+    }
+}
+
 fn render_slash_dropdown(f: &mut Frame, app: &App, input_area: Rect, theme: &Theme) {
-    let matches = &app.slash.matches;
-    if matches.is_empty() {
+    if app.slash.matches.is_empty() {
         return;
     }
     let entries = app.slash.entries();
+    let rows: Vec<CompletionRow> = app
+        .slash
+        .matches
+        .iter()
+        .filter_map(|&i| entries.get(i))
+        .map(|cmd| CompletionRow {
+            primary: format!("/{}", cmd.name),
+            secondary: cmd.description.clone(),
+        })
+        .collect();
+    render_completion_dropdown(f, &rows, app.slash.selected, input_area, theme);
+}
 
-    let buf = f.buffer_mut();
-
-    // Position dropdown above input.
-    let dropdown_h = (matches.len() as u16).min(8);
-    let dropdown_y = input_area.y.saturating_sub(dropdown_h + 1);
-    let dropdown_x = input_area.x + 2; // Align with input text.
-    let dropdown_w = 40.min(input_area.width.saturating_sub(4));
-
-    // Background.
-    for y in dropdown_y..dropdown_y + dropdown_h {
-        for x in dropdown_x..dropdown_x + dropdown_w {
-            if x < input_area.x + input_area.width && y < input_area.y {
-                buf[(x, y)].set_char(' ').set_bg(Color::DarkGray);
+/// The `@` mention dropdown (PLAN §P7 L2).
+fn render_mention_dropdown(f: &mut Frame, app: &App, input_area: Rect, theme: &Theme) {
+    let rows: Vec<CompletionRow> = app
+        .mention
+        .matches
+        .iter()
+        .map(|path| {
+            // Basename first, directory second: the same shape as a slash row, and it makes
+            // two files with the same name tell themselves apart.
+            let (dir, base) = match path.rsplit_once('/') {
+                Some((d, b)) => (d, b),
+                None => ("", path.as_str()),
+            };
+            CompletionRow {
+                primary: base.to_string(),
+                secondary: dir.to_string(),
             }
-        }
+        })
+        .collect();
+    render_completion_dropdown(f, &rows, app.mention.selected, input_area, theme);
+}
+
+/// Draw a rounded border one cell outside an overlay's content rect (PLAN §P7 D18).
+///
+/// *Outside* rather than around: every overlay computes its rect to fit its content
+/// exactly — title, rows and a footer on the last row — so insetting a border would eat
+/// the footer. A ring needs one cell of margin, which the callers' centring already
+/// leaves; when there is no room (a rect flush with the screen edge) no border is drawn
+/// rather than one painted over the content.
+fn draw_overlay_border(buf: &mut Buffer, rect: Rect, area: Rect, theme: &Theme) {
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = rect.x + rect.width - 1;
+    let y1 = rect.y + rect.height - 1;
+    if x0 == 0 || y0 == 0 || x1 + 1 >= area.right() || y1 + 1 >= area.bottom() {
+        return;
     }
+    let (x0, y0, x1, y1) = (x0 - 1, y0 - 1, x1 + 1, y1 + 1);
 
-    // Items.
-    for (i, &cmd_idx) in matches.iter().enumerate().take(dropdown_h as usize) {
-        let Some(cmd) = entries.get(cmd_idx) else {
-            continue;
-        };
-        let y = dropdown_y + i as u16;
-        let is_selected = i == app.slash.selected;
-
-        let (fg, bg) = if is_selected {
-            (theme.bg, theme.primary)
-        } else {
-            (theme.fg, Color::DarkGray)
-        };
-
-        // Command name.
-        let name = format!("/{}", cmd.name);
-        for (j, ch) in name.chars().enumerate() {
-            let x = dropdown_x + j as u16;
-            if x < dropdown_x + dropdown_w {
-                buf[(x, y)].set_char(ch).set_fg(fg).set_bg(bg);
-            }
-        }
-
-        // Description.
-        let desc_start = dropdown_x + 12;
-        for (j, ch) in cmd.description.chars().enumerate() {
-            let x = desc_start + j as u16;
-            if x < dropdown_x + dropdown_w {
-                let desc_fg = if is_selected { theme.bg } else { theme.muted };
-                buf[(x, y)].set_char(ch).set_fg(desc_fg).set_bg(bg);
-            }
-        }
-
-        // Fill rest of line with bg.
-        for x in (desc_start + cmd.description.len() as u16)..dropdown_x + dropdown_w {
-            if x < dropdown_x + dropdown_w {
-                buf[(x, y)].set_char(' ').set_bg(bg);
-            }
-        }
+    let edge = Style::default().fg(theme.primary);
+    buf[(x0, y0)].set_char('╭').set_style(edge);
+    buf[(x1, y0)].set_char('╮').set_style(edge);
+    buf[(x0, y1)].set_char('╰').set_style(edge);
+    buf[(x1, y1)].set_char('╯').set_style(edge);
+    for x in (x0 + 1)..x1 {
+        buf[(x, y0)].set_char('─').set_style(edge);
+        buf[(x, y1)].set_char('─').set_style(edge);
+    }
+    for y in (y0 + 1)..y1 {
+        buf[(x0, y)].set_char('│').set_style(edge);
+        buf[(x1, y)].set_char('│').set_style(edge);
     }
 }
 
@@ -1731,7 +1952,7 @@ fn render_model_select(
     // Dim background.
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
-            buf[(x, y)].set_fg(Color::DarkGray);
+            buf[(x, y)].set_fg(theme.muted);
         }
     }
 
@@ -1798,9 +2019,15 @@ fn render_model_select(
     // Background.
     for y in overlay_y..overlay_y + overlay_h {
         for x in overlay_x..overlay_x + overlay_w {
-            buf[(x, y)].set_char(' ').set_bg(Color::Black);
+            buf[(x, y)].set_char(' ').set_bg(theme.panel_bg);
         }
     }
+    draw_overlay_border(
+        buf,
+        Rect::new(overlay_x, overlay_y, overlay_w, overlay_h),
+        area,
+        theme,
+    );
 
     // Title.
     let title = "SELECT MODEL";
@@ -1810,7 +2037,7 @@ fn render_model_select(
         buf[(title_x + i as u16, y)]
             .set_char(ch)
             .set_fg(theme.primary)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
     }
     y += 1;
 
@@ -1831,7 +2058,7 @@ fn render_model_select(
             buf[(x, y)]
                 .set_char(ch)
                 .set_fg(filter_style)
-                .set_bg(Color::Black);
+                .set_bg(theme.panel_bg);
         }
     }
     y += 2;
@@ -1859,7 +2086,7 @@ fn render_model_select(
                         buf[(x, y)]
                             .set_char(ch)
                             .set_fg(theme.muted)
-                            .set_bg(Color::Black);
+                            .set_bg(theme.panel_bg);
                     }
                 }
                 y += 1;
@@ -1869,7 +2096,7 @@ fn render_model_select(
                 let (fg, bg) = if is_selected {
                     (theme.bg, theme.primary)
                 } else {
-                    (theme.fg, Color::Black)
+                    (theme.fg, theme.panel_bg)
                 };
 
                 // Indent model names under provider header.
@@ -1911,7 +2138,7 @@ fn render_model_select(
                 buf[(x, y)]
                     .set_char(ch)
                     .set_fg(theme.muted)
-                    .set_bg(Color::Black);
+                    .set_bg(theme.panel_bg);
             }
         }
     }
@@ -1924,7 +2151,7 @@ fn render_model_select(
         buf[(footer_x + i as u16, footer_y)]
             .set_char(ch)
             .set_fg(theme.muted)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
     }
 }
 
@@ -1941,7 +2168,7 @@ fn render_session_select(
     // Dim background.
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
-            buf[(x, y)].set_fg(Color::DarkGray);
+            buf[(x, y)].set_fg(theme.muted);
         }
     }
 
@@ -1998,9 +2225,15 @@ fn render_session_select(
     // Background.
     for y in overlay_y..overlay_y + overlay_h {
         for x in overlay_x..overlay_x + overlay_w {
-            buf[(x, y)].set_char(' ').set_bg(Color::Black);
+            buf[(x, y)].set_char(' ').set_bg(theme.panel_bg);
         }
     }
+    draw_overlay_border(
+        buf,
+        Rect::new(overlay_x, overlay_y, overlay_w, overlay_h),
+        area,
+        theme,
+    );
 
     // Title.
     let title = "SELECT SESSION";
@@ -2010,7 +2243,7 @@ fn render_session_select(
         buf[(title_x + i as u16, y)]
             .set_char(ch)
             .set_fg(theme.primary)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
     }
     y += 1;
 
@@ -2031,7 +2264,7 @@ fn render_session_select(
             buf[(x, y)]
                 .set_char(ch)
                 .set_fg(filter_style)
-                .set_bg(Color::Black);
+                .set_bg(theme.panel_bg);
         }
     }
     y += 2;
@@ -2053,7 +2286,7 @@ fn render_session_select(
                         buf[(x, y)]
                             .set_char(ch)
                             .set_fg(theme.muted)
-                            .set_bg(Color::Black);
+                            .set_bg(theme.panel_bg);
                     }
                 }
                 y += 1;
@@ -2063,7 +2296,7 @@ fn render_session_select(
                 let (fg, bg) = if is_selected {
                     (theme.bg, theme.primary)
                 } else {
-                    (theme.success, Color::Black)
+                    (theme.success, theme.panel_bg)
                 };
                 let line = "  ✚ New session";
                 for (j, ch) in line.chars().enumerate() {
@@ -2085,7 +2318,7 @@ fn render_session_select(
                 let (fg, bg) = if is_selected {
                     (theme.bg, theme.primary)
                 } else {
-                    (theme.fg, Color::Black)
+                    (theme.fg, theme.panel_bg)
                 };
 
                 // Show indicator for running/active sessions.
@@ -2141,7 +2374,7 @@ fn render_session_select(
                 buf[(x, y)]
                     .set_char(ch)
                     .set_fg(theme.muted)
-                    .set_bg(Color::Black);
+                    .set_bg(theme.panel_bg);
             }
         }
     }
@@ -2155,7 +2388,7 @@ fn render_session_select(
             buf[(footer_x + i as u16, footer_y)]
                 .set_char(ch)
                 .set_fg(theme.muted)
-                .set_bg(Color::Black);
+                .set_bg(theme.panel_bg);
         }
     }
 }
@@ -2173,7 +2406,7 @@ fn render_session_tree(f: &mut Frame, app: &App, selected: usize, area: Rect, th
     // Dim background, as the other full-screen overlays do.
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
-            buf[(x, y)].set_fg(Color::DarkGray);
+            buf[(x, y)].set_fg(theme.muted);
         }
     }
 
@@ -2189,7 +2422,7 @@ fn render_session_tree(f: &mut Frame, app: &App, selected: usize, area: Rect, th
 
     for y in overlay_y..overlay_y + overlay_h {
         for x in overlay_x..overlay_x + overlay_w {
-            buf[(x, y)].set_char(' ').set_bg(Color::Black);
+            buf[(x, y)].set_char(' ').set_bg(theme.panel_bg);
         }
     }
 
@@ -2200,7 +2433,7 @@ fn render_session_tree(f: &mut Frame, app: &App, selected: usize, area: Rect, th
         buf[(title_x + i as u16, y)]
             .set_char(ch)
             .set_fg(theme.primary)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
     }
     y += 2;
 
@@ -2218,7 +2451,7 @@ fn render_session_tree(f: &mut Frame, app: &App, selected: usize, area: Rect, th
                 buf[(x, y)]
                     .set_char(ch)
                     .set_fg(theme.muted)
-                    .set_bg(Color::Black);
+                    .set_bg(theme.panel_bg);
             }
         }
     }
@@ -2245,9 +2478,9 @@ fn render_session_tree(f: &mut Frame, app: &App, selected: usize, area: Rect, th
         let (fg, bg) = if is_selected {
             (theme.bg, theme.primary)
         } else if is_current {
-            (theme.success, Color::Black)
+            (theme.success, theme.panel_bg)
         } else {
-            (theme.fg, Color::Black)
+            (theme.fg, theme.panel_bg)
         };
 
         // Indent by depth; the glyph marks the current session, the badge the reason this
@@ -2288,7 +2521,7 @@ fn render_session_tree(f: &mut Frame, app: &App, selected: usize, area: Rect, th
             buf[(footer_x + i as u16, footer_y)]
                 .set_char(ch)
                 .set_fg(theme.muted)
-                .set_bg(Color::Black);
+                .set_bg(theme.panel_bg);
         }
     }
 }
@@ -2306,7 +2539,7 @@ fn render_tools_manager(
     // Dim background.
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
-            buf[(x, y)].set_fg(Color::DarkGray);
+            buf[(x, y)].set_fg(theme.muted);
         }
     }
 
@@ -2383,9 +2616,15 @@ fn render_tools_manager(
     // Background.
     for y in overlay_y..overlay_y + overlay_h {
         for x in overlay_x..overlay_x + overlay_w {
-            buf[(x, y)].set_char(' ').set_bg(Color::Black);
+            buf[(x, y)].set_char(' ').set_bg(theme.panel_bg);
         }
     }
+    draw_overlay_border(
+        buf,
+        Rect::new(overlay_x, overlay_y, overlay_w, overlay_h),
+        area,
+        theme,
+    );
 
     // Title.
     let enabled_count = app.tools.iter().filter(|t| t.enabled).count();
@@ -2397,7 +2636,7 @@ fn render_tools_manager(
         buf[(title_x + i as u16, y)]
             .set_char(ch)
             .set_fg(theme.primary)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
     }
     y += 1;
 
@@ -2418,7 +2657,7 @@ fn render_tools_manager(
             buf[(x, y)]
                 .set_char(ch)
                 .set_fg(filter_style)
-                .set_bg(Color::Black);
+                .set_bg(theme.panel_bg);
         }
     }
     y += 2;
@@ -2444,7 +2683,7 @@ fn render_tools_manager(
                         buf[(x, y)]
                             .set_char(ch)
                             .set_fg(theme.muted)
-                            .set_bg(Color::Black);
+                            .set_bg(theme.panel_bg);
                     }
                 }
                 y += 1;
@@ -2454,7 +2693,7 @@ fn render_tools_manager(
                 let (fg, bg) = if is_selected {
                     (theme.bg, theme.primary)
                 } else {
-                    (theme.fg, Color::Black)
+                    (theme.fg, theme.panel_bg)
                 };
 
                 let check = if tool.enabled { "☑" } else { "☐" };
@@ -2488,7 +2727,7 @@ fn render_tools_manager(
                 buf[(x, y)]
                     .set_char(ch)
                     .set_fg(theme.muted)
-                    .set_bg(Color::Black);
+                    .set_bg(theme.panel_bg);
             }
         }
     }
@@ -2502,7 +2741,7 @@ fn render_tools_manager(
             buf[(footer_x + i as u16, footer_y)]
                 .set_char(ch)
                 .set_fg(theme.muted)
-                .set_bg(Color::Black);
+                .set_bg(theme.panel_bg);
         }
     }
 }
@@ -2515,7 +2754,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     // Dim background.
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
-            buf[(x, y)].set_fg(Color::DarkGray);
+            buf[(x, y)].set_fg(theme.muted);
         }
     }
 
@@ -2531,7 +2770,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     // Draw background.
     for y in overlay_y..overlay_y + overlay_h {
         for x in overlay_x..overlay_x + overlay_w {
-            buf[(x, y)].set_char(' ').set_bg(Color::Black);
+            buf[(x, y)].set_char(' ').set_bg(theme.panel_bg);
         }
     }
 
@@ -2540,42 +2779,42 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     buf[(overlay_x, overlay_y)]
         .set_char('╭')
         .set_fg(theme.primary)
-        .set_bg(Color::Black);
+        .set_bg(theme.panel_bg);
     buf[(overlay_x + overlay_w - 1, overlay_y)]
         .set_char('╮')
         .set_fg(theme.primary)
-        .set_bg(Color::Black);
+        .set_bg(theme.panel_bg);
     for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
         buf[(x, overlay_y)]
             .set_char('─')
             .set_fg(theme.primary)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
     }
     // Bottom.
     buf[(overlay_x, overlay_y + overlay_h - 1)]
         .set_char('╰')
         .set_fg(theme.primary)
-        .set_bg(Color::Black);
+        .set_bg(theme.panel_bg);
     buf[(overlay_x + overlay_w - 1, overlay_y + overlay_h - 1)]
         .set_char('╯')
         .set_fg(theme.primary)
-        .set_bg(Color::Black);
+        .set_bg(theme.panel_bg);
     for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
         buf[(x, overlay_y + overlay_h - 1)]
             .set_char('─')
             .set_fg(theme.primary)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
     }
     // Sides.
     for y in (overlay_y + 1)..(overlay_y + overlay_h - 1) {
         buf[(overlay_x, y)]
             .set_char('│')
             .set_fg(theme.primary)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
         buf[(overlay_x + overlay_w - 1, y)]
             .set_char('│')
             .set_fg(theme.primary)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
     }
 
     // Title.
@@ -2585,7 +2824,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         buf[(title_x + i as u16, overlay_y)]
             .set_char(ch)
             .set_fg(theme.primary)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
     }
 
     // Search input.
@@ -2595,7 +2834,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         buf[(overlay_x + 2 + i as u16, input_y)]
             .set_char(ch)
             .set_fg(theme.muted)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
     }
     let query = &palette.query;
     for (i, ch) in query.chars().enumerate() {
@@ -2604,7 +2843,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             buf[(x, input_y)]
                 .set_char(ch)
                 .set_fg(theme.fg)
-                .set_bg(Color::Black);
+                .set_bg(theme.panel_bg);
         }
     }
     // Cursor.
@@ -2613,7 +2852,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         buf[(cursor_x, input_y)]
             .set_char('▏')
             .set_fg(theme.primary)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
     }
 
     // Separator.
@@ -2621,8 +2860,8 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     for x in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
         buf[(x, sep_y)]
             .set_char('─')
-            .set_fg(Color::DarkGray)
-            .set_bg(Color::Black);
+            .set_fg(theme.muted)
+            .set_bg(theme.panel_bg);
     }
 
     // Command list.
@@ -2639,7 +2878,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         let (fg, bg) = if is_selected {
             (theme.bg, theme.primary)
         } else {
-            (theme.fg, Color::Black)
+            (theme.fg, theme.panel_bg)
         };
 
         // Clear line.
@@ -2680,7 +2919,7 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             buf[(count_x + i as u16, count_y)]
                 .set_char(ch)
                 .set_fg(theme.muted)
-                .set_bg(Color::Black);
+                .set_bg(theme.panel_bg);
         }
     }
 }
@@ -2834,6 +3073,151 @@ fn get_tool_display_mode(app: &App, name: &str) -> ToolDisplayMode {
         "read" => ToolDisplayMode::Summary,
         "bash" => ToolDisplayMode::Streaming,
         _ => ToolDisplayMode::Output, // MCP tools, others
+    }
+}
+
+/// One line summarising a tool call inside a collapsed turn (PLAN §P7 D11).
+///
+/// The point of the compact line is that a turn's tool calls stay *scannable* without
+/// being expanded: which files were read, which were edited, and whether anything
+/// failed. Before this, each call was its own one-line card with its own background, so
+/// a four-tool turn read as four unrelated blocks.
+fn render_tool_compact_line(
+    card: &ToolCard,
+    app: &App,
+    lines: &mut Vec<Line>,
+    inner_w: usize,
+    theme: &Theme,
+) {
+    let accent = status_accent(&card.status, theme);
+    let icon = status_icon(card, app, theme);
+    let mode = get_tool_display_mode(app, &card.name);
+
+    let summary = build_tool_header_extra(card, mode, inner_w.saturating_sub(18));
+    let badge = diff_badge(card, mode);
+
+    let used = 2 + card.name.chars().count() + summary.chars().count() + badge.chars().count() + 6;
+    let pad = inner_w.saturating_sub(used);
+
+    lines.push(Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(format!("{icon} "), Style::default().fg(accent)),
+        Span::styled(
+            card.name.clone(),
+            Style::default().fg(theme.tool).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  {summary}"),
+            Style::default().fg(theme.muted),
+        ),
+        Span::styled(badge, Style::default().fg(accent)),
+        Span::raw(" ".repeat(pad)),
+    ]));
+}
+
+/// `+N -M` for a card whose content is a diff, empty otherwise.
+///
+/// Counted from what is actually rendered, so the badge cannot advertise a change the
+/// card does not show.
+fn diff_badge(card: &ToolCard, mode: ToolDisplayMode) -> String {
+    if mode != ToolDisplayMode::Diff {
+        return String::new();
+    }
+    let diff: Vec<String> = if !card.progress_lines.is_empty() {
+        card.progress_lines.clone()
+    } else {
+        reconstruct_diff_from_args(&card.args)
+    };
+    if diff.is_empty() {
+        return String::new();
+    }
+    // `reconstruct_diff_from_args` marks removals with '-' and additions with '+';
+    // `progress_lines` from a real edit already look like that.
+    let added = diff.iter().filter(|l| l.starts_with('+')).count();
+    let removed = diff.iter().filter(|l| l.starts_with('-')).count();
+    format!("  +{added} -{removed}")
+}
+
+/// The turn's tool calls, rolled up (PLAN §P7 D11).
+///
+/// Only shown for a turn with more than one call: a header that says "1 tool" above a
+/// single line is pure chrome.
+fn render_tool_group_header(
+    cards: &[ToolCard],
+    app: &App,
+    lines: &mut Vec<Line>,
+    inner_w: usize,
+    theme: &Theme,
+) {
+    let open = cards.iter().any(|c| c.expanded);
+
+    // Roll the statuses up: one failure colours the turn, one still-running call makes
+    // it live. A turn is only "done" when every call in it finished.
+    let rollup: (String, Color) = if cards.iter().any(|c| c.status == "error") {
+        ("✗".to_string(), theme.error)
+    } else if cards
+        .iter()
+        .any(|c| c.status.starts_with("running") || c.status == "pending")
+    {
+        (
+            SPINNER[app.spinner_frame % SPINNER.len()].to_string(),
+            theme.primary,
+        )
+    } else {
+        ("✓".to_string(), theme.success)
+    };
+
+    let names: Vec<&str> = {
+        let mut seen: Vec<&str> = Vec::new();
+        for c in cards {
+            if !seen.contains(&c.name.as_str()) {
+                seen.push(&c.name);
+            }
+        }
+        seen
+    };
+    let distinct = names.join(", ");
+    let label = format!(
+        "{} {}  {}  {}",
+        if open { "▾" } else { "▸" },
+        rollup.0,
+        plural(cards.len(), "tool", "tools"),
+        truncate(&distinct, inner_w.saturating_sub(20)),
+    );
+
+    lines.push(Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(label.clone(), Style::default().fg(rollup.1).add_modifier(Modifier::BOLD)),
+        Span::raw(" ".repeat(inner_w.saturating_sub(label.chars().count() + 2))),
+    ]));
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("{n} {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+/// Status icon for a card, animated while it runs.
+fn status_icon(card: &ToolCard, app: &App, _theme: &Theme) -> String {
+    match card.status.as_str() {
+        s if s.starts_with("running") || s == "pending" => {
+            SPINNER[app.spinner_frame % SPINNER.len()].to_string()
+        }
+        "done" => "✓".to_string(),
+        "error" => "✗".to_string(),
+        _ => "○".to_string(),
+    }
+}
+
+fn status_accent(status: &str, theme: &Theme) -> Color {
+    match status {
+        "done" => theme.success,
+        "error" => theme.error,
+        s if s.starts_with("running") => theme.primary,
+        _ => theme.muted,
     }
 }
 
@@ -3951,7 +4335,7 @@ fn render_interaction_overlay(
     let border_fg = theme.primary;
     let border_style = Style::default()
         .fg(border_fg)
-        .bg(Color::Black)
+        .bg(theme.panel_bg)
         .add_modifier(Modifier::BOLD);
 
     // Draw border
@@ -3993,7 +4377,7 @@ fn render_interaction_overlay(
         buf[(title_x + i as u16, y)]
             .set_char(ch)
             .set_fg(theme.primary)
-            .set_bg(Color::Black);
+            .set_bg(theme.panel_bg);
     }
     y += 2;
 
@@ -4010,7 +4394,7 @@ fn render_interaction_overlay(
                     buf[(inner_x + i as u16, y)]
                         .set_char(ch)
                         .set_fg(theme.primary)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
                 y += 1;
             }
@@ -4026,7 +4410,7 @@ fn render_interaction_overlay(
                     buf[(inner_x + i as u16, y)]
                         .set_char(ch)
                         .set_fg(theme.fg)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
                 y += 1;
             }
@@ -4059,14 +4443,14 @@ fn render_interaction_overlay(
                         buf[(inner_x + i as u16, y)]
                             .set_char(ch)
                             .set_fg(theme.muted)
-                            .set_bg(Color::Black);
+                            .set_bg(theme.panel_bg);
                     }
                 } else {
                     // Indent continuation lines
                     for i in 0..prompt.len() {
                         buf[(inner_x + i as u16, y)]
                             .set_char(' ')
-                            .set_bg(Color::Black);
+                            .set_bg(theme.panel_bg);
                     }
                 }
                 let input_x = inner_x + prompt.len() as u16;
@@ -4077,7 +4461,7 @@ fn render_interaction_overlay(
                     buf[(input_x + i as u16, y)]
                         .set_char(ch)
                         .set_fg(input_fg)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
                 // Draw cursor on the right line
                 if line_idx == cursor_line && !input.is_empty() {
@@ -4086,7 +4470,7 @@ fn render_interaction_overlay(
                         buf[(cx, y)]
                             .set_char('▏')
                             .set_fg(theme.primary)
-                            .set_bg(Color::Black);
+                            .set_bg(theme.panel_bg);
                     }
                 }
                 y += 1;
@@ -4098,7 +4482,7 @@ fn render_interaction_overlay(
                     buf[(cx, y - 1)]
                         .set_char('▏')
                         .set_fg(theme.primary)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
             }
             // Footer
@@ -4109,7 +4493,7 @@ fn render_interaction_overlay(
                 buf[(fx + i as u16, fy)]
                     .set_char(ch)
                     .set_fg(theme.muted)
-                    .set_bg(Color::Black);
+                    .set_bg(theme.panel_bg);
             }
         }
 
@@ -4127,7 +4511,7 @@ fn render_interaction_overlay(
                     buf[(inner_x + i as u16, y)]
                         .set_char(ch)
                         .set_fg(theme.primary)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
                 y += 1;
             }
@@ -4142,7 +4526,7 @@ fn render_interaction_overlay(
                     buf[(inner_x + i as u16, y)]
                         .set_char(ch)
                         .set_fg(theme.fg)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
                 y += 1;
             }
@@ -4155,9 +4539,9 @@ fn render_interaction_overlay(
                 let is_sel = i == *selected && !*in_custom_mode;
                 let marker = if is_sel { "● " } else { "○ " };
                 let style = if is_sel {
-                    Style::default().fg(Color::Black).bg(theme.primary)
+                    Style::default().fg(theme.ink).bg(theme.primary)
                 } else {
-                    Style::default().fg(theme.fg).bg(Color::Black)
+                    Style::default().fg(theme.fg).bg(theme.panel_bg)
                 };
                 let line_text = format!("{}{}", marker, opt.label);
                 for (j, ch) in line_text.chars().take(inner_w).enumerate() {
@@ -4173,13 +4557,13 @@ fn render_interaction_overlay(
                             buf[(inner_x + j as u16, y)]
                                 .set_char(ch)
                                 .set_fg(theme.muted)
-                                .set_bg(Color::Black);
+                                .set_bg(theme.panel_bg);
                         }
                         for (j, ch) in desc.chars().take(desc_w).enumerate() {
                             buf[(inner_x + indent.len() as u16 + j as u16, y)]
                                 .set_char(ch)
                                 .set_fg(theme.muted)
-                                .set_bg(Color::Black);
+                                .set_bg(theme.panel_bg);
                         }
                         y += 1;
                     }
@@ -4195,9 +4579,9 @@ fn render_interaction_overlay(
                         "○ "
                     };
                     let style = if is_sel && !*in_custom_mode {
-                        Style::default().fg(Color::Black).bg(theme.primary)
+                        Style::default().fg(theme.ink).bg(theme.primary)
                     } else {
-                        Style::default().fg(theme.fg).bg(Color::Black)
+                        Style::default().fg(theme.fg).bg(theme.panel_bg)
                     };
                     let line_text = format!("{}Other...", marker);
                     for (j, ch) in line_text.chars().take(inner_w).enumerate() {
@@ -4211,7 +4595,7 @@ fn render_interaction_overlay(
                             buf[(inner_x + j as u16, y)]
                                 .set_char(ch)
                                 .set_fg(theme.muted)
-                                .set_bg(Color::Black);
+                                .set_bg(theme.panel_bg);
                         }
                         let input_x = inner_x + prompt.len() as u16;
                         for (j, ch) in custom_input.chars().enumerate() {
@@ -4221,14 +4605,14 @@ fn render_interaction_overlay(
                             buf[(input_x + j as u16, y)]
                                 .set_char(ch)
                                 .set_fg(theme.fg)
-                                .set_bg(Color::Black);
+                                .set_bg(theme.panel_bg);
                         }
                         let cx = input_x + custom_input.chars().count() as u16;
                         if cx < overlay_x + overlay_w - 1 {
                             buf[(cx, y)]
                                 .set_char('▏')
                                 .set_fg(theme.primary)
-                                .set_bg(Color::Black);
+                                .set_bg(theme.panel_bg);
                         }
                     }
                 }
@@ -4244,7 +4628,7 @@ fn render_interaction_overlay(
                 buf[(fx + i as u16, fy)]
                     .set_char(ch)
                     .set_fg(theme.muted)
-                    .set_bg(Color::Black);
+                    .set_bg(theme.panel_bg);
             }
         }
 
@@ -4260,7 +4644,7 @@ fn render_interaction_overlay(
                     buf[(inner_x + i as u16, y)]
                         .set_char(ch)
                         .set_fg(theme.primary)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
                 y += 1;
             }
@@ -4275,7 +4659,7 @@ fn render_interaction_overlay(
                     buf[(inner_x + i as u16, y)]
                         .set_char(ch)
                         .set_fg(theme.fg)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
                 y += 1;
             }
@@ -4289,9 +4673,9 @@ fn render_interaction_overlay(
                 let is_checked = selected.get(i).copied().unwrap_or(false);
                 let checkbox = if is_checked { "☑ " } else { "☐ " };
                 let style = if is_cursor {
-                    Style::default().fg(Color::Black).bg(theme.primary)
+                    Style::default().fg(theme.ink).bg(theme.primary)
                 } else {
-                    Style::default().fg(theme.fg).bg(Color::Black)
+                    Style::default().fg(theme.fg).bg(theme.panel_bg)
                 };
                 let line_text = format!("{}{}", checkbox, opt.label);
                 for (j, ch) in line_text.chars().take(inner_w).enumerate() {
@@ -4307,13 +4691,13 @@ fn render_interaction_overlay(
                             buf[(inner_x + j as u16, y)]
                                 .set_char(ch)
                                 .set_fg(theme.muted)
-                                .set_bg(Color::Black);
+                                .set_bg(theme.panel_bg);
                         }
                         for (j, ch) in desc.chars().take(desc_w).enumerate() {
                             buf[(inner_x + indent.len() as u16 + j as u16, y)]
                                 .set_char(ch)
                                 .set_fg(theme.muted)
-                                .set_bg(Color::Black);
+                                .set_bg(theme.panel_bg);
                         }
                         y += 1;
                     }
@@ -4326,7 +4710,7 @@ fn render_interaction_overlay(
                 buf[(fx + i as u16, fy)]
                     .set_char(ch)
                     .set_fg(theme.muted)
-                    .set_bg(Color::Black);
+                    .set_bg(theme.panel_bg);
             }
         }
 
@@ -4340,7 +4724,7 @@ fn render_interaction_overlay(
                     buf[(inner_x + i as u16, y)]
                         .set_char(ch)
                         .set_fg(theme.primary)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
                 y += 1;
             }
@@ -4355,7 +4739,7 @@ fn render_interaction_overlay(
                     buf[(inner_x + i as u16, y)]
                         .set_char(ch)
                         .set_fg(theme.fg)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
                 y += 1;
             }
@@ -4363,14 +4747,14 @@ fn render_interaction_overlay(
             // Yes / No buttons
             let btn_y = y;
             let yes_style = if *selected {
-                Style::default().fg(Color::Black).bg(theme.success)
+                Style::default().fg(theme.ink).bg(theme.success)
             } else {
-                Style::default().fg(theme.fg).bg(Color::DarkGray)
+                Style::default().fg(theme.fg).bg(theme.selection)
             };
             let no_style = if !*selected {
-                Style::default().fg(Color::Black).bg(theme.error)
+                Style::default().fg(theme.ink).bg(theme.error)
             } else {
-                Style::default().fg(theme.fg).bg(Color::DarkGray)
+                Style::default().fg(theme.fg).bg(theme.selection)
             };
             let yes_label = "  Yes  ";
             let no_label = "  No  ";
@@ -4394,7 +4778,7 @@ fn render_interaction_overlay(
                 buf[(fx + i as u16, fy)]
                     .set_char(ch)
                     .set_fg(theme.muted)
-                    .set_bg(Color::Black);
+                    .set_bg(theme.panel_bg);
             }
         }
 
@@ -4411,7 +4795,7 @@ fn render_interaction_overlay(
                     buf[(inner_x + i as u16, y)]
                         .set_char(ch)
                         .set_fg(theme.fg)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
                 y += 1;
             }
@@ -4433,13 +4817,13 @@ fn render_interaction_overlay(
                         buf[(inner_x + i as u16, y)]
                             .set_char(ch)
                             .set_fg(theme.muted)
-                            .set_bg(Color::Black);
+                            .set_bg(theme.panel_bg);
                     }
                 } else {
                     for i in 0..prompt.len() {
                         buf[(inner_x + i as u16, y)]
                             .set_char(' ')
-                            .set_bg(Color::Black);
+                            .set_bg(theme.panel_bg);
                     }
                 }
                 let input_x = inner_x + prompt.len() as u16;
@@ -4450,7 +4834,7 @@ fn render_interaction_overlay(
                     buf[(input_x + i as u16, y)]
                         .set_char(ch)
                         .set_fg(theme.fg)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
                 if line_idx == cursor_line && !input.is_empty() {
                     let cx = input_x + cursor_col as u16;
@@ -4458,7 +4842,7 @@ fn render_interaction_overlay(
                         buf[(cx, y)]
                             .set_char('▏')
                             .set_fg(theme.primary)
-                            .set_bg(Color::Black);
+                            .set_bg(theme.panel_bg);
                     }
                 }
                 y += 1;
@@ -4469,7 +4853,7 @@ fn render_interaction_overlay(
                     buf[(cx, y - 1)]
                         .set_char('▏')
                         .set_fg(theme.primary)
-                        .set_bg(Color::Black);
+                        .set_bg(theme.panel_bg);
                 }
             }
             let footer = "Enter send · Esc cancel";
@@ -4479,7 +4863,7 @@ fn render_interaction_overlay(
                 buf[(fx + i as u16, fy)]
                     .set_char(ch)
                     .set_fg(theme.muted)
-                    .set_bg(Color::Black);
+                    .set_bg(theme.panel_bg);
             }
         }
     }

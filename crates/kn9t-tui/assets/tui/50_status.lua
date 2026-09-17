@@ -1,4 +1,12 @@
--- 50_status.lua — render_status(): ReAct-style phase indicator + cost.
+-- 50_status.lua — render_status(): the segmented status bar (PLAN §P7 D13).
+--
+-- Solid blocks of state read left to right, with the contextual key hints on the right —
+-- VS Code's grammar. Three colours carry meaning (accent for "where we are", amber for
+-- "watch this", danger for "this is wrong") and the rest is chrome, so the eye lands on
+-- what changed.
+--
+-- A segment takes the same fields as a text span: `{text=, fg=, bg=, bold=, dim=,
+-- reverse=}`. `bg` is what makes a block rather than coloured text.
 
 local C = TUI.color
 
@@ -6,83 +14,76 @@ function render_status()
     local ctx     = kn9t.context or {}
     local session = kn9t.state and kn9t.state.session or {}
     local usage   = kn9t.state and kn9t.state.usage or {}
+    local turn    = usage.turn or {}
 
     local seg = {}
-    local function put(text, color) table.insert(seg, { text = text, color = color }) end
-
-    -- Message mix bar
-    local s = ctx.system_count or 0
-    local u = ctx.user_count or 0
-    local a = ctx.assistant_count or 0
-    local t = ctx.tool_count or 0
-    local total = s + u + a + t
-    local bar = 14
-
-    put("[", C.dim)
-    if total > 0 then
-        local sl = math.floor(s / total * bar + 0.5)
-        local ul = math.floor(u / total * bar + 0.5)
-        local al = math.floor(a / total * bar + 0.5)
-        local tl = math.max(0, bar - sl - ul - al)
-        if sl > 0 then put(string.rep("#", sl), C.system) end
-        if ul > 0 then put(string.rep("#", ul), C.user) end
-        if al > 0 then put(string.rep("#", al), C.asst) end
-        if tl > 0 then put(string.rep("#", tl), C.tool) end
-    else
-        put(string.rep(".", bar), C.dim)
+    local function block(text, fg, bg, opts)
+        opts = opts or {}
+        table.insert(seg, {
+            text = text, fg = fg, bg = bg,
+            bold = opts.bold, dim = opts.dim,
+        })
     end
-    put("]", C.dim)
+    -- Chrome text: no background, reads as a label rather than a value.
+    local function text(s, fg) table.insert(seg, { text = s, fg = fg or C.dim }) end
 
-    -- Context pressure
-    local turn = usage.turn or {}
+    -- ── Left: what is running and where ─────────────────────────────────────
+    local phase, phase_col
+    if session.streaming then
+        phase, phase_col = "streaming", C.ok
+    elseif session.aborting then
+        phase, phase_col = "aborting", C.danger
+    else
+        phase, phase_col = (ctx.phase or "idle"), C.dim
+    end
+    block(" " .. phase .. " ", C.ink, phase_col, { bold = true })
+
+    text(" " .. (ctx.model or "no model") .. " ", C.value)
+
+    -- ── Context pressure: the number that decides when compaction bites ─────
     local live = (turn.input or 0) + (turn.cache_read or 0)
     if live == 0 then live = (ctx.tokens_in or 0) + (ctx.cache_read or 0) end
     local frac = live / TUI.context_window()
-    put(" ctx ", C.label)
-    put(string.format("%d%%", math.floor(frac * 100)), TUI.context_color(frac))
+    local pct  = math.floor(frac * 100)
+    text("  ctx ")
+    block(" " .. pct .. "% ", C.ink, TUI.context_color(frac), { bold = true })
+    text(" " .. TUI.fmt_tokens(live) .. "/" .. TUI.fmt_tokens(TUI.context_window()))
 
-    put("  ", nil)
-    put(TUI.fmt_tokens(live), C.value)
-    put("/", C.dim)
-    put(TUI.fmt_tokens(TUI.context_window()), C.dim)
+    -- ── Cost ────────────────────────────────────────────────────────────────
+    text("   $")
+    text(string.format("%.4f", usage.cost or 0), C.warn)
 
-    -- Cost
-    put("  $", C.dim)
-    put(string.format("%.4f", usage.cost or 0), C.warn)
-
-    -- Live state
-    put("  ", nil)
-    if session.streaming then
-        put("streaming", C.ok)
-        if (usage.toks_per_sec or 0) > 0 then
-            put(string.format(" %.0ft/s", usage.toks_per_sec), C.dim)
-        end
-    elseif session.aborting then
-        put("aborting", C.danger)
-    else
-        put(ctx.phase or "idle", C.dim)
+    -- ── Throughput, only while it means something ───────────────────────────
+    if (usage.toks_per_sec or 0) > 0 then
+        text(string.format("  %.0f t/s", usage.toks_per_sec))
     end
 
-    -- Contextual help bar (right-aligned)
-    put("  ", nil)
+    -- ── Message mix, as four numbers ────────────────────────────────────────
+    -- This used to be an 18-cell bar: the loudest thing on the line, answering a question
+    -- nobody asks mid-turn, and wider than everything else combined.
+    text("   ")
+    text(tostring(ctx.system_count or 0), C.system)
+    text("/")
+    text(tostring(ctx.user_count or 0), C.user)
+    text("/")
+    text(tostring(ctx.assistant_count or 0), C.asst)
+    text("/")
+    text(tostring(ctx.tool_count or 0), C.tool)
+
+    -- ── Right: what you can do from here ───────────────────────────────────
     local focused = (kn9t.state and kn9t.state.focused_plugin) or ""
+    text("    ")
     if focused ~= "" then
-        -- Plugin focused: generic hint only, plugin shows its own help
-        put("Esc", C.accent)
-        put(":release ", C.dim)
-        put("(", C.dim)
-        put(focused, C.value)
-        put(")", C.dim)
+        text("Esc", C.accent)
+        text(" release " .. focused, C.value)
     else
-        -- Normal mode: show global controls
-        put("C-p", C.accent)
-        put(":cmd ", C.dim)
-        put("F1/F2", C.accent)
-        put(":side ", C.dim)
-        local plugin_count = #((kn9t.state and kn9t.state.plugin_views) or {})
-        if plugin_count > 0 then
-            put("F10", C.accent)
-            put(":plugin", C.dim)
+        text("C-p", C.accent)
+        text(" commands", C.value)
+        text("   F2", C.accent)
+        text(" panels", C.value)
+        if #((kn9t.state and kn9t.state.plugin_views) or {}) > 0 then
+            text("   F10", C.accent)
+            text(" plugins", C.value)
         end
     end
 

@@ -675,7 +675,7 @@ pub(crate) fn run_session_turn(
     let params = RunParams {
         session: session.clone(),
         model: model.clone(),
-        thinking: Thinking::Off,
+        thinking: model.thinking,
         max_tokens: Some(model.max_out),
         cwd: session_cwd.clone(),
         config: state.react_config(),
@@ -803,7 +803,7 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
         let params = RunParams {
             session: session.clone(),
             model: model.clone(),
-            thinking: Thinking::Off,
+            thinking: model.thinking,
             max_tokens: Some(model.max_out),
             cwd: session_cwd,
             config: state.react_config(),
