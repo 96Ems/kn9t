@@ -1,4 +1,4 @@
-//! 96E-21 TDD red: plugin events without session_id must never broadcast to all sessions.
+//! TDD red: plugin events without session_id must never broadcast to all sessions.
 
 use kn9t_core::{EventSink, LiveEvent};
 use kn9t_plugin::{

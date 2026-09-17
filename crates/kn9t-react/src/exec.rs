@@ -84,7 +84,7 @@ impl ReactLoop {
         let store_offered_compaction = plan.compact.is_some();
 
         // R-RCT-020 step 3 / R-RCT-090: run the compaction sub-turn then re-plan once.
-        // 96E-11: compaction reuses the provider_attempt abstraction so cancellation,
+        // compaction reuses the provider_attempt abstraction so cancellation,
         // truncated (malformed-incomplete), and failed outcomes are classified identically
         // to normal provider execution.
         if plan.compact.is_some() {
@@ -113,7 +113,7 @@ impl ReactLoop {
                     // compaction committed; re-plan once
                 }
                 Attempt::AbortedInStream(a) => {
-                    // 96E-11: cancelled during compaction — already recorded Compaction usage
+                    // cancelled during compaction — already recorded Compaction usage
                     // (estimated if needed) inside run_compaction, never appended Compacted.
                     // Propagate as turn abort deterministically.
                     return Ok(Attempt::AbortedInStream(a));
@@ -153,7 +153,7 @@ impl ReactLoop {
 
         // Use visible_specs() to exclude hidden tools from the system prompt.
         // Hidden tools can still be executed once discovered via meta-tools.
-        // 96E-48: snapshot per model call, not per turn — a plugin stop/start/reload
+        // snapshot per model call, not per turn — a plugin stop/start/reload
         // landing between two iterations of the ReAct loop is visible immediately.
         let tool_specs = self.tools.snapshot().visible_specs();
         let req = Request {
@@ -167,7 +167,7 @@ impl ReactLoop {
             session: Some(params.session.0.as_str()),
         };
 
-        // R-RCT-020 step 4: stream + assemble via reusable abstraction (96E-11).
+        // R-RCT-020 step 4: stream + assemble via reusable abstraction.
         let attempt = self.provider_attempt(&req, cancel, &params.model.r#ref)?;
 
         // R-RCT-080 bound. `turn.rs` answers `Attempt::ContextOverflow` with a bare
@@ -208,7 +208,7 @@ impl ReactLoop {
         Ok(attempt)
     }
 
-    /// 96E-11: reusable provider-attempt/cancellation abstraction.
+    /// reusable provider-attempt/cancellation abstraction.
     /// Explicitly distinguishes completed, cancelled, failed, and malformed-incomplete
     /// (Truncated/ContextOverflow) outcomes with deterministic cancellation semantics.
     fn provider_attempt(
@@ -291,7 +291,7 @@ impl ReactLoop {
 
     /// R-RCT-090 / R-RCT-095: the compaction summarize sub-turn. Uses `UsageKind::Compaction`,
     /// never `Main`. The loop is the only component that calls a provider or emits usage.
-    /// 96E-11: reuses `provider_attempt` so cancellation, truncated (malformed-incomplete),
+    /// reuses `provider_attempt` so cancellation, truncated (malformed-incomplete),
     /// failed, and completed are distinguished identically to normal provider execution.
     /// Cancelled compaction records Compaction usage (estimated if needed) but never commits
     /// `Compacted` (partial state must not be treated as successful).
@@ -301,10 +301,10 @@ impl ReactLoop {
         cancel: &Cancel,
         span: kn9t_provider_core::CompactSpan,
     ) -> Result<Attempt, ReactError> {
-        // 96E-16/17: pluggable delegation — if a compactor is set, use it. If none is
+        // /17: pluggable delegation — if a compactor is set, use it. If none is
         // installed, compaction is fail-closed: the turn ends (CompactionUnavailable),
         // the provider is never called, and nothing is persisted. The hardcoded
-        // inline-prompt fallback was removed (96E-17).
+        // inline-prompt fallback was removed.
         // Cancel is checked first: an ESC during a context-full turn is a clean abort,
         // unrelated to compactor availability.
         if cancel.cancelled() {
@@ -400,13 +400,13 @@ impl ReactLoop {
         cancel: &Cancel,
     ) -> Vec<Content> {
         // Decide each call up front (hooks, ADR-0008) preserving order; then execute.
-        // 96E-39: pass cancel so approval waits can be aborted.
+        // pass cancel so approval waits can be aborted.
         let mut plans: Vec<CallPlan> = Vec::with_capacity(calls.len());
         for call in calls {
             plans.push(self.authorize(params, call, cancel));
         }
 
-        // 96E-48: one snapshot for the whole batch — the batch must dispatch against a
+        // one snapshot for the whole batch — the batch must dispatch against a
         // single coherent registry (a plugin stopped between two calls of the same batch
         // would otherwise make results depend on scheduling). The next model call gets a
         // fresh snapshot.
@@ -417,7 +417,7 @@ impl ReactLoop {
         let mut results: Vec<Option<Content>> = vec![None; calls.len()];
 
         // Launch parallel-safe authorized calls on threads.
-        // Fix 96E-6: parallel path now returns raw inner content + is_error;
+        // Fix parallel path now returns raw inner content + is_error;
         // after_tool_call is applied after join in sequential order, so both
         // paths share the identical before/execute/after lifecycle.
         let mut handles: Vec<ParallelToolHandle> = Vec::new();
@@ -536,7 +536,7 @@ impl ReactLoop {
     }
 
     /// Sequential execution of one call given its authorization plan.
-    /// `registry` is the batch's single snapshot (96E-48).
+    /// `registry` is the batch's single snapshot.
     fn execute_one(
         &self,
         params: &RunParams,
@@ -593,7 +593,7 @@ impl ReactLoop {
     /// Failure posture (DESIGN §13.5) is unchanged: a hook that errors or times out yields
     /// `Deny` — a policy that cannot answer is not permission. That is distinct from *no
     /// policy installed*, which yields `Allow` (ADR-0008 decision 5).
-    /// 96E-39: pass cancel so approval waits can be aborted.
+    /// pass cancel so approval waits can be aborted.
     #[doc(hidden)]
     pub fn authorize(&self, params: &RunParams, call: &ToolCall, cancel: &Cancel) -> CallPlan {
         // Session-scoped tool blocking (tools enable/disable). Checked before args
@@ -614,7 +614,7 @@ impl ReactLoop {
                 call.name, call.name
             ));
         }
-        // 96E-47: the tool belongs to a plugin that is currently stopped. Its spec is
+        // the tool belongs to a plugin that is currently stopped. Its spec is
         // still in the `tools` array (never filtered — that would invalidate the level-1
         // cache prefix for a temporary condition), so the model can legitimately call it.
         // Refuse here, exactly like `disabled_tools`, and say the state is recoverable so
@@ -636,7 +636,7 @@ impl ReactLoop {
         // failure here is a real defect (provider sent malformed JSON, or the bytes were
         // corrupted in transit). Surface it instead of silently substituting Null, which
         // would present the tool with empty args and produce a confusing downstream error.
-        // 96E-8 fix: invalid args must short-circuit to ToolResult(error) and must not
+        // invalid args must short-circuit to ToolResult(error) and must not
         // reach Tool::execute or policy hooks. Emit Error for observability, then deny.
         let args: serde_json::Value = match serde_json::from_str(&call.args_json) {
             Ok(v) => v,
@@ -674,7 +674,7 @@ impl ReactLoop {
     /// The `Approver` blocks this thread until `POST /approve` arrives (or the scope cache
     /// answers immediately), so no polling and no extra state machine here.
     ///
-    /// 96E-39: pass cancel so ESC can abort the approval wait.
+    /// pass cancel so ESC can abort the approval wait.
     fn request_approval(
         &self,
         params: &RunParams,

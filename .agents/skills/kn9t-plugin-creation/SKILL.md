@@ -10,8 +10,10 @@ metadata:
 
 # Creating kn9t Plugins
 
-> **⚠️ Always read `schema/plugin.json` for the canonical wire protocol.**
-> This skill provides guidance, but the schema file is the source of truth.
+> **⚠️ The wire contract is generated — read it, do not restate it.**
+> `schema/plugin.json` is canonical; `references/api.md` is the readable rendering (and
+> cannot be stale: `scripts/check-contract.sh` fails a push on any schema/host disagreement);
+> `references/sdk/` is the Rust SDK byte-for-byte. This file is guidance only.
 
 kn9t plugins are **subprocess binaries** that communicate via **newline-delimited JSON over stdin/stdout**. This design provides:
 
@@ -116,52 +118,28 @@ cargo build --release
 cp target/release/my-plugin ~/.kn9t/plugins/
 ```
 
-## Wire Protocol v2
+## The wire contract
 
-### Handshake
+**It is generated and verifiable — do not restate it here.** The authoritative sources,
+in order:
 
-```
-Host  → Plugin:  {"t":"hello","proto":1,"kn9t":"0.1.0"}
-Plugin → Host:   {"t":"hello","name":"my-plugin","capabilities":["streaming","cancelable"],"tools":[...],"hooks":[...],"events":[...]}
-```
+| what | where |
+|---|---|
+| Canonical schema — message types, hook payloads, host-API ops, shared types | `schema/plugin.json` |
+| Generated readable reference (adds the HTTP routes) | `references/api.md` |
+| Rust SDK, byte-for-byte snapshot of `crates/kn9t-plugin-sdk` | `references/sdk/` |
+| Guidance — hand-written, this file | here |
 
-### Capabilities
+`scripts/check-contract.sh` fails a push when the schema and the host disagree about any op,
+route or hook, so `references/api.md` cannot go stale. Reading this skill without the repo?
+`references/api.md` is your contract.
 
-| Flag | Meaning |
-|------|---------|
-| `streaming` | Plugin may send `chunk` messages before `done` |
-| `cancelable` | Plugin listens for `cancel` messages |
-| `host_api` | Plugin may call host ops (provider_complete, session_fork, etc.) |
-| `compactor` | Plugin provides context compaction |
-
-### Tool Call Flow
-
-**Non-streaming:**
-```
-Host → Plugin:  {"t":"hook","id":7,"hook":"tool_call","payload":{"tool":"echo","args":{"message":"hi"},"session":"01..."}}
-Plugin → Host:  {"t":"done","id":7,"content":[{"type":"text","text":"hi"}],"is_error":false}
-```
-
-**Streaming (with `streaming` capability):**
-```
-Host → Plugin:  {"t":"hook","id":7,"hook":"tool_call","payload":{...}}
-Plugin → Host:  {"t":"chunk","id":7,"text":"partial output..."}
-Plugin → Host:  {"t":"chunk","id":7,"text":"more output..."}
-Plugin → Host:  {"t":"done","id":7,"content":[{"type":"text","text":"full output"}],"is_error":false}
-```
-
-### Available Hooks
-
-| Hook | Payload | Reply | Purpose |
-|------|---------|-------|---------|
-| `before_tool_call` | `{tool, args, cwd}` | `{action: allow/deny/replace}` | Gate tool execution |
-| `after_tool_call` | `{tool, args, result}` | `{action: keep/replace}` | Transform output |
-| `before_request` | `{messages, model, system}` | `{action: keep/replace}` | Modify LLM request |
-| `should_stop_after_turn` | `{stop, usage, turn}` | `{action: continue/stop}` | Control loop termination |
-| `prepare_next_turn` | `{stop, usage}` | `{action: keep/patch}` | Switch model/thinking |
-| `get_steering` | `null` | `{messages: [...]}` | Inject context |
-| `get_followup` | `null` | `{messages: [...]}` | Queue follow-up messages |
-| `get_api_key` | `{provider}` | `{key: "..." or null}` | Provide API keys |
+One paragraph of orientation: the host spawns your plugin as a subprocess and you exchange
+one JSON object per line (NdJSON) over stdin/stdout. Your plugin opens with a `hello`
+declaring `capabilities`, `tools`, `hooks` and `events`; the host then drives it with `hook`
+messages. Answer with `result` (atomic) or `chunk` … `done` (streaming, if you declared
+`streaming`). With `host_api` you may also call back with `request` — the ops are listed in
+`references/api.md`.
 
 ## Streaming Tools
 
@@ -271,7 +249,8 @@ let prompt_result = ctx.api.session_prompt(
 )?;
 ```
 
-Available ops: `provider_complete`, `session_read`, `tool_execute`, `session_fork`, `session_prompt`
+All host-API ops are listed in [`references/api.md`](references/api.md); the snippet above
+shows only the SDK shape.
 
 ## Python Plugin Structure
 
@@ -714,29 +693,21 @@ echo '{"t":"hello","proto":1,"kn9t":"test"}' | ./my-plugin
 
 ## Reference Files
 
-**Schemas (source of truth):**
-- `schema/plugin.json` — **Canonical wire protocol schema** (read this for exact message formats)
-- `schema/http.json` — HTTP API schema
+**Generated — do not edit, `xtask --check` enforces it:**
+- `references/api.md` — the whole contract: HTTP routes, SSE, plugin protocol, hooks, host-API ops
+- `references/sdk/` — the Rust SDK, byte-for-byte
+- `references/README.md` — provenance for the two above
 
-**Specifications:**
-- `spec/08b-plugin-redesign.md` — Full protocol specification with rationale
+**Canonical schemas:** `schema/plugin.json` (plugin wire), `schema/http.json` (HTTP).
 
-**Rust SDK:**
-- `crates/kn9t-plugin-sdk/src/traits.rs` — Trait definitions (PluginTool, PluginProvider, etc.)
-- `crates/kn9t-plugin-sdk/src/wire.rs` — Wire message types
-- `crates/kn9t-plugin-sdk/src/plugin.rs` — Plugin container and main loop
+**In this repo:**
+- SDK source: `crates/kn9t-plugin-sdk/src/` — `traits.rs`, `wire.rs`, `plugin.rs`, `ctx.rs`
+- Worked examples: `plugins/kn9t-tools` (Rust tools), `plugins/kn9t-policy` (Python hooks),
+  `plugins/kn9t-compactor` (TypeScript), `plugins/kn9t-agents-md` (Go), `plugins/kn9t-anthropic`
+  (Rust provider)
+- Protocol rationale: `spec/08b-plugin-redesign.md`
 
-**Example Plugins:**
-- `plugins/kn9t-tools/` — Rust: bash, read, write, edit tools
-- `plugins/kn9t-anthropic/` — Rust: LLM provider plugin
-- `plugins/kn9t-subagent/` — TypeScript: sub-agent spawning with host_api
-- `plugins/kn9t-skills/` — Python: Agent Skills integration
-- `plugins/kn9t-mcp/` — TypeScript: MCP bridge
-
-**Regenerate schemas after SDK changes:**
-```bash
-cargo run -p xtask -- generate
-```
+**After changing the SDK or a schema:** `cargo run -p xtask -- generate`
 
 ## Plugin TUI Integration
 

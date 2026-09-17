@@ -84,20 +84,20 @@ fn turn_sequence() {
     let stop = looop.run(params).expect("loop ran");
     assert_stop(stop, StopReason::Stop);
 
-    // Ordered event trace on the bus for the first turn — 96E-12: bus is live-only (transient).
+    // Ordered event trace on the bus for the first turn — bus is live-only (transient).
     let kinds = bus.kinds();
     let pos = |name: &str| kinds.iter().position(|k| k == name);
     assert!(pos("TurnStarted").is_some());
     assert!(pos("TextDelta").unwrap() > pos("TurnStarted").unwrap());
     assert!(pos("ToolArgsDelta").is_some());
-    // 96E-12: durable events must not be on the live bus; they are on the store.
+    // durable events must not be on the live bus; they are on the store.
     assert!(
         pos("MessageAppended").is_none(),
-        "durable MessageAppended must not be on live bus (96E-12)"
+        "durable MessageAppended must not be on live bus"
     );
     assert!(
         pos("UsageRecorded").is_none(),
-        "durable UsageRecorded must not be on live bus (96E-12)"
+        "durable UsageRecorded must not be on live bus"
     );
     assert!(pos("ToolStarted").unwrap() < pos("ToolFinished").unwrap());
 
@@ -1109,11 +1109,11 @@ fn tool_output_reaches_second_provider_call() {
     );
 }
 
-// ── P1 96E-6: parallel_safe must still run after_tool_call ─────────────────
-// Red test for 96E-6: parallel path currently skips hook_after_tool_call.
+// ── parallel_safe must still run after_tool_call ─────────────────
+// Red test for parallel path currently skips hook_after_tool_call.
 // This test must FAIL before fix (proving bug) and PASS after fix.
 #[test]
-fn p1_96e6_parallel_safe_after_tool_call_must_run() {
+fn parallel_safe_after_tool_call_must_run() {
     use kn9t_core::{Cancel, Content, HookHost, Message, ModelRef, Tool, ToolCtx, ToolSpec};
     use std::sync::{Arc, Mutex};
 
@@ -1277,14 +1277,14 @@ fn p1_96e6_parallel_safe_after_tool_call_must_run() {
 
     assert!(!tool_result.is_empty(), "tool result content empty");
     match &tool_result[0] {
-        Content::Text { text } => assert_eq!(text, "hooked", "parallel tool result must be mutated by after_tool_call (bug 96E-6: was 'original' before fix)"),
+        Content::Text { text } => assert_eq!(text, "hooked", "parallel tool result must be mutated by after_tool_call"),
         _ => panic!("expected Text"),
     }
 }
 
-// ── P1 96E-8: malformed tool JSON must not reach Tool::execute ──────────────
+// ── malformed tool JSON must not reach Tool::execute ──────────────
 #[test]
-fn p1_96e8_malformed_json_never_reaches_tool() {
+fn malformed_json_never_reaches_tool() {
     use kn9t_core::{Cancel, Content, HookHost, Message, ModelRef, Tool, ToolCtx, ToolSpec};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -1431,7 +1431,7 @@ fn p1_96e8_malformed_json_never_reaches_tool() {
     };
     looop.run(run_params(&store)).expect("loop ran");
 
-    // Assertions per 96E-8 acceptance:
+    // Assertions per acceptance:
     assert_eq!(
         tool_calls.load(Ordering::SeqCst),
         0,
@@ -1497,7 +1497,7 @@ fn p1_96e8_malformed_json_never_reaches_tool() {
 }
 
 #[test]
-fn p1_96e8_malformed_json_parallel_safe_also_blocked() {
+fn malformed_json_parallel_safe_also_blocked() {
     // Same guarantee for parallel_safe tools
     use kn9t_core::{Cancel, Content, HookHost, Message, ModelRef, Tool, ToolCtx, ToolSpec};
     use std::sync::{
@@ -1648,7 +1648,7 @@ fn p1_96e8_malformed_json_parallel_safe_also_blocked() {
 }
 
 #[test]
-fn p1_96e6_sequential_after_tool_call_still_runs() {
+fn sequential_after_tool_call_still_runs() {
     use kn9t_core::{Cancel, Content, HookHost, Message, ModelRef, Tool, ToolCtx, ToolSpec};
 
     struct SeqEchoTool;
@@ -1788,12 +1788,12 @@ fn p1_96e6_sequential_after_tool_call_still_runs() {
     }
 }
 
-// ── P1 96E-11: compaction cancellation semantics must reuse attempt abstraction ─
+// ── compaction cancellation semantics must reuse attempt abstraction ─
 // Before fix: run_compaction ignores Cancel, commits Compacted even when cancelled,
 // and does not distinguish failed vs truncated vs cancelled.
 
 #[test]
-fn p1_96e11_compaction_cancel_does_not_commit() {
+fn compaction_cancel_does_not_commit() {
     use kn9t_core::{Cancel, Event, StopReason};
     // Store wants compaction once, then plain.
     let store = Arc::new(StubStore::new(PlanScript::plain(vec![])).script(vec![
@@ -1862,9 +1862,9 @@ fn p1_96e11_compaction_cancel_does_not_commit() {
 }
 
 #[test]
-fn p1_96e17_compaction_cancel_pre_fail_closed_aborts_cleanly() {
+fn compaction_cancel_pre_fail_closed_aborts_cleanly() {
     use kn9t_core::{Cancel, Event, UsageKind};
-    // 96E-17: pre-cancelled + fail-closed => clean AbortedInStream (cancel is checked
+    // pre-cancelled + fail-closed => clean AbortedInStream (cancel is checked
     // before compactor availability), nothing persisted, no usage rows (nothing was
     // ever spent — the provider and compactor are never reached).
     let store = Arc::new(
@@ -1919,7 +1919,7 @@ fn p1_96e17_compaction_cancel_pre_fail_closed_aborts_cleanly() {
 }
 
 #[test]
-fn p1_96e11_compaction_malformed_truncated_not_committed() {
+fn compaction_malformed_truncated_not_committed() {
     use kn9t_core::{Event, ProvErr};
     let store = Arc::new(
         StubStore::new(PlanScript::plain(vec![]))
@@ -1958,7 +1958,7 @@ fn p1_96e11_compaction_malformed_truncated_not_committed() {
 }
 
 #[test]
-fn p1_96e11_compaction_cancel_is_deterministic() {
+fn compaction_cancel_is_deterministic() {
     use kn9t_core::{Cancel, Event};
     // Run twice with same pre-cancelled input; outcome must be identical (deterministic)
     for _ in 0..2 {
@@ -2004,11 +2004,11 @@ fn p1_96e11_compaction_cancel_is_deterministic() {
     }
 }
 
-// ── 96E-16: pluggable compaction + handoff ───────────────────────────────
+// ── pluggable compaction + handoff ───────────────────────────────
 
 #[test]
-fn p1_96e17_no_compactor_is_fail_closed() {
-    // 96E-17: no compactor installed => NO compaction at all (the hardcoded prompt
+fn no_compactor_is_fail_closed() {
+    // no compactor installed => NO compaction at all (the hardcoded prompt
     // fallback is gone). The turn that hits a compaction demand fails with
     // CompactionUnavailable, nothing is persisted, and the provider is never
     // called for summarization.
@@ -2064,7 +2064,7 @@ fn p1_96e17_no_compactor_is_fail_closed() {
 }
 
 #[test]
-fn p1_96e16_custom_compactor_overrides_provider_and_validates_ids() {
+fn custom_compactor_overrides_provider_and_validates_ids() {
     use kn9t_core::{
         CallId, CompactSpan, CompactionPlan, Compactor, Content, HandoffPlanData, HandoffSummary,
         Message, MsgId, Role,
@@ -2222,7 +2222,7 @@ fn p1_96e16_custom_compactor_overrides_provider_and_validates_ids() {
 }
 
 #[test]
-fn p1_96e16_handoff_validation_rejects_hallucinated_id() {
+fn handoff_validation_rejects_hallucinated_id() {
     use kn9t_core::{
         CallId, CompactSpan, CompactionPlan, Compactor, Content, HandoffPlanData, Message, MsgId,
         Role,

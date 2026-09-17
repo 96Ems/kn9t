@@ -271,7 +271,7 @@ impl ApprovalRegistry {
 
     /// Block until `id` is resolved, `cancel` fires, or `deadline` elapses.
     ///
-    /// 96E-39: Returns Deny if cancelled (ESC during pending approval = abort).
+    /// Returns Deny if cancelled (ESC during pending approval = abort).
     ///
     /// B10: the deadline is the third exit, and the reason it must exist is that callers can
     /// reach this with a `Cancel` nobody else holds — `get_cancel(..).unwrap_or_else(Cancel::new)`
@@ -295,7 +295,7 @@ impl ApprovalRegistry {
         const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
         while guard.is_none() {
-            // 96E-39: Check cancel at each iteration
+            // Check cancel at each iteration
             if cancel.cancelled() {
                 eprintln!("[approval] wait id={} cancelled", id);
                 drop(guard);
@@ -496,7 +496,7 @@ impl Approver for InteractiveApprover {
         // Blocks until `POST /approve` arrives. The human wait happens here, server-side,
         // *after* the hook returned — so a user taking their time cannot trip the plugin's
         // 30 s hook timeout (ADR-0008).
-        // 96E-39: pass cancel so ESC can abort the approval wait.
+        // pass cancel so ESC can abort the approval wait.
         // B10: and a deadline, because `ctx.cancel` may be a handle nobody can fire (the
         // `Cancel::new()` fallback in host_api when no turn is registered). Denying on
         // timeout keeps the fail-closed posture. Configurable via

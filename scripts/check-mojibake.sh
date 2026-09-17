@@ -1,5 +1,5 @@
 #!/bin/bash
-# 96E-15/96E-20/96E-34 — encoding guard.
+# Encoding guard.
 #
 # Catches three distinct defects, all of which have actually occurred here:
 #
@@ -15,7 +15,7 @@
 #
 # Scope is the whole tree, not just crates/ docs/ spec/. The previous version
 # excluded root-level .md, so CHANGELOG.md, TRACKING.md and AGENTS.md were never
-# checked (96E-34).
+# checked.
 
 set -e
 cd "$(dirname "$0")/.."

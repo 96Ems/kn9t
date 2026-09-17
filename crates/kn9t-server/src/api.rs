@@ -106,6 +106,17 @@ pub struct PluginLoadReq {
 /// Request body.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct UiEventReq {
+    /// Opaque JSON, forwarded verbatim to the plugin
+    pub data: Option<serde_json::Value>,
+    /// Event name the plugin subscribed to
+    pub event: String,
+    pub session_id: String,
+}
+
+/// Request body.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UiRespondReq {
     /// Pending interaction id from interaction_request event
     pub id: u64,

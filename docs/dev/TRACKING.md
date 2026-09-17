@@ -328,6 +328,42 @@ and cp1252-double-encodes UTF-8) plus `scripts/fix_mojibake.py` to repair the da
 
 ---
 
+## Release-prep register (2026-09-17)
+
+Repo hygiene, documentation truth, and the schema↔code contract guard. No `R-<AREA>-<NNN>` ids:
+this is neither a spec stage nor a `PLAN.md` epic. Narrative in `CHANGELOG.md` 2026-09-17d.
+
+| item | what | status |
+|---|---|---|
+| HYG-1 | Delete `ANALYSIS_*`, root `package.json`+lock, `crates/clippy_warnings.txt` | done |
+| HYG-2 | Move `docs/internal/` → `docs/dev/`, move `PLAN`/`TRACKING`/`CHANGELOG` there, rewrite every reference (incl. 8 code comments) | done, 0 broken links |
+| DOC-1 | `CONTEXT.md`: `policy`/`effect`/`replay fixture` entries described code deleted by ADR-0008 | done |
+| DOC-2 | `DESIGN.md` §10 + §10.1 rewritten to the ADR-0008 reality; §14 key list fixed | done |
+| DOC-3 | `ADR-0002` marked partially superseded by ADR-0008 | done |
+| DOC-4 | `docs/ARCHITECTURE.md`: measurements re-taken 2026-09-17; §11.1 rewritten to the Lua mechanism; F5 corrected | done |
+| DOC-5 | Schema descriptions no longer cite ADR numbers or internal ticket ids | done |
+| CT-1 | `op` is a JSON-Schema `enum` (20 names); `API.md` renders it | done |
+| CT-2 | `GET /policy` and `POST /plugin/{name}/ui_event` added to `schema/http.json` (routes were 33 claimed / 35 declared / **37** real) | done |
+| CT-3 | `routes/plugin.rs` consumes the generated `api::UiEventReq` instead of re-declaring it | done |
+| CT-4 | `scripts/check-contract.sh` — ops/routes/hooks compared schema↔code **both ways** | done |
+| CT-5 | `.githooks/pre-push` (new) + `check-ci.sh` run the contract guard; `install-hooks.sh` installs both hooks | done |
+| CT-6 | `xtask gen_skill.rs` — `references/api.md` (copy of API.md) + `references/sdk/**` (byte copy of the SDK), both under `xtask --check` | done |
+| CT-7 | `check_contract.py` fourth surface: every op must be named in `docs/PLUGIN_DEVELOPMENT.md` (set compare, not substring) | done |
+| SKILL-1 | `SKILL.md` de-duplicated: `## The wire contract` points at the generated refs; the stale 5-of-20 op list is gone | done |
+| SKILL-2 | `references/SCHEMA-LOCATIONS.md` deleted (hand-written file in a generated dir); `kn9t-mcp` language corrected | done |
+| CMT-1 | Internal `96E-<n>` ticket ids removed from code comments and plugin READMEs (356 → 0) | done |
+| CMT-2 | Comment length trimmed to ≤2 lines; net −771 comment lines in `crates/**` + `plugins/**` | done |
+| ID-1 | Renamed 37 ticket-named test fns, 6 test files, `migrate_96e14`; updated `spec/08-plugin.md` and `check-sse-race.sh` | done |
+| ID-2 | `96E-` removed from all published docs (spec, ARCHITECTURE, ADR, README, AGENTS); kept in `docs/dev/` as history | done |
+| BUG-1 | `scripts/check-sse-race.sh` used `cargo test --lib` for a test in `tests/unit_sse.rs` — could never find it; CI red | **fixed** |
+| BUG-2 | `srv::approve_session_caches` fails at `acceptance.rs:3258` (third leg sees no `ApprovalRequest`) | open — see `CHANGELOG.md` 2026-09-17d |
+
+**Guard-proofs worth keeping:** `check-contract.sh` caught a mojibake sequence that the F5 rewrite
+had embedded in `docs/ARCHITECTURE.md` (it quoted the corrupted glyphs instead of describing them
+as codepoints) — the guard was right, the doc was wrong.
+
+---
+
 ## 96E issue register (post-PLAN fixes)
 
 The P1/96E batch and later live-breakage fixes are tracked here (they are not spec requirements, so they have no per-requirement row in the tables above).

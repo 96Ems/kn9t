@@ -99,7 +99,7 @@ pub struct AttachPrelude {
     ///
     /// The dedup rule ("`seq <= head_seq` was already emitted in step 2") is sound only if
     /// the ring delivered everything above the watermark. The ring is bounded and drops the
-    /// *oldest* on overflow, and since 96E-18 durable echoes ride it too, so a slow attach
+    /// *oldest* on overflow, and since durable echoes ride it too, so a slow attach
     /// can lose one. §5.1 self-healing covers transient loss only — a lost durable event is a
     /// permanent hole in the client's transcript unless it refetches. This flag is how the
     /// client learns it must.
@@ -161,7 +161,7 @@ pub fn build_attach_prelude(
 
 /// Read durable events with `seq > from`, ordered, and the session's current
 /// `head_seq`. Uses an atomic store snapshot so a concurrent append cannot
-/// commit between the two reads (96E-7 fix).
+/// commit between the two reads.
 fn read_durable_since(store: &SqliteStore, session: &str, from: u64) -> (Vec<Event>, u64) {
     let (payloads, head_seq) = store
         .read_attach_snapshot(session, from)

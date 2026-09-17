@@ -1,7 +1,5 @@
-//! 96E-28 — `POST /ui-respond` — resolve a pending generic interaction.
-//!
-//! Validates that `id` is actually pending before forwarding — same principle as
-//! rejecting undeclared placeholder writes.
+//! `POST /ui-respond` — resolve a pending generic interaction. Validates the `id` is actually
+//! pending before forwarding, like rejecting undeclared placeholder writes.
 
 use std::sync::Arc;
 

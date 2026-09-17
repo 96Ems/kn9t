@@ -58,11 +58,35 @@
     "Done": { "type": "object", "properties": { "t": { "const": "done" }, "id": { "type": "integer" } }, "required": ["t", "id"] },
     "Request": {
       "type": "object",
-      "description": "Plugin → host API request (host_api capability). Ops: provider_complete, session_read, tool_execute, session_fork, session_prompt, tool_list, ui_directive, ui_register_lua, ui_set_state, ui_clear. TUI display is plugin-supplied Lua: send the source once with ui_register_lua {source} (defines render(state) returning a widget tree), then push data with ui_set_state {state} (arbitrary JSON) and tear down with ui_clear. The host does not interpret the Lua or the state; the widget vocabulary belongs to the TUI. A registered view is interactive, not render-only: inside its chunk it may call kn9t.on_click(id, fn) to handle clicks on widgets carrying that id, kn9t.on_key(key, fn) to handle keys while the view holds focus, and kn9t.insert_input(text) to append to the user's prompt. Handlers are keyed per plugin, so two plugins may reuse the same id or key without colliding; a handler returning false falls through to the host. Keys only reach a focused view (Esc blurs), so a plugin cannot swallow global keybinds.",
+      "description": "Plugin → host API request (host_api capability). Ops: session_read (snapshot + transcript), session_create, session_fork, session_prompt (run a turn on the session), provider_complete (one completion on the session's model; usage is recorded as Subagent), tool_list, tool_execute, tool_visibility (a plugin may only change the hidden flag on its own tools), interaction_request (register a pending question; the client answers it with POST /ui-respond), plugin_list, plugin_start, plugin_stop, plugin_reload, plugin_load, plugin_health, ui_directive (alias ui_push), ui_register_lua, ui_set_state, ui_clear. TUI display is plugin-supplied Lua: send the source once with ui_register_lua {source} (defines render(state) returning a widget tree), then push data with ui_set_state {state} (arbitrary JSON) and tear down with ui_clear. The host does not interpret the Lua or the state; the widget vocabulary belongs to the TUI. A registered view is interactive, not render-only: inside its chunk it may call kn9t.on_click(id, fn) to handle clicks on widgets carrying that id, kn9t.on_key(key, fn) to handle keys while the view holds focus, and kn9t.insert_input(text) to append to the user's prompt. Handlers are keyed per plugin, so two plugins may reuse the same id or key without colliding; a handler returning false falls through to the host. Keys only reach a focused view (Esc blurs), so a plugin cannot swallow global keybinds.",
       "properties": {
         "t": { "const": "request" },
         "id": { "type": "integer" },
-        "op": { "type": "string" },
+        "op": {
+          "type": "string",
+          "enum": [
+            "session_read",
+            "session_create",
+            "session_fork",
+            "session_prompt",
+            "provider_complete",
+            "tool_list",
+            "tool_execute",
+            "tool_visibility",
+            "interaction_request",
+            "plugin_list",
+            "plugin_start",
+            "plugin_stop",
+            "plugin_reload",
+            "plugin_load",
+            "plugin_health",
+            "ui_directive",
+            "ui_push",
+            "ui_register_lua",
+            "ui_set_state",
+            "ui_clear"
+          ]
+        },
         "payload": { "type": "object" }
       },
       "required": ["t", "id", "op", "payload"],

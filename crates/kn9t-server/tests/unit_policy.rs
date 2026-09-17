@@ -149,7 +149,7 @@ fn approver_forwards_plugin_reason() {
     let _ = handle.join();
 }
 
-/// 96E-33 — an approval driven from a thread that never started a turn still emits
+/// an approval driven from a thread that never started a turn still emits
 /// to the session it was told about.
 #[test]
 fn approver_emits_from_a_foreign_thread() {

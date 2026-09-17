@@ -1,35 +1,15 @@
 //! Plugin management routes.
 //!
-//! - `GET  /plugin` — inventory: declared name, Running/Stopped, tools (96E-49).
-//! - `POST /plugin/{name}/reload` — hot-reload an existing plugin (R-PLUG2-100).
-//! - `POST /plugin/{name}/stop` — stop and leave it off, keeping the recipe (96E-47).
-//! - `POST /plugin/{name}/start` — respawn a stopped plugin (96E-47).
-//! - `POST /plugin/load` — hot-load a new plugin without server restart.
-//! - `POST /plugin/{name}/ui_event` — forward a UI interaction to a plugin.
-//!
-//! Reload steps, per `spec/08b-plugin-redesign.md` R-PLUG2-100:
-//! 1. `cancel` for every in-flight call on that plugin.
-//! 2. wait up to `before_tool_call` timeout for `done` replies.
-//! 3. `shutdown`, close write pipe.
-//! 4. respawn from the same `cmd`.
-//! 5. re-handshake; re-register tools, provider, hooks, event subscriptions.
-//!
-//! In-flight calls that miss step 3 get a synthetic error at the call site
-//! (the pending channel is dropped → `disconnected`).
+//! `GET /plugin` (inventory), `POST /plugin/{name}/reload|stop|start`, `POST /plugin/load` (new
+//! plugin, no restart) and `POST /plugin/{name}/ui_event` (forward a UI interaction). Reload
+//! cancels in-flight calls, waits for `done`, shuts down, respawns from the same `cmd`, then
+//! re-handshakes (R-PLUG2-100); a call that misses the shutdown gets a synthetic `disconnected`
+//! error at the call site.
 
 use std::sync::Arc;
 
 use crate::http_util::{JsonResp, Reply};
 use crate::state::ServerState;
-
-/// Request body for POST /plugin/{name}/ui_event.
-#[derive(serde::Deserialize)]
-pub struct UiEventReq {
-    pub session_id: String,
-    pub event: String,
-    #[serde(default)]
-    pub data: serde_json::Value,
-}
 
 /// POST /plugin/{name}/reload
 pub fn reload(state: &Arc<ServerState>, name: &str) -> Reply {
@@ -47,12 +27,9 @@ pub fn reload(state: &Arc<ServerState>, name: &str) -> Reply {
     }
 }
 
-/// POST /plugin/{name}/stop — 96E-47: cut a plugin and leave it off.
-///
-/// Distinct from `reload`, which always respawns. The spawn recipe is kept, so `start`
-/// can bring the same plugin back. The plugin's tools stay in the registry and stay in
-/// the `tools` array sent to the model; they are refused at execution time instead
-/// (`ServerState::blocked_tools`), so a stop never invalidates the level-1 cache prefix.
+/// POST /plugin/{name}/stop — cut a plugin and leave it off. Unlike `reload` it does not respawn,
+/// and the recipe is kept for `start`. Its tools stay in the registry and model-facing array,
+/// refused at execution via `blocked_tools()` — so the level-1 cache prefix survives.
 pub fn stop(state: &Arc<ServerState>, name: &str) -> Reply {
     match state.stop_plugin(name) {
         Ok(stopped) => JsonResp::ok(serde_json::json!({ "stopped": stopped })).into(),
@@ -62,10 +39,8 @@ pub fn stop(state: &Arc<ServerState>, name: &str) -> Reply {
     }
 }
 
-/// POST /plugin/{name}/start — 96E-47: respawn a stopped plugin from its known recipe.
-///
-/// A name that was never loaded is a 404, not a silent spawn: bringing a brand new
-/// command up is `POST /plugin/load`'s job.
+/// POST /plugin/{name}/start — respawn a stopped plugin from its recipe. An unknown name is a
+/// 404; bringing a brand new command up is `POST /plugin/load`'s job.
 pub fn start(state: &Arc<ServerState>, name: &str) -> Reply {
     match state.start_plugin(name) {
         Ok((started, tools)) => JsonResp::ok(serde_json::json!({
@@ -79,7 +54,7 @@ pub fn start(state: &Arc<ServerState>, name: &str) -> Reply {
     }
 }
 
-/// GET /plugin — 96E-49: the plugin inventory (name, running state, tools).
+/// GET /plugin — the plugin inventory (name, running state, tools).
 pub fn list(state: &Arc<ServerState>) -> Reply {
     let plugins: Vec<serde_json::Value> = state
         .plugin_inventory()
@@ -166,7 +141,7 @@ pub fn load(state: &Arc<ServerState>, body: LoadPluginReq) -> Reply {
 
 /// POST /plugin/{name}/ui_event — forward a UI interaction to a plugin.
 /// The plugin receives this via HostMsg::Event if it subscribed to "ui_interaction".
-pub fn ui_event(state: &Arc<ServerState>, plugin_name: &str, body: UiEventReq) -> Reply {
+pub fn ui_event(state: &Arc<ServerState>, plugin_name: &str, body: crate::api::UiEventReq) -> Reply {
     let payload = serde_json::json!({
         "kind": "ui_interaction",
         "plugin": plugin_name,

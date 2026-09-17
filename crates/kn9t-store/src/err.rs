@@ -1,8 +1,6 @@
-//! Error helper constructors for StoreErr.
-//!
-//! Provides typed constructors to reduce `format!()` overhead and improve
-//! error consistency. The underlying StoreErr(String) type is preserved
-//! for spec compliance (R-CORE-135).
+//! Error helper constructors for `StoreErr`. Typed constructors reduce `format!()` overhead and
+//! keep errors consistent; the underlying `StoreErr(String)` is preserved for spec compliance
+//! (R-CORE-135).
 
 use kn9t_core::StoreErr;
 

@@ -1,4 +1,4 @@
-//! 96E-53 — `build_forest` / `picker_order`.
+//! `build_forest` / `picker_order`.
 //!
 //! Pure functions over `SessionEntry`, so these run without a server, a client, or a
 //! terminal. Both the sidebar and the `/tree` overlay consume the output, so the
@@ -152,7 +152,7 @@ fn self_parent_is_treated_as_a_root() {
     assert_eq!(shape(&entries), vec![("loop".into(), 0)]);
 }
 
-// ── picker_order: the renderer/key-handler contract (96E-19) ────────────────
+// ── picker_order: the renderer/key-handler contract ────────────────
 
 #[test]
 fn picker_order_covers_every_entry_and_indexes_the_full_list() {
@@ -199,7 +199,7 @@ fn reason_badge_distinguishes_the_four_reasons_and_ignores_unknown() {
     assert_eq!(reason_badge(Some("weird")), "");
 }
 
-// ── 96E-55: /fork and /undo argument rules ─────────────────────────────────
+// ── /fork and /undo argument rules ─────────────────────────────────
 
 use kn9t_tui::session_tree::plan_fork;
 

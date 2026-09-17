@@ -1,7 +1,7 @@
-//! 96E-13 regression: store docs must accurately describe the single-connection serialized model.
+//! Regression: store docs must accurately describe the single-connection serialized model.
 
 #[test]
-fn p1_96e13_doc_clarifies_serialized_model() {
+fn doc_clarifies_serialized_model() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let db_rs = manifest.join("src/db.rs");
     let txt = std::fs::read_to_string(&db_rs).expect("read db.rs");
@@ -9,7 +9,7 @@ fn p1_96e13_doc_clarifies_serialized_model() {
     let misleading = "WAL allows concurrent readers on separate connections";
     assert!(
         !txt.contains(misleading),
-        "db.rs still contains misleading concurrency claim '{}'; 96E-13 requires it to be clarified or removed",
+        "db.rs still contains misleading concurrency claim '{}'; it must be clarified or removed",
         misleading
     );
     // Must contain clarification of intentional single-connection serialized model

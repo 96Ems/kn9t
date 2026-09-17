@@ -1,6 +1,6 @@
 // Extracted from src/reducer.rs — the #[cfg(test)] mod tests block.
 // These are pure unit tests for the SSE reducer: no terminal, no I/O.
-// See src/reducer.rs module-level doc for the test strategy (96E-19).
+// See src/reducer.rs module-level doc for the test strategy.
 
 #![allow(clippy::unwrap_used)]
 
@@ -463,7 +463,7 @@ fn truncation_retry_via_turn_status() {
         .any(|m| m.content.contains("truncated")));
 }
 
-/// 96E-18/96E-19 — the full live tool round-trip must leave a visible tool card:
+/// the full live tool round-trip must leave a visible tool card:
 /// MessageAppended(assistant+tool_call) creates it, ToolStarted/ToolFinished drive
 /// its status, MessageAppended(tool results) fills the output. Regression: with
 /// durable events never reaching the SSE bus, no card was ever created live.
@@ -506,7 +506,7 @@ fn live_tool_call_roundtrip_creates_card() {
     assert_eq!(s.transcript.message_count(), 1);
 }
 
-// ── 96E-19 extended reducer coverage ─────────────────────────────────────────
+// ── extended reducer coverage ─────────────────────────────────────────
 
 #[test]
 fn interaction_request_sets_overlay() {

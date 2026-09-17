@@ -65,7 +65,7 @@ fn a_response_within_the_deadline_is_returned() {
 }
 
 /// Cancellation still wins immediately — the deadline is an addition, not a replacement
-/// (96E-39: ESC must abort a pending interaction).
+/// (ESC must abort a pending interaction).
 #[test]
 fn cancellation_still_aborts_before_the_deadline() {
     let reg = Arc::new(InteractionRegistry::new());

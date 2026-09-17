@@ -1,10 +1,5 @@
-//! Policy info routes — ADR-0008: policy decisions moved to plugin.
-//!
-//! The server no longer manages policy rules. The `kn9t-policy` plugin reads
-//! `~/.kn9t/policy.py` directly. These routes are informational only.
-//!
-//! Routes:
-//! - `GET /policy` — current policy state (informational)
+//! Policy info routes — ADR-0008: policy decisions moved to the `kn9t-policy` plugin, which reads
+//! `~/.kn9t/policy.py` directly. These routes are informational only (`GET /policy`).
 
 use crate::config;
 use crate::http_util::JsonResp;

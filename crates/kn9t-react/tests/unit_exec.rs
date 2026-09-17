@@ -168,10 +168,10 @@ fn make_params() -> RunParams {
     }
 }
 
-// ── 96E-8: malformed JSON must not reach Tool::execute ────────────────────────
+// ── malformed JSON must not reach Tool::execute ────────────────────────
 
 #[test]
-fn p1_96e8_authorize_malformed_json_is_deny() {
+fn authorize_malformed_json_is_deny() {
     let tool_calls = Arc::new(AtomicUsize::new(0));
     let hook_calls = Arc::new(AtomicUsize::new(0));
     let bus = Arc::new(RecordingBus::new());

@@ -740,11 +740,11 @@ mod plug {
         );
     }
 
-    /// P1 96E-5: PluginHost session context must be isolated per concurrent session.
+    /// PluginHost session context must be isolated per concurrent session.
     /// Before fix: `current_session` is a single Mutex, so session B overwrites A.
     /// After fix: per-call/per-thread context, each hook sees its own session.
     #[test]
-    fn p1_96e5_session_context_isolation() {
+    fn session_context_isolation() {
         use std::sync::Barrier;
 
         let (h_read, h_write, p_read, p_write) = make_pipes();
@@ -841,9 +841,9 @@ mod plug {
         );
     }
 
-    /// P1 96E-5: bus isolation — plugin HookFailed and events must go to correct session's bus
+    /// bus isolation — plugin HookFailed and events must go to correct session's bus
     #[test]
-    fn p1_96e5_bus_isolation() {
+    fn bus_isolation() {
         use kn9t_core::{Bus, Event};
         use std::sync::Barrier;
 
@@ -934,13 +934,13 @@ mod plug {
         );
     }
 
-    /// P1 96E-9: plugin event backlog must not block RPC response processing.
+    /// plugin event backlog must not block RPC response processing.
     /// Reader thread must use non-blocking try_send for transient events, so a
     /// noisy plugin cannot stall unrelated hook calls. Before fix, burst of events
     /// fills the bounded channel (64) and reader blocks on `send`, delaying the
     /// subsequent hook Result beyond the hook timeout.
     #[test]
-    fn p1_96e9_event_backlog_does_not_block_rpc() {
+    fn event_backlog_does_not_block_rpc() {
         use kn9t_core::{EventSink, LiveEvent};
 
         struct SlowSink {
@@ -1051,9 +1051,9 @@ mod plug {
         assert_eq!(hook_failed2, 0, "no HookFailed should appear after drain");
     }
 
-    /// 96E-9: saturation — transient events may be dropped, RPC still completes.
+    /// saturation — transient events may be dropped, RPC still completes.
     #[test]
-    fn p1_96e9_transient_events_may_be_dropped_under_pressure() {
+    fn transient_events_may_be_dropped_under_pressure() {
         use kn9t_core::{EventSink, LiveEvent};
 
         struct CountingSink {
@@ -1123,12 +1123,12 @@ mod plug {
         assert!(got <= 150, "count {got} should not exceed sent");
     }
 
-    /// 96E-10: malformed protocol message must poison the host.
+    /// malformed protocol message must poison the host.
     /// Before fix: reader `continue`s after parse error, host stays healthy and
     /// next call can still succeed (reader still alive). After fix: host becomes
     /// unhealthy, pending calls fail, new calls fail fast.
     #[test]
-    fn p1_96e10_protocol_corruption_marks_unhealthy() {
+    fn protocol_corruption_marks_unhealthy() {
         let (h_read, h_write, p_read, p_write) = make_pipes();
         let host = PluginHost::from_io(
             h_read,
@@ -1211,9 +1211,9 @@ mod plug {
         );
     }
 
-    /// 96E-10: pending call fails correctly on corruption and new calls remain poisoned
+    /// pending call fails correctly on corruption and new calls remain poisoned
     #[test]
-    fn p1_96e10_new_calls_fail_deterministically_after_corruption() {
+    fn new_calls_fail_deterministically_after_corruption() {
         let (h_read, h_write, p_read, p_write) = make_pipes();
         let host = PluginHost::from_io(
             h_read,
@@ -1252,9 +1252,9 @@ mod plug {
         }
     }
 
-    /// 96E-10: a fresh host after poisoning has a clean stream (restart semantics)
+    /// a fresh host after poisoning has a clean stream (restart semantics)
     #[test]
-    fn p1_96e10_restarted_host_has_clean_stream() {
+    fn restarted_host_has_clean_stream() {
         // First host gets poisoned
         {
             let (h_read, h_write, p_read, p_write) = make_pipes();
@@ -1296,10 +1296,10 @@ mod plug {
         }
     }
 
-    // ── 96E-17: plugin → host API (host_api capability) ─────────────────────
+    // ── plugin → host API (host_api capability) ─────────────────────
 
     #[test]
-    fn p1_96e17_host_api_request_roundtrip() {
+    fn host_api_request_roundtrip() {
         use kn9t_plugin::host_api::HostApi;
         let (h_read, h_write, p_read, p_write) = make_pipes();
 
@@ -1365,7 +1365,7 @@ mod plug {
     }
 
     #[test]
-    fn p1_96e17_host_api_request_error_reply() {
+    fn host_api_request_error_reply() {
         use kn9t_plugin::host_api::HostApi;
         let (h_read, h_write, p_read, p_write) = make_pipes();
 
@@ -1424,10 +1424,10 @@ mod plug {
         );
     }
 
-    // ── 96E-16/17: RemoteCompactor delegation over the hook wire ────────────
+    // ── /17: RemoteCompactor delegation over the hook wire ────────────
 
     #[test]
-    fn p1_96e17_remote_compactor_roundtrip() {
+    fn remote_compactor_roundtrip() {
         use kn9t_core::{CompactSpan, Compactor as _, ModelRef, SeqRange};
         use kn9t_plugin::RemoteCompactor;
 
@@ -1481,7 +1481,7 @@ mod plug {
     }
 
     #[test]
-    fn p1_96e17_remote_compactor_error_reply() {
+    fn remote_compactor_error_reply() {
         use kn9t_core::{CompactSpan, Compactor as _, ModelRef, SeqRange};
         use kn9t_plugin::RemoteCompactor;
 

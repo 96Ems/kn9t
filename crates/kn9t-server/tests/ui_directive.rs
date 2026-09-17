@@ -1,6 +1,6 @@
-//! 96E-23 TDD: structured plugin→TUI UI directive primitive.
+//! TDD: structured plugin→TUI UI directive primitive.
 //!
-//! Must be session-scoped (reuse 96E-21 routing fix), structured (non-text),
+//! Must be session-scoped (reuse routing fix), structured (non-text),
 //! and PluginNotification must keep working.
 
 use kn9t_core::ToolRegistry;

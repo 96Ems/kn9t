@@ -90,6 +90,6 @@ is worse than no gate.
 
 ADR-0007 reached the right diagnosis and stopped one attribute short. The gap was not
 in the reasoning but in the verification: nothing ran `bash scripts/check-gi1.sh` after
-the change to confirm the gates it named actually worked. Per TRACKING.md:31-35 —
+the change to confirm the gates it named actually worked. Per docs/dev/TRACKING.md:31-35 —
 *prefer a script over an assertion* — an ADR that claims a gate now works should show
 the gate's exit code.

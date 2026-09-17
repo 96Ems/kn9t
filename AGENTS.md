@@ -17,7 +17,7 @@ kn9t is a from-scratch coding agent. Design goals, in priority order:
    the SQLite row, and the input to state reconstruction.
 
 The design and spec are complete. **What is built, and how far, is status — it lives in
-`TRACKING.md` (§5), never in this file.** Your job across sessions is to advance the
+`docs/dev/TRACKING.md` (§5), never in this file.** Your job across sessions is to advance the
 implementation, stage by stage, following the spec exactly.
 
 ---
@@ -27,15 +27,15 @@ implementation, stage by stage, following the spec exactly.
 | doc | what it is | when to read |
 |---|---|---|
 | `AGENTS.md` (this) | repo guidelines — how to proceed, rules, invariants, gates | every session, first |
-| `TRACKING.md` | live status — stage progress, per-requirement test status, SPEC-OPEN register, 96E/P7 registers | every session, second — it tells you where you are |
-| `PLAN.md` | the post-v1 work plan — epics P1–P7; §P7 holds the TUI-polish decisions D1–D21 | when the work is a PLAN epic, not a spec stage |
-| `CHANGELOG.md` | session narrative + discovered spec/design bugs | every session; append as you work |
+| `docs/dev/TRACKING.md` | live status — stage progress, per-requirement test status, SPEC-OPEN register, 96E/P7 registers | every session, second — it tells you where you are |
+| `docs/dev/PLAN.md` | the post-v1 work plan — epics P1–P7; §P7 holds the TUI-polish decisions D1–D21 | when the work is a PLAN epic, not a spec stage |
+| `docs/dev/CHANGELOG.md` | session narrative + discovered spec/design bugs | every session; append as you work |
 | `DESIGN.md` | the *why* — decisions, rejected alternatives, accepted costs (§1–18) | when a spec requirement is unclear; it is the rationale |
 | `docs/ARCHITECTURE.md` | how the code is built *as shipped*, plus §14 "Findings" (the known-defect list) | when you need the as-built picture or the known issues |
 | `spec/README.md` | spec conventions — ID scheme, keywords, global invariants, SPEC-OPEN register | before touching any stage |
 | `spec/NN-*.md` | the *what* and *how* — per-stage requirements with signatures, DDL, wire schemas, acceptance tests | when implementing that stage |
 
-`AGENTS.md` is the standing rulebook — it changes rarely. `TRACKING.md` is the mutable
+`AGENTS.md` is the standing rulebook — it changes rarely. `docs/dev/TRACKING.md` is the mutable
 scoreboard — it changes every session. Keep the two separate; do not put status tables in
 this file.
 
@@ -43,9 +43,9 @@ this file.
 and the spec is the bug — stop and flag it. If the design is silent, the spec is
 authoritative.
 
-Do **not** read the whole design or spec into context every time. Read `TRACKING.md` to
+Do **not** read the whole design or spec into context every time. Read `docs/dev/TRACKING.md` to
 find where the work is, then read only that stage's spec file plus `spec/README.md` — or,
-when the work is a `PLAN.md` epic, that epic's section.
+when the work is a `docs/dev/PLAN.md` epic, that epic's section.
 
 ---
 
@@ -72,7 +72,7 @@ depends on the previous stage existing. Build strictly 01 → 10.
 
 Gates G1/G2/G3 are the three §16 checkpoints; they are hard stops (§7 below). This list is
 the build **order**, not a scoreboard — what is implemented and which gates are green is in
-`TRACKING.md`.
+`docs/dev/TRACKING.md`.
 
 ---
 
@@ -80,7 +80,7 @@ the build **order**, not a scoreboard — what is implemented and which gates ar
 
 For each stage `NN`:
 
-1. **Open `TRACKING.md`** — confirm the previous stage's gate is green. If not, finish
+1. **Open `docs/dev/TRACKING.md`** — confirm the previous stage's gate is green. If not, finish
    that first. Never start a stage on top of a red gate.
 2. **Read `spec/NN-*.md` in full** plus `spec/README.md` (global invariants GI-1…GI-6 apply
    to every stage and are not restated per requirement).
@@ -94,19 +94,19 @@ For each stage `NN`:
    <name>`). The test name in the spec is the test you write. A requirement with no passing
    acceptance test is **not done**.
 6. **Run the stage gate** (`R-<AREA>-900`). It lists the exact conditions for "done".
-7. **Update `TRACKING.md`** (§6 below) — flip requirement/test statuses, record any
+7. **Update `docs/dev/TRACKING.md`** (§6 below) — flip requirement/test statuses, record any
    SPEC-OPEN resolution.
-8. **Record the session** in `CHANGELOG.md` — narrative of what changed, plus any
+8. **Record the session** in `docs/dev/CHANGELOG.md` — narrative of what changed, plus any
    discovered spec/design bug.
 
-Work that comes from **neither** a spec stage (a `PLAN.md` epic, or an issue in
-`TRACKING.md`'s 96E / P7 registers) has no `R-<AREA>-<NNN>` id. Record it in the matching
-register with its test and in `CHANGELOG.md`; the same "done means the named test passes"
+Work that comes from **neither** a spec stage (a `docs/dev/PLAN.md` epic, or an issue in
+`docs/dev/TRACKING.md`'s 96E / P7 registers) has no `R-<AREA>-<NNN>` id. Record it in the matching
+register with its test and in `docs/dev/CHANGELOG.md`; the same "done means the named test passes"
 rule applies, it just has no requirement row to flip.
 
 ### Keywords (from `spec/README.md` §3)
 - **MUST / MUST NOT** — absolute; violation blocks the gate.
-- **SHOULD** — strong default; deviation needs a recorded reason in `CHANGELOG.md`.
+- **SHOULD** — strong default; deviation needs a recorded reason in `docs/dev/CHANGELOG.md`.
 - **MAY** — optional.
 
 ### Global invariants — check these every stage (CI enforces them, §13)
@@ -126,7 +126,7 @@ rule applies, it just has no requirement row to flip.
 
 ## 5. Where status lives
 
-**All live status is in `TRACKING.md`** — the stage tracker, per-requirement test tables,
+**All live status is in `docs/dev/TRACKING.md`** — the stage tracker, per-requirement test tables,
 and the SPEC-OPEN resolution register. This file (`AGENTS.md`) holds no status and must not
 grow any; it is the standing rulebook only.
 
@@ -138,7 +138,7 @@ grow any; it is the standing rulebook only.
 
 Two files carry across sessions; keep both current **as you work**, not at the end.
 
-**`TRACKING.md` — the scoreboard.** At session start, read it to find the current stage and
+**`docs/dev/TRACKING.md` — the scoreboard.** At session start, read it to find the current stage and
 last gate status. As you work:
 - flip each requirement's test status (`—` → `▣`/`✗`/`☑`) as its acceptance test is written
   and run. A requirement is `☑` only when its named test passes.
@@ -147,7 +147,7 @@ last gate status. As you work:
   date, **and** update the interim value in the spec file + `spec/README.md`'s SPEC-OPEN
   table.
 
-**`CHANGELOG.md` — the narrative.** It is the memory of *why* things changed; it is not a
+**`docs/dev/CHANGELOG.md` — the narrative.** It is the memory of *why* things changed; it is not a
 git log and not a status table. Under a dated session heading, append:
 - what you implemented/changed this session, by stage and requirement ID.
 - any **deviation** from a SHOULD, with reason.
@@ -261,7 +261,7 @@ bytes where there were three:
 | `§` U+00A7 | `C2 A7` | `C3 82 C2 A7` |
 | `─` U+2500 | `E2 94 80` | `C3 A2 E2 80 9D C2 80` |
 
-`crates/kn9t-core/tests/mojibake.rs` (96E-15) catches the `§` and `—` forms, but **it does
+`crates/kn9t-core/tests/mojibake.rs` catches the `§` and `—` forms, but **it does
 not catch every variant** — box-drawing `──` passed it while the file was visibly broken.
 A clean mojibake test is not proof the file is clean.
 
@@ -293,7 +293,7 @@ provably left untouched and the script is idempotent.
 - **Spec contradicts design, or a MUST is unimplementable?** Stop. Record it in the
   changelog as a spec bug and surface it. Do not work around it silently.
 - **Already a known defect?** Check `docs/ARCHITECTURE.md` §14 (findings F1–F8, the fixed
-  ones marked FIXED) and the bug tables in `TRACKING.md` before diagnosing from scratch.
+  ones marked FIXED) and the bug tables in `docs/dev/TRACKING.md` before diagnosing from scratch.
 
 ---
 
@@ -510,18 +510,29 @@ cargo run -p xtask -- generate   # after any schema/*.json edit
 Do **not** add a `build.rs` that regenerates on build — it would leak `preserve_order` (IndexMap) into every runtime crate via feature unification (`GI-3` `preserve_order off`, `xtask/Cargo.toml:8`), bloat the `DESIGN §15` budget, and hide API breaks from diff review. Drift is enforced at commit/CI, not at build:
 
 * `scripts/check-schema.sh` — `xtask --check` byte-identical compare; fails on drift
-* `bash scripts/install-hooks.sh` (once per clone) — sets `core.hooksPath = .githooks`, whose
+* `scripts/check-contract.sh` — the **reverse** direction: every op, route and hook declared in
+  `schema/*.json` must exist in the code, and every one in the code must be declared in the
+  schema. `check-schema.sh` only proves schema → generated, so a primitive added straight to a
+  `match` arm used to leave `API.md` silently incomplete with every gate green (nine host-API ops,
+  and two routes, were invisible this way). Parsing only, no cargo.
+* `bash scripts/install-hooks.sh` (once per clone) — sets `core.hooksPath = .githooks`:
   `pre-commit` runs `check-gi1.sh` + `check-schema.sh` + `check-mojibake.sh` +
-  `check-unwrap-trend.sh`; a drifted `wire.rs`/`api.rs` blocks the commit
-* `.github/workflows/ci.yml` — `bash scripts/check-ci.sh` (the four above, plus
+  `check-unwrap-trend.sh`; `pre-push` adds `check-contract.sh`. A drifted `wire.rs`/`api.rs`, or a
+  primitive missing from the schema, blocks the commit/push.
+* `.github/workflows/ci.yml` — `bash scripts/check-ci.sh` (the five above, plus
   `check-sse-race.sh`), a `-D warnings` build, and a test job per OS
 
-**Verify the hook is actually installed**: `git config core.hooksPath` must print `.githooks`
-and `.githooks/pre-commit` must exist. A `core.hooksPath` pointing at a directory without a
-`pre-commit` runs **nothing** — which is how the guards silently stopped running on a
-checkout once already (96E-29).
+**Verify the hooks are actually installed**: `git config core.hooksPath` must print `.githooks`
+and `.githooks/pre-commit` + `.githooks/pre-push` must exist. A `core.hooksPath` pointing at a
+directory without them runs **nothing** — which is how the guards silently stopped running on a
+checkout once already.
 
-`cargo build` passes even drifted; only the hook/CI blocks. If `check-schema.sh` fails, run `generate` and commit both schema and regenerated files together.
+**The schema is the only input to generated code.** Never hand-edit `api.rs`, `wire.rs`, `API.md`
+or the language stubs: edit `schema/*.json`, run `cargo run -p xtask -- generate`, commit both.
+A new route with an object request also needs its Rust type name in `req_name_for_path`
+(`xtask/src/schema.rs`) — the generator refuses to guess rather than emit nothing.
+
+`cargo build` passes even drifted; only the hooks/CI block. If `check-schema.sh` fails, run `generate` and commit both schema and regenerated files together.
 
 ### 13.1 Read `API.md` before writing code against any API
 

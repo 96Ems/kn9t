@@ -59,7 +59,7 @@ the source of truth — exactly the problem.
 
 ### Precedent
 
-TRACKING.md records: "GI-1 was violated for an unknown period because nothing checked it.
+docs/dev/TRACKING.md records: "GI-1 was violated for an unknown period because nothing checked it.
 Lesson: prefer a script over an assertion." The same principle applies here — API.md
 said one thing, the server did another, and nobody knew.
 

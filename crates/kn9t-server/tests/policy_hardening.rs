@@ -1,5 +1,8 @@
-//! 96E-18 TDD red: bare unwrap / malformed config panic must be fixed.
-//! These tests are expected to FAIL until policy.rs is hardened.
+//! Hardening guards for `policy.rs`.
+//!
+//! The approval mechanism must never turn a denial into a crash: no bare `unwrap` in
+//! non-test code, and a malformed `[policy]` shape in `config.toml` returns `Result`
+//! instead of panicking.
 
 use kn9t_server::policy::ApprovalCache;
 

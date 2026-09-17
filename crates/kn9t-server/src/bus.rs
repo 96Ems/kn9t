@@ -115,7 +115,7 @@ impl SessionSink {
     /// Persist what a crash would otherwise lose. Every failure here is swallowed: this is
     /// non-canonical scratch (R-STOR-116), and a write error must never break the turn that
     /// is actually producing the output.
-    /// 96E-12: only `LiveEvent` is accepted; durable `MessageAppended` no longer
+    /// only `LiveEvent` is accepted; durable `MessageAppended` no longer
     /// flows through this sink (it goes via `Store::append` only), so the
     /// `MessageAppended` salvage branch is removed — the store clears live scratch
     /// when the durable tool-result message is appended.

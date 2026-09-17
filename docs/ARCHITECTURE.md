@@ -1,13 +1,13 @@
 # kn9t — Architecture
 
-**Status:** reflects the tree as built (73 commits, stages 01–09 gates green).
+**Status:** reflects the tree as built (stages 01–09 gates green).
 **Scope:** the *as-is* structure — processes, crates, data flow, invariants, and where
 they are enforced. This is a map, not a rulebook (`AGENTS.md`) and not a rationale
 (`DESIGN.md`). Where the shipped code diverges from the docs, this file says so and
 `§14 Findings` records it.
 
-Measured 2026-09-03: 11 workspace crates (~42.5 KLOC Rust), 1 xtask, 8 out-of-workspace
-plugins in 4 languages, 437 workspace tests + 26 external.
+Measured 2026-09-17: 14 workspace crates (~49.2 KLOC Rust), 1 xtask, 13 out-of-workspace
+plugins in 4 languages, 923 workspace tests + 71 external.
 
 ---
 
@@ -63,7 +63,7 @@ Three hard facts shape everything below:
 |---|---|---|---|
 | server | `kn9t-server` | auto-spawned, idle-exits after 5 s with no client and no turn | owns the DB, the plugins, the leases |
 | TUI | `kn9t-tui` | user session | ratatui; HTTP + SSE only, never links `kn9t-core` (GI-6) |
-| CLI | `kn9t` | per command / REPL | `chat`, `sessions`, `history`, `attach`, `cost`, `models`, `tools`, `status`, `stop` |
+| CLI | `kn9t` | per command / REPL | `chat`, `sessions`, `history`, `attach`, `cost`/`budget`, `models`, `tools`, `status`/`health`, `stop`, `install-plugins`, `tui` |
 | plugin ×N | any executable | spawned at server start, killable/reloadable | NdJSON on stdin/stdout; `POST /plugin/{name}/reload` respawns |
 
 **Startup handshake** (`crates/kn9t-server/src/spawn.rs`, `bootstrap.rs`): a client takes
@@ -96,8 +96,8 @@ loopback; documented as such.
         ┌────────────┬───────┴────────┬──────────────┐
         ▼            ▼                ▼              ▼
   provider-core   kn9t-store     kn9t-plugin    (kn9t-plugin-sdk)
-  ureq/TLS,       SQLite,        subprocess     zero workspace deps,
-  sse_lines,      projections,   stdio host,    publishable to crates.io
+  ureq/TLS,       SQLite,        subprocess     one workspace dep
+  sse_lines,      projections,   stdio host,    (`kn9t-macros`, exempt),
   assemble,       reproject,     RemoteTool/    → the only dep an external
   retry, pricing  blobs, kv      Provider/      plugin may take
         │                        Compactor
@@ -122,7 +122,7 @@ loopback; documented as such.
 | crate | workspace deps | GI-1 |
 |---|---|---|
 | `kn9t-core` | 0 | ✅ vocabulary root |
-| `kn9t-plugin-sdk` | 0 | ✅ publishable |
+| `kn9t-plugin-sdk` | 0 (`kn9t-macros` exempt) | ✅ publishable |
 | `kn9t-store`, `kn9t-plugin`, `kn9t-provider-core` | 1 (`kn9t-core`) | ✅ |
 | `kn9t-provider-openai`, `kn9t-provider-replay`, `kn9t-react` | 1 (`kn9t-provider-core`) | ✅ via re-export |
 | `kn9t-tui`, `kn9t` | 0 | ✅ GI-6 — HTTP only |
@@ -139,12 +139,12 @@ GI-1 does not count. That is a real hole in the invariant, not a violation of it
 
 ## 4. The event model — two tiers, one enum
 
-`crates/kn9t-core/src/event.rs` (414 lines) is the centre of the system. Everything else
+`crates/kn9t-core/src/event.rs` (486 lines) is the centre of the system. Everything else
 is plumbing around it.
 
 ```rust
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Event { … }        // 23 variants, 6 durable
+pub enum Event { … }        // 26 variants, 7 durable
 ```
 
 **Tier is encoded in the type, not in a flag.** A variant with a `seq: u64` field is
@@ -153,12 +153,13 @@ durable; everything else is transient. `Event::is_durable()` is literally
 
 | tier | variants | path to a client | lossy? |
 |---|---|---|---|
-| **durable** (6) | `SessionForked`, `MessageAppended`, `ModelChanged`, `Compacted`, `Handoff`, `UsageRecorded` | `Store::append` → txn commit → `after_append` hook → bus → SSE | **never** |
-| **transient** (17) | `TextDelta`, `ThinkingDelta`, `ToolArgsDelta`, `ToolStarted/Progress/Finished`, `TurnStarted/Ended/Status`, `ApprovalRequest`, `InteractionRequest`, `UiDirective`, `RetryAttempt`, `HookFailed`, `TitleChanged`, `Error`, `PluginNotification` | `EventSink::emit` → bus → SSE | yes, by design |
+| **durable** (7) | `SessionForked`, `MessageAppended`, `ModelChanged`, `Compacted`, `Handoff`, `ToolsToggled`, `UsageRecorded` | `Store::append` → txn commit → `after_append` hook → bus → SSE | **never** |
+| **transient** (19) | `TextDelta`, `ThinkingDelta`, `ToolArgsDelta`, `ToolStarted/Progress/Finished`, `TurnStarted/Ended/Status`, `ApprovalRequest`, `InteractionRequest`, `UiDirective`, `RetryAttempt`, `HookFailed`, `TitleChanged`, `Error`, `PluginNotification`, `PluginDeclared`, `PluginState` | `EventSink::emit` → bus → SSE | yes, by design |
 
 ### 4.1 The `LiveEvent` split is the good bit
 
-There is a second enum, `LiveEvent`, holding exactly the 17 transient variants.
+There is a second enum, `LiveEvent`, holding the 17 session-scoped transient variants
+plus the internal `TurnFinishing`.
 `EventSink::emit` accepts **only** `LiveEvent`:
 
 ```rust
@@ -170,7 +171,9 @@ error**, not a code review. `From<LiveEvent> for Event` widens on the way out. T
 the single best structural decision in the codebase — it makes GI-4 (append-only log)
 unbypassable from the loop and the tools.
 
-Cost: the 17 variants are declared twice (`event.rs:308–414`). A macro would remove the
+Cost: the 17 session-scoped variants are declared twice (`event.rs:119–275` and
+`event.rs:316–404`); `PluginDeclared`/`PluginState` are global and bypass `LiveEvent`, so
+`state.rs` broadcasts them directly to the bus. A macro would remove the
 duplication and the type-level guarantee with it. Correct trade.
 
 ### 4.2 `seq` is stamped by the store, not the caller
@@ -190,9 +193,9 @@ source).
 
 ---
 
-## 5. Storage — `kn9t-store` (3.0 KLOC, 12 files)
+## 5. Storage — `kn9t-store` (2.4 KLOC, 12 files)
 
-SQLite via bundled `rusqlite` (no system library). WAL on. **11 tables.**
+SQLite via bundled `rusqlite` (no system library). WAL on. **9 tables.**
 
 ```
 sessions ──┬── events           (session_id, seq)  APPEND-ONLY, the truth
@@ -227,7 +230,7 @@ The two `live_*` tables are the deliberate exception and are marked non-canonica
 
 ### 5.2 Money is integers
 
-96E-14: `cost_micros: i64` (1e6 micros = 1 USD) is the source of truth. The `REAL`
+`cost_micros: i64` (1e6 micros = 1 USD) is the source of truth. The `REAL`
 `cost_usd` columns survive for reading old rows and wire compat but are **derived** from
 micros on write (`project.rs:104`). Prices are snapshotted into the usage row at record
 time, so a later price change cannot rewrite history.
@@ -238,10 +241,10 @@ time, so a later price change cannot rewrite history.
 pub(crate) conn: Mutex<Connection>,   // db.rs:20
 ```
 
-Documented at the top of `db.rs` (96E-13): WAL is for crash safety and external
+Documented at the top of `db.rs`: WAL is for crash safety and external
 `sqlite3` readers, **not** in-process concurrency. There is no pool and no separate reader
 connection. `read_attach_snapshot` holds the mutex across payloads *and* `head_seq`
-because the 96E-7 bug was exactly that interleaving. Honest and simple; the ceiling is
+because that interleaving was exactly the bug. Honest and simple; the ceiling is
 one writer, and for a single-user localhost agent that ceiling is far away.
 
 One real hazard is handled explicitly rather than by luck: `plan_request` scopes the lock
@@ -261,7 +264,7 @@ re-deriving it.
 
 ---
 
-## 6. The ReAct loop — `kn9t-react` (3.1 KLOC)
+## 6. The ReAct loop — `kn9t-react` (1.3 KLOC, 6 files)
 
 The loop owns **only trait objects**. `loop_.rs:88`:
 
@@ -324,10 +327,10 @@ that session sees a well-formed call/result pairing, which is the thing provider
 if you get it wrong.
 
 **Malformed tool args fail closed.** `authorize()` on unparseable `args_json` returns deny
-and emits `Event::Error` (test `p1_96e8_authorize_malformed_json_is_deny`). Earlier it was
+and emits `Event::Error` (test `authorize_malformed_json_is_deny`). Earlier it was
 silently swallowed.
 
-**Compaction is fail-closed.** 96E-17 removed the hardcoded inline-prompt fallback: with
+**Compaction is fail-closed.** The hardcoded inline-prompt fallback was removed: with
 no compactor plugin installed, context exhaustion ends the turn with
 `ReactError::CompactionUnavailable` and persists nothing. A session simply cannot continue
 past its window without a compactor. That is a deliberate, documented capability
@@ -345,9 +348,9 @@ demand in one turn is `ReactError::CompactionLoop`, not an infinite loop.
 ## 7. Providers
 
 ```
-kn9t-provider-core (1.1 KLOC)  ── the four things nobody should reimplement
+kn9t-provider-core (0.8 KLOC)  ── the four things nobody should reimplement
   http.rs      ureq, blocking, AuthScheme
-  sse.rs       sse_lines() — 34 lines, the whole SSE framing
+  sse.rs       sse_lines() + SseIter::next() — the whole SSE framing (54 lines)
   assemble.rs  delta accumulation + partial-JSON tool-arg buffering
   retry.rs     pre-stream only: 429/5xx/connect, backoff, RetryAttempt events
   abort.rs     CancellableReader — cancel lands mid-stream, not after
@@ -355,9 +358,9 @@ kn9t-provider-core (1.1 KLOC)  ── the four things nobody should reimplement
   quirks.rs    per-model HTTP eccentricities
 ```
 
-A provider implements **wire mapping only**. Measured: `provider-openai` 1.4 KLOC
-(encode 358 + decode 150 + provider 204 + cache), `kn9t-anthropic` 623 lines as a
-subprocess plugin.
+A provider implements **wire mapping only**. Measured: `provider-openai` 1.7 KLOC
+(encode 421 + decode 196 + provider 332 + responses 441 + image_guard 282 + cache 14),
+`kn9t-anthropic` 967 lines as a subprocess plugin.
 
 **Retry is pre-stream only.** Once bytes are flowing, a failure is a stream failure — it
 cannot be retried without double-charging or duplicating output. Correct and unusual;
@@ -377,7 +380,7 @@ states this honestly rather than pretending the ~250-line estimate held.
 
 ---
 
-## 8. Server — `kn9t-server` (9.2 KLOC, 36 files)
+## 8. Server — `kn9t-server` (8.7 KLOC, 31 files)
 
 The GI-1 exception, and the only place concrete types are named: `SqliteStore`,
 `ServerHostApi`, `InteractiveApprover`, the provider registry.
@@ -398,9 +401,9 @@ main.rs ─► ServerHandle::spawn
    └─────────────────────────────────────────────────────────────────────
 ```
 
-**33 routes**, grouped in `routes/`: `session.rs` (573 lines — create/list/snapshot/fork/
-delete/lease/prompt/steer/abort/model/approve/rename/compact/export), plus `blob`, `cost`,
-`models`, `pref`, `policy`, `plugin`, `tools`, `interaction`.
+**37 routes**, grouped in `routes/`: `session.rs` (694 lines — create/list/snapshot/fork/
+delete/lease/prompt/steer/abort/model/tools/approve/rename/compact/export), plus `blob`,
+`config`, `cost`, `models`, `pref`, `policy`, `plugin`, `tools`, `interaction`.
 
 ### 8.1 No PATCH — action endpoints only
 
@@ -424,7 +427,7 @@ is an atomic fact, and there is no merge semantics to argue about.
 Read-then-subscribe is explicitly forbidden: a durable event committed in the window
 between read and subscribe would be lost, and transient self-healing does not cover
 durable events. There is a deterministic regression test using `KN9T_SSE_TEST_DELAY_MS` to
-widen the window artificially (96E-7), and `scripts/check-sse-race.sh` asserts the test is
+widen the window artificially, and `scripts/check-sse-race.sh` asserts the test is
 actually *run* rather than silently `#[ignore]`d. That is the correct paranoia: the bug
 class is "the test existed but never executed".
 
@@ -441,7 +444,7 @@ pub(crate) after_append: Mutex<Option<Arc<dyn Fn(&SessionId, &Event) + Send + Sy
 ```
 
 The server installs it at startup; it fires once per durable append, **outside** the
-connection lock, with the seq-stamped event (96E-18). This is the clean resolution of a
+connection lock, with the seq-stamped event. This is the clean resolution of a
 real tension — the alternative would have been widening `EventSink` and losing the
 compile-time guarantee. Fix the architecture, not the symptom.
 
@@ -507,7 +510,7 @@ with `Ask` in the vocabulary, short-circuiting would make the outcome depend on 
 2. `Approver` keeps `Ask`/`HardDeny` variants that nothing derives any more — they exist
    for the wire (`POST /approve`) and for old replayable events.
 3. ~~**The spec is stale.**~~ R-TOOL-070/080/090/095 described a classifier that no longer
-   exists. **Fixed in 96E-31:** the four requirements now specify `HookVeto`, strictest-wins
+   exists. **Fixed:** the four requirements now specify `HookVeto`, strictest-wins
    composition, and both failure postures, and name tests that exist. See `§14 F1`.
 
 `policy.rs` carries `#![deny(clippy::unwrap_used)]` and `scripts/check-unwrap-trend.sh`
@@ -525,7 +528,7 @@ approval off the turn thread.
 ## 10. Plugins — the extension model
 
 Everything user-facing is a plugin. **Tools are not built in**: `bash`, `read`, `edit`,
-`write` live in `plugins/kn9t-tools` (Rust, 1.1 KLOC), a separate crate outside the
+`write` live in `plugins/kn9t-tools` (Rust, 1.4 KLOC), a separate crate outside the
 workspace, spawned as a subprocess. A server with an empty plugin dir starts, warns, and
 serves — degraded, not crashed.
 
@@ -566,31 +569,36 @@ with zero plugins, which is what makes the react crate testable standalone.
 ### 10.3 Host API — kn9t does not embed subagents, it opens a door
 
 This is the most interesting design move in the plugin layer. Rather than building
-subagents, compaction, and MCP into the core, the host exposes 10 operations that plugins
+subagents, compaction, and MCP into the core, the host exposes 20 operations that plugins
 call *back* into:
 
 ```
 session_read        read the transcript by seq range
+session_create      create a session
 session_prompt      run a real turn
 session_fork        fork (fork_reason = subagent)
 provider_complete   one LLM call with the session's model/credentials/cache
                     (usage recorded as UsageKind::Subagent — cost stays attributed)
 tool_list           what tools exist
 tool_execute        run a tool through the normal policy path
+tool_visibility     a plugin may only change the hidden flag on its own tools
 interaction_request block until the user answers (generic, opaque payload)
-ui_declare_page / ui_write_placeholder / ui_clear_page   plugin-declared TUI pages
+plugin_list / plugin_start / plugin_stop / plugin_reload / plugin_load / plugin_health
+                    plugin lifecycle, callable by the agent
+ui_directive        structured plugin→TUI directive; alias ui_push
+ui_register_lua / ui_set_state / ui_clear   plugin-supplied Lua TUI views
 ```
 
-So `kn9t-subagent` (TypeScript, ~200 lines) runs its own agent loop using kn9t's
+So `kn9t-subagent` (TypeScript, 327 lines) runs its own agent loop using kn9t's
 providers and store. `kn9t-compactor` (TypeScript) *is* compaction. `kn9t-mcp` (Python)
 bridges MCP servers. None of that is core code.
 
-Each request is dispatched **on a worker thread per request** (96E-9) so a slow op cannot
+Each request is dispatched **on a worker thread per request** so a slow op cannot
 block the plugin's reader thread — the classic stdio-host deadlock, handled.
 
 The `HostApi` trait lives in `kn9t-plugin` so that crate stays GI-1 clean (it only names
 `serde_json::Value`); the implementation is the server's business
-(`kn9t-server/src/host_api.rs`, 414 lines).
+(`kn9t-server/src/host_api.rs`, 774 lines).
 
 ### 10.4 Four languages prove the protocol
 
@@ -598,10 +606,14 @@ The `HostApi` trait lives in `kn9t-plugin` so that crate stays GI-1 clean (it on
 |---|---|---|
 | `kn9t-tools` | Rust | `bash`/`read`/`edit`/`write` — the default toolset |
 | `kn9t-anthropic` | Rust | provider plugin, own `ureq` |
+| `kn9t-git-integration` | Rust | git status/log + reviewable working-tree diff (TUI) |
+| `kn9t-plugin-manager` | Rust | plugin lifecycle as agent-callable tools |
+| `kn9t-websearch` | Rust | `websearch` / `scrape` tools |
 | `kn9t-test-plugin` | Rust | real-subprocess test fixture (P4-A) |
 | `kn9t-agents-md` | Go | discovers and injects `AGENTS.md`, KV-backed |
 | `kn9t-mcp` | Python | MCP bridge (stdio + HTTP) |
 | `kn9t-policy` | Python | **the safety policy** (ADR-0008) |
+| `kn9t-skills` | Python | Agent Skills discovery (`SKILL.md`) |
 | `kn9t-compactor` | TypeScript | compaction |
 | `kn9t-subagent` | TypeScript | subagents, re-entrant |
 | `kn9t-ask-user` | TypeScript | user interaction via `interaction_request` |
@@ -610,7 +622,7 @@ Go and Python type stubs are generated from `schema/plugin.json` into
 `schema/generated/`. Four languages is a genuine protocol test — an internal-only
 convention would have drifted long ago.
 
-`kn9t-plugin-sdk` (2.2 KLOC, zero workspace deps) is publishable to crates.io so a
+`kn9t-plugin-sdk` (1.7 KLOC, one workspace dep: `kn9t-macros`) is publishable to crates.io so a
 third-party Rust plugin needs nothing from this repo.
 
 **Discovery is user-dir only** (ADR-0004): `~/.kn9t/plugins/` and pinned `[[plugin]]`
@@ -620,7 +632,7 @@ code execution. The repo's `plugins/` is *build source*; `~/.kn9t/plugins/` is t
 
 ---
 
-## 11. TUI — `kn9t-tui` (14.7 KLOC, the largest crate)
+## 11. TUI — `kn9t-tui` (24.1 KLOC, 52 files, the largest crate)
 
 Links **no** `kn9t-*` crate. Verified: zero references to `kn9t_core` or `kn9t_server`,
 and `check-schema.sh` greps `Cargo.toml` for `^\s*kn9t-` to keep it that way.
@@ -632,21 +644,21 @@ main.rs ─► terminal setup (raw, alt screen, bracketed paste, mouse)
            └─ SSE thread     (spawned on session select)
                  │ frames
                  ▼
-           reducer.rs (805 lines)  SseFrame → State      ← pure, 157 unit tests
+           reducer.rs (624 lines)  SseFrame → State      ← pure, 42 unit tests
                  │
-           app.rs (2769 lines)     App: 32 fields, composed from
+           app.rs (4533 lines)     App: 70 fields, composed from
                  │                 SessionManager / ModelSelector / TokenTracker /
                  │                 Transcript / SlashState / SearchState / …
                  ▼
-           ui/render.rs (2347)  +  diff_viewer (1343), markdown (542), search (528),
-                                   latex (392), which_key (408), syntax, theme, …
+           ui/render.rs (4870)  +  markdown (531), search (447), latex (473),
+                                   which_key (402), syntax (168), theme (396), …
 ```
 
 **The reducer split is what makes this testable.** `reduce(&mut State, SseFrame)` is a pure
-function, so 157 tests cover live event paths with no terminal and no server. Golden
-snapshots (96E-19) cover rendering.
+function, so 42 tests cover live event paths with no terminal and no server. Golden
+snapshots cover rendering.
 
-`wire.rs` (253 lines) is **generated** from `schema/http.json` — GI-6-clean serde mirrors.
+`wire.rs` (297 lines) is **generated** from `schema/http.json` — GI-6-clean serde mirrors.
 The TUI and the server therefore agree by construction rather than by review. This
 directly fixed a three-way drift where API.md, the server, and `wire.rs` disagreed on
 nearly every route, and where the TUI sent `decision: "always"` while the server checked
@@ -658,17 +670,33 @@ endpoint, not a client workaround. `POST /{id}/rename`, `/compact`, `/export`, a
 `GET /tools` all exist because the TUI needed them. That discipline is why there are no
 PATCH routes and no client-side state reconstruction.
 
-`app.rs` at 2769 lines and `render.rs` at 2347 are the two files that will need splitting
+`app.rs` at 4533 lines and `render.rs` at 4870 are the two files that will need splitting
 next; the manager extraction (2026-08-28) already removed ~835 lines of dead duplicate
 state, so the pattern is established.
 
-### 11.1 Plugin-declared UI (96E-23…27)
+### 11.1 Plugin-declared UI
 
-A plugin can declare a page with typed placeholders (`text|number|bar|list`), write
-placeholder values, and clear it; the host validates placeholder existence and value kind,
-and the TUI renders it. `UiDirective` events are **session-scoped, never broadcast** —
-96E-21 fixed exactly that leak. This lets a plugin own screen real estate without the TUI
-knowing what the plugin is.
+A plugin that wants to draw ships **Lua, not a fixed widget vocabulary**. Three host ops
+drive it: `ui_register_lua {source}` is sent once and defines `render(state)`, which returns
+a widget tree; `ui_set_state {state}` pushes arbitrary JSON on each update; `ui_clear` drops
+the view. The state is opaque to the host — `kn9t-server` validates the envelope and forwards
+a `UiDirective`; the widget vocabulary belongs to the TUI (`lua/plugin_ui.rs`,
+`lua/widgets.rs`). `UiDirective` events are **session-scoped, never broadcast** —
+fixed exactly that leak.
+
+Each plugin's chunk runs in its **own environment** (`plugin_ui.rs`), so plugins cannot see
+or clobber each other — or the user's `tui.lua`. This is *collision avoidance, not a security
+boundary*: plugins are native executables that already hold full OS privileges, so restricting
+their Lua would protect nothing. What it does buy is visible degradation: a load error, a
+missing `render`, or a runtime error is drawn in the plugin's own slot instead of blanking the
+frame or hiding the cause.
+
+**Placement is the user's decision, not the plugin's.** A view may *request*
+`placement`/`title`/`rows`/`cols` on `ui_register_lua`, and `kn9t.state.plugin_view_specs`
+surfaces the request so `tui.lua` can route by zone; but the config decides whether and where
+to draw it, so a plugin cannot seize screen space. `plugins/kn9t-ask-user` is the reference
+implementation — its Lua is extracted verbatim into a test fixture
+(`scripts/extract_ask_user_lua.py`) so a syntax error fails CI instead of a user's terminal.
 
 ---
 
@@ -699,7 +727,7 @@ never a silent ignore.
 
 ## 13. Invariants and how each is actually enforced
 
-The stated lesson in `TRACKING.md` is *"the invariant claim was untrue for an unknown
+The stated lesson in `docs/dev/TRACKING.md` is *"the invariant claim was untrue for an unknown
 period because nothing checked it. Prefer a script over an assertion."* That lesson is
 mostly applied:
 
@@ -719,12 +747,11 @@ mostly applied:
 
 Six guard scripts (`check-ci.sh` aggregates five) plus `pre-commit.hook`.
 
-**Test posture:** 437 workspace tests + 26 external, verified this session:
-`cargo test --workspace` → **436 passed, 1 failed**. The single failure is
-`srv::plugin_reload`, which is a hardcoded `panic!("not supported on Windows in this
-harness")` — a *declared* platform gap, not a regression. Confirmed pre-existing and
-documented. Distribution is healthy: `kn9t-core` 48 inline + 24 integration, `kn9t-tui`
-157 inline, `kn9t-server` 37 + 55.
+**Test posture:** 923 workspace test attributes (`#[test]`) plus 71 in the Rust plugin
+crates (measured 2026-09-17). Distribution: `kn9t-core` 79 integration, `kn9t-tui` 45
+inline + 380 integration, `kn9t-server` 14 inline + 156 integration. `srv::plugin_reload`
+is `#[ignore]`d on Windows (its dummy plugin is a POSIX shell script) — a declared platform
+gap, not a regression.
 
 ---
 
@@ -732,7 +759,7 @@ documented. Distribution is healthy: `kn9t-core` 48 inline + 24 integration, `kn
 
 Ordered by consequence. Nothing here blocks; several are cheap.
 
-### F1 — Spec is stale where ADR-0008 deleted code (highest) — **FIXED (96E-31)**
+### F1 — Spec is stale where ADR-0008 deleted code (highest) — **FIXED**
 
 R-TOOL-070/080/090/095 described a shell classifier that no longer exists, and named
 acceptance tests (`tool::classify_*`) that are deleted. Because "a requirement is done only
@@ -763,7 +790,7 @@ named sibling. Either the invariant should say "`[dependencies]` only" explicitl
 re-export works and the hole closes. The rename is ~20 lines and removes an asterisk from
 three crates.
 
-### F3 — Guard scripts unrunnable on Windows ✅ FIXED (96E-29, ADR-0009)
+### F3 — Guard scripts unrunnable on Windows ✅ FIXED (ADR-0009)
 
 `core.autocrlf=true` plus `* text=auto` meant every `.sh` file was CRLF in the working
 tree, so `bash scripts/check-gi1.sh` died immediately:
@@ -790,7 +817,7 @@ Renormalizing produced **no content churn** — the index was already LF, so thi
 a checkout-side defect. ADR-0007 is superseded by ADR-0009 rather than edited, since its
 Consequences section is known-false.
 
-### F4 — `xtask --check` false drift ✅ FIXED (96E-30, same root cause)
+### F4 — `xtask --check` false drift ✅ FIXED (same root cause)
 
 `cargo run -p xtask -- --check` reported **all five** generated files as drifted. They were
 not: `git diff --ignore-cr-at-eol` showed zero content difference. The generator writes
@@ -801,29 +828,21 @@ Fixed by the same `eol=lf` pin, with **no change to the comparison logic** — t
 positive was the line endings, not the generator. Adding a normalizing compare would have
 masked the underlying checkout bug while leaving the six guard scripts broken.
 
-### F5 — Mojibake guard is itself mojibake'd
+### F5 — Mojibake guard is itself mojibake'd — **FIXED**
 
-`scripts/check-mojibake.sh:12` holds a `PATTERN=` line listing eight alternatives, spelled
-with literal U+00C2 / U+00E2 / U+00C3 lead bytes (shown here as codepoints, so that *this*
-document does not trip the very guard it describes):
+The guard first landed with its byte patterns spelled as *literal* double-encoded characters and
+its own comments double-encoded — and it excludes itself from the grep, so it could never report
+its own corruption. The patterns are now ASCII escapes (`\xc3\x82`, `\xce\x93\xc3\xb6\xc3\x87`)
+and the file is clean.
 
-```
-U+00C2 U+00A7 | U+00E2 U+20AC U+201D | U+00E2 U+20AC U+2122 | U+00E2 U+20AC U+0153
-             | U+00E2 U+20AC | U+00C3 U+00A9 | U+00C3 U+00A8 | U+00C3 SPACE
-```
+The second half of this finding has also lapsed. `CHANGELOG.md` was reported to hold ~25 mangled
+sequences (`rAcponse`, `dAcfaut`, `A?` for `À`). Re-measured 2026-09-17: the file is valid UTF-8 —
+zero `C2`/`C3` double-encode leads, no `U+0393 U+00F6 U+00C7` box-drawing misreads, correct em dashes — and the
+guard now covers the whole tree (`git ls-files`, not `crates/ docs/ spec/`), so the changelog is
+inside its scope and passes.
 
-The script is correct *by construction* — it must contain the byte patterns it hunts. But
-the same file's own comments were double-encoded, and `check-mojibake.sh` excludes itself
-from the grep, so it can never report its own corruption.
-
-Meanwhile `CHANGELOG.md` contains ~25 genuinely mangled sequences (`rAcponse`,
-`dAcfaut`, `A?` for `À`) from a French-language session — which the guard does not catch
-because that is a *different* mis-decoding (UTF-8 → CP1252-ish), not double-UTF-8. The
-guard's scope (`crates/ docs/ spec/`) also excludes `CHANGELOG.md` entirely.
-
-*Fix:* widen the scope to root `*.md`, and add the observed `[A-Za-z]Ac` / `A\?` patterns.
-Low severity, but a guard that cannot see the corruption in the repo it guards is worse
-than no guard, because it certifies cleanliness.
+*Lesson kept:* a guard that cannot see the corruption in the repo it guards is worse than no
+guard, because it certifies cleanliness.
 
 ### F6 — TLS-threaded session sink in the approver
 
@@ -885,14 +904,14 @@ the actual ratio.
 2. **`ReactLoop` owns only `dyn` traits.** The entire agent loop runs against replayed
    raw bytes with no network and no spend. That is why stage 02 comes before stage 05.
 3. **Tools, policy, compaction, subagents, and MCP are all out-of-process.** The core does
-   not grow features; it grows *seams*. Nine plugins in four languages, and the host API is
-   10 operations.
+   not grow features; it grows *seams*. Thirteen plugins in four languages, and the host API is
+   20 operations.
 4. **The SSE attach order is reasoned, tested, and guarded** — including a script that
    verifies the test actually runs.
 5. **Generated contract, committed and drift-checked.** The three-way API drift that
    silently turned "always" into "deny" cannot recur.
 6. **Deletion is treated as a legitimate fix.** ADR-0008 removed 333 lines of classifier
-   rather than patching it; 96E-17 removed the fallback compactor rather than keeping a bad
+   rather than patching it; the fallback compactor was removed rather than keeping a bad
    one. `AGENTS.md §10` ("no patches, fix the architecture") is visibly obeyed in the
    commit history, not just asserted.
 7. **The costs are written down.** DESIGN §2.1 corrects its own line-count estimate by 3×
@@ -908,24 +927,27 @@ real rather than nominal.
 
 ---
 
-## Appendix — file map by size
+## Appendix — file map by size (measured 2026-09-17)
 
 | crate | files | lines | heaviest |
 |---|---|---|---|
-| `kn9t-tui` | 36 | 14 674 | `app.rs` 2769, `ui/render.rs` 2347, `diff_viewer.rs` 1343 |
-| `kn9t-server` | 36 | 9 191 | `config.rs` 942, `policy.rs` 692, `tools.rs` 674, `routes/session.rs` 573 |
-| `kn9t-react` | 8 | 3 132 | `exec.rs` 634, `hooks.rs` 180, `turn.rs` 170 |
-| `kn9t-core` | 19 | 3 079 | `event.rs` 414, `bus.rs` 331, `ids.rs` 293 |
-| `kn9t-store` | 15 | 3 029 | `db.rs` 460, `session.rs` 268, `plan.rs` 258 |
-| `kn9t-plugin` | 11 | 2 982 | `host.rs` 983, `remote_provider.rs` 230, `codec.rs` 203 |
-| `kn9t-plugin-sdk` | 9 | 2 169 | `ctx.rs` 464, `plugin.rs` 360, `subagent.rs` 274 |
-| `kn9t` (CLI) | 10 | 2 100 | `chat.rs` 686, `bootstrap.rs` 516, `main.rs` 353 |
-| `kn9t-provider-openai` | 7 | 1 387 | `encode.rs` 358, `provider.rs` 204 |
-| `xtask` | 6 | 1 319 | generators |
-| `kn9t-provider-core` | 9 | 1 074 | `pricing.rs` 154, `abort.rs` 153 |
-| `kn9t-provider-replay` | 6 | 912 | fixtures + parser drive |
+| `kn9t-tui` | 52 | 24 113 | `ui/render.rs` 4870, `app.rs` 4533 |
+| `kn9t-server` | 31 | 8 703 | `config.rs` 1168, `state.rs` 1090 |
+| `kn9t` (CLI) | 13 | 3 090 | `chat.rs` 692, `bootstrap.rs` 538 |
+| `kn9t-store` | 12 | 2 383 | `db.rs` 528, `project.rs` 291 |
+| `kn9t-plugin` | 9 | 2 047 | `host.rs` 1181, `codec.rs` 234 |
+| `xtask` | 6 | 2 041 | `gen_markdown.rs` 736, `gen_wire.rs` 440 |
+| `kn9t-core` | 15 | 1 772 | `event.rs` 486, `ids.rs` 177 |
+| `kn9t-plugin-sdk` | 6 | 1 745 | `ctx.rs` 555, `plugin.rs` 417 |
+| `kn9t-provider-openai` | 7 | 1 693 | `responses.rs` 441, `encode.rs` 421 |
+| `kn9t-react` | 6 | 1 344 | `exec.rs` 737, `turn.rs` 254 |
+| `kn9t-provider-core` | 8 | 803 | `retry.rs` 151, `assemble.rs` 150 |
+| `kn9t-provider-replay` | 5 | 612 | `sse.rs` 155, `replay.rs` 154 |
+| `kn9t-test-support` | 7 | 496 | `store.rs` 122, `fixtures.rs` 105 |
+| `kn9t-tui-test-support` | 2 | 287 | `frames.rs` 279, `lib.rs` 8 |
+| `kn9t-macros` | 1 | 103 | `lib.rs` 103 |
 
-Tests: 8 004 lines across 22 integration files, plus inline modules.
+Tests: 25 215 lines across 93 integration files, plus inline modules.
 
 
 

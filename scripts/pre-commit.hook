@@ -4,7 +4,7 @@
 #   scripts/check-gi1.sh     — dependency budget (GI-1)
 #   scripts/check-schema.sh  — schema-first contract (ADR-0005, GI-6)
 # A red check refuses the commit. Both scripts are the "script over assertion"
-# precedent from TRACKING.md:31-35.
+# precedent from docs/dev/TRACKING.md:31-35.
 
 set -e
 # Resolve the repo root independently of where this hook is installed: .git/hooks/

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::visibility::Visibility;
 
-/// Every tool here is `hidden` (96E-50) and none is `parallel_safe`: stopping or
+/// Every tool here is `hidden` and none is `parallel_safe`: stopping or
 /// respawning a subprocess while another lifecycle call is in flight on the same
 /// plugin is precisely the race the host's locking is there to avoid.
 fn spec(name: &str, description: &str, schema: Value, policy: DefaultPolicy) -> ToolSpec {

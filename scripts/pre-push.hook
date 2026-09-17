@@ -1,0 +1,27 @@
+#!/bin/bash
+# Pre-push gates.
+#
+# The push is the last moment before a change becomes public, so this runs the
+# full mechanical set rather than the pre-commit subset:
+#   scripts/check-contract.sh    — schema <-> code agree, both directions
+#   scripts/check-schema.sh      — schema -> generated files, no drift (GI-6)
+#   scripts/check-gi1.sh         — dependency budget (GI-1)
+#   scripts/check-mojibake.sh    — encoding
+#   scripts/check-unwrap-trend.sh — panic budget
+#
+# A red check refuses the push. The contract guard is here rather than only in
+# pre-commit because a handbook rule ("update the schema when you add an op") is
+# not enforcement: nine ops were added to `host_api.rs` without ever reaching the
+# schema, and every gate stayed green.
+
+set -e
+# Resolve the repo root independently of where this hook is installed: .git/hooks/
+# and a core.hooksPath directory sit at different depths.
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+./scripts/check-contract.sh
+./scripts/check-schema.sh
+./scripts/check-gi1.sh
+./scripts/check-mojibake.sh
+./scripts/check-unwrap-trend.sh

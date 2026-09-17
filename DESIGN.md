@@ -1518,51 +1518,67 @@ filesystem mutated with no record of why.
 
 ## 10. Permissions
 
+**Policy is a plugin, not a core concern** (ADR-0008). kn9t ships no in-tree classifier, no
+`Policy` trait, and no `[policy.bash]` rules table. Every installed policy plugin answers the
+`before_tool_call` hook:
+
 ```rust
-pub enum Decision {
+pub enum HookVeto {
     Allow,
-    Deny { reason: String },       // immediate deny (e.g. ConfigPolicy's Ask→Deny)
-    Ask,                           // needs human; InteractivePolicy will prompt
-    HardDeny { reason: String },   // never prompt, never cached (e.g. `never = ["sudo"]`)
+    Ask { reason: String },        // needs a human
+    Deny { reason: String },       // refused here and now
+    Replace { args: Value },       // rewrite, then execute
 }
-pub trait Policy: Send + Sync {
-    fn check(&self, call: &ToolCall, cwd: &Path) -> Decision;
-}
-// Scope (once|session|always) is on the approve command, not the decision.
-// ApprovalCache (session: in-memory, always: persisted under [policy.approvals]) is checked before prompting.
 ```
 
-The loop calls `policy.check(...)` and blocks. It has no idea whether that consulted a
-TOML allowlist or blocked 90 seconds on a human. `Policy` is the **single safety seam** — all risk
-decisions funnel through `Policy::check()` and must never be duplicated in a tool or plugin (ADR-0002:
-plugins declare `ToolSpec.effects`, server decides).
+Composition across plugins is **strictest-wins**, `Deny > Ask > Allow`, with `Replace`
+short-circuiting (a later plugin would otherwise judge stale input). Every plugin is consulted,
+never just the first to object: with `Ask` in the vocabulary, first-wins would make the outcome
+depend on plugin *load order*.
 
-| impl | behavior |
+| outcome | what happens |
 |---|---|
-| `ConfigPolicy` | `dispatch_effects` → `Ask` becomes `Deny` (no prompt in `-p`/CI), `HardDeny` stays `HardDeny`, `Allow` stays `Allow`. Returns instantly. |
-| `InteractivePolicy` | `dispatch_effects` → `HardDeny` returns immediately (never prompts, never cached); `Allow` returns immediately; `Ask` checks `ApprovalCache` (always → session → prompt): emits `ApprovalRequest` to the bus (a *fact*: "I am waiting"), blocks on condvar until an `approve{id, decision, scope}` **command** arrives (`scope=session` caches in-memory, `scope=always` persists to `~/.kn9t/config.toml` under `[policy.approvals]`). `HardDeny` can never be overridden by a cached `always`. |
+| `Allow` | dispatch |
+| `Deny` | synthesized error result, no execution |
+| `Replace` | dispatch with the rewritten args |
+| `Ask` | handed to the `Approver` — the only part that needs the server |
+
+What stays in the server is the approval **mechanism**, because it needs the session bus, the
+write lease and the user's config file:
+
+- `ApprovalRegistry` — `ApprovalId` → waiting slot, resolved by `POST /approve`.
+- `ApprovalCache` — `once` / `session` / `always` scopes; `always` persists to
+  `[policy.approvals]` in `~/.kn9t/config.toml`.
+- `InteractiveApprover` / `DenyAllApprover` — turn a plugin's `Ask` into a `Decision`.
 
 ```mermaid
 sequenceDiagram
     participant R as ReAct
-    participant Pol as InteractivePolicy
+    participant H as HookHost (policy plugins)
+    participant Ap as Approver
     participant B as Bus
     participant Srv as Server
     participant C as Client (lease holder)
 
-    R->>Pol: check(bash "rm -rf build", cwd)
-    Pol->>B: Event::ApprovalRequest{id, tool, args, cwd}
+    R->>H: before_tool_call(bash "rm -rf build", args, cwd)
+    H-->>R: HookVeto::Ask { reason }
+    R->>Ap: request(ApprovalCtx)
+    Ap->>B: Event::ApprovalRequest{id, tool, args, cwd}
     B->>Srv: (subscriber)
     Srv-->>C: SSE: ApprovalRequest
-    Note over Pol: blocked on condvar
+    Note over Ap: blocked on condvar
     C->>Srv: POST /approve {id, scope: once|session|always}
-    Srv->>Pol: resolve(id, Allow) -- command path, NOT the bus
-    Pol-->>R: Allow
-    Note over C,Srv: scope=session caches in a ConfigPolicy overlay<br/>scope=always writes to config
+    Srv->>Ap: resolve(id, Allow) -- command path, NOT the bus
+    Ap-->>R: Allow
 ```
 
-Resolution travels the **command** path, never the bus. The bus stays reply-free and
+Resolution travels the **command** path, never the bus, so the bus stays reply-free and
 Principle 3 holds.
+
+**Default posture, with no policy plugin installed: every tool call executes.** The hook layer
+fail-opens to `HookVeto::Allow`, and safety is opt-in by installing a policy plugin. ADR-0008
+decision 5 accepts this explicitly: a fake classifier that `sh -c` defeats is worse than an
+honest absence.
 
 **Default posture: ask on mutation, auto-allow reads.** `write` and `edit` are gated
 exactly as hard as `bash` — a model rewriting `~/.ssh/authorized_keys` needs no shell.
@@ -1570,87 +1586,28 @@ exactly as hard as `bash` — a model rewriting `~/.ssh/authorized_keys` needs n
 Rejected: allow-all by default. A prompt-injected model would force-push or rewrite
 dotfiles with no confirmation.
 
-### 10.1 Effects + command allowlist for `bash`
+### 10.1 Why the in-tree classifier was deleted
 
-**Effects (ADR-0002):** tools declare `ToolSpec { name, description, schema, effects: Vec<Effect{field, kind}> }` where `EffectKind` is `Shell | FsRead | FsWrite | Network`. The server's `dispatch_effects` (`crates/kn9t-server/src/policy.rs`) maps each effect via `eval_effect`: `Shell` on `field="cmd"` → `classify(cmd, Shell::Posix, &bash_policy)`, `FsRead` → `Allow`, `FsWrite`/`Network` → `Ask`, unknown tool or empty `effects` → `Ask` (strict, per ADR-0002). Combined `HardDeny > Ask > Allow`. Built-in mapping: `bash` is `Effect{field:"cmd", kind:Shell}`, `read` is `FsRead:path`, `write`/`edit` are `FsWrite:path`. Classification lives in `crates/kn9t-server/src/classify.rs` (ADR-0001: server owns approval — a plugin cannot self-approve).
+The original design (ADR-0001) put a **shell command classifier in the server**: cross-platform
+pwsh + POSIX grammars deciding whether `rm -rf /` behind `sh -c` was dangerous. ADR-0008 deleted
+it — `classify.rs` and its tests — and moved judgement into a user-installed plugin.
 
-`bash` covers both `rg pattern` and `rm -rf /`, so "auto-allow reads" needs
-command-level classification. This applies **even if** dedicated `grep`/`glob`/`find`
-tools are added later — `bash` remains the escape hatch and must be classified
-regardless.
+Three reasons, recorded in ADR-0008:
 
-```mermaid
-flowchart TD
-    CMD["bash command string"] --> PARSE["tokenize: split on<br/>semicolon, and-and, or-or, pipe, newline"]
-    PARSE --> ANYFAIL{"every segment's<br/>argv0 in allow_read?"}
-    ANYFAIL -->|no| ASK["ask (or Deny in -p mode)"]
-    ANYFAIL -->|yes| REDIR{"redirection, tee, dd,<br/>command substitution,<br/>or subshell present?"}
-    REDIR -->|yes| ASK
-    REDIR -->|no| INPLACE{"in-place flag?<br/>sed -i, perl -i, awk redirect"}
-    INPLACE -->|yes| ASK
-    INPLACE -->|no| SUB{"argv0 is git/cargo/npm with a<br/>subcommand outside allow_read_sub?"}
-    SUB -->|yes| ASK
-    SUB -->|no| ALWAYS{"argv0 in always_ask?"}
-    ALWAYS -->|yes| ASK
-    ALWAYS -->|no| NEVER{"argv0 matches never?"}
-    NEVER -->|yes| HARDDENY["hard Deny, not askable"]
-    NEVER -->|no| ALLOW["Allow, no prompt"]
+1. **It could not be made correct.** A grammar covering `sh -c`, pipelines, substitutions and
+   interpreters is either bypassable or unreadable, and it was both.
+2. **It duplicated the seam.** The server already had to ask a human for mutations; a second
+   risk oracle in Rust meant two places to change and two chances to disagree.
+3. **The plugin protocol was already sufficient.** `before_tool_call` sees the tool name, the
+   args and the cwd — everything the classifier saw — and ships with the policy the user chose.
 
-    style ASK fill:#78350f,color:#fff
-    style ALLOW fill:#064e3b,color:#fff
-    style HARDDENY fill:#7f1d1d,color:#fff
-```
+**Accepted cost:** with no policy plugin installed, nothing is gated. That is the honest failure
+mode; a bypassable classifier was not.
 
-```toml
-[policy]
-mode = "ask_on_mutation"    # | "allow_all" | "deny_all" | "readonly"
-
-[policy.bash]
-# argv[0] values treated as read-only. Any segment outside this list means ask.
-allow_read = [
-  "rg", "grep", "egrep", "fgrep", "find", "fd", "ls", "cat", "head", "tail",
-  "wc", "file", "stat", "which", "type", "pwd", "echo", "sort", "uniq", "cut",
-  "tr", "awk", "sed", "jq", "diff", "tree", "du", "df", "env", "date",
-  "basename", "dirname", "realpath", "readlink", "nl", "column", "xxd", "strings",
-]
-
-# Always ask, overriding any allow above.
-always_ask = ["rm","mv","cp","chmod","chown","kill","dd","curl","wget","ssh","scp",
-              "sh","bash","zsh","python","python3","node","perl","ruby","eval"]
-
-# Never allowed, even with explicit approval.
-never = ["shutdown","reboot","mkfs*","fdisk","sudo"]
-
-# Subcommand-sensitive: allowed only with these subcommands.
-# Must come last: every key above belongs to [policy.bash], and a sub-table
-# header would otherwise capture them.
-[policy.bash.allow_read_sub]
-git   = ["log","diff","show","status","branch","blame","describe",
-         "rev-parse","ls-files","remote","tag"]
-cargo = ["tree","metadata","--version"]
-npm   = ["ls","view","outdated"]
-```
-
-**Evaluation order:**
-
-1. Split the command on `;`, `&&`, `||`, `|`, and newlines into segments.
-2. If **any** segment's `argv[0]` is absent from `allow_read`, the whole command
-   requires approval.
-3. Any of `>`, `>>`, `<`, `>|`, `tee`, `dd`, command substitution (`$(...)` or
-   backticks), or a subshell forces approval even when every `argv[0]` looks
-   read-only — `cat x > y` is a write.
-4. In-place flags force approval: `sed -i`, `perl -i`, `awk` with redirection.
-   `sed` and `awk` are in `allow_read` only because rules 3 and 4 catch their
-   mutating forms.
-5. `always_ask` overrides any allow. Note that every interpreter (`sh`, `bash`,
-   `python`, `node`, `perl`) is listed, which closes the obvious
-   `sh -c 'rm -rf /'` bypass.
-6. `never` entries are refused even with approval, and are not presented as an
-   approval prompt at all.
-
-**Accepted cost:** this is a heuristic classifier, not a sandbox. It is defense in
-depth against an unhelpful model, not a security boundary against an adversarial one.
-Real isolation is a container, which is orthogonal and recommended for unattended runs.
+`ToolSpec.effects` survives on the wire (ADR-0002) and tools still declare it (`bash` is
+`Shell` on `cmd`, `read` is `FsRead`, `write`/`edit` are `FsWrite`, websearch is `Network`), but
+nothing server-side maps effects to risk any more. The policy plugin judges the call it is
+handed, not a declared effect.
 
 ---
 
@@ -2123,7 +2080,7 @@ paths, and per-project tool defaults.
 It may **not** set — these are read from the global file and ignored with a warning if
 present:
 
-- `[policy]` and `[policy.bash]` — gates `rm -rf` (§10.1)
+- `[policy]` — the approval cache and the inert `mode` knob (§10)
 - `[[plugin]]` — executes arbitrary binaries (§13)
 - any `api_key`, token path, or credential
 - `tls_insecure` (§8.7.5)

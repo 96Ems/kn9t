@@ -48,7 +48,7 @@ fn opaque_payload_is_forwarded_verbatim() {
     assert_eq!(v, Some(json!({"choice":"b"})));
 }
 
-/// 96E-39: Verify that cancel unblocks a waiting interaction.
+/// Verify that cancel unblocks a waiting interaction.
 #[test]
 fn cancel_unblocks_wait() {
     let reg = Arc::new(InteractionRegistry::new());

@@ -245,7 +245,7 @@ pub enum Event {
         #[serde(flatten)]
         payload: serde_json::Value,
     },
-    /// 96E-28 — generic client→host interaction request (transient).
+    /// generic client→host interaction request (transient).
     InteractionRequest {
         id: u64,
         plugin: String,

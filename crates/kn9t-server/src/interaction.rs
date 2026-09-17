@@ -1,4 +1,4 @@
-//! 96E-28 — generic client→host interaction primitive.
+//! Generic client→host interaction primitive.
 //!
 //! Generalization of `PolicyRegistry`'s `id → slot(Mutex<Option<T>>, Condvar)` pattern
 //! for opaque JSON payloads. The host does NOT interpret the payload — it is the
@@ -13,7 +13,7 @@
 //! `HostApi` op `interaction_request {session, payload}` blocks the plugin's
 //! worker thread until the client responds.
 //!
-//! 96E-39: `wait` now accepts a `Cancel` to allow the turn to abort a pending
+//! `wait` now accepts a `Cancel` to allow the turn to abort a pending
 //! interaction request when the user hits ESC.
 
 use kn9t_core::Cancel;
@@ -75,7 +75,7 @@ impl InteractionRegistry {
 
     /// Block until `id` is resolved (by `POST /ui-respond`) or `cancel` fires.
     ///
-    /// 96E-39: Now accepts a `Cancel` to allow the turn to abort a pending
+    /// Now accepts a `Cancel` to allow the turn to abort a pending
     /// interaction request when the user hits ESC. Returns `None` if cancelled.
     ///
     /// Prefer [`InteractionRegistry::wait_until`] at call sites that cannot guarantee their
@@ -110,7 +110,7 @@ impl InteractionRegistry {
         const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
         while guard.is_none() {
-            // 96E-39: Check cancel at each iteration
+            // Check cancel at each iteration
             if cancel.cancelled() {
                 eprintln!("[interaction] wait id={} cancelled", handle.id);
                 drop(guard);
@@ -153,7 +153,7 @@ impl InteractionRegistry {
 
     /// Resolve `id` with `response`, waking any waiter. Returns `true` if a pending
     /// slot existed (validated request ID), `false` if unknown — callers must reject
-    /// undeclared/unknown IDs (96E-28 acceptance: responses to unknown IDs are rejected).
+    /// undeclared/unknown IDs (acceptance: responses to unknown IDs are rejected).
     pub fn resolve(&self, id: u64, response: Value) -> bool {
         let slot = {
             let map = self

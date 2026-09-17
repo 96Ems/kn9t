@@ -52,12 +52,12 @@ type PluginHello struct {
 
 // PluginEvent sends a fire-and-forget notification to the host's EventBus.
 // Format: plugin name + message to display. TUI shows "ℹ {plugin}: {message}".
-// MUST include session_id for routing (96E-21: events without session_id are dropped).
+// MUST include session_id for routing (events without session_id are dropped).
 type PluginEvent struct {
 	T         string `json:"t"`          // Always "event"
 	Plugin    string `json:"plugin"`     // Plugin name for display
 	Message   string `json:"message"`    // Human-readable message to display
-	SessionID string `json:"session_id"` // Required for routing (96E-21)
+	SessionID string `json:"session_id"` // Required for routing
 }
 
 // KV request messages (plugin → host). Host replies with kv_result.

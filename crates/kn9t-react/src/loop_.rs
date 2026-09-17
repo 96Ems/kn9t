@@ -88,7 +88,7 @@ pub enum ReactError {
     Provider(String),
     /// Compaction re-plan still asked to compact a second time (R-RCT-090).
     CompactionLoop,
-    /// 96E-17: compaction was demanded (context exhausted) but no compactor plugin is
+    /// compaction was demanded (context exhausted) but no compactor plugin is
     /// installed. Fail-closed: the turn ends, nothing is persisted, and the session
     /// cannot continue.
     CompactionUnavailable,
@@ -109,15 +109,15 @@ pub struct ReactLoop {
     pub tools: Arc<dyn ToolSource>,
     pub hooks: Arc<dyn HookHost>,
     pub bus: Arc<dyn EventSink>,
-    /// 96E-16 — optional pluggable compactor. `None` keeps the hardcoded inline prompt
+    /// optional pluggable compactor. `None` keeps the hardcoded inline prompt
     /// as fallback (same fail-open posture as the rest of the plugin system).
     pub compactor: Option<Arc<dyn Compactor>>,
 }
 
-/// 96E-48 -- a live source of tools for a run.
+/// - a live source of tools for a run.
 ///
 /// The loop holds this instead of a `ToolRegistry` value so that hot plugin lifecycle
-/// changes (96E-47 stop/start, R-PLUG2-100 reload/load) are visible *within* a turn.
+/// changes (stop/start, R-PLUG2-100 reload/load) are visible *within* a turn.
 /// `snapshot()` is called once per model call and once per tool batch, so it must be
 /// cheap: implementations clone an ordered `Vec<Arc<dyn Tool>>` under a short lock.
 pub trait ToolSource: Send + Sync {
@@ -125,7 +125,7 @@ pub trait ToolSource: Send + Sync {
     /// tools (GI-3): the serialized `tools` array is part of the level-1 cache prefix.
     fn snapshot(&self) -> ToolRegistry;
 
-    /// 96E-47 -- tool names refused at *execution* time while still advertised to the
+    /// - tool names refused at *execution* time while still advertised to the
     /// model. Used for stopped plugins: their specs stay in the `tools` array (cache
     /// prefix untouched) but a call gets a clean error instead of reaching a dead
     /// subprocess. Same posture as `RunParams::disabled_tools`.
@@ -149,7 +149,7 @@ pub fn static_tools(registry: ToolRegistry) -> Arc<dyn ToolSource> {
     Arc::new(StaticTools(registry))
 }
 
-/// 96E-48 -- restrict a live source to a fixed name set (sub-agent toolset, 96E-17).
+/// - restrict a live source to a fixed name set (sub-agent toolset).
 ///
 /// The filter is applied *after* each `snapshot()`, not once at composition time, so a
 /// sub-agent still observes plugin lifecycle changes for the tools it was granted.

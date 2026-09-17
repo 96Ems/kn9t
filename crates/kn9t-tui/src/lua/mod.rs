@@ -1,4 +1,4 @@
-//! Lua customization — 96E-41 phase 1, 96E-42 phase 2, 96E-43 phase 3, 96E-44 phase 4.
+//! Lua customization.
 //!
 //! In-process Lua embedding for UI scripting. Unlike the subprocess-based
 //! plugin system (kn9t-plugin-sdk), this runs in the TUI process for per-frame
@@ -532,7 +532,7 @@ impl LuaRuntime {
         state.lua.globals().get::<T>(name).ok()
     }
 
-    /// 96E-43: Process pending panel registrations from Lua.
+    /// Process pending panel registrations from Lua.
     pub fn process_panels(&self, registry: &mut panels::PanelRegistry) {
         let state =safe_expect!(self.inner.read(), "poisoned");
         if !state.ever_loaded {
@@ -642,7 +642,7 @@ impl LuaRuntime {
             .collect()
     }
 
-    /// 96E-43: Build a widget tree for a panel.
+    /// Build a widget tree for a panel.
     pub fn build_panel_widget(&self, panel: &panels::Panel) -> Option<widgets::Widget> {
         let state =safe_expect!(self.inner.read(), "poisoned");
         panel.build_widget(&state.lua)
@@ -717,7 +717,7 @@ impl LuaRuntime {
         }
     }
 
-    /// 96E-43: Handle a key event for the focused panel.
+    /// Handle a key event for the focused panel.
     /// Returns true if the key was handled.
     pub fn handle_panel_key(
         &self,

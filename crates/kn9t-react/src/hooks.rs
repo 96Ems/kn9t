@@ -16,7 +16,7 @@ use crate::loop_::{ReactError, ReactLoop, RunParams};
 
 impl ReactLoop {
     /// R-RCT-020: durable append via the store (assigns seq, commits, returns seq).
-    /// 96E-12: durable events must go through the store only; the live bus (`EventSink`)
+    /// durable events must go through the store only; the live bus (`EventSink`)
     /// is transient-only (`LiveEvent`), so we do NOT republish the durable event via
     /// `self.bus.emit`. Durable observers read from the store (or the server's
     /// `SessionBuses::publish` for SSE echo after store commit). Cancellation is never

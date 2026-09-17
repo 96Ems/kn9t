@@ -236,7 +236,7 @@ without tools to call.
 > two grammars and a seven-step decision pipeline. ADR-0008 moved risk judgement **out** of
 > kn9t into a policy plugin and deleted that module in `5b65819`; the requirements below
 > describe the mechanism that replaced it. The old text named `tool::classify_posix`,
-> `tool::classify_pwsh` and `tool::classify_pipeline`, none of which exist — see 96E-31.
+> `tool::classify_pwsh` and `tool::classify_pipeline`, none of which exist.
 > Historical detail lives in ADR-0008 and DESIGN §10.1.
 
 > **R-TOOL-070 → DESIGN §10.1, §18.6, ADR-0008**

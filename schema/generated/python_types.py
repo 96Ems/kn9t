@@ -90,6 +90,15 @@ class PluginLoadReq:
 
 
 @dataclass
+class UiEventReq:
+    """Request body."""
+
+    data: Optional[Any] = None
+    event: str
+    session_id: str
+
+
+@dataclass
 class UiRespondReq:
     """Request body."""
 

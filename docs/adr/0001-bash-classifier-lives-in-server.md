@@ -65,6 +65,6 @@ and the `/approve` route — they are just dead code because the only `Policy` i
 - The server must be able to inspect tool arguments to run the classifier. For internal
   tools this is trivial (the server dispatches them). For plugin tools, this motivates
   ADR-0002: plugins must declare argument effects so the server knows *what* to inspect.
-- TRACKING.md's R-TOOL-070/080/090/095 rows must be flipped from `☑` to `✗` until the
+- docs/dev/TRACKING.md's R-TOOL-070/080/090/095 rows must be flipped from `☑` to `✗` until the
   classifier is restored.
 - Gate G1 is no longer green for the classifier requirements.

@@ -135,12 +135,9 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     }
 }
 
-/// Overlays (approval, help, model select, ...).
-///
-/// Shared by the Lua layout and the error shell, so overlays behave identically
-/// no matter which path drew the frame.
+/// Overlays (approval, help, model select, ...), shared by the Lua layout and the error shell
+/// so they behave identically on either path.
 fn render_chat_overlays(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
-    // Overlay (approval, help, model select, session select, etc).
     if let Some(ref overlay) = app.overlay {
         match overlay {
             Overlay::ModelSelect { selected, filter } => {
@@ -168,10 +165,8 @@ fn render_chat_overlays(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme)
     }
 }
 
-/// Minimal shell shown when the user's Lua UI is broken.
-///
-/// Deliberately *not* the Rust chrome: a red banner naming the error, plus the
-/// transcript and input so the session stays usable while the config is fixed.
+/// Shell shown when the user's Lua UI is broken: a red banner naming the error plus transcript
+/// and input, so the session stays usable — deliberately not the old Rust chrome.
 fn render_lua_error_shell(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme, err: &str) {
     use ratatui::layout::{Constraint, Direction, Layout};
     use ratatui::widgets::{Paragraph, Wrap};
@@ -208,8 +203,7 @@ fn render_lua_error_shell(f: &mut Frame, app: &mut App, area: Rect, theme: &Them
 
 /// Render Lua-registered floating panels on top of the layout.
 fn render_lua_panels(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
-    // Reset unconditionally, mirroring `lua_click_areas`: a panel that just
-    // hid itself must stop taking clicks, not keep its last rect forever.
+    // Reset unconditionally, mirroring `lua_click_areas`: a hidden panel must stop taking clicks.
     app.lua_panel_click_areas.clear();
 
     let Some(runtime) = app.lua_runtime.clone() else {
@@ -238,11 +232,8 @@ fn render_lua_panels(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     }
 }
 
-/// Resolve a panel's declared position into a concrete rect.
-///
-/// `position` is a free-form string from Lua, so unknown values fall back to
-/// centred-floating rather than erroring: a typo should misplace a panel, not
-/// take the UI down.
+/// Resolve a panel's declared position into a concrete rect; unknown strings fall back to
+/// centred-floating — a Lua typo should misplace a panel, not take the UI down.
 fn compute_panel_area(panel: &crate::lua::panels::Panel, area: Rect) -> Rect {
     let w = panel.width.unwrap_or(area.width / 3).min(area.width);
     let h = panel.height.unwrap_or(area.height / 3).min(area.height);
@@ -277,10 +268,8 @@ fn compute_panel_area(panel: &crate::lua::panels::Panel, area: Rect) -> Rect {
     }
 }
 
-/// Render a Rust-owned view at a rect chosen by Lua.
-///
-/// This is the mechanism/policy boundary: Lua decides *where*, Rust decides
-/// *how* (markdown, syntax highlighting, scroll math, render cache).
+/// Render a Rust-owned view at a rect chosen by Lua — the mechanism/policy boundary: Lua
+/// decides *where*, Rust *how* (markdown, highlighting, scroll maths, render cache).
 fn render_native_view(f: &mut Frame, app: &mut App, view: &str, area: Rect, theme: &Theme) {
     match view {
         "transcript" => {
@@ -321,14 +310,9 @@ fn render_native_view(f: &mut Frame, app: &mut App, view: &str, area: Rect, them
     }
 }
 
-/// Draw every `{type="plugin", plugin="name"}` slot the layout declared.
-///
-/// The plugin's registered Lua produces the subtree; this only supplies the
-/// rect, so a plugin cannot choose its own placement or size.
-///
-/// A plugin that is broken or absent gets an error message drawn in its slot
-/// rather than empty space — a silent blank would look like a layout bug and
-/// hide the actual cause.
+/// Draw every `{type="plugin", plugin="name"}` slot the layout declared. The plugin's Lua
+/// produces the subtree; this only supplies the rect, so a plugin cannot choose its placement.
+/// A broken or absent plugin gets its error drawn in the slot — a blank would hide the cause.
 fn render_plugin_views(
     f: &mut Frame,
     app: &mut App,
@@ -379,11 +363,8 @@ fn panel_inner(area: Rect) -> Rect {
     }
 }
 
-/// The file explorer column (PLAN §P7 L2 / D3).
-///
-/// Reads the flattened tree from `App::explorer` and records a hit area per drawn row, so a
-/// click selects it and the D4 action follows. Nothing here knows how the tree was built — the
-/// index does that.
+/// The file explorer column (PLAN §P7 L2 / D3): reads the flattened tree from `App::explorer`
+/// and records a hit area per drawn row for clicks. The index owns how the tree was built.
 fn render_explorer(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     app.explorer_area = Some((area.x, area.y, area.width, area.height));
     app.explorer_hit_areas.clear();
@@ -480,11 +461,8 @@ fn render_explorer(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     app.explorer_hit_areas = hits;
 }
 
-/// The read-only file viewer (PLAN §P7 L2 / D4/D5).
-///
-/// Line numbers in the gutter, syntax highlighting when the extension names a language. The
-/// header states the path and the line count so a truncated file says so (the viewer caps at
-/// `MAX_VIEWER_LINES`).
+/// The read-only file viewer (PLAN §P7 L2 / D4/D5): gutter line numbers, syntax highlighting by
+/// extension, and a header stating path and line count so a truncated file says so.
 fn render_viewer(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     app.viewer_area = Some((area.x, area.y, area.width, area.height));
     let Some((title, focused)) = app.viewer.as_ref().map(|v| (v.title(), v.focused)) else {
@@ -685,7 +663,7 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             }
         }
 
-        // 96E-45: Plugins loading indicator.
+        // Plugins loading indicator.
         if !app.plugins_ready {
             let spinner = SPINNER[app.spinner_frame % SPINNER.len()];
             let loading_text = format!("{} plugins loading...", spinner);
@@ -802,7 +780,7 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             }
         }
 
-        // 96E-45: Show steering/queue sections if any pending messages.
+        // Show steering/queue sections if any pending messages.
         let pending_start_y = hints_y + 4;
         let mut pending_y = pending_start_y;
 
@@ -1002,15 +980,12 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     let is_streaming = app.streaming;
 
     for (msg_idx, msg) in app.transcript.messages().iter().enumerate() {
-        // Can we use cached rendering for this message?
-        // Cache is valid when:
-        // - Not searching (search highlighting requires per-frame update)
-        // - Not the last message while streaming (may be incomplete)
-        // - Width hasn't changed (tracked in update_state)
+        // Cache valid when not searching (highlight is per-frame) and, while streaming, not the
+        // last message (it may be incomplete). Width is tracked in `update_state`.
         let is_last_msg = msg_idx == msg_count.saturating_sub(1);
         let can_use_cache = !(search_active || (is_last_msg && is_streaming));
 
-        // Compute tool info hash - changes when tool state changes (expanded, scroll, status, etc.)
+        // Hash the tool state (expanded, scroll, status) so a change invalidates the cache.
         let tool_info_hash = crate::render_cache::compute_tool_info_hash(&msg.tools, &msg.thinking);
 
         // Try cache first
@@ -1163,11 +1138,8 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             }
         }
 
-        // Tool cards, grouped per turn (PLAN §P7 D11).
-        //
-        // A turn's calls read as one unit: a header that expands them all, then either a
-        // compact line each (collapsed) or the card itself (expanded). A single-call turn
-        // gets no header — one line does not need a heading over it.
+        // Tool cards grouped per turn (PLAN §P7 D11): one header expands them all, then a compact
+        // line or the card each. A single-call turn gets no header.
         if !msg.tools.is_empty() {
             if msg.tools.len() > 1 {
                 let group_line_offset = lines.len() - lines_before;
@@ -1205,7 +1177,7 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                     content_end_offset,
                 });
 
-                // 96E-27: collapsible subagent sub-entry nested under its spawning tool call
+                // collapsible subagent sub-entry nested under its spawning tool call
                 if let Some(sub) = app.subagents.iter().find(|s| s.call_id == card.call_id) {
                     let collapsed = sub.collapsed;
                     let vis = sub.visibility.as_str();
@@ -1262,7 +1234,7 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         inner_w,
     );
 
-    // 96E-27: attached subagent full transcript on demand (session_read result)
+    // attached subagent full transcript on demand (session_read result)
     if let Some((ref call_id, ref transcript)) = app.attached_subagent {
         lines.push(Line::from(vec![
             Span::styled("── ", Style::default().fg(theme.muted)),
@@ -1410,7 +1382,7 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         )));
     }
 
-    // 96E-45: Render Steering section (muted, at bottom before queue).
+    // Render Steering section (muted, at bottom before queue).
     if !app.steering.is_empty() {
         lines.push(Line::from(Span::styled(
             "── Steering ──",
@@ -1429,7 +1401,7 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         }
     }
 
-    // 96E-45: Render Queue section (muted, at bottom).
+    // Render Queue section (muted, at bottom).
     if !app.queue.is_empty() {
         lines.push(Line::from(Span::styled(
             "── Queue ──",
@@ -1592,15 +1564,9 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 }
 
 fn render_input(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    // A boxed prompt, Copilot-Chat shaped (PLAN P7 D12): a rounded frame whose top
-    // border names the model, the text inside, and a key hint on the right of the
-    // frame. The border colour is the one piece of state the frame carries: it goes
-    // amber while aborting and accent while this client holds the write lease, so
-    // "can I type and will it send" is answerable without reading the status bar.
-    //
-    // Degenerate rects fall back to the bare prompt rather than drawing a broken
-    // frame: a 1-row area is what a very short terminal gives, and losing the text
-    // would be worse than losing the box.
+    // A boxed prompt (PLAN §P7 D12): rounded frame naming the model, text inside, key hint at
+    // right. The border colour is its only state — error while aborting, accent while this client
+    // holds the lease. Degenerate rects fall back to the bare prompt.
     if area.height < 3 || area.width < 8 {
         render_input_bare(f, app, area, theme);
         return;
@@ -2070,21 +2036,16 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
     }
 }
 
-/// One row of the completion dropdown.
-///
-/// `primary` is the text that will be inserted, `secondary` an orientation hint. The slash
-/// dropdown puts `/name` and its description; the mention dropdown puts the path's basename
-/// and its directory — the same grammar, so the two cannot drift apart visually.
+/// One completion row: `primary` is inserted, `secondary` an orientation hint. Slash uses
+/// `/name` + description, mention uses basename + directory — the same grammar, so they cannot
+/// drift.
 struct CompletionRow {
     primary: String,
     secondary: String,
 }
 
-/// The completion dropdown, shared by `/` commands and `@` mentions (PLAN §P7 D18, L2).
-///
-/// One widget for both because it *is* the same interaction — a filtered list above the
-/// prompt, arrows and Enter — and the only difference is what a row means. Two renderers is
-/// how the two would drift: one ends up themed, the other keeps a hardcoded background.
+/// The completion dropdown, shared by `/` commands and `@` mentions (PLAN §P7 D18, L2): it is
+/// the same interaction, differing only in what a row means, and two renderers would drift.
 fn render_completion_dropdown(
     f: &mut Frame,
     rows: &[CompletionRow],
@@ -2109,8 +2070,7 @@ fn render_completion_dropdown(
     let x = input_area.x + 2;
     let y = input_area.y.saturating_sub(h + 1);
 
-    // Keep the selection on screen: the list is capped at 8 rows and the user can walk past
-    // that, and before this the highlight simply left the box.
+    // Keep the selection on screen: the list caps at 8 rows and the user can walk past it.
     let first = selected.saturating_sub(h.saturating_sub(1) as usize);
 
     let buf = f.buffer_mut();
@@ -2193,13 +2153,9 @@ fn render_mention_dropdown(f: &mut Frame, app: &App, input_area: Rect, theme: &T
     render_completion_dropdown(f, &rows, app.mention.selected, input_area, theme);
 }
 
-/// Draw a rounded border *on* a rect's own edge (PLAN §P7 D18).
-///
-/// [`draw_overlay_border`] rings a rect from the *outside*, which is right for a dialog: its
-/// rect is sized to its content exactly, so a border drawn on the edge would eat a row. A
-/// full-screen panel has no outside — its rect *is* the screen — so the ring has to sit on
-/// the edge, which is what makes it read as a pane rather than as a box that fell off the
-/// terminal.
+/// Draw a rounded border *on* a rect's own edge (PLAN §P7 D18). A full-screen panel has no
+/// outside — its rect is the screen — unlike `draw_overlay_border`, which rings a content-sized
+/// dialog from outside.
 fn draw_panel_border(buf: &mut Buffer, rect: Rect, theme: &Theme) {
     if rect.width < 2 || rect.height < 2 {
         return;
@@ -2224,13 +2180,9 @@ fn draw_panel_border(buf: &mut Buffer, rect: Rect, theme: &Theme) {
     }
 }
 
-/// Draw a rounded border one cell outside an overlay's content rect (PLAN §P7 D18).
-///
-/// *Outside* rather than around: every overlay computes its rect to fit its content
-/// exactly — title, rows and a footer on the last row — so insetting a border would eat
-/// the footer. A ring needs one cell of margin, which the callers' centring already
-/// leaves; when there is no room (a rect flush with the screen edge) no border is drawn
-/// rather than one painted over the content.
+/// Draw a rounded border one cell *outside* an overlay's content rect (PLAN §P7 D18): overlays
+/// size their rect to title + rows + a last-row footer, so insetting would eat the footer. No
+/// border when the rect is flush with a screen edge.
 fn draw_overlay_border(buf: &mut Buffer, rect: Rect, area: Rect, theme: &Theme) {
     let x0 = rect.x;
     let y0 = rect.y;
@@ -2489,8 +2441,8 @@ fn render_session_select(
         }
     }
 
-    // 96E-53: rows in tree order (a branch directly under its parent), from the single
-    // shared `picker_order` the key handler also calls — they must not diverge (96E-19).
+    // rows in tree order (a branch directly under its parent), from the single
+    // shared `picker_order` the key handler also calls — they must not diverge.
     let ordered = crate::session_tree::picker_order(&app.session.sessions, filter);
     let filtered: Vec<(usize, &crate::session_manager::SessionEntry)> = ordered
         .iter()
@@ -2507,13 +2459,11 @@ fn render_session_select(
 
     let mut rows: Vec<SessionRow> = Vec::new();
 
-    // No "New session" row: the tab bar's pinned `+ new` button, Ctrl+N and `/new` all
-    // create one from anywhere, so an extra selectable row at the top of a *picker* was a
-    // fourth door to the same room — and it stole index 0, so a filter that matched
-    // nothing still offered to create a session.
+    // No "New session" row: `+ new`, Ctrl+N and `/new` already create one, and it stole index 0
+    // so a filter that matched nothing still offered it.
 
-    // Group sessions by date. Only roots get a header: a branch belongs under the
-    // conversation it came from, not under the day it happened to be created.
+    // Only roots get a date header: a branch belongs under the conversation it came from, not
+    // under the day it was created.
     let mut current_date: Option<String> = None;
     for (orig_idx, session) in &filtered {
         let depth = depth_of.get(orig_idx).copied().unwrap_or(0);
@@ -2628,7 +2578,7 @@ fn render_session_select(
                     "  ".to_string()
                 };
 
-                // 96E-53: indent by depth and badge the reason, so a rewind reads as a
+                // indent by depth and badge the reason, so a rewind reads as a
                 // step back from its parent rather than as an unrelated session.
                 let indent = "  ".repeat(*depth);
                 let badge = crate::session_tree::reason_badge(session.fork_reason.as_deref());
@@ -2691,11 +2641,9 @@ fn render_session_select(
     }
 }
 
-/// 96E-54 — the session tree as a git-style graph.
-///
-/// Nodes are sessions, edges are `origin_session` links, and the label on an edge is the
-/// fork reason. The shape comes from `session_tree::build_forest`, the same function the
-/// sidebar uses: one tree implementation, two renderings.
+/// the session tree as a git-style graph: nodes are sessions, edges are
+/// `origin_session` links labelled with the fork reason. Uses the sidebar's
+/// `session_tree::build_forest`.
 fn render_session_tree(f: &mut Frame, app: &App, selected: usize, area: Rect, theme: &Theme) {
     use crate::session_tree::{build_forest, reason_badge};
 
@@ -3353,12 +3301,8 @@ impl ToolDisplayMode {
     }
 }
 
-/// How a tool's card should be displayed.
-///
-/// Lua decides via `tool_mode(name)`; the built-in mapping is the fallback so a
-/// config that defines nothing keeps the current behaviour. Previously this was
-/// a hardcoded `match` on tool name, which meant a plugin's tool could never
-/// choose how it rendered.
+/// How a tool's card should be displayed. Lua decides via `tool_mode(name)`; the built-in
+/// mapping is the fallback, so a config that defines nothing keeps the current behaviour.
 fn get_tool_display_mode(app: &App, name: &str) -> ToolDisplayMode {
     if let Some(mode) = app
         .lua_runtime
@@ -3377,12 +3321,8 @@ fn get_tool_display_mode(app: &App, name: &str) -> ToolDisplayMode {
     }
 }
 
-/// One line summarising a tool call inside a collapsed turn (PLAN §P7 D11).
-///
-/// The point of the compact line is that a turn's tool calls stay *scannable* without
-/// being expanded: which files were read, which were edited, and whether anything
-/// failed. Before this, each call was its own one-line card with its own background, so
-/// a four-tool turn read as four unrelated blocks.
+/// One line summarising a tool call inside a collapsed turn (PLAN §P7 D11), so a multi-call
+/// turn stays scannable without expanding: what was read, what was edited, what failed.
 fn render_tool_compact_line(
     card: &ToolCard,
     app: &App,
@@ -3416,10 +3356,8 @@ fn render_tool_compact_line(
     ]));
 }
 
-/// `+N -M` for a card whose content is a diff, empty otherwise.
-///
-/// Counted from what is actually rendered, so the badge cannot advertise a change the
-/// card does not show.
+/// `+N -M` for a diff card, empty otherwise. Counted from what is actually rendered, so the
+/// badge cannot advertise a change the card does not show.
 fn diff_badge(card: &ToolCard, mode: ToolDisplayMode) -> String {
     if mode != ToolDisplayMode::Diff {
         return String::new();
@@ -3439,10 +3377,8 @@ fn diff_badge(card: &ToolCard, mode: ToolDisplayMode) -> String {
     format!("  +{added} -{removed}")
 }
 
-/// The turn's tool calls, rolled up (PLAN §P7 D11).
-///
-/// Only shown for a turn with more than one call: a header that says "1 tool" above a
-/// single line is pure chrome.
+/// The turn's tool calls, rolled up (PLAN §P7 D11); only for turns with more than one call —
+/// a header above a single line is pure chrome.
 fn render_tool_group_header(
     cards: &[ToolCard],
     app: &App,

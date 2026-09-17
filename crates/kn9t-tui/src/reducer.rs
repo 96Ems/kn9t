@@ -1,20 +1,10 @@
 //! Pure SSE reducer — `(state, frame) -> state`, no `&mut self`, no terminal, no I/O.
 //!
-//! Phase 4.4a: extract a pure reducer so `handle_sse` (the most important function
-//! in the crate, previously 0 tests) is testable by constructing only `State`.
-//! The interface is the test surface — a pure reducer would have caught F5 and F7 immediately.
-//!
-//! Handles the three frames previously ignored: `ThinkingDelta`, `ModelChanged`, `Compacted`
-//! (only their `seq` was recorded). `Compacted` especially — the transcript now reflects a compaction.
-//!
-//! ## Test strategy (96E-19)
-//!
-//! This module is the **primary unit-test seam** for the TUI (pure logic, no terminal).
-//! All state transitions are tested here without a PTY. Terminal rendering is covered
-//! separately via golden-snapshot tests in `ui::render` (`ui/render.rs` `golden_*` tests)
-//! which render to a `TestBackend` and assert the buffer string. What's intentionally
-//! left untested: raw crossterm event loop, `App::run` poll loop, and `Client` HTTP I/O
-//! — pure I/O glue with no branching worth unit-testing.
+//! The interface is the TUI's primary unit-test seam: `handle_sse` (previously untested) is
+//! testable by constructing only `State`, and every transition runs without a PTY. It also handles
+//! the frames that used to be ignored (`ThinkingDelta`, `ModelChanged`, `Compacted`). Rendering is
+//! covered separately by `ui/render.rs` golden-snapshot tests; the crossterm loop and `Client` HTTP
+//! I/O are pure glue, left untested.
 
 use crate::app::Overlay;
 use crate::message_handler::{Message, ThinkingCard, ToolCard};
@@ -34,7 +24,7 @@ struct ExtractedContent {
     thinking: Vec<ThinkingCard>,
 }
 
-/// 96E-27 — collapsible subagent entry nested under its spawning tool call.
+/// collapsible subagent entry nested under its spawning tool call.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SubagentEntry {
     pub call_id: String,
@@ -66,43 +56,35 @@ pub struct State {
     pub transcript: crate::message_handler::Transcript,
     pub tokens: TokenTracker,
     pub active_approval_id: Option<u64>,
-    /// 96E-28: active generic interaction id (opaque payload).
+    /// active generic interaction id (opaque payload).
     pub active_interaction_id: Option<u64>,
     pub overlay: Option<Overlay>,
     pub session_id: String,
     pub session_title: Option<String>,
     pub sessions: Vec<SessionEntry>,
     pub model_sel: ModelSelector,
-    /// 96E-23: structured UI directives received (plugin, target, op, payload) — transport only.
+    /// structured UI directives received (plugin, target, op, payload) — transport only.
     pub ui_directives: Vec<(String, String, String, serde_json::Value)>,
-    /// 96E-27: collapsible subagent sub-entries nested under spawning tool calls.
+    /// collapsible subagent sub-entries nested under spawning tool calls.
     pub subagents: Vec<SubagentEntry>,
-    /// 96E-27: attached subagent transcript view (call_id -> transcript preview).
+    /// attached subagent transcript view (call_id -> transcript preview).
     pub attached_subagent: Option<(String, Vec<crate::wire::TranscriptMessage>)>,
     /// R-PLUG2-110: set by reducer when `PluginDeclared` received; App clears after refresh.
     pub tools_need_refresh: bool,
-    /// Plugin Lua UI operations to apply after reduce.
-    ///
-    /// Queued rather than applied inline because the reducer is pure over
-    /// `State` and has no access to the Lua runtime.
+    /// Plugin Lua UI operations to apply after reduce — queued because the reducer is pure over
+    /// `State` and cannot touch the Lua runtime.
     pub plugin_lua_pending: Vec<PluginLuaOp>,
 }
 
-/// A plugin's request to change its TUI display.
-///
-/// The plugin ships Lua (`Register`) and pushes data (`SetState`); the TUI owns
-/// the widget vocabulary, so neither the source nor the state is interpreted here.
+/// A plugin's request to change its TUI display: it ships Lua (`Register`) and pushes state
+/// (`SetState`); the TUI owns the vocabulary, so neither is interpreted here.
 #[derive(Debug, Clone)]
 pub enum PluginLuaOp {
     Register {
         plugin: String,
         source: String,
-        /// How the plugin would like to be placed, if it said.
-        ///
-        /// A hint, not an instruction: a config routes on it (`"sidebar"` /
-        /// `"main"` / `"status"`) instead of matching plugin names, and is free
-        /// to ignore it. Without this a config could only place a view by
-        /// hardcoding the plugin's name.
+        /// The plugin's placement *hint*, not an instruction: a config routes on
+        /// `"sidebar"`/`"main"`/`"status"` instead of hardcoding plugin names, and may ignore it.
         placement: PluginPlacement,
     },
     SetState {
@@ -114,11 +96,9 @@ pub enum PluginLuaOp {
     },
 }
 
-/// A plugin's declared placement preferences, as sent with `ui_register_lua`.
-///
-/// Every field is optional because a plugin that only wants to draw something
-/// should not have to answer layout questions. `None`/empty means "the config
-/// decides", which is the safe default.
+/// A plugin's declared placement preferences, as sent with `ui_register_lua`. Every field is
+/// optional — a plugin that only wants to draw should not answer layout questions; `None`/empty
+/// means the config decides.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PluginPlacement {
     /// `"sidebar"` | `"main"` | `"status"`. Validated server-side, so an
@@ -302,7 +282,7 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                     scroll_offset: 0,
                 })
                 .collect();
-            // 96E-27: detect SubagentSpec spawns (args contains task) and create collapsed sub-entry
+            // detect SubagentSpec spawns (args contains task) and create collapsed sub-entry
             for (call_id, name, args) in &extracted.tool_calls {
                 // Heuristic: SubagentSpec tools have task in args; also name often spawn_subagent
                 let is_spawn = name.contains("spawn") || args.contains("\"task\"");
@@ -424,19 +404,10 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                 .push(Message::new("system", format!("Model changed to {}", name)));
         }
         SseFrame::ToolsToggled { .. } => {
-            // The event carries the full disabled set, not a diff, so the last one
-            // wins and a replay is idempotent.
-            //
-            // The payload's `disabled` list is deliberately ignored: `App.tools`
-            // already holds `enabled` per tool, and `GET /tools?session=` returns
-            // the authoritative `disabled` flag (client.rs), so keeping a copy on
-            // `State` would be a second source of truth that can drift. The reducer
-            // is pure and does no I/O, so it only flags the refresh and `App`
-            // re-reads. That is also what keeps a second attached client in sync --
-            // the reason this event is broadcast over SSE at all.
-            //
-            // No transcript message on purpose: a local toggle is already visible
-            // in the tools panel, and announcing every keystroke would be noise.
+            // Full disabled set, not a diff: the last one wins and replay is idempotent. The
+            // payload is ignored because `GET /tools?session=` is the authoritative source and a
+            // copy here would drift; the reducer only flags a refresh, which `App` re-reads (also
+            // keeping a second client in sync). No transcript message — the tools panel shows it.
             state.tools_need_refresh = true;
         }
         SseFrame::Compacted { summary, .. } => {
@@ -513,11 +484,11 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             op,
             payload,
         } => {
-            // 96E-23 transport — record verbatim.
+            // transport — record verbatim.
             state
                 .ui_directives
                 .push((plugin.clone(), target.clone(), op.clone(), payload.clone()));
-            // 96E-25: page ops are tunneled through UiDirective with target=page_id and
+            // page ops are tunneled through UiDirective with target=page_id and
             // op declare_page/write_placeholder/clear_page. Update structured map.
             match op.as_str() {
                 // Plugin ships Lua defining `render(state)`; the TUI owns the
@@ -567,7 +538,7 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                 state.transcript.push(Message::new("system", msg));
             }
         }
-        // 96E-47: a plugin's run state changed. The tool list is unaffected by a stop (the
+        // a plugin's run state changed. The tool list is unaffected by a stop (the
         // specs stay registered, calls are refused at execution), but the *display* should
         // say so, and a reload/start may have changed the set — hence the refresh flag.
         SseFrame::PluginState {

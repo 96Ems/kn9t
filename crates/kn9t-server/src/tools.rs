@@ -11,7 +11,7 @@
 //! then `kn9t` must not be code execution. The repo's `plugins/` directory is *build source*;
 //! `~/.kn9t/plugins/` is the *install target*.
 //!
-//! Step 3.3 — config overrides discovery (docs/internal/job/phase3.md 3.3):
+//! Step 3.3 — config overrides discovery (docs/dev/job/phase3.md 3.3):
 //! - `enabled = false` / `disabled = true` → discovered plugin with same `name`
 //!   (and file-stem fallback) is suppressed; the entry itself is not spawned.
 //! - `cmd = [...]` → pinned plugin: spawned as a user plugin; discovered plugin
@@ -43,7 +43,7 @@ pub type SpawnRecipe = (Vec<String>, Vec<(String, String)>);
 /// Result of spawning all plugins: hosts, registry, and spawn recipes keyed by plugin name.
 pub type AllPluginsResult = (Vec<Arc<PluginHost>>, ToolRegistry, HashMap<String, SpawnRecipe>);
 
-/// 96E-50 — a tool wrapper that reports a different `hidden` flag than the plugin declared.
+/// a tool wrapper that reports a different `hidden` flag than the plugin declared.
 ///
 /// The override lives outside the plugin's own `ToolSpec` on purpose: a plugin ships the
 /// default visibility it wants, and the server's decision to reveal (or re-hide) a

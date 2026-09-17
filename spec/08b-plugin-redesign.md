@@ -4,11 +4,11 @@
 from stage 08 that touch the wire format, the SDK, or the crate layout are superseded by
 this file. Behavioural requirements (composition classes, failure postures, hook surface)
 remain valid and are not repeated here. The built-in "spawn tool" from 08 §8 is
-**deleted** (96E-17): there are no built-in tools — sub-agent sessions are created
+**deleted**: there are no built-in tools — sub-agent sessions are created
 by plugins through the host_api ops (`session_fork`/`session_prompt`, §2.5).
 
 **Decision log:** this spec was derived from a full design-challenge session recorded in
-`CHANGELOG.md` (2026-08-26 — Plugin redesign). Every branch in that session maps to a
+`docs/dev/CHANGELOG.md` (2026-08-26 — Plugin redesign). Every branch in that session maps to a
 section here.
 
 **Language neutrality:** this document is the canonical protocol reference. It is written
@@ -128,8 +128,8 @@ The plugin declares its capabilities in the hello reply:
 |---|---|
 | `streaming` | plugin may send `chunk` messages before `done` |
 | `cancelable` | plugin listens for `cancel` messages on a dedicated thread |
-| `host_api` | plugin may send `request` messages (96E-17): the host runs ops (`provider_complete`, `session_read`, `tool_execute`) and replies `api_result` |
-| `compactor` | plugin provides compaction: the host delegates `compactor_compact` (96E-16/17) — no plugin with this capability = fail-closed (no compaction) |
+| `host_api` | plugin may send `request` messages: the host runs ops (`provider_complete`, `session_read`, `tool_execute`) and replies `api_result` |
+| `compactor` | plugin provides compaction: the host delegates `compactor_compact` — no plugin with this capability = fail-closed (no compaction) |
 
 A plugin without `"streaming"` MUST reply with `result` only (v1 behaviour, unchanged).
 A plugin without `"cancelable"` will not receive `cancel` messages; on abort the host
@@ -148,7 +148,7 @@ added without a protocol version bump.
 | `hook` | per hook invocation | `{"id":N,"hook":"<name>","payload":{}}` |
 | `event` | fire-and-forget bus event | `{"id":N,...event fields...}` |
 | `cancel` | abort a running call | `{"id":N}` |
-| `api_result` | reply to a plugin `request` (96E-17) | `{"id":N,"ok":true,"result":{}}` or `{"id":N,"ok":false,"error":"..."}` |
+| `api_result` | reply to a plugin `request` | `{"id":N,"ok":true,"result":{}}` or `{"id":N,"ok":false,"error":"..."}` |
 | `shutdown` | graceful stop | — |
 
 **Plugin → Host:**
@@ -159,7 +159,7 @@ added without a protocol version bump.
 | `result` | atomic (non-streaming) reply | `{"id":N,...reply fields...}` |
 | `chunk` | partial streaming output | `{"id":N,...partial fields...}` |
 | `done` | final streaming reply + accounting | `{"id":N,...final fields...}` |
-| `request` | 96E-17: plugin → host API call (host_api) | `{"id":N,"op":"<op>","payload":{...}}` — ops: `provider_complete`, `session_read`, `tool_execute`; payload MUST carry the session id as `"session"` |
+| `request` | plugin → host API call (host_api) | `{"id":N,"op":"<op>","payload":{...}}` — ops: `provider_complete`, `session_read`, `tool_execute`; payload MUST carry the session id as `"session"` |
 | `declare` | hot re-declaration (any time after hello) | `{"tools":[...],"hooks":[...],"capabilities":[...],"events":[...]}` — all fields optional; see §2.7 |
 
 > **R-PLUG2-040**
@@ -350,7 +350,7 @@ The plugin MUST NOT reply to event messages.
 
 ---
 
-**`request`** — 96E-17: plugin → host API call (host_api capability). The host runs the
+**`request`** — plugin → host API call (host_api capability). The host runs the
 op on a worker thread (a slow op must never block the plugin reader) and replies with
 `api_result`. The payload MUST carry the session id (`"session"`).
 
@@ -525,7 +525,7 @@ Reply:
 
 **`tool_call`**
 
-Payload (96E-17: `session` added so plugin tools can fork/spawn sessions):
+Payload (`session` lets plugin tools fork/spawn sessions):
 ```json
 { "tool": "spawn_session", "args": { "task": "..." }, "session": "01..." }
 ```
@@ -548,7 +548,7 @@ Final `done`:
 
 ---
 
-**`compactor_compact`** — 96E-16/17: the host delegates compaction to a plugin that
+**`compactor_compact`** — the host delegates compaction to a plugin that
 declared the `compactor` capability. The plugin runs its own agent turn (via the
 `host_api` ops) and replies atomically.
 

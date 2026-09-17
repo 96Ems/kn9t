@@ -1,6 +1,6 @@
 // Extracted from src/lua/widgets.rs — the #[cfg(test)] mod tests block.
 // Unit tests for the declarative widget tree parser and geometry helpers.
-// See src/lua/widgets.rs module-level doc for the widget vocabulary (96E-43).
+// See src/lua/widgets.rs module-level doc for the widget vocabulary.
 
 #![allow(clippy::unwrap_used)]
 

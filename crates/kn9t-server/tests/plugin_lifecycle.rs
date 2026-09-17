@@ -1,4 +1,4 @@
-//! 96E-47 / 96E-50 — plugin lifecycle state, tool blocking, and visibility.
+//! Plugin lifecycle state, tool blocking, and visibility.
 //!
 //! These exercise `ServerState` directly rather than through HTTP, because what the
 //! tickets specify is state machinery: which tools are refused while a plugin is down,
@@ -74,7 +74,7 @@ fn state_with(tools: Vec<Arc<dyn Tool>>) -> Arc<ServerState> {
     ))
 }
 
-// ── 96E-47: stop/start are distinct from reload ─────────────────────────────
+// ── stop/start are distinct from reload ─────────────────────────────
 
 /// `start` on a name the server never loaded is 404 territory, not a spawn. Bringing up a
 /// brand new command is `POST /plugin/load`'s job, and conflating the two would let a typo
@@ -113,7 +113,7 @@ fn a_plugin_is_running_until_it_is_stopped() {
     assert!(!state.is_plugin_stopped("p"));
 }
 
-// ── 96E-47: blocking is at execution, never in the tools array ──────────────
+// ── blocking is at execution, never in the tools array ──────────────
 
 /// The core cache decision. A stopped plugin's specs stay in `tools_snapshot()` — and
 /// therefore in the serialized `tools` array that forms the level-1 cache prefix (§8.4.2) —
@@ -148,7 +148,7 @@ fn blocked_tools_is_derived_from_current_registry() {
     assert!(state.plugin_tool_names("nobody").is_empty());
 }
 
-// ── 96E-49: the inventory the agent reads ──────────────────────────────────
+// ── the inventory the agent reads ──────────────────────────────────
 
 /// `plugin_inventory` walks hosts, so with no host it is empty even when tools claim a
 /// plugin name. That is the honest answer: `plugin_stop` takes a *host* name, and listing a
@@ -170,9 +170,9 @@ fn health_reports_nothing_when_no_plugin_is_loaded() {
     state.scan_plugin_health();
 }
 
-// ── 96E-50: visibility overrides ───────────────────────────────────────────
+// ── visibility overrides ───────────────────────────────────────────
 
-/// The substrate already existed (`ToolSpec.hidden` + `visible_specs()`); what 96E-50 adds
+/// The substrate already existed (`ToolSpec.hidden` + `visible_specs`); what adds
 /// is who flips it. A `hidden: true` tool is registered and executable but absent from the
 /// array the model sees.
 #[test]

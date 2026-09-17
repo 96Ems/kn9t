@@ -1,13 +1,8 @@
 //! Config management routes.
 //!
-//! - `POST /config/reload` — re-read `config.toml`, swap providers + models
-//!   (R-SRV-CFG-100).
-//!
-//! An action endpoint, not a PATCH (AGENTS.md §11): the operation is a full
-//! replacement of the resolved config, and there are no merge semantics to define.
-//!
-//! The same operation runs automatically from `crate::watch` on file change; this
-//! endpoint is the explicit trigger for clients and for tests.
+//! `POST /config/reload` re-reads `config.toml` and swaps providers + models (R-SRV-CFG-100).
+//! An action endpoint, not a PATCH (AGENTS.md §11) — a full replacement with no merge semantics.
+//! The same runs automatically from `crate::watch`; this is the explicit trigger for clients/tests.
 
 use std::sync::Arc;
 

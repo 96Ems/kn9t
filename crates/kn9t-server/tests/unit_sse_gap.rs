@@ -5,7 +5,7 @@
 //! already emitted by the durable replay (`sse.rs` step 4).
 //!
 //! That holds only if the ring actually delivered it. The ring is bounded and evicts the
-//! *oldest* entry when full (`kn9t-core/src/bus.rs`), and since 96E-18 durable echoes travel
+//! *oldest* entry when full (`kn9t-core/src/bus.rs`), and since durable echoes travel
 //! that same ring. So on a slow attach — a large backlog, a busy agent — a durable
 //! `MessageAppended` can be evicted before the flush reads it. The client then never gets it:
 //! not in the replay (it is above `from`, but the replay had already run), and not live (it

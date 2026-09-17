@@ -1,4 +1,4 @@
-//! 96E-39: Tests verifying Cancel propagation into blocking waits.
+//! Tests verifying Cancel propagation into blocking waits.
 //!
 //! These tests reproduce the three corner cases where Cancel does NOT propagate:
 //! 0. ApprovalRegistry::wait — standard tool approval blocks forever on ESC
@@ -14,7 +14,7 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// 96E-39 FIX VERIFIED: InteractionRegistry::wait now respects Cancel.
+/// VERIFIED: InteractionRegistry::wait now respects Cancel.
 ///
 /// This test verifies the fix is working: wait() returns None quickly
 /// when cancel fires, instead of blocking forever.
@@ -82,7 +82,7 @@ fn approval_wait_ignores_cancel_documented() {
     // This test just documents the issue since we can't access the type.
 }
 
-/// 96E-39 FIX VERIFIED: run_session_turn now accepts parent_cancel.
+/// VERIFIED: run_session_turn now accepts parent_cancel.
 ///
 /// When a plugin calls session_prompt (spawning a subagent), the parent's Cancel
 /// is now passed through, so ESC on the parent aborts the subagent immediately.
@@ -123,7 +123,7 @@ fn tool_execute_creates_fresh_cancel_documented() {
     // from the HostApi context).
 }
 
-/// 96E-39 FIX VERIFIED: provider_complete now uses session's Cancel.
+/// VERIFIED: provider_complete now uses session's Cancel.
 #[test]
 fn provider_complete_uses_session_cancel() {
     // See crates/kn9t-server/src/host_api.rs provider_complete:

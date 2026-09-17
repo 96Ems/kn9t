@@ -175,7 +175,7 @@ fn test_event_sink_trait() {
     let bus = Bus::new();
     let sub = bus.subscribe(10);
 
-    // Use the EventSink trait — 96E-12: must be LiveEvent, not Event
+    // Use the EventSink trait — must be LiveEvent, not Event
     let sink: &dyn EventSink = &bus;
     sink.emit(test_live_event());
 
@@ -185,7 +185,7 @@ fn test_event_sink_trait() {
 #[test]
 fn test_event_sink_cannot_accept_durable() {
     // Compile-time guarantee: EventSink::emit takes LiveEvent, so the following
-    // would not compile after 96E-12:
+    // would not compile after
     //   let sink: &dyn EventSink = &Bus::new();
     //   sink.emit(Event::MessageAppended { seq: 0, msg: ... });
     // This test documents the type safety by asserting that LiveEvent does not

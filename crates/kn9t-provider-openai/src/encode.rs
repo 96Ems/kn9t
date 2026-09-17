@@ -49,17 +49,14 @@ pub fn build_request(
         messages.push(json!({ "role": &quirks.system_role, "content": sys }));
     }
 
-    // User/assistant/tool messages.
-    // A Tool-role message may carry N ToolResult blocks (one per parallel call).
-    // The wire format requires one message per result, so we expand here.
+    // A Tool-role message with N results expands to N wire messages.
     for (idx, msg) in req.messages.iter().enumerate() {
         let needs_cache = !matches!(cache_mode, CacheMode::None) && cache_indices.contains(&idx);
         encode_messages(msg, quirks, needs_cache, &mut messages);
     }
     body["messages"] = json!(messages);
 
-    // Tools: build array and apply cache_control to the last tool if Cache::System is set.
-    // This caches the entire system + tools prefix (opencode "caterpillar" strategy).
+    // Cache the system + tools prefix by tagging the last tool (opencode "caterpillar").
     let tools_count = req.tools.len();
     let mut tools_json: Vec<Value> = req
         .tools
@@ -105,12 +102,9 @@ pub fn build_request(
         body["tools"] = json!(tools_json);
     }
 
-    // Reasoning / thinking quirk. On the effort-based path an `Off` turn sends
-    // `reasoning_effort: "none"`: omitting the field leaves reasoning at the model's default,
-    // which is **on** for models like DeepSeek. That ate the whole output budget and returned
-    // an empty message — the auto-title case (`finish_reason: length`, no content). A gateway
-    // that rejects `"none"` is configured `quirks.reasoning = "none"` instead, which sends
-    // nothing at all.
+    // An `Off` turn sends `reasoning_effort: "none"` — omitting the field leaves reasoning at
+    // the model default (on for DeepSeek, which then returns no text). A gateway that rejects
+    // `"none"` uses `quirks.reasoning = "none"` instead, which sends nothing at all.
     match quirks.reasoning.as_str() {
         "reasoning_effort" => {
             let effort = match req.thinking {
@@ -167,17 +161,11 @@ pub(crate) fn effort_of(t: Thinking) -> Option<&'static str> {
     }
 }
 
-/// Expand one `Message` into ≥1 wire objects, pushing into `out`.
-/// Tool-role messages with N ToolResult blocks become N separate wire messages
-/// (one `{ role: "tool", tool_call_id, content }` per result).
+/// Expand one `Message` into ≥1 wire objects, pushing into `out`. A Tool-role message with N
+/// ToolResult blocks becomes N `{ role: "tool", tool_call_id, content }` messages.
 ///
-/// R-OAI-IMG: OpenAI's chat-completions wire format rejects `image_url` parts
-/// inside a `role: "tool"` message - only `user` messages may carry images
-/// (see community reports; this is the same restriction opencode/Claude Code
-/// work around). When a tool result contains `Content::Image` blocks, the
-/// tool message itself gets a text-only placeholder, and the images are
-/// pushed as a synthetic `user` message immediately after - same pattern
-/// every OpenAI-compatible agent harness uses.
+/// R-OAI-IMG: chat-completions rejects `image_url` inside a `role: "tool"` message, so tool-result
+/// images go out as a synthetic `user` message immediately after.
 pub fn encode_messages(msg: &Message, quirks: &Quirks, needs_cache: bool, out: &mut Vec<Value>) {
     if msg.role == Role::Tool {
         let results: Vec<_> = msg
@@ -196,11 +184,8 @@ pub fn encode_messages(msg: &Message, quirks: &Quirks, needs_cache: bool, out: &
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
-                    // 96E-19: an empty tool result must still carry non-empty content —
-                    // strict gateways (opencode zen, OpenAI) reject `content: ""` with
-                    // HTTP 400 "empty content". The output is genuinely empty; this is
-                    // the wire form, not a masking placeholder (the TUI still shows
-                    // nothing under the tool card output).
+                    // empty `content` 400s strict gateways; `(no output)` is the wire
+                    // form only, the genuine output stays empty in the TUI.
                     let inner_text = if inner_text.trim().is_empty() {
                         "(no output)".to_string()
                     } else {
@@ -237,8 +222,7 @@ pub fn encode_messages(msg: &Message, quirks: &Quirks, needs_cache: bool, out: &
                     "content": inner_text,
                 }));
             }
-            // R-OAI-IMG: images from a tool result ride along as a synthetic
-            // user message right after - see doc comment above.
+            // R-OAI-IMG: tool-result images ride as a synthetic user message (see above).
             if !images.is_empty() {
                 let parts: Vec<Value> = images.into_iter().map(|c| encode_content(c, quirks)).collect();
                 out.push(json!({ "role": "user", "content": parts }));
@@ -247,9 +231,8 @@ pub fn encode_messages(msg: &Message, quirks: &Quirks, needs_cache: bool, out: &
         return;
     }
 
-    // R-OAI-010 / DESIGN §4.2: `strip` drops persisted reasoning. Chat has no reasoning
-    // content part, so DeepSeek 400s `unknown variant 'thinking'` — and the persisted
-    // block repeats that every turn. Responses makes the same choice.
+    // R-OAI-010 / DESIGN §4.2: chat has no reasoning content part — DeepSeek 400s on a
+    // replayed persisted thinking block, so `strip` drops it. Responses makes the same choice.
     let content: Vec<&Content> = if quirks.thinking_replay == "strip" {
         msg.content
             .iter()
@@ -304,8 +287,7 @@ fn encode_message(
         }
     }
 
-    // Tool result message — handled by encode_messages; should not reach here.
-    // Fallback: encode first result only (safe, but encode_messages avoids this path).
+    // Tool-role messages normally go through `encode_messages`; fallback encodes the first result.
     if msg.role == Role::Tool {
         if let Some(Content::ToolResult { id, content, .. }) = content.first() {
             let inner_text: String = content
@@ -319,7 +301,7 @@ fn encode_message(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            // 96E-19: see encode_messages — empty tool content 400s strict gateways.
+            // see encode_messages — empty tool content 400s strict gateways.
             let inner_text = if inner_text.trim().is_empty() {
                 "(no output)".to_string()
             } else {
@@ -333,8 +315,8 @@ fn encode_message(
         }
     }
 
-    // Assistant message with tool calls — OpenAI wire format puts them in a top-level
-    // `tool_calls` array, NOT in content parts. Content is null when only tool calls present.
+    // Tool calls live in a top-level `tool_calls` array, not content parts; content is null
+    // when there is no text alongside them.
     if msg.role == Role::Assistant {
         let tool_calls: Vec<Value> = content
             .iter()
@@ -420,11 +402,8 @@ fn encode_content(c: &Content, _quirks: &Quirks) -> Value {
             } else {
                 format!("data:{mime};base64,{sha256}")
             };
-            // R-OAI-IMG-GUARD: every image reaching the provider funnels through
-            // here, so this is the one place that can stop a corrupt one. A bad
-            // image does not just fail this turn, it stays in the transcript and
-            // fails every turn after it, so it degrades to text rather than being
-            // forwarded and poisoning the session.
+            // R-OAI-IMG-GUARD: a corrupt image would stay in the transcript and fail every
+            // later turn, so it degrades to text here instead of being forwarded.
             match crate::image_guard::check(&url) {
                 crate::image_guard::Verdict::Pass => json!({
                     "type": "image_url",

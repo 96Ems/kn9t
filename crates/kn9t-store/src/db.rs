@@ -1,10 +1,8 @@
 //! R-STOR-010, R-STOR-020, R-STOR-030 — open, pragmas, schema.
-//! Concurrency model (96E-13): intentionally single `Mutex<Connection>`.
-//! WAL is for crash safety and external `sqlite3` readers, not for
-//! in-process concurrency. All ops serialize through the Mutex; there is
-//! no pool and no separate reader connection. `read_attach_snapshot` holds
-//! the Mutex across payloads+head_seq to avoid the interleaving bug fixed
-//! in 96E-7. Separate reader/writer connections only if benchmarks justify it.
+//!
+//! Concurrency model: one `Mutex<Connection>`, deliberately. WAL is for crash safety
+//! and external `sqlite3` readers, not in-process concurrency. `read_attach_snapshot` holds the
+//! mutex across payloads+head_seq; separate connections only if benchmarks justify it.
 
 use kn9t_core::{
     Event, ModelRef, ModelSpec, PluginKv, RequestPlan, SessionId, SessionSnapshot, Store, StoreErr,
@@ -22,20 +20,15 @@ pub type AfterAppendCallback = Arc<dyn Fn(&SessionId, &Event) + Send + Sync>;
 pub const PROJECTION_VERSION: &str = "2";
 
 pub struct SqliteStore {
-    /// Single Mutex-serialized connection. WAL is enabled for crash safety and to allow
-    /// external readers (e.g. `sqlite3` CLI) while the server runs, not for in-process
-    /// concurrency. Every application-level operation serializes through this Mutex;
-    /// there is no connection pool and no concurrent in-process readers.
+    /// Single Mutex-serialized connection; WAL is for crash safety and external readers (e.g.
+    /// the `sqlite3` CLI), not in-process concurrency. No pool.
     pub(crate) conn: Mutex<Connection>,
     pub(crate) path: PathBuf,
     /// Runtime model specs by `ModelRef` provider+id key — not stored in DB.
     pub(crate) model_specs: RwLock<HashMap<String, ModelSpec>>,
-    /// After-commit observer (96E-18): called once per durable append, outside the
-    /// connection lock, with the seq-stamped event. The server installs this to echo
-    /// durable events onto the SSE bus after `Store::append` commits — the live
-    /// `EventSink` is transient-only (96E-12), so without this the SSE bus never sees
-    /// `MessageAppended`/`UsageRecorded`/`ModelChanged`/`Compacted` emitted by the loop
-    /// or the routes.
+    /// After-commit observer, called once per durable append outside the lock with the
+    /// seq-stamped event. The live `EventSink` is transient-only, so the server installs
+    /// this to echo durable events onto the SSE bus.
     pub(crate) after_append: Mutex<Option<AfterAppendCallback>>,
 }
 
@@ -101,7 +94,7 @@ impl SqliteStore {
         let conn = Connection::open(path).map_err(|e| StoreErr(format!("open db: {e}")))?;
         apply_pragmas(&conn)?;
         create_schema(&conn)?;
-        migrate_96e14(&conn)?;
+        migrate_money_to_integer_micros(&conn)?;
         truncate_live_messages(&conn)?;
         check_projection_version(&conn)?;
         Ok(Self {
@@ -189,7 +182,7 @@ impl SqliteStore {
         Ok(out)
     }
 
-    /// Execute a query mapping every row through `f` (96E-17: multi-row reads
+    /// Execute a query mapping every row through `f` (multi-row reads
     /// for the plugin host API — e.g. `session_read`).
     pub fn query_rows<T, F>(
         &self,
@@ -218,7 +211,7 @@ impl SqliteStore {
         Ok(out)
     }
 
-    /// 96E-7 fix: atomic snapshot of durable payloads + head_seq.
+    /// atomic snapshot of durable payloads + head_seq.
     /// Holds the connection lock across both queries so a concurrent `append`
     /// cannot commit between them and cause a lost event during SSE attach.
     pub fn read_attach_snapshot(
@@ -245,7 +238,7 @@ impl SqliteStore {
             out
         };
         // TEST HOOK: sleep while still holding the lock so concurrent writers block.
-        // This makes the race deterministic for the 96E-7 regression test.
+        // This makes the race deterministic for the regression test.
         if let Ok(val) = std::env::var("KN9T_SSE_TEST_DELAY_MS") {
             if let Ok(ms) = val.parse::<u64>() {
                 if ms > 0 {
@@ -292,7 +285,7 @@ impl SqliteStore {
 
 fn apply_pragmas(conn: &Connection) -> Result<(), StoreErr> {
     // WAL for crash safety (atomic commit, survives kill -9) and external readers;
-    // not for in-process concurrency — we still serialize via Mutex (96E-13).
+    // not for in-process concurrency — we still serialize via Mutex.
     let stmts = [
         "PRAGMA journal_mode = WAL",
         "PRAGMA synchronous = NORMAL",
@@ -341,8 +334,8 @@ fn check_projection_version(conn: &Connection) -> Result<(), StoreErr> {
     Ok(())
 }
 
-fn migrate_96e14(conn: &Connection) -> Result<(), StoreErr> {
-    // 96E-14: add integer micros columns; keep REAL for reading old DBs.
+fn migrate_money_to_integer_micros(conn: &Connection) -> Result<(), StoreErr> {
+    // add integer micros columns; keep REAL for reading old DBs.
     // Ignore duplicate-column errors (already migrated).
     let alters = [
         "ALTER TABLE sessions ADD COLUMN inherited_cost_micros INTEGER NOT NULL DEFAULT 0",

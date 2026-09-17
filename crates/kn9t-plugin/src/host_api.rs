@@ -1,4 +1,4 @@
-//! 96E-17 — the plugin → host API surface (host_api capability).
+//! The plugin → host API surface (host_api capability).
 //!
 //! kn9t does NOT embed sub-agents. Instead it opens this host API so external
 //! plugins can run their own agent loops: the plugin sends a `request` message
@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 /// One host-side operation handler, registered on each `PluginHost` by the
 /// server. Must be fast to *dispatch*: the host spawns a worker thread per
-/// request so a slow op can never block the plugin reader (96E-9).
+/// request so a slow op can never block the plugin reader.
 pub trait HostApi: Send + Sync {
     /// Handle one plugin request. `session` is the plugin's current session
     /// (set via `PluginHost::set_session` per turn; `None` outside a turn).

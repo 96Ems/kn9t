@@ -135,7 +135,7 @@ fn main() -> io::Result<()> {
     // Create app.
     let mut app = App::new(config, tick_ctl);
 
-    // 96E-41: Initialize Lua runtime with hot-reload watcher.
+    // Initialize Lua runtime with hot-reload watcher.
     app.init_lua(event_loop.sender());
 
     // Connect to server and load session list for welcome screen.

@@ -151,11 +151,11 @@ safety policy, compaction, subagents, and the MCP bridge.
 `cat`. Capabilities are negotiated at handshake, so a plugin that declares neither
 `streaming` nor `cancelable` simply never receives those messages.
 
-**Host API:** rather than embedding subagents, the host exposes 10 operations plugins call
-back into — `session_read`, `session_prompt`, `session_fork`, `provider_complete`,
-`tool_list`, `tool_execute`, `interaction_request`, and three for plugin-declared UI pages.
-`provider_complete` uses the session's own model and credentials, and records usage as
-`UsageKind::Subagent`, so cost attribution stays correct.
+**Host API:** rather than embedding subagents, the host exposes operations plugins call back
+into — session read/create/fork/prompt, `provider_complete`, tool list/execute/visibility,
+`interaction_request`, the plugin lifecycle, and the `ui_*` ops that drive plugin-supplied Lua
+display. `provider_complete` uses the session's own model and credentials, and records usage as
+`UsageKind::Subagent`, so cost attribution stays correct. The full list is in [`API.md`](API.md).
 
 Writing one in Rust:
 
@@ -305,14 +305,15 @@ Working on this repo with an AI agent? [`AGENTS.md`](AGENTS.md) is the operating
 | [`docs/adr/`](docs/adr) | Architecture decision records |
 | [`spec/`](spec) | Per-stage requirements and acceptance tests |
 | [`CONTEXT.md`](CONTEXT.md) | Glossary |
-| [`docs/internal/`](docs/internal) | Working notes from a finished cleanup — not an interface |
+| [`AGENTS.md`](AGENTS.md) | Operating guide for working on this repo with an AI agent |
+| [`docs/dev/`](docs/dev) | Development record — changelog, plan, live status, archived notes |
 
 ---
 
 ## Status
 
 Stages 01–09 implemented; v1 end-to-end verified. Stage 10 (native Bedrock, Gemini) is v2.
-Live status in [`TRACKING.md`](TRACKING.md), narrative in [`CHANGELOG.md`](CHANGELOG.md),
+Live status in [`TRACKING.md`](docs/dev/TRACKING.md), narrative in [`CHANGELOG.md`](docs/dev/CHANGELOG.md),
 known issues in [`docs/ARCHITECTURE.md §14`](docs/ARCHITECTURE.md).
 
 Not yet stable: expect breaking changes to the config format and the plugin protocol

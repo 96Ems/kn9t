@@ -1,13 +1,9 @@
 //! Turn execution + abort/approval registries + auto-titling (R-SRV-100).
 //!
-//! `prompt` spawns a turn on a background OS thread (GI-5: no async). The turn
-//! drives `kn9t_react::ReactLoop`, wired here with the concrete `SqliteStore`, the
-//! tools from the `kn9t-tools` plugin subprocess (R-PLUG2-110), the server policy,
-//! and the injected provider. Events flow to the session bus via `SessionSink`.
-//!
-//! After the first assistant turn of a nameless session, one cheap provider call
-//! generates a title, recorded as `UsageKind::Title` (R-SRV-100). It is
-//! best-effort: any failure leaves `name` null and surfaces no client error.
+//! `prompt` runs a turn on a background OS thread (GI-5: no async), wiring `ReactLoop` to the
+//! concrete store, the `kn9t-tools` plugin (R-PLUG2-110), the policy, and the provider; events
+//! flow to the session bus via `SessionSink`. After the first assistant turn of a nameless
+//! session, a cheap best-effort call generates a title (R-SRV-100).
 
 use kn9t_macros::safe_expect;
 use std::collections::HashMap;
@@ -26,9 +22,8 @@ use crate::bus::SessionSink;
 use crate::state::ServerState;
 use crate::system_prompt;
 
-/// Wrapper HookHost that drains pending steering messages from ServerState.
-/// This ensures steering messages sent via POST /steer are appended AFTER
-/// tool_results, preventing transcript corruption.
+/// HookHost wrapper that drains steering messages from `ServerState`, so `POST /steer`
+/// messages land after tool_results rather than interleaving them.
 struct ServerHookHost {
     inner: Arc<dyn HookHost>,
     state: Arc<ServerState>,
@@ -81,13 +76,9 @@ impl HookHost for ServerHookHost {
         self.inner.prepare_next_turn(stop, usage)
     }
 
-    /// Drain pending steering messages from the server queue, then collect
-    /// any additional steering from plugins. This ensures POST /steer messages
-    /// appear AFTER tool_results in the transcript.
+    /// Drain the server's steering queue, then any plugin steering.
     fn get_steering(&self) -> Vec<Message> {
-        // First: drain the server's pending steering queue for this session
         let mut out = self.state.drain_steering(&self.session);
-        // Then: collect any plugin-generated steering
         out.extend(self.inner.get_steering());
         out
     }
@@ -101,21 +92,16 @@ impl HookHost for ServerHookHost {
     }
 }
 
-/// 96E-48 — `ServerState` as a live tool source for the ReAct loop.
-///
-/// The loop must not name a concrete server type (GI-1), so it sees only
-/// `Arc<dyn ToolSource>`; this is the adapter, and it delegates to the two methods the
-/// server already owns. `snapshot()` costs one registry clone (a `Vec<Arc<_>>`) per model
-/// call — cheap next to the provider round-trip it precedes.
+/// `ServerState` as a live tool source (GI-1: the loop sees only `Arc<dyn ToolSource>`).
+/// `snapshot()` clones the registry once per model call — cheap next to the round-trip.
 struct LiveTools {
     state: Arc<ServerState>,
 }
 
 impl kn9t_react::ToolSource for LiveTools {
     fn snapshot(&self) -> kn9t_core::ToolRegistry {
-        // 96E-47: noticing a dead plugin here — rather than on a timer — is what makes a
-        // crash observable inside the turn that is running. The scan is a cheap flag read
-        // per host and announces each failure once.
+        // scanning here (not on a timer) makes a crash observable within the running
+        // turn; the scan is a cheap per-host flag read that announces each failure once.
         self.state.scan_plugin_health();
         self.state.tools_snapshot()
     }
@@ -125,10 +111,8 @@ impl kn9t_react::ToolSource for LiveTools {
     }
 }
 
-/// 96E-17: the first plugin host that declared the `compactor` capability
-/// becomes the compaction delegate. None when no plugin provides it — the loop
-/// is then fail-closed (compaction demanded â†’ turn ends, session cannot
-/// continue). The plugin drives its own agent turn via the host_api ops.
+/// the first host declaring `compactor` becomes the delegate; `None` leaves the loop
+/// fail-closed. The plugin drives its own turn via the host_api ops.
 fn compactor_from_hosts(
     hosts: &[Arc<kn9t_plugin::PluginHost>],
 ) -> Option<Arc<dyn kn9t_core::Compactor>> {
@@ -142,21 +126,9 @@ fn compactor_from_hosts(
 
 /// B5/B6 — one turn's registration in `ServerState::aborts`, released on `Drop`.
 ///
-/// The map behind this used to be written from three unrelated places: `register_cancel` at
-/// spawn, `clear_cancel` from `SessionSink` when it saw `TurnFinishing`, and `clear_cancel`
-/// again as a "fallback" at the end of the thread. None of them checked *which* turn they
-/// were talking about, and the whole scheme depended on a transient event being emitted at
-/// the right moment. Two consequences, both live bugs:
-///
-/// * turn A's teardown deregistered turn B, so `is_turn_running` reported idle for a session
-///   with a provider stream open — and `/prompt` accepted a user message mid-batch, which is
-///   the transcript corruption that 409 exists to prevent;
-/// * an ESC raised against A fired B's `Cancel`, killing a turn that had done nothing.
-///
-/// A guard fixes both by construction: the id makes every write a compare-and-swap, and
-/// `Drop` runs on the normal path, on `?`, and during a panic unwind — so a registration
-/// cannot outlive its turn even if the thread dies. That last case used to wedge the session
-/// at 409 forever, because nothing else ever cleared the entry.
+/// The id makes every write a compare-and-swap, so a stale teardown or ESC cannot touch a
+/// successor turn. `Drop` runs on the normal path, on `?`, and on panic unwind — the slot
+/// and the idle count cannot outlive their turn and wedge the session at 409.
 pub struct TurnSlot {
     state: Arc<ServerState>,
     session: String,
@@ -176,11 +148,8 @@ impl TurnSlot {
         let id = state.next_turn_id.fetch_add(1, Ordering::SeqCst);
         safe_expect!(state.aborts.lock(), "aborts poisoned")
             .insert(session.to_owned(), (id, cancel.clone()));
-        // Paired with the `turn_ended()` in `Drop`, so the idle counter cannot drift from the
-        // registration it mirrors. These were two independent calls: `running_turns` and
-        // `aborts` could disagree (GET /health misreported), and an early return that skipped
-        // `turn_ended()` left the counter high forever — which pins the process alive, since
-        // `IdleTracker::should_exit` refuses to exit while a turn is "running".
+        // Paired with `turn_ended()` in `Drop` so the idle counter cannot drift from the
+        // registration; a leaked count pins the process alive (`IdleTracker::should_exit`).
         state.idle.turn_started();
         crate::log!("[turn] registered session={} turn_id={}", session, id);
         TurnSlot {
@@ -202,12 +171,8 @@ impl TurnSlot {
     }
 }
 
-/// B5/B6 — release `session`'s slot only if `id` still owns it.
-///
-/// Shared by `TurnSlot::drop` and the `TurnFinishing` interception in `SessionSink`, which
-/// is why it is idempotent: whichever runs first releases, the other becomes a no-op. The
-/// sink still needs to be the *early* path, because the release must be visible before
-/// `TurnEnded` reaches a client that may prompt the instant it sees it.
+/// B5/B6 — release `session`'s slot only if `id` still owns it. Idempotent: shared by
+/// `TurnSlot::drop` and the `TurnFinishing` interception, whichever runs first wins.
 pub(crate) fn release_turn(state: &Arc<ServerState>, session: &str, id: u64) {
     let mut map = safe_expect!(state.aborts.lock(), "aborts poisoned");
     match map.get(session) {
@@ -225,14 +190,9 @@ pub(crate) fn release_turn(state: &Arc<ServerState>, session: &str, id: u64) {
 
 impl Drop for TurnSlot {
     fn drop(&mut self) {
-        // Idempotent: `SessionSink` normally releases on `TurnFinishing`, before `TurnEnded`
-        // goes out. This is the backstop that also covers a compose failure, an early
-        // return, and a panic unwind — the cases that used to leave the slot claimed and
-        // wedge the session at 409 forever.
+        // Backstop for the sink's early release; also covers compose failure and panic unwind.
         release_turn(&self.state, &self.session, self.id);
-        // The idle count is this guard's too, so it falls exactly once per turn whatever the
-        // exit path. `release_turn` is idempotent (the sink may have run first); this is not,
-        // which is why it lives here and not there.
+        // Falls exactly once per turn whatever the exit path (`release_turn` may have run already).
         self.state.idle.turn_ended();
     }
 }
@@ -242,15 +202,10 @@ pub fn is_turn_running(state: &Arc<ServerState>, session: &str) -> bool {
     safe_expect!(state.aborts.lock(), "aborts poisoned").contains_key(session)
 }
 
-/// Fire the cancel for `session`'s running turn.
-///
-/// `turn_id` scopes the abort to one turn: `Some(id)` cancels only if that turn is still the
-/// registered one (so an ESC arriving after its turn ended is a no-op instead of killing the
-/// successor), `None` means "whatever is running now" — what `POST /abort` wants, since the
-/// user is aiming at the turn they can see.
-///
-/// The `Cancel` is fired with the lock held. Cloning it out first left a window in which the
-/// turn could finish and a new one register, and the ESC then landed on the newcomer.
+/// Fire the cancel for `session`'s running turn. `Some(id)` cancels only if that turn still
+/// owns the slot (a late ESC is a no-op, not a hit on the successor); `None` hits whatever runs
+/// now, which is what `POST /abort` wants. Fired with the lock held so no successor can register
+/// in between.
 pub fn abort_turn(state: &Arc<ServerState>, session: &str, turn_id: Option<u64>) {
     let map = safe_expect!(state.aborts.lock(), "aborts poisoned");
     match map.get(session) {
@@ -288,17 +243,15 @@ pub(crate) fn running_turn_id(state: &Arc<ServerState>, session: &str) -> Option
 }
 
 /// Get the Cancel for `session`'s running turn, if any.
-/// 96E-39: used by host_api to pass Cancel to blocking waits.
+/// used by host_api to pass Cancel to blocking waits.
 pub fn get_cancel(state: &Arc<ServerState>, session: &str) -> Option<Cancel> {
     safe_expect!(state.aborts.lock(), "aborts poisoned")
         .get(session)
         .map(|(_, c)| c.clone())
 }
 
-/// Record an approval decision (R-SRV-010 `/approve`).
-/// `decision` is `"allow"`/`"always"` -> Allow, else Deny. Resolved via the
-/// command path (never the bus) — DESIGN §10.
-/// Kept for backward compat; new code should use `resolve_approval`.
+/// Record an approval decision (R-SRV-010 `/approve`): allow/always -> Allow, else Deny,
+/// resolved via the command path, never the bus (DESIGN §10). Legacy; prefer `resolve_approval`.
 pub fn record_approval(state: &Arc<ServerState>, id: u64, allow: bool) {
     let decision = if allow {
         Decision::Allow
@@ -307,8 +260,7 @@ pub fn record_approval(state: &Arc<ServerState>, id: u64, allow: bool) {
             reason: "denied by user".into(),
         }
     };
-    // Resolve the blocking InteractivePolicy waiter if any. If no pending
-    // request with this id, this is a no-op 200 (idempotent, test `approve_no_pending_is_ok`).
+    // Resolving an unknown id is a no-op 200 (`approve_no_pending_is_ok`).
     let _ = state.approval_registry.resolve(id, decision);
 }
 
@@ -384,8 +336,7 @@ pub fn resolve_approval(
                     }
                 }
                 "always" => {
-                    // Persistent — write back to config.toml
-                    // HardDeny commands are never emitted, so no meta for them; this is safe.
+                    // Persistent: write back to config.toml (HardDeny emits no meta, so this is safe).
                     if let Err(e) = state.approval_cache.approve_persistent(meta.fingerprint) {
                         // Log but don't fail the approval — the turn is unblocked regardless.
                         crate::log!("approve_persistent failed: {e}");
@@ -395,17 +346,14 @@ pub fn resolve_approval(
             }
         }
     } else {
-        // No pending approval with this id — still need to resolve for waiting turn?
-        // `resolve_with_meta` already tried; fallback to plain resolve for idempotency.
+        // No pending id: fall back to plain resolve for idempotency.
         let _ = state.approval_registry.resolve(id, decision.clone());
     }
     Ok(decision)
 }
 
-/// Tools-enable/disable inputs for a run: the set of tools blocked at execution
-/// time for this session, plus a one-shot re-enable notice if any tool was just
-/// re-enabled. Reads the session snapshot (last `ToolsToggled` wins) and drains
-/// `ServerState::pending_reactivation`.
+/// Per-run tool gating: tools blocked for this session, plus a one-shot re-enable notice
+/// (last `ToolsToggled` wins; drains `ServerState::pending_reactivation`).
 fn tool_gating_for_session(
     state: &Arc<ServerState>,
     session: &SessionId,
@@ -450,8 +398,7 @@ fn tool_gating_for_session(
     (disabled, reminder)
 }
 
-/// Retrieve the working directory for `session` from the database.
-/// Returns the session's cwd if found, otherwise falls back to the server's cwd.
+/// `session`'s cwd from the database, or the server's cwd if unknown.
 pub(crate) fn get_session_cwd(state: &Arc<ServerState>, session: &SessionId) -> std::path::PathBuf {
     state
         .store
@@ -465,13 +412,9 @@ pub(crate) fn get_session_cwd(state: &Arc<ServerState>, session: &SessionId) -> 
         .unwrap_or_else(|| state.cwd.clone())
 }
 
-/// Compose the full `ReactLoop` for a session: bus + sink, hooks (from plugin
-/// hosts, session-attached), provider, tool registry (optionally filtered to a
-/// subset), and the compactor delegation. Single composition point — shared by
-/// `spawn_turn` and the host_api `session_prompt` op (96E-17).
-///
-/// `session_cwd` is the working directory for this session (from the database),
-/// used for tool execution and plugin context — NOT the server's process cwd.
+/// Compose the full `ReactLoop`: bus + sink, hooks, provider, tools, compactor. Single
+/// composition point shared by `spawn_turn` and the host_api `session_prompt` op.
+/// `session_cwd` is the session's directory, not the server process cwd.
 pub(crate) fn compose_loop(
     state: &Arc<ServerState>,
     session: &SessionId,
@@ -480,9 +423,8 @@ pub(crate) fn compose_loop(
     session_cwd: &std::path::Path,
 ) -> Result<(ReactLoop, Arc<dyn EventSink>), String> {
     let bus = state.buses.bus_for(&session.0);
-    // R-STOR-116: salvage in-flight tool progress so a crash mid-batch still leaves
-    // usable content for R-STOR-115's synthesized result.
-    // Also passes state so the sink can clear_cancel on TurnFinishing.
+    // R-STOR-116: the store salvages in-flight tool progress; `state` lets the sink release
+    // the turn slot on TurnFinishing.
     let sink: Arc<dyn EventSink> = Arc::new(SessionSink::with_store(
         bus.clone(),
         state.store.clone(),
@@ -490,8 +432,7 @@ pub(crate) fn compose_loop(
         state.clone(),
     ));
 
-    // Compose hooks from all plugins (R-PLUG-060).
-    // Each plugin host gets a reference to the bus and session for emitting events.
+    // Compose hooks from all plugins (R-PLUG-060); each host gets the bus and session for events.
     let hosts = state.hosts_snapshot();
     // ADR-0008: a test may install hooks in-process rather than spawning a policy plugin.
     let inner_hooks: Arc<dyn HookHost> = if let Some(h) = state.hooks_override_snapshot() {
@@ -499,7 +440,6 @@ pub(crate) fn compose_loop(
     } else if hosts.is_empty() {
         Arc::new(kn9t_core::NoopHookHost)
     } else {
-        // Set the bus, session, and cwd on each plugin host
         for host in &hosts {
             host.set_bus(sink.clone());
             host.set_session(&session.0);
@@ -507,8 +447,6 @@ pub(crate) fn compose_loop(
         }
         Arc::new(ComposedHookHost::new(hosts.clone()))
     };
-    // Wrap with ServerHookHost to drain pending steering messages from the queue.
-    // This ensures POST /steer messages are appended AFTER tool_results.
     let hooks: Arc<dyn HookHost> = Arc::new(ServerHookHost {
         inner: inner_hooks,
         state: state.clone(),
@@ -516,24 +454,20 @@ pub(crate) fn compose_loop(
     });
 
     let tools: Arc<dyn kn9t_react::ToolSource> = {
-        // 96E-48: a live handle, not a frozen clone. `state.tools_snapshot()` used to be
-        // called once per turn here, which meant a plugin stop/start/reload landing during
-        // a multi-tool-call turn was only observed by the *next* prompt. The registry is
-        // now re-read on every model call inside the loop.
+        // a live handle, re-read on every model call, so a plugin stop/start/reload
+        // mid-turn is observed now rather than at the next prompt.
         let live: Arc<dyn kn9t_react::ToolSource> = Arc::new(LiveTools {
             state: state.clone(),
         });
         match tool_names {
-            // The sub-agent filter still applies — but per snapshot, not once, so a child
-            // session keeps observing lifecycle changes for the tools it was granted.
+            // Filtered per snapshot, so a child keeps observing lifecycle changes for its tools.
             Some(names) => Arc::new(kn9t_react::FilteredTools { inner: live, names }),
             None => live,
         }
     };
 
-    // Get the provider for this model. Cloned out of the lock: the turn owns this
-    // `Arc` for its whole lifetime, so a concurrent config reload cannot swap the
-    // provider mid-stream (R-SRV-CFG-100).
+    // Clone the provider out of the lock: the turn owns this `Arc`, so a config reload cannot
+    // swap it mid-stream (R-SRV-CFG-100).
     let provider = state
         .get_provider(&model.r#ref.provider)
         .or_else(|| state.provider_snapshot())
@@ -553,14 +487,9 @@ pub(crate) fn compose_loop(
     ))
 }
 
-/// Run one full synchronous turn on `session` with `text` as the user message.
-/// Returns the final assistant text. Enforces the session's fork budget.
-/// 96E-17: this is the "make a spawned session do its work" primitive (a
-/// spawned session running a turn IS a sub-agent — the concept adds nothing).
-///
-/// 96E-39: `parent_cancel` is the calling turn's Cancel. If provided, this turn
-/// aborts when the parent cancels (ESC propagates to subagents). If None, a fresh
-/// Cancel with only a timeout watchdog is created.
+/// Run one synchronous turn on `session`, returning the final assistant text. A spawned
+/// session running a turn *is* a sub-agent. `parent_cancel` propagates the parent's
+/// ESC; without it a fresh `Cancel` with only a timeout watchdog is created.
 pub(crate) fn run_session_turn(
     state: &Arc<ServerState>,
     session: &SessionId,
@@ -596,34 +525,21 @@ pub(crate) fn run_session_turn(
         )
         .map_err(|e| format!("append message: {}", e.0))?;
 
-    // A spawned session's turn runs synchronously on the CALLER's thread, so
-    // compose_loop overwrites the caller's TL_SESSION/TL_BUS with this child.
-    // Restore them on the way out — otherwise every later hook on this thread
-    // (get_steering etc.) mis-attributes to the child and leaks AGENTS.md
-    // reminders into the parent (kn9t-agents-md plugin leak).
+    // This turn runs on the caller's thread, so `compose_loop` overwrites its TL_SESSION/TL_BUS;
+    // restore on exit or later hooks mis-attribute to the child (AGENTS.md reminder leak).
     let _scope = kn9t_plugin::SessionScope::capture();
 
     // Use the session's cwd from the database, not the server's process cwd.
     let session_cwd = get_session_cwd(state, session);
     let (loop_, _sink) = compose_loop(state, session, &model, tool_names, &session_cwd)?;
 
-    // B11: the child gets its OWN `Cancel`, and the parent's is only *observed*.
-    //
-    // This used to be `parent_cancel.unwrap_or_else(Cancel::new)` with the watchdog armed
-    // on the result — so in the normal case (a parent cancel is supplied) the timeout timer
-    // was set on the *parent's* handle. The watchdog thread is never joined or stopped, so
-    // `timeout_s` later (600 s by default) it cancelled the parent turn, long after the
-    // sub-agent had returned. A sub-agent early in a long session killed that session ten
-    // minutes later, with nothing to point at.
-    //
-    // Propagation is still required (96E-39: ESC on the parent must abort the sub-agent),
-    // so a watcher polls the parent and forwards a cancellation down. Both threads exit as
-    // soon as the child is done, which is what makes the timeout scoped to this turn.
+    // B11: the child gets its OWN `Cancel`; the parent's is only observed. Propagation still
+    // matters (ESC on the parent aborts the sub-agent), so a watcher forwards
+    // cancellation down. Both threads exit when the child is done, scoping the timeout here.
     let cancel = Cancel::new();
     let child_done = Arc::new(AtomicBool::new(false));
 
-    // Watchdog: the loop aborts at its next cancel checkpoint when the timeout fires (the
-    // plugin's worker thread stays responsive). Fires on the child only.
+    // Watchdog fires on the child only; the loop aborts at its next cancel checkpoint.
     {
         let cancel_watch = cancel.clone();
         let done = child_done.clone();
@@ -770,11 +686,8 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
     );
 
     std::thread::spawn(move || {
-        // B6: one guard owns the "a turn is running" fact, its `Cancel`, and the idle count,
-        // and releases all three on every exit path including a panic. The old code
-        // registered here and relied on `SessionSink` seeing `TurnFinishing` to deregister,
-        // with a best-effort second call at the end — a transient event driving state that
-        // `/prompt` gates on.
+        // B6: one guard owns the running-turn fact, its `Cancel`, and the idle count, and
+        // releases all three on every exit path including a panic.
         let slot = TurnSlot::register(&state, &session.0);
         let cancel = slot.cancel().clone();
 
@@ -782,14 +695,11 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
         // compute cache breakpoints and the compaction threshold.
         state.store.register_model_spec(model.clone());
 
-        // Use the session's cwd from the database, not the server's process cwd.
-        // This allows multiple sessions with different working directories on one server.
+        // The session's cwd, not the server's: one server may host sessions in different directories.
         let session_cwd = get_session_cwd(&state, &session);
 
-        // Single composition point (bus/sink + hooks + tools + provider + compactor).
-        // 96E-33: the sink used to be installed in TLS for the approver. The loop already
-        // holds it as `ReactLoop::bus` and now passes it through `ApprovalCtx`, so there is
-        // nothing left to thread by hand here.
+        // Single composition point. The loop passes its sink through `ApprovalCtx`,
+        // so nothing is threaded by hand here.
         let (loop_, _sink) = match compose_loop(&state, &session, &model, None, &session_cwd) {
             Ok(v) => v,
             Err(e) => {
@@ -821,19 +731,16 @@ pub fn spawn_turn(state: Arc<ServerState>, session: SessionId) {
             Err(e) => crate::log!("turn error: session={} error={e:?}", session.0),
         }
 
-        // R-SRV-100: after the first assistant turn of a nameless session, title it.
-        // `slot` is still alive here on purpose: it holds the idle count, so `should_exit()`
-        // cannot reap the process mid-titling. The `aborts` entry was already released by the
-        // sink on `TurnFinishing`, so a new `/prompt` is accepted meanwhile — the two facts
-        // have different lifetimes and now say so.
+        // R-SRV-100: title after the first assistant turn. `slot` stays alive so `should_exit()`
+        // cannot reap mid-titling; `aborts` was already released, so a new `/prompt` is accepted.
         maybe_autotitle(&state, &session);
         drop(slot);
     });
 }
 
-/// R-SRV-100 — best-effort auto-title. If the session has a name, or has no
-/// assistant message yet, do nothing. Otherwise issue one cheap provider call, set
-/// the name, and record a `UsageKind::Title` usage row. Any failure is swallowed.
+/// R-SRV-100 — best-effort auto-title: one cheap provider call, then set the name and record
+/// a `UsageKind::Title` usage row. Skipped if already named or no assistant message; failures
+/// are swallowed.
 pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
     crate::log!("[autotitle] checking session={}", session.0);
 
@@ -866,8 +773,8 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
         return;
     }
 
-    // Configured title model, else the session's own. Never a model the user did not choose:
-    // the old cheapest-on-provider pick landed on one that returns no text.
+    // Configured title model, else the session's own — never a cheapest-on-provider pick
+    // (that landed on a model which returns no text).
     let session_model = state.store.get_model_spec_for_session(&session.0);
     let default_model = state.default_model_snapshot();
     let model = state
@@ -926,9 +833,8 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
         messages: &messages,
         tools: &no_tools,
         thinking: Thinking::Off,
-        // The title itself is ~10 tokens, but a reasoning model spends the budget on its
-        // scratchpad first: at 32 the stream ended with empty text (`finish_reason: length`),
-        // which read as "skip". Room for the reasoning plus a few words.
+        // 512 leaves room for a reasoning model's scratchpad plus the few title tokens;
+        // at 32 the stream ended empty and read as "skip".
         max_tokens: Some(512),
         cache: &no_cache,
         session: Some(session.0.as_str()),
@@ -986,9 +892,8 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
         },
     );
 
-    // Record UsageKind::Title (R-CORE-150 / R-SRV-100). The loop is normally the
-    // only usage emitter, but titling is a server-owned side call, so the server
-    // records it here directly.
+    // R-CORE-150 / R-SRV-100: titling is a server-owned side call, so the server records
+    // the usage row directly rather than through the loop.
     let usage = Usage {
         tokens,
         model: model.r#ref.clone(),
@@ -1044,14 +949,10 @@ fn compute_cost(tokens: &Tokens, price: &Price) -> i64 {
     kn9t_core::cost_micros(tokens, price)
 }
 
-/// Spawn a background compaction for `session`. Fire-and-forget: emits
-/// `Event::Compacted` via SSE when done, or `Event::Error` on failure.
-///
-/// 96E-17 fail-closed, same posture as the automatic path (`exec.rs:223`):
-/// compaction is the compactor plugin's job alone. No plugin (or a failing one)
-/// means NO compaction — the session keeps its transcript and simply runs to the
-/// context ceiling. A host-side "summary of N messages" fallback would be worse
-/// than nothing: it destroys the span and silently looks like success.
+/// Spawn a background compaction for `session` (fire-and-forget; emits `Compacted` or `Error`).
+/// fail-closed, same as the automatic path (`exec.rs:223`): the compactor plugin is the
+/// only engine. With none, the session runs to the context ceiling — a host-side summary
+/// fallback would destroy the span and look like success.
 pub fn spawn_compact(
     state: Arc<ServerState>,
     session: SessionId,
@@ -1060,13 +961,10 @@ pub fn spawn_compact(
     std::thread::spawn(move || {
         crate::log!("[spawn_compact] starting: session={}", session.0);
 
-        // Registering makes the compaction abortable via /abort AND makes `is_turn_running`
-        // reject a concurrent /prompt — a user message landing mid-compaction would race the
-        // Compacted event over the same span. B6: the guard releases on every exit path,
-        // including the early `return` below and a panic.
+        // Registration makes compaction abortable and rejects a concurrent /prompt (which
+        // would race the Compacted event); the B6 guard releases on every exit path.
         let _slot = TurnSlot::register(&state, &session.0);
 
-        // Get model for compaction
         let model_ref = state
             .store
             .get_model_spec_for_session(&session.0)
@@ -1077,10 +975,8 @@ pub fn spawn_compact(
                 id: "unknown".into(),
             });
 
-        // The plugin host reads session/bus/cwd from THREAD-LOCAL storage
-        // (PluginHost::set_session -> TL_SESSION). `compose_loop` does this for
-        // turn threads; this is a fresh thread, so it must do it too — otherwise
-        // the hook payload carries `"session": null` and the plugin bails out.
+        // A fresh thread: `compose_loop` sets the plugin host's thread-local session/bus/cwd,
+        // so this one must too, or the hook payload carries `session: null` and the plugin bails.
         let bus = state.buses.bus_for(&session.0);
         let sink: Arc<dyn EventSink> = Arc::new(SessionSink::with_store(
             bus,
@@ -1089,7 +985,7 @@ pub fn spawn_compact(
             state.clone(),
         ));
 
-        // 96E-17: the compactor plugin is the ONLY compaction engine.
+        // the compactor plugin is the ONLY compaction engine.
         let compaction_result = {
             let hosts = state.hosts_snapshot();
             let compactor_host = hosts
@@ -1120,8 +1016,7 @@ pub fn spawn_compact(
         let compaction_plan = match compaction_result {
             Ok(plan) => plan,
             Err(e) => {
-                // Surface the failure instead of silently degrading to a one-liner:
-                // a fallback that looks like success hides a broken compactor.
+                // Surface the failure: a fallback that looks like success hides a broken compactor.
                 crate::log!("[spawn_compact] compactor failed: {e}");
                 state.buses.publish(
                     &session.0,
@@ -1150,7 +1045,6 @@ pub fn spawn_compact(
             }
             Err(e) => {
                 crate::log!("[spawn_compact] store error: {}", e.0);
-                // Emit error event so TUI knows something went wrong
                 state.buses.publish(
                     &session.0,
                     Event::Error {

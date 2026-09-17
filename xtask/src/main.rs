@@ -10,6 +10,7 @@
 //! | `API.md` | human-readable contract docs — never hand-edited again |
 //! | `schema/generated/go_types.go` | Go client stubs (for `plugins/kn9t-agents-md`) |
 //! | `schema/generated/python_types.py` | Python client stubs (for `plugins/kn9t-mcp`) |
+//! | `.agents/skills/kn9t-plugin-creation/references/**` | plugin-authoring snapshots — `api.md` plus the SDK source, so the skill cannot restate the contract wrongly |
 //!
 //! The generator is **idempotent**: consecutive runs produce byte-identical output.
 //! `scripts/check-schema.sh` (installed in the pre-commit hook) fails on any drift
@@ -20,6 +21,7 @@
 
 mod gen_markdown;
 mod gen_server;
+mod gen_skill;
 mod gen_stubs;
 mod gen_wire;
 mod schema;
@@ -32,7 +34,7 @@ fn main() -> ExitCode {
     match args.get(1).map(|s| s.as_str()) {
         Some("generate") => match generate() {
             Ok(()) => {
-                println!("xtask generate: schema -> api.rs, wire.rs, API.md, Go/Python stubs (idempotent)");
+                println!("xtask generate: schema -> api.rs, wire.rs, API.md, Go/Python stubs, skill references (idempotent)");
                 ExitCode::SUCCESS
             }
             Err(e) => {
@@ -110,6 +112,7 @@ fn generate() -> Result<(), String> {
     gen_wire::write(&root, &http)?;
     gen_markdown::write(&root, &http, &plugin)?;
     gen_stubs::write(&root, &http, &plugin)?;
+    gen_skill::write(&root, &http, &plugin)?;
 
     // Run rustfmt on generated Rust files so they match workspace style and
     // `cargo fmt -- --check` in CI does not flag them as drift.
@@ -173,6 +176,10 @@ fn check() -> Result<(), String> {
     let (go, py) = gen_stubs::generate(&http, &plugin)?;
     expected.push((root.join("schema/generated/go_types.go"), go));
     expected.push((root.join("schema/generated/python_types.py"), py));
+
+    for (path, content) in gen_skill::outputs(&root, &http, &plugin)? {
+        expected.push((path, content));
+    }
 
     for (path, want) in &expected {
         match std::fs::read_to_string(path) {

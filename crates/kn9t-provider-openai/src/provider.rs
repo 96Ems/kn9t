@@ -110,7 +110,7 @@ impl OpenAiProvider {
     }
 
     /// Make one streaming attempt; returns the SSE chunk iterator.
-    /// 96E-40: cancel is now passed to sse_lines_cancellable for mid-buffer cancel.
+    /// cancel is now passed to sse_lines_cancellable for mid-buffer cancel.
     fn attempt(
         &self,
         req: &Request<'_>,
@@ -183,7 +183,7 @@ impl OpenAiProvider {
 
         if streaming {
             // SSE streaming path.
-            // 96E-40: pass cancel to sse_lines for mid-buffer cancel support.
+            // pass cancel to sse_lines for mid-buffer cancel support.
             let mut state = Wire::new(&quirks.api);
             let lines = sse_lines(resp.body, Some(cancel));
             let iter = lines.flat_map(move |line_res| match line_res {

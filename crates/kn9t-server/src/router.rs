@@ -240,11 +240,11 @@ fn route(
         // ── plugin hot-reload (R-PLUG2-100) ──
         (Method::Post, ["plugin", name, "reload"]) => routes::plugin::reload(state, name),
 
-        // ── plugin stop/start, distinct from reload (96E-47) ──
+        // ── plugin stop/start, distinct from reload ──
         (Method::Post, ["plugin", name, "stop"]) => routes::plugin::stop(state, name),
         (Method::Post, ["plugin", name, "start"]) => routes::plugin::start(state, name),
 
-        // ── plugin inventory (96E-49) ──
+        // ── plugin inventory ──
         (Method::Get, ["plugin"]) => routes::plugin::list(state),
 
         // ── plugin hot-load (new plugin without restart) ──
@@ -257,13 +257,13 @@ fn route(
 
         // ── plugin UI event (TUI → Plugin communication) ──
         (Method::Post, ["plugin", name, "ui_event"]) => {
-            match parse_json::<routes::plugin::UiEventReq>(req) {
+            match parse_json::<api::UiEventReq>(req) {
                 Ok(body) => routes::plugin::ui_event(state, name, body),
                 Err(e) => e.into(),
             }
         }
 
-        // ── 96E-28 generic interaction ──
+        // ── generic interaction ──
         (Method::Post, ["ui-respond"]) => match parse_json::<api::UiRespondReq>(req) {
             Ok(body) => routes::interaction::respond(state, body).into(),
             Err(e) => e.into(),

@@ -1,4 +1,4 @@
-//! 96E-22 TDD: host_api tool_execute must generate unique CallId per invocation.
+//! TDD: host_api tool_execute must generate unique CallId per invocation.
 
 use kn9t_core::{
     Approver, CallId, Cancel, Decision, ModelRef, SessionId, Tool, ToolCall, ToolCtx, ToolErr,

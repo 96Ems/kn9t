@@ -5,7 +5,7 @@
 # scripts are typically run from WSL or git-bash where `cargo` is not on PATH
 # (WSL has its own filesystem, so ~/.cargo does not exist there). Without this,
 # check-schema.sh and check-sse-race.sh fail with "cargo: command not found" -
-# which reads as a gate failure rather than a missing tool (96E-29).
+# which reads as a gate failure rather than a missing tool.
 #
 # Resolution order:
 #   1. $CARGO if the caller already set it

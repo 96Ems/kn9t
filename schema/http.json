@@ -54,9 +54,9 @@
                 "cwd": { "type": "string" },
                 "head_seq": { "type": "integer" },
                 "created_at": { "type": "string", "format": "date-time", "description": "ISO8601, millis since epoch normalized at boundary" },
-                "origin_session": { "type": ["string", "null"], "description": "96E-52: session this one was forked from; null on a root" },
-                "origin_seq": { "type": ["integer", "null"], "description": "96E-52: parent seq this session branched at" },
-                "fork_reason": { "type": ["string", "null"], "enum": ["fork", "rewind", "subagent", "tree", null], "description": "96E-52: how this session came to exist" }
+                "origin_session": { "type": ["string", "null"], "description": "session this one was forked from; null on a root" },
+                "origin_seq": { "type": ["integer", "null"], "description": "parent seq this session branched at" },
+                "fork_reason": { "type": ["string", "null"], "enum": ["fork", "rewind", "subagent", "tree", null], "description": "how this session came to exist" }
               },
               "required": ["id", "head_seq"]
             }
@@ -332,6 +332,21 @@
     },
     {
       "method": "GET",
+      "path": "/policy",
+      "lease": false,
+      "description": "Informational policy state. Decisions are made by the policy plugin; `mode` is reporting-only and `approvals` is the persisted scope=always ledger. Edit ~/.kn9t/policy.py to change behaviour.",
+      "response": {
+        "type": "object",
+        "properties": {
+          "mode": { "type": "string", "enum": ["ask_on_mutation", "allow_all", "deny_all", "readonly"], "description": "Reporting-only: no verdict derives from it" },
+          "approvals": { "type": "array", "items": { "type": "string" }, "description": "Fingerprints of tool calls approved with scope=always" },
+          "note": { "type": "string" }
+        },
+        "required": ["mode", "approvals"]
+      }
+    },
+    {
+      "method": "GET",
       "path": "/tools",
       "lease": false,
       "description": "List registered tools (from discovered + pinned plugins; reflects GET /tools for TUI sidebar, F9)",
@@ -405,7 +420,7 @@
       "method": "GET",
       "path": "/plugin",
       "lease": false,
-      "description": "96E-49: plugin inventory — declared name, run state, and the tools each contributes.",
+      "description": "plugin inventory — declared name, run state, and the tools each contributes.",
       "response": { "type": "object", "properties": { "plugins": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "state": { "type": "string", "enum": ["running", "stopped"] }, "tools": { "type": "array", "items": { "type": "string" } } }, "required": ["name", "state"] } } }, "required": ["plugins"] }
     },
     {
@@ -419,14 +434,14 @@
       "method": "POST",
       "path": "/plugin/{name}/stop",
       "lease": false,
-      "description": "96E-47: stop a plugin and leave it off, keeping its spawn recipe. Unlike reload, there is no respawn. The plugin's tools stay registered and stay in the tools array sent to the model (the level-1 cache prefix is untouched); calls to them are refused at execution instead. 404 if the plugin is unknown, 409 if it is already stopped.",
+      "description": "stop a plugin and leave it off, keeping its spawn recipe. Unlike reload, there is no respawn. The plugin's tools stay registered and stay in the tools array sent to the model (the level-1 cache prefix is untouched); calls to them are refused at execution instead. 404 if the plugin is unknown, 409 if it is already stopped.",
       "response": { "type": "object", "properties": { "stopped": { "type": "string" } }, "required": ["stopped"] }
     },
     {
       "method": "POST",
       "path": "/plugin/{name}/start",
       "lease": false,
-      "description": "96E-47: respawn a stopped plugin from the command it was originally loaded with, and unblock its tools. Only works on a plugin the server already knows: 404 otherwise (spawning a new command is POST /plugin/load). 409 if already running.",
+      "description": "respawn a stopped plugin from the command it was originally loaded with, and unblock its tools. Only works on a plugin the server already knows: 404 otherwise (spawning a new command is POST /plugin/load). 409 if already running.",
       "response": { "type": "object", "properties": { "started": { "type": "string" }, "tools": { "type": "integer", "description": "total tools after start" } }, "required": ["started"] }
     },
     {
@@ -477,9 +492,26 @@
     },
     {
       "method": "POST",
+      "path": "/plugin/{name}/ui_event",
+      "lease": false,
+      "description": "Forward a TUI UI interaction to a plugin. The plugin receives it as a `ui_interaction` event if it subscribed to that kind. 404 when the plugin is unknown.",
+      "request": {
+        "type": "object",
+        "properties": {
+          "session_id": { "type": "string" },
+          "event": { "type": "string", "description": "Event name the plugin subscribed to" },
+          "data": { "description": "Opaque JSON, forwarded verbatim to the plugin" }
+        },
+        "required": ["session_id", "event"],
+        "additionalProperties": false
+      },
+      "response": { "type": "object", "properties": { "sent": { "type": "boolean" } }, "required": ["sent"] }
+    },
+    {
+      "method": "POST",
       "path": "/ui-respond",
       "lease": false,
-      "description": "96E-28: respond to a pending generic plugin→client interaction (opaque payload, unknown id rejected)",
+      "description": "respond to a pending generic plugin→client interaction (opaque payload, unknown id rejected)",
       "request": {
         "type": "object",
         "properties": {

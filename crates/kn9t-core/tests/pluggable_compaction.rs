@@ -1,7 +1,7 @@
 //! Compaction regression test: pluggable compactors and Handoff event.
 
 #[test]
-fn p1_96e16_handoff_event_is_durable() {
+fn handoff_event_is_durable() {
     use kn9t_core::{CallId, Event};
     // Event::Handoff must exist and be durable (carries seq)
     let ev = Event::Handoff {
@@ -27,11 +27,11 @@ fn p1_96e16_handoff_event_is_durable() {
 }
 
 #[test]
-fn p1_96e17_compactor_trait_exists_model_passed() {
+fn compactor_trait_exists_model_passed() {
     use kn9t_core::{
         CompactSpan, CompactionPlan, Compactor, Content, Message, ModelRef, MsgId, Role, SeqRange,
     };
-    // Compactor trait must exist and receive the session model (96E-17 wire needs it).
+    // Compactor trait must exist and receive the session model (wire needs it).
     struct NoopCompactor;
     impl Compactor for NoopCompactor {
         fn compact(&self, span: CompactSpan, model: &ModelRef) -> Result<CompactionPlan, String> {
@@ -72,7 +72,7 @@ fn p1_96e17_compactor_trait_exists_model_passed() {
 }
 
 #[test]
-fn p1_96e16_handoff_callid_validation() {
+fn handoff_callid_validation() {
     use kn9t_core::{CallId, Event};
     // Host must be able to validate CallIds in a Handoff against known session CallIds.
     // We test the helper that will be added to core.

@@ -414,9 +414,7 @@ fn oai_extra_headers() {
         ..OpenAiConfig::default()
     };
     let _provider = OpenAiProvider::new(gateway_url_config.clone());
-    // If the provider were sniffing the URL it would mutate extra_headers or add headers
-    // internally. Since extra_headers is on config (not derived at runtime), the field
-    // stays exactly what the config layer set — verified by nbed_config_headers.
+    // The provider never URL-sniffs: `extra_headers` is config data, not derived at runtime.
     assert!(
         gateway_url_config.extra_headers.is_empty(),
         "provider must NOT add headers based on URL — that is the config layer's job (R-OAI-050)"
@@ -424,8 +422,8 @@ fn oai_extra_headers() {
 }
 
 // ── oai::session_header (R-OAI-050) ─────────────────────────────────────────
-// The conversation id travels on the request, so the config layer cannot supply it
-// (it resolves extra_headers once, at load). The header *name* is still config data.
+// The session id travels on the request, so the config layer cannot supply it; only the
+// header *name* is config data.
 
 #[test]
 fn oai_session_header() {
@@ -947,14 +945,8 @@ fn req_with_thinking<'a>(model: &'a ModelSpec, thinking: Thinking) -> kn9t_core:
     }
 }
 
-/// `Off` must send `reasoning_effort: "none"`.
-///
-/// It used to omit the field, on the theory that omitting means "no reasoning". It does not:
-/// omitting leaves the model's default, which is *on* for DeepSeek. Verified against
-/// `opencode-go` with the same prompt — omitted + `max_tokens: 16` returned
-/// `finish_reason: length`, empty content and a 63-char reasoning scratchpad; `"none"` returned
-/// the title and zero reasoning. That is what left auto-titling silent. Substituting a level
-/// (`low`/`medium`) is the opposite mistake: it forces reasoning on.
+/// `Off` must send `reasoning_effort: "none"` — omitting the field leaves the model default
+/// (on for DeepSeek, whose reasoning then eats the budget and returns no title text).
 #[test]
 fn oai_thinking_off_sends_reasoning_effort_none() {
     let model = make_model("deepseek-v4.1-flash");
@@ -1013,13 +1005,11 @@ fn nbed_rewrites_placeholder_tool() {
 }
 
 // ── nbed::config_headers (R-NBED-010) ────────────────────────────────────────
-// Verify that a gateway-style config with extra_headers produces correct wire headers.
-// The mechanism is the same oai_extra_headers path; this test documents the gateway config shape.
+// A gateway config with extra_headers uses the same oai_extra_headers path; this pins the shape.
 
 #[test]
 fn nbed_config_headers() {
-    // A gateway provider is just OpenAiConfig with the right extra_headers.
-    // The config layer resolves env: values and populates this vec.
+    // A gateway provider is an OpenAiConfig whose extra_headers the config layer populated.
     let config = OpenAiConfig {
         name: "my-gateway".into(),
         base_url: "https://llm-gateway.example.com/v1".into(),
@@ -1051,8 +1041,7 @@ fn nbed_config_headers() {
 }
 
 // ── DESIGN §8.3 — per-model quirk overrides ──────────────────────────────────
-// One gateway fronts models that disagree on wire details. The provider is
-// instantiated once per provider NAME and resolved that way, so the override
+// A provider is instantiated once per provider name, so a model's wire-detail override
 // rides in the config and is applied per request.
 
 #[test]

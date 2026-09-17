@@ -22,7 +22,7 @@ fn valid_png_data_uri() -> String {
     )
 }
 
-/// 96E-19 — a genuinely empty tool result must not 400 the gateway:
+/// a genuinely empty tool result must not 400 the gateway:
 /// `content` on the wire is non-empty while the TUI still renders no output.
 #[test]
 fn tool_result_empty_content_is_nonempty_on_wire() {
@@ -49,7 +49,7 @@ fn tool_result_empty_content_is_nonempty_on_wire() {
     );
 }
 
-/// 96E-19 — non-empty results are untouched.
+/// non-empty results are untouched.
 #[test]
 fn tool_result_keeps_real_output() {
     let msg = Message {

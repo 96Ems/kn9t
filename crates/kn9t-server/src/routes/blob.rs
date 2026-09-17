@@ -1,9 +1,7 @@
 //! R-SRV-090 — blob roundtrip (DESIGN §12.7, R-STOR-140).
 //!
-//! `POST /blob` computes SHA-256, stores once via the store (dedup by content
-//! hash), returns `{hash, mime}`. `GET /blob/{hash}` returns bytes with
-//! `ETag: "<hash>"` and `Cache-Control: immutable` (blobs are content-addressed and
-//! never change).
+//! `POST /blob` hashes SHA-256 and stores once (dedup by content hash), returning `{hash, mime}`;
+//! `GET /blob/{hash}` returns the bytes with `ETag` and `Cache-Control: immutable` (content-addressed).
 
 use std::sync::Arc;
 

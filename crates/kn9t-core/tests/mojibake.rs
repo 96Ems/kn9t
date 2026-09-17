@@ -3,7 +3,7 @@
 use std::path::Path;
 
 #[test]
-fn p1_96e15_no_mojibake() {
+fn no_mojibake() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let crates = manifest.join("..");
     // actual workspace crates dir is at repo root /crates
@@ -69,7 +69,7 @@ fn p1_96e15_no_mojibake() {
             eprintln!("mojibake: {}", o);
         }
         panic!(
-            "96E-15: found {} file(s) with double-UTF8 mojibake (section/em-dash). Fix: replace with correct UTF-8 and check toolchain. Offenders:\n{}",
+            "found {} file(s) with double-UTF8 mojibake (section/em-dash). Fix: replace with correct UTF-8 and check toolchain. Offenders:\n{}",
             offenders.len(),
             offenders.join("\n")
         );

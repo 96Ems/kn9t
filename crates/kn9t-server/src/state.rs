@@ -1,12 +1,8 @@
 //! [`ServerState`] — the shared, thread-safe wiring of the server (DESIGN §12).
 //!
-//! This is the one place that names concrete `Store` (`SqliteStore`), tool, and
-//! policy types (GI-1 exception). Every `tiny_http` connection thread holds an
-//! `Arc<ServerState>`. Interior state (leases, buses, idle counters) is guarded by
-//! fine-grained locks so a long SSE backlog read never blocks a write (§12.4).
-//!
-//! The provider used for turns and auto-titling is injected as `Arc<dyn Provider>`
-//! so tests drive the server fully offline.
+//! The one place naming concrete `Store`/tool/policy types (GI-1 exception); every connection
+//! thread holds an `Arc`. Fine-grained locks keep a long SSE backlog read from blocking a write
+//! (§12.4). The provider is injected as `Arc<dyn Provider>`, so tests run fully offline.
 
 use kn9t_macros::safe_expect;
 use std::collections::HashMap;
@@ -25,17 +21,13 @@ use crate::lease::{LeaseMap, DEFAULT_LEASE_IDLE};
 use crate::policy::{ApprovalCache, ApprovalRegistry, InteractiveApprover, NonInteractiveApprover};
 use crate::tools::SpawnRecipe;
 
-/// Grace period after last client disconnects before the server exits.
-/// Short enough to feel immediate, long enough to survive a TUI restart.
-/// Overridable via `[server] idle_exit_secs` in config.toml (0 = disable).
+/// Grace period after the last client disconnects (long enough to survive a TUI restart);
+/// `[server] idle_exit_secs` overrides, `0` disables.
 pub const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(5);
 
-/// ADR-0008 — the approver used when nothing can answer a prompt. Reached only if a policy
-/// plugin returned `Ask`, so denying is the honest answer: there is no one to ask.
-///
-/// Note this is *not* the "no policy installed" path. With no policy plugin the hook layer
-/// answers `Allow` and no approver is consulted at all — kn9t runs unguarded by design
-/// (ADR-0008 decision 5).
+/// ADR-0008 — the approver used when nothing can answer a prompt: reached only if a policy
+/// plugin returned `Ask`, so deny is the honest answer. Not the "no policy installed" path —
+/// then the hook layer allows directly (ADR-0008 §5).
 pub struct DenyAllApprover;
 impl Approver for DenyAllApprover {
     fn request(
@@ -51,9 +43,8 @@ impl Approver for DenyAllApprover {
     }
 }
 
-/// Idle / activity accounting for R-SRV-080. The server exits when there is **no
-/// attached client and no running turn** for `idle_exit`. Any activity (attach,
-/// turn start, write) stamps `last_activity`.
+/// Idle accounting for R-SRV-080: exit when no client is attached and no turn is running for
+/// `idle_exit`. Any activity (attach, turn start, write) stamps `last_activity`.
 pub struct IdleTracker {
     attached_clients: AtomicU64,
     running_turns: AtomicU64,
@@ -99,13 +90,8 @@ impl IdleTracker {
         self.running_turns.load(Ordering::SeqCst)
     }
 
-    /// R-SRV-080 — exit when no client is attached and no turn is running,
-    /// after a short grace period since the last detach.
-    ///
-    /// - If `idle_exit` is zero: never exit (disabled).
-    /// - If any client is still attached: stay up regardless of idle time.
-    /// - If a turn is running: stay up (client may reconnect to see the result).
-    /// - Otherwise: exit once `idle_exit` has elapsed since last activity.
+    /// R-SRV-080 — exit once `idle_exit` has elapsed with no attached client and no running
+    /// turn; a zero period disables exit.
     pub fn should_exit(&self) -> bool {
         if self.idle_exit.is_zero() {
             return false;
@@ -129,8 +115,7 @@ impl IdleTracker {
     }
 }
 
-/// The shared server state. All fields are `Send + Sync`; connection threads share
-/// it through an `Arc`.
+/// The shared server state; connection threads share it through an `Arc`.
 pub struct ServerState {
     pub store: Arc<SqliteStore>,
     pub buses: Arc<SessionBuses>,
@@ -139,12 +124,8 @@ pub struct ServerState {
     pub token: String,
     /// Set by `POST /stop` — the watchdog detects this and exits cleanly.
     pub stop_requested: AtomicBool,
-    /// Provider used for auto-titling and running turns. `None` disables both
-    /// (routes still function; a `prompt` without a provider is a no-op turn).
-    ///
-    /// `RwLock` for config hot-reload (R-SRV-CFG-100): `POST /config/reload` swaps
-    /// providers and models in place. Reads are per-turn, writes only on reload.
-    /// Never hold the guard across a provider call — clone the `Arc` out first.
+    /// Provider for turns and auto-titling; `None` disables both. `RwLock` for hot-reload
+    /// (R-SRV-CFG-100); never hold the guard across a provider call — clone the `Arc` out first.
     pub provider: RwLock<Option<Arc<dyn Provider>>>,
     /// All providers by name, for model switching. `RwLock` for hot-reload.
     pub providers: RwLock<std::collections::HashMap<String, Arc<dyn Provider>>>,
@@ -152,106 +133,70 @@ pub struct ServerState {
     pub default_model: RwLock<Option<ModelSpec>>,
     /// Model used to title sessions (config `title_model` / explicit `default_model`).
     pub title_model: RwLock<Option<ModelSpec>>,
-    /// ADR-0008 -- turns a policy plugin's `Ask` into a `Decision`. Not a decider: the
-    /// judgement already happened in the plugin. `RwLock` so a non-interactive run can swap
-    /// in the deny-on-ask adapter at startup.
+    /// ADR-0008 — turns a policy plugin's `Ask` into a `Decision`; the judgement already
+    /// happened in the plugin. `RwLock` so a non-interactive run can swap in deny-on-ask.
     pub approver: std::sync::RwLock<Arc<dyn Approver>>,
     /// Registry for blocking approval requests (DESIGN §10).
     pub approval_registry: Arc<ApprovalRegistry>,
     /// Session + persistent approval cache (scope=session|always).
     pub approval_cache: Arc<ApprovalCache>,
-    /// 96E-28 — generic client-to-host interaction registry (opaque JSON payloads).
+    /// generic client-to-host interaction registry (opaque JSON payloads).
     pub interaction_registry: Arc<InteractionRegistry>,
     /// Working directory root (server process cwd), used for the tool context when
     /// a session does not pin its own.
     pub cwd: PathBuf,
-    /// Provider-reported budget figure, injectable (gateway `/user/usage`,
-    /// R-NBED-040 / R-SRV-120). `None` where unavailable.
+    /// Provider-reported budget from the gateway `/user/usage` (R-NBED-040 / R-SRV-120);
+    /// `None` where unavailable.
     pub provider_reported_budget: Mutex<Option<f64>>,
     /// All model specs loaded from config (GET /models registry, DESIGN §8.2).
     /// `RwLock` for config hot-reload (R-SRV-CFG-100).
     pub model_registry: RwLock<Vec<ModelSpec>>,
-    /// Tools registry — populated from external auto-discovered plugins in
-    /// `~/.kn9t/plugins/` plus pinned `[[plugin]]` entries (R-PLUG2-110, ADR-0004).
-    /// Wrapped in a Mutex for hot-reload (R-PLUG2-100): `POST /plugin/{name}/reload`
-    /// swaps the host and rebuilds the registry without restarting the server.
+    /// Tools from auto-discovered plugins in `~/.kn9t/plugins/` plus pinned `[[plugin]]`
+    /// entries (R-PLUG2-110, ADR-0004). Mutex for hot-reload (R-PLUG2-100).
     pub tools: Mutex<ToolRegistry>,
-    /// Plugin hosts — for composing hooks from all plugins (discovered + pinned).
-    /// Mutex for hot-reload.
+    /// Plugin hosts for composing hooks. Mutex for hot-reload.
     pub plugin_hosts: Mutex<Vec<Arc<PluginHost>>>,
     /// Spawn recipe per plugin declared name — used to respawn on reload (R-PLUG2-100).
     /// `cmd` is the exact argv (binary + args) and `env` the injected vars.
     pub plugin_spawn: Mutex<HashMap<String, SpawnRecipe>>,
-    /// Plugin hosts backing `kind = "plugin"` providers, by provider name.
-    /// R-SRV-CFG-100: kept so `reload_config` can shut down the old subprocess
-    /// before replacing it, instead of leaking one process per reload.
+    /// Plugin hosts backing `kind = "plugin"` providers. R-SRV-CFG-100: kept so
+    /// `reload_config` can shut down the old subprocess instead of leaking one per reload.
     pub provider_hosts: Mutex<Vec<(String, Arc<PluginHost>)>>,
-    /// Per-session cancellation handles for `abort` (R-SRV-060). A running turn registers
-    /// its `Cancel` here; `abort` fires it.
+    /// Per-session `Cancel` handles for `abort` (R-SRV-060). Per-server state, not a process-global
+    /// `static`, so two servers in one test process do not share it.
     ///
-    /// 96E-33: this was a `static ABORTS` in `turn.rs`. Process-global state made two server
-    /// instances in one test process share an abort map, and it was global for the same
-    /// reason the policy sink was thread-local — a signature that did not carry what it
-    /// needed. It lives here now because it is per-server state, like every other map above.
-    ///
-    /// B5/B6: the value is a `(turn_id, Cancel)` pair, not a bare `Cancel`. Keyed by session
-    /// alone this map could not tell two overlapping turns apart: turn A's teardown removed
-    /// turn B's registration (so `is_turn_running` reported idle while B was mid-stream and a
-    /// concurrent `/prompt` was accepted), and an ESC raised against A fired B's `Cancel`.
-    /// Every write is now a compare-and-swap on the id, so a stale handle is inert. The
-    /// lifecycle belongs to `turn::TurnSlot`, whose `Drop` is the only deregistration path.
+    /// B5/B6: the `(turn_id, Cancel)` pair makes every write a compare-and-swap on the id, so a
+    /// stale teardown or ESC is inert.
     pub aborts: Mutex<HashMap<String, (u64, Cancel)>>,
     /// B5/B6 — monotonic turn id source. Server-wide rather than per-session so an id is
     /// never ambiguous, even across sessions.
     pub(crate) next_turn_id: AtomicU64,
-    /// Server-side timing knobs from `[server]` (approval/interaction deadlines, tool
-    /// cancellation grace). These used to be `const`s buried in `policy.rs` / `host_api.rs`;
-    /// the right value depends on the deployment's tools and users, not on kn9t.
+    /// Server-side timing knobs from `[server]`; the right values depend on the deployment,
+    /// not on kn9t.
     pub timeouts: crate::config::ServerTimeouts,
-    /// ADR-0008 -- an in-process `HookHost` that replaces the composed plugin hooks.
-    ///
-    /// Since ADR-0008 an `Ask` can only originate from a policy plugin, so exercising the
-    /// approval flow end-to-end would otherwise require spawning a real subprocess. This seam
-    /// lets a test supply the verdict directly. `None` in production, where hooks are always
-    /// composed from `plugin_hosts`.
+    /// ADR-0008 — an in-process `HookHost` seam replacing the composed plugin hooks, so a test
+    /// can supply an approval verdict without spawning a real policy subprocess. `None` in
+    /// production.
     pub hooks_override: Mutex<Option<Arc<dyn kn9t_core::HookHost>>>,
-    /// Tools-enable/disable: per-session set of tools that were just RE-ENABLED and
-    /// have not yet been announced to the agent. `POST /session/{id}/tools` fills this
-    /// (old_disabled \ new_disabled); the next `spawn_turn` drains it into a one-shot
-    /// `<system-reminder>`. Transient by design — a re-enable the agent never got to
-    /// hear about is harmless (it simply discovers the tool works when it tries), so
-    /// this need not be event-sourced.
+    /// Per-session tools just re-enabled and not yet announced (`POST /session/{id}/tools`
+    /// fills it; the next turn drains a one-shot `<system-reminder>`). Transient by design —
+    /// a missed notice is harmless, so it is not event-sourced.
     pub pending_reactivation: Mutex<HashMap<String, std::collections::HashSet<String>>>,
-    /// Per-session queue of steering messages. `POST /session/{id}/steer` adds messages
-    /// here instead of appending directly to the store. The turn loop drains this queue
-    /// via `get_steering()` AFTER tool_results, ensuring valid transcript order:
-    /// `[tool_use] -> [tool_result] -> [steer]` instead of the buggy
-    /// `[tool_use] -> [steer] -> [tool_result]`.
+    /// Per-session steering queue. `POST /session/{id}/steer` adds here; the turn drains it
+    /// via `get_steering()` after tool_results, keeping `[tool_use] -> [tool_result] -> [steer]`.
     pub pending_steering: Mutex<HashMap<String, Vec<kn9t_core::Message>>>,
-    /// True while plugins are loading in background (non-blocking startup).
-    ///
-    /// The server binds and writes its port file immediately, then loads plugins
-    /// in a background thread. Routes that require plugins (`POST /session`,
-    /// `POST /session/{id}/prompt`) return 503 while this is true. The TUI polls
-    /// `GET /health` for `plugins_ready: true` before proceeding.
+    /// True while plugins load in the background (the server binds immediately).
+    /// Plugin-dependent routes return 503 meanwhile; the TUI polls `GET /health` first.
     plugins_loading: AtomicBool,
-    /// 96E-47 — plugins currently `Stopped` (subprocess reaped, spawn recipe kept).
-    ///
-    /// A stopped plugin's tools stay in `tools` and stay in the `tools` array sent
-    /// to the model, so the level-1 cache prefix (§8.4.2) is never invalidated just
-    /// because a plugin was temporarily cut. They are refused at *execution* time
-    /// instead, exactly like the session-scoped `disabled_tools` path: the loop asks
-    /// `ToolSource::blocked()` on every call, so a stop takes effect mid-turn.
+    /// plugins currently `Stopped` (subprocess reaped, recipe kept). Their tools stay
+    /// in the registry so the level-1 cache prefix (§8.4.2) is not invalidated; they are refused
+    /// at execution via `ToolSource::blocked()`, so a stop takes effect mid-turn.
     stopped_plugins: Mutex<std::collections::HashSet<String>>,
-    /// 96E-50 — per-tool `hidden` overrides applied on top of the plugin-declared
-    /// `ToolSpec.hidden`. `None` entry means "no override". Applied in
-    /// `tools_snapshot()`, so a flip is visible on the next model call — including
-    /// mid-turn, since `ReactLoop` re-snapshots per call (96E-48).
+    /// per-tool `hidden` overrides over the plugin-declared `ToolSpec.hidden`; applied
+    /// in `tools_snapshot`, so a flip lands on the next model call.
     hidden_overrides: Mutex<HashMap<String, bool>>,
-    /// 96E-47 — plugins already reported as crashed, so the fact is announced once per
-    /// transition instead of on every health scan. A host stays poisoned until it is
-    /// reloaded, and the scan runs before every model call, so without this the same
-    /// failure would be re-broadcast for the rest of the session.
+    /// plugins already reported crashed, announced once per transition. The scan runs
+    /// before every model call, so without this a poisoned host would re-broadcast forever.
     crash_announced: Mutex<std::collections::HashSet<String>>,
 }
 
@@ -271,10 +216,8 @@ impl ServerState {
             approval_cache.clone(),
         ));
         let buses = Arc::new(SessionBuses::new());
-        // 96E-18: durable-event SSE echo. 96E-12 made the live `EventSink` transient-only;
-        // durable events reach the bus only through this observer, installed once per
-        // server. Called after every `Store::append` commit, outside the conn lock, with
-        // the seq-stamped event (see kn9t-store session::append).
+        // durable events reach the bus only through this observer (made the
+        // live sink transient-only); called after every `Store::append`, outside the conn lock.
         {
             let buses_for_echo = buses.clone();
             store.set_after_append(Some(Arc::new(move |session, event| {
@@ -316,24 +259,17 @@ impl ServerState {
         }
     }
 
-    /// Check if plugins are fully loaded and ready.
-    ///
-    /// Returns `false` during background plugin loading (non-blocking startup).
-    /// Routes that depend on plugins should return 503 when this is false.
+    /// False while plugins are still loading; plugin-dependent routes return 503.
     pub fn plugins_ready(&self) -> bool {
         !self.plugins_loading.load(Ordering::SeqCst)
     }
 
-    /// Mark plugins as loading (true) or ready (false).
-    ///
-    /// Called by the background plugin loader thread.
+    /// Mark plugins loading (true) or ready (false); called by the background loader thread.
     pub fn set_plugins_loading(&self, loading: bool) {
         self.plugins_loading.store(loading, Ordering::SeqCst);
     }
 
-    /// Queue a steering message for the given session. Called by `POST /steer`.
-    /// The message will be drained by `get_steering()` during the turn, ensuring
-    /// it appears AFTER tool_results in the transcript.
+    /// Queue a steering message (`POST /steer`); drained by `get_steering()` after tool_results.
     pub fn queue_steering(&self, session: &str, msg: kn9t_core::Message) {
         let mut map = self
             .pending_steering
@@ -352,12 +288,8 @@ impl ServerState {
         map.remove(session).unwrap_or_default()
     }
 
-    /// Snapshot the current tool registry (clone under lock) — used by turns.
-    ///
-    /// 96E-50: `hidden_overrides` are applied here, so a `set_tool_hidden` flip shows up
-    /// in the next snapshot without touching what the plugin declared. The override map is
-    /// the server's opinion about visibility; the plugin's `ToolSpec.hidden` stays the
-    /// default it shipped with (a reload therefore does not silently reveal a meta-tool).
+    /// Snapshot the tool registry, applying `hidden_overrides` so a flip shows up
+    /// next call; the plugin's declared `ToolSpec.hidden` stays its default.
     pub fn tools_snapshot(&self) -> ToolRegistry {
         let registry = safe_expect!(self.tools.lock(), "tools poisoned").clone();
         let overrides = safe_expect!(self.hidden_overrides.lock(), "hidden poisoned").clone();
@@ -379,11 +311,8 @@ impl ServerState {
         )
     }
 
-    /// 96E-47 — tool names refused at execution time because their plugin is stopped.
-    ///
-    /// Derived from `stopped_plugins` and `Tool::plugin()` rather than stored as a name
-    /// list: a stopped plugin that re-declares tools while down (it cannot — the process
-    /// is gone) or a reload that renames one would otherwise leave a stale entry behind.
+    /// tool names refused at execution because their plugin is stopped. Derived
+    /// from `stopped_plugins`, not stored, so a rename or reload cannot leave a stale entry.
     pub fn blocked_tools(&self) -> std::collections::HashSet<String> {
         let stopped = safe_expect!(self.stopped_plugins.lock(), "stopped poisoned").clone();
         if stopped.is_empty() {
@@ -396,25 +325,21 @@ impl ServerState {
             .collect()
     }
 
-    /// 96E-47 — is this plugin currently stopped?
+    /// is this plugin currently stopped?
     pub fn is_plugin_stopped(&self, name: &str) -> bool {
         safe_expect!(self.stopped_plugins.lock(), "stopped poisoned").contains(name)
     }
 
-    /// 96E-50 — force a tool's `hidden` flag on or off, overriding what its plugin
-    /// declared. Visible from the next `tools_snapshot()`, i.e. from the next model call,
-    /// including mid-turn (96E-48). Cache cost is accepted for this case by design.
+    /// force a tool's `hidden` flag, visible from the next `tools_snapshot`
+    /// (including mid-turn). Cache cost is accepted by design.
     pub fn set_tool_hidden(&self, name: &str, hidden: bool) {
         safe_expect!(self.hidden_overrides.lock(), "hidden poisoned")
             .insert(name.to_string(), hidden);
     }
 
-    /// 96E-50 — reveal or re-hide every tool owned by one plugin in one shot.
-    /// Returns the affected tool names.
-    ///
-    /// The caller names the plugin. The server has no opinion about *which* plugin
-    /// deserves lazy visibility — a plugin asks for its own tools to be shown or hidden
-    /// through the `tool_visibility` host_api op, and can only ever name itself.
+    /// reveal or re-hide every tool owned by `plugin`, returning the affected names.
+    /// The server has no opinion about which plugin deserves lazy visibility; a plugin can
+    /// only name itself via the `tool_visibility` host_api op.
     pub fn set_plugin_hidden(&self, plugin: &str, hidden: bool) -> Vec<String> {
         let names: Vec<String> = self.plugin_tool_names(plugin);
         {
@@ -434,7 +359,7 @@ impl ServerState {
         names
     }
 
-    /// 96E-50 — the tool names owned by one plugin. Used to scope a plugin's own
+    /// the tool names owned by one plugin. Used to scope a plugin's own
     /// visibility changes to its own tools.
     pub fn plugin_tool_names(&self, plugin: &str) -> Vec<String> {
         safe_expect!(self.tools.lock(), "tools poisoned")
@@ -444,11 +369,9 @@ impl ServerState {
             .collect()
     }
 
-    /// 96E-50 — plugin health as the server observes it, for the `plugin_health` op.
-    ///
-    /// Returns `(name, running, healthy, poison_reason)` per plugin. "Healthy" means the
-    /// reader thread has not seen a protocol violation — the server's own observation of
-    /// the subprocess, which is why a plugin cannot fake it about another.
+    /// `(name, running, healthy, poison_reason)` per plugin, for the `plugin_health`
+    /// op. Healthy means the reader thread saw no protocol violation — the server's own
+    /// observation, so a plugin cannot fake another's.
     pub fn plugin_health(&self) -> Vec<(String, bool, bool, Option<String>)> {
         let hosts = safe_expect!(self.plugin_hosts.lock(), "hosts poisoned").clone();
         let stopped = safe_expect!(self.stopped_plugins.lock(), "stopped poisoned").clone();
@@ -462,13 +385,9 @@ impl ServerState {
             .collect()
     }
 
-    /// 96E-47 — stop a plugin without forgetting how to spawn it again.
-    ///
-    /// Steps 1–3 of `reload_plugin` (cancel in-flight, wait for `done` up to the
-    /// `before_tool_call` timeout, `shutdown`) and then *no* respawn. The host stays in
-    /// `plugin_hosts` and its tools stay in the registry: removing them would rewrite the
-    /// `tools` array and invalidate the level-1 cache prefix for what is meant to be a
-    /// temporary condition. `blocked_tools()` refuses calls in the meantime.
+    /// stop a plugin without forgetting its spawn recipe: cancel in-flight, wait,
+    /// `shutdown`, no respawn. The host and its tools stay in the registry (removing them would
+    /// rewrite the `tools` array and bust the level-1 cache); `blocked_tools()` refuses calls.
     pub fn stop_plugin(self: &Arc<Self>, name: &str) -> Result<String, String> {
         let host = {
             let hosts = safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
@@ -525,10 +444,8 @@ impl ServerState {
         Ok(name.to_string())
     }
 
-    /// 96E-47 — start a plugin that was stopped, from its known spawn recipe.
-    ///
-    /// Distinct from `POST /plugin/load`, which only knows how to spawn a command it has
-    /// never seen. A name that was never loaded is a 404 here, not a silent spawn.
+    /// start a stopped plugin from its known recipe. Unlike `POST /plugin/load`, an
+    /// unknown name is a 404 here, never a silent spawn.
     pub fn start_plugin(self: &Arc<Self>, name: &str) -> Result<(String, usize), String> {
         {
             let spawn = safe_expect!(self.plugin_spawn.lock(), "spawn poisoned");
@@ -552,12 +469,8 @@ impl ServerState {
         Ok((declared, tools))
     }
 
-    /// 96E-47 — notice hosts the reader thread poisoned and announce each one once.
-    ///
-    /// Called from the live `ToolSource` (before every model call), which is what makes a
-    /// crash observable *inside* a running turn rather than at the next prompt. It reports
-    /// only: whoever wants to act — a TUI panel, or a plugin that reveals its own recovery
-    /// tools on `plugin_state` — decides for itself.
+    /// notice poisoned hosts and announce each once. Called before every model call,
+    /// so a crash is observable inside the running turn; it reports only, the observer decides.
     pub fn scan_plugin_health(&self) {
         let broken: Vec<(String, Option<String>)> =
             safe_expect!(self.plugin_hosts.lock(), "hosts poisoned")
@@ -584,12 +497,9 @@ impl ServerState {
         }
     }
 
-    /// 96E-47 — publish a lifecycle fact to SSE clients and to subscribed plugins.
-    ///
-    /// The server's whole involvement in lazy tool visibility is this: state what happened.
-    /// It keeps no list of plugins that get special treatment, and takes no visibility
-    /// decision of its own — a plugin that wants to surface tools on a lifecycle signal
-    /// subscribes to `plugin_state` and calls `tool_visibility` on itself.
+    /// publish a lifecycle fact to SSE clients and subscribed plugins. The server
+    /// only states what happened: a plugin wanting to react subscribes to `plugin_state` and
+    /// calls `tool_visibility` on itself.
     fn announce_plugin_state(&self, plugin: &str, state: &str, error: String) {
         let event = kn9t_core::Event::PluginState {
             plugin: plugin.to_string(),
@@ -602,7 +512,7 @@ impl ServerState {
         self.notify_plugins(&event, Some(plugin));
     }
 
-    /// 96E-49 — the plugin inventory the agent (and the TUI) can read: declared name,
+    /// the plugin inventory the agent (and the TUI) can read: declared name,
     /// running state, and the tools each one contributes.
     pub fn plugin_inventory(&self) -> Vec<(String, bool, Vec<String>)> {
         let hosts = safe_expect!(self.plugin_hosts.lock(), "hosts poisoned").clone();
@@ -636,17 +546,9 @@ impl ServerState {
             .insert(name, (cmd, env));
     }
 
-    /// Hot-reload a plugin by declared name (R-PLUG2-100).
-    ///
-    /// Steps, per spec:
-    /// 1. `cancel` for every in-flight call on that plugin.
-    /// 2. wait up to `before_tool_call` timeout for `done` replies.
-    /// 3. `shutdown`, close write pipe.
-    /// 4. respawn from the same `cmd`.
-    /// 5. re-handshake; re-register tools, provider, hooks, event subscriptions.
-    ///
-    /// In-flight calls that miss step 3 get a synthetic error result at the call site
-    /// (the pending channel is dropped / returns `disconnected`).
+    /// Hot-reload a plugin by declared name (R-PLUG2-100): cancel in-flight calls, wait for
+    /// `done`, `shutdown`, respawn from the same `cmd`, then re-handshake and re-register.
+    /// Calls that miss the shutdown get a synthetic error at the call site.
     pub fn reload_plugin(self: &Arc<Self>, name: &str) -> Result<(String, usize), String> {
         // 0. Lookup host and spawn recipe (hold lock briefly).
         let (old_host, cmd, env) = {
@@ -707,7 +609,7 @@ impl ServerState {
             crate::log!("hot-reload: warning: plugin declared name '{}' differs from requested '{}' — using declared name for registry", new_decl_name, name);
         }
         let new_host = Arc::new(new_host);
-        // 96E-17: the respawned host gets the plugin ? host API handler too.
+        // the respawned host gets the plugin ? host API handler too.
         new_host.set_api_handler(Arc::new(crate::host_api::ServerHostApi {
             state: self.clone(),
         }));
@@ -723,11 +625,9 @@ impl ServerState {
                 hosts.push(new_host.clone());
             }
 
-            // Rebuild tool registry from all current hosts (dedup first wins).
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             let mut all_tools: Vec<Arc<dyn kn9t_core::Tool>> = Vec::new();
-            // Pinned order is already in hosts vec (pinned first, then discovered sorted).
-            // Respect that order for dedup.
+            // Hosts are already ordered (pinned first, then discovered sorted); dedup respects it.
             for h in hosts.iter() {
                 let tools_for_host = if h.name() == new_decl_name {
                     new_tools.clone()
@@ -751,18 +651,15 @@ impl ServerState {
                 name,
                 n
             );
-            // 96E-47: a reload always ends with a running subprocess, so a plugin that was
-            // stopped is stopped no longer. Clearing here (rather than only in
-            // `start_plugin`) keeps the invariant true for `POST /plugin/{name}/reload`
-            // called directly on a stopped plugin.
+            // a reload ends with a running subprocess, so clear the stopped flag here
+            // too — `POST /plugin/{name}/reload` may target a stopped plugin directly.
             {
                 let mut stopped = safe_expect!(self.stopped_plugins.lock(), "stopped poisoned");
                 stopped.remove(name);
                 stopped.remove(new_decl_name.as_str());
             }
-            // The respawned host is a fresh process, so a *future* crash is a new fact and
-            // must be announced again. Without this, recovering a plugin would silently
-            // disarm crash reporting for it for the rest of the session.
+            // A fresh process means a *future* crash is a new fact; without clearing, recovery
+            // would silently disarm crash reporting for the rest of the session.
             {
                 let mut announced = safe_expect!(self.crash_announced.lock(), "crash poisoned");
                 announced.remove(name);
@@ -773,11 +670,8 @@ impl ServerState {
         }
     }
 
-    /// Hot-load a NEW plugin that wasn't present at startup.
-    ///
-    /// Unlike `reload_plugin` which replaces an existing plugin, this spawns
-    /// a brand new plugin and adds it to the registry. The plugin can be
-    /// specified inline (cmd + env) or loaded from config.toml.
+    /// Hot-load a NEW plugin (unlike `reload_plugin`, which replaces one), specified inline
+    /// (cmd + env) or from config.toml, and add it to the registry.
     pub fn load_plugin(
         self: &Arc<Self>,
         cmd: Vec<String>,
@@ -893,20 +787,15 @@ impl ServerState {
             tools_removed: vec![],
         };
         self.buses.broadcast_all(event.clone());
-        // 96E-50: subscribed plugins hear about it too. A plugin that keeps lifecycle tools
-        // hidden until they are useful decides for itself that this is the moment (via
-        // `tool_visibility`); the server just reports that a plugin appeared. Not delivered
-        // to the newcomer itself — it cannot have subscribed yet, and being told about its
-        // own arrival is not information.
+        // subscribed plugins hear about it too and decide for themselves when to
+        // reveal tools via `tool_visibility`; not sent to the newcomer — it has not subscribed.
         self.notify_plugins(&event, Some(&declared_name));
 
         Ok((declared_name, tools_count))
     }
 
-    /// Load new plugins from config.toml that weren't present at startup.
-    ///
-    /// Re-reads the config file and spawns any [[plugin]] entries that aren't
-    /// already loaded. Returns the list of newly loaded plugins.
+    /// Re-read config.toml and spawn any `[[plugin]]` entries not already loaded, returning
+    /// the newly loaded ones.
     pub fn load_plugins_from_config(self: &Arc<Self>) -> Result<Vec<(String, usize)>, String> {
         let config_path = crate::config::global_config_path();
         let config = crate::config::load(&config_path)?;
@@ -934,7 +823,6 @@ impl ServerState {
                 }
             }
 
-            // Try to load.
             match self.load_plugin(cmd, plugin_cfg.env.clone()) {
                 Ok((name, tools)) => {
                     loaded.push((name, tools));
@@ -952,36 +840,11 @@ impl ServerState {
         Ok(loaded)
     }
 
-    /// R-SRV-CFG-100 — re-read `config.toml` and swap providers + models in place.
-    ///
-    /// Returns `(providers, models)` counts on success.
-    ///
-    /// **Scope.** Swaps `providers`, `provider_hosts`, `model_registry` and
-    /// `default_model` only. It deliberately does NOT reload:
-    ///
-    /// * `[[plugin]]` — tool plugins have their own lifecycle
-    ///   (`POST /plugin/load`, `POST /plugin/{name}/reload`, R-PLUG2-100);
-    /// * `[policy] mode` — read live per call via `config::get_policy_state`;
-    /// * `[server] idle_exit_secs` — `IdleTracker` is built once at startup.
-    ///
-    /// Two hazards it must respect:
-    ///
-    /// 1. **Provider plugins are subprocesses.** `config::load` spawns one per
-    ///    `kind = "plugin"` provider. The previous generation is shut down here,
-    ///    after the swap, or every reload would leak a process.
-    /// 2. **In-flight turns hold their own `Arc<dyn Provider>` and `ModelSpec`**,
-    ///    cloned out of the locks at turn start. A reload therefore never disturbs a
-    ///    running turn — it takes effect from the next turn. This is deliberate:
-    ///    mutating a turn's provider mid-stream would tear the SSE assembly.
-    ///
-    /// Sessions that pinned a model keep their pin; the spec is re-resolved from the
-    /// new registry by `register_model_spec` below, so an edited `ctx` reaches them —
-    /// which matters because `plan_request` compacts at `ctx_window * 0.80`
-    /// (`kn9t-store/src/plan.rs`), so a stale `ctx_window` silently mis-times
-    /// compaction.
-    ///
-    /// Cost: re-runs `config::load`, which re-fetches `/v1/models` for every
-    /// `kind = "openai"` provider and respawns every provider plugin.
+    /// R-SRV-CFG-100 — re-read `config.toml` and swap `providers`, `provider_hosts`,
+    /// `model_registry` and `default_model` in place; returns `(providers, models)` counts.
+    /// Not reloaded: `[[plugin]]` (R-PLUG2-100 lifecycle), `[policy] mode` (read live) and
+    /// `[server] idle_exit_secs` (built at startup). In-flight turns hold their own cloned
+    /// provider/model, so it applies next turn. Cost: `config::load` re-fetches `/v1/models`.
     pub fn reload_config(self: &Arc<Self>) -> Result<(usize, usize), String> {
         let path = crate::config::global_config_path();
         let resolved = crate::config::load(&path)?;
@@ -1058,9 +921,8 @@ impl ServerState {
         self
     }
 
-    /// 96E-17: install the plugin ? host API (host_api capability) on every
-    /// plugin host. Must be called once after `Arc::new(state)` (the handler
-    /// holds an `Arc<ServerState>`).
+    /// install the host_api handler on every plugin host. Must be called once after
+    /// `Arc::new(state)` — the handler holds an `Arc<ServerState>`.
     pub fn install_host_api(self: &Arc<Self>) {
         let api = Arc::new(crate::host_api::ServerHostApi {
             state: self.clone(),
@@ -1095,9 +957,8 @@ impl ServerState {
         *self.approver.write().expect("approver poisoned") = a;
         self
     }
-    /// ADR-0008 -- pick the approval adapter. This is *not* a risk decision: it only says who
-    /// can answer an `Ask` that a policy plugin already raised. Interactive runs prompt; `-p`
-    /// and CI have nobody to prompt, so an unanswerable ask is denied.
+    /// ADR-0008 — pick the approval adapter: not a risk decision, only who can answer an `Ask`
+    /// the policy plugin already raised. Interactive runs prompt; `-p`/CI have nobody, so deny.
     pub fn approver_for(
         interactive: bool,
         registry: &Arc<ApprovalRegistry>,
@@ -1283,16 +1144,9 @@ impl ServerState {
         Err(format!("plugin '{}' not found", plugin_name))
     }
 
-    /// 96E-50 — fan an event out to every plugin subscribed to its kind.
-    ///
-    /// Lifecycle events used to reach SSE clients only (`broadcast_all` walks the session
-    /// buses), so a plugin could not react to another plugin appearing or dying. This is the
-    /// missing half: any plugin that lists the kind in its handshake `events` receives it.
-    /// Generic on purpose — the server fans out facts and holds no view about which plugin
-    /// is entitled to care, which is what lets lazy tool visibility live entirely in the
-    /// plugin that wants it (via the `tool_visibility` op).
-    ///
-    /// `exclude` skips one plugin, so an event *about* a plugin is not delivered back to it.
+    /// Fan an event out to every plugin subscribed to its kind. Lifecycle events previously
+    /// reached SSE clients only, so a plugin could not react to another appearing or dying; the
+    /// server holds no view about which plugin should care. `exclude` skips the subject itself.
     pub fn notify_plugins(&self, event: &kn9t_core::Event, exclude: Option<&str>) {
         let kind = crate::sse::event_kind(event);
         let hosts = safe_expect!(self.plugin_hosts.lock(), "hosts poisoned").clone();

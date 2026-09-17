@@ -11,7 +11,7 @@ use crate::event::{Event, TickControl};
 /// Session info for sidebar display.
 ///
 /// `Default` so a caller that only cares about identity (tests, and any construction site
-/// that predates the 96E-53 parentage fields) does not have to spell out four `None`s.
+/// that predates the parentage fields) does not have to spell out four `None`s.
 #[derive(Debug, Clone, Default)]
 pub struct SessionEntry {
     pub id: String,
@@ -19,7 +19,7 @@ pub struct SessionEntry {
     pub running: bool,
     /// ISO 8601 timestamp for date grouping (e.g., "2026-08-28T10:30:00").
     pub created_at: Option<String>,
-    /// 96E-53 — the session this one was forked from, `None` for a root.
+    /// the session this one was forked from, `None` for a root.
     pub parent_id: Option<String>,
     /// Why the fork happened: `"fork" | "rewind" | "subagent" | "tree"`.
     pub fork_reason: Option<String>,
@@ -29,7 +29,7 @@ pub struct SessionEntry {
     pub head_seq: u64,
 }
 
-/// 96E-19 — session filter used by the picker (render + key handler MUST agree).
+/// session filter used by the picker (render + key handler MUST agree).
 /// Names match fuzzily (subsequence); IDs match by case-insensitive SUBSTRING —
 /// fuzzy-matching random ULID-style ids matches nearly everything (every long id
 /// contains most letters somewhere), which made the session filter useless.
@@ -132,7 +132,7 @@ impl SessionManager {
         Ok(session_id)
     }
 
-    /// 96E-55 — fork `origin_id` and return the new session id.
+    /// fork `origin_id` and return the new session id.
     ///
     /// Mirrors `create_session` but hits `POST /session/{id}/fork`. `/fork` and `/undo` are
     /// the same server call with a different `reason` and `origin_seq`; the log is

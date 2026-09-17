@@ -1,4 +1,4 @@
-//! File watcher for hot-reload — 96E-41.
+//! File watcher for hot-reload.
 //!
 //! Watches ~/.kn9t/tui.lua (or configured path) for changes.
 //! On modification, reloads the Lua state and sends an event to the TUI.

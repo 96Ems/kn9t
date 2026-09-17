@@ -1,4 +1,4 @@
-//! 96E-28 TDD red→green: generic client→host interaction primitive.
+//! TDD red→green: generic client→host interaction primitive.
 
 use kn9t_core::ToolRegistry;
 use kn9t_core::{ModelRef, SessionId};

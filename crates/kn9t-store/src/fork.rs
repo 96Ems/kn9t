@@ -15,11 +15,9 @@ fn now_ts() -> i64 {
         .as_millis() as i64
 }
 
-/// Common fork head: compute inherited totals, create the fork session row and
-/// write the `SessionForked` event (seq 0). Returns the `ForkSnapshot` stored.
-/// The caller then writes the copied events (fork) or nothing (empty), sets
-/// `head_seq`, and commits. 96E-17: extracted so the bare child fork
-/// (`fork_session_empty`) shares exactly the same snapshot semantics.
+/// Common fork head: inherited totals, the fork session row, and the `SessionForked` event
+/// (seq 0). The caller then copies events (or not), sets `head_seq`, and commits.
+/// extracted so `fork_session_empty` shares the same snapshot semantics.
 #[allow(clippy::too_many_arguments)]
 fn fork_begin(
     conn: &Connection,
@@ -34,7 +32,7 @@ fn fork_begin(
     let origin_sid = origin.0.clone();
     let new_sid = new_id.0.clone();
 
-    // Inherited totals up to origin_seq — 96E-14: use micros for determinism
+    // Inherited totals up to origin_seq — use micros for determinism
     let (inh_cost_micros, inh_tok_in, inh_tok_out, inh_cache_read): (i64, i64, i64, i64) = conn
         .query_row(
             "SELECT COALESCE(SUM(cost_micros),0), COALESCE(SUM(tokens_in),0),
@@ -229,11 +227,9 @@ pub fn fork_session(
     Ok(())
 }
 
-/// 96E-17 — bare fork: same origin/snapshot semantics as [`fork_session`] but
-/// **no events are copied** (empty child session, head_seq=0). Used by the
-/// compactor sub-agent, which must NOT inherit the parent transcript (it would
-/// immediately re-overflow the context window — the span is delivered instead
-/// as the child's task message).
+/// bare fork: same semantics as [`fork_session`] but no events are copied (empty
+/// child, head_seq 0). The compactor sub-agent must not inherit the parent transcript or it
+/// re-overflows; the span arrives as its task message instead.
 pub fn fork_session_empty(
     store: &SqliteStore,
     origin: &SessionId,

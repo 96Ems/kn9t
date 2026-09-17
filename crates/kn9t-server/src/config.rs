@@ -78,11 +78,8 @@ pub struct RawConfig {
     pub plugins: Vec<RawPlugin>,
 }
 
-/// `[policy]` block — DESIGN §10.1, reduced by ADR-0008.
-///
-/// `[policy.bash]` and `[policy.allow]` are gone: risk rules live in the policy plugin's own
-/// file now. `mode` survives as a reporting value only — nothing in kn9t derives a verdict
-/// from it.
+/// `[policy]` block — DESIGN §10.1, reduced by ADR-0008: risk rules live in the policy plugin,
+/// so `mode` survives as a reporting value only.
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct RawPolicy {
     /// `ask_on_mutation` | `allow_all` | `deny_all` | `readonly`
@@ -99,7 +96,7 @@ pub struct RawApprovals {
     pub always: Vec<String>,
 }
 
-/// Resolved policy mode — DESIGN §10.1 `mode`.
+/// Resolved policy mode — DESIGN §10. ADR-0008: reporting only, no verdict derives from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[derive(Default)]
 pub enum PolicyMode {
@@ -121,20 +118,12 @@ impl PolicyMode {
     }
 }
 
-/// Configuration for a user tool plugin.
-///
-/// `[[plugin]]` in the global config (`~/.kn9t/config.toml`, R-PLUG-100) can
-/// override discovery (ADR-0004):
-/// - **pin a path:** `cmd = ["/abs/path/to/plugin"]` — discovered plugin with
-///   the same declared name is suppressed, this cmd is spawned instead.
-/// - **inject env:** `cmd` omitted, `env` set — env vars are injected when the
-///   discovered plugin with matching `name` is spawned.
-/// - **disable:** `enabled = false` or `disabled = true` — discovered plugin
-///   with matching `name` (and file-stem fallback) is not spawned at all.
+/// A `[[plugin]]` entry in the global config (`~/.kn9t/config.toml`, R-PLUG-100) overrides
+/// discovery (ADR-0004): `cmd` pins a path, `env` alone injects vars, `enabled=false` /
+/// `disabled=true` suppresses the discovered plugin of the same name.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawPlugin {
-    /// Plugin name — matches the plugin's declared `name` in its hello reply
-    /// (and typically its binary file name). Used for dedup/disabled matching.
+    /// Matches the plugin's declared `name` (and usually its binary file name); used for dedup.
     pub name: String,
     /// Command + args to spawn. Omit (or set `enabled=false`) for an
     /// env-only override or a disable entry that targets a discovered plugin.
@@ -143,8 +132,7 @@ pub struct RawPlugin {
     /// Environment variables to inject. Values support `env:VAR` syntax.
     #[serde(default)]
     pub env: HashMap<String, String>,
-    /// If `false`, this entry disables the discovered plugin with the same
-    /// `name`. Defaults to `true` when omitted.
+    /// `false` disables the discovered plugin of the same `name` (default `true`).
     #[serde(default)]
     pub enabled: Option<bool>,
     /// Alias for `enabled = false`. If `true`, the plugin is disabled.
@@ -158,34 +146,21 @@ pub struct RawServer {
     /// Seconds of inactivity (no attached clients, no running turns) before the
     /// server exits. Default: 1800 (30 min). Set to 0 to disable auto-exit.
     pub idle_exit_secs: Option<u64>,
-    /// Seconds a tool call may wait for a human approval decision before it is denied.
-    /// Default: 1800 (30 min). `0` disables the deadline (wait forever).
-    ///
-    /// A backstop, not a nudge: a user is allowed to think. It exists so a client that
-    /// disappears mid-prompt cannot pin the turn thread for the life of the process.
+    /// Seconds a tool call waits for a human approval before denial (default 1800; `0` = wait
+    /// forever). A backstop, so a client that disappears mid-prompt cannot pin the turn thread.
     pub approval_timeout_secs: Option<u64>,
-    /// Seconds a plugin's `interaction_request` may wait for a client answer, when the
-    /// session has a live cancellable turn. Default: 1800 (30 min). `0` disables.
+    /// `interaction_request` wait with a live cancellable turn (default 1800; `0` disables).
     pub interaction_timeout_secs: Option<u64>,
-    /// Seconds an `interaction_request` may wait when NO cancellable turn is registered.
-    /// Default: 120 (2 min). `0` disables — not advised.
-    ///
-    /// Nothing can interrupt such a wait (there is no reachable `Cancel`), so this deadline
-    /// is the only exit and is deliberately much tighter than the cancellable case.
+    /// `interaction_request` wait with NO cancellable turn (default 120; `0` disables). Nothing
+    /// can interrupt such a wait, so this deadline is the only exit — deliberately tight.
     pub interaction_timeout_no_cancel_secs: Option<u64>,
-    /// Milliseconds a cancelled tool batch waits for a `parallel_safe` tool to notice
-    /// `Cancel` before abandoning it. Default: 1500.
-    ///
-    /// Raise it if your tools are slow to react to cancellation; lowering it makes ESC feel
-    /// snappier at the cost of abandoning threads sooner.
+    /// Milliseconds a cancelled tool batch waits for a `parallel_safe` tool to notice `Cancel`
+    /// (default 1500); raise for slow tools, lower to make ESC snappier.
     pub tool_cancel_grace_ms: Option<u64>,
 }
 
-/// Server-side timing knobs resolved from `[server]`, with defaults applied.
-///
-/// Grouped in one struct so a new knob does not mean a new field on `ResolvedConfig` and a
-/// new argument at every call site. `None` means "no deadline" for the timeout fields, which
-/// is what `0` in the config maps to.
+/// Server-side timing knobs resolved from `[server]`. `None` means "no deadline" (config `0`).
+/// Grouped so a new knob is one field here, not one on `ResolvedConfig` plus every call site.
 #[derive(Debug, Clone, Copy)]
 pub struct ServerTimeouts {
     pub approval: Option<std::time::Duration>,
@@ -231,10 +206,8 @@ impl ServerTimeouts {
     }
 }
 
-/// Parse just the `[server]` timing knobs out of a config document.
-///
-/// Exposed so the knobs can be tested without a full `load()` (which spawns provider
-/// subprocesses and fetches `/v1/models`).
+/// Parse just the `[server]` knobs, so tests need not run a full `load()` (which spawns
+/// provider subprocesses and fetches `/v1/models`).
 pub fn parse_server_timeouts(toml_text: &str) -> Result<ServerTimeouts, String> {
     #[derive(Deserialize, Default)]
     struct JustServer {
@@ -261,12 +234,9 @@ pub struct RawProvider {
     /// R-SRV-CFG-010: per-provider extra headers (openai only).
     #[serde(default)]
     pub headers: HashMap<String, String>,
-    /// R-SRV-CFG-030: skip model auto-discovery for this provider. Default `true`.
-    ///
-    /// Two sources are suppressed: the `/models` fetch (`kind = "openai"`) and the model
-    /// declaration a plugin ships (`kind = "plugin"`). Both register models with no local
-    /// price and a guessed context window, and a plugin's catalog belongs to the endpoint
-    /// it was written for -- pointing it at another gateway imports a wrong one.
+    /// R-SRV-CFG-030: skip model auto-discovery (default `true`). Suppresses both the
+    /// `/models` fetch and a plugin's shipped catalog — each registers guessed prices/windows,
+    /// and a plugin's catalog belongs to the endpoint it was written for.
     #[serde(default = "default_discover")]
     pub discover: bool,
     #[serde(default)]
@@ -275,8 +245,7 @@ pub struct RawProvider {
     pub quirks: RawQuirks,
 }
 
-/// Raw quirks mirror DESIGN §8.2.  All fields optional; missing → use the
-/// provider-level default (which is `Quirks::default()`).
+/// Raw quirks mirror DESIGN §8.2; missing fields fall back to `Quirks::default()`.
 #[derive(Debug, Deserialize, Default)]
 pub struct RawQuirks {
     pub max_tokens_field: Option<String>,
@@ -296,11 +265,8 @@ pub struct RawQuirks {
 }
 
 impl RawQuirks {
-    /// True when at least one field was set in the TOML.
-    ///
-    /// Lets the config layer tell "no `[model.quirks]` table" apart from one that
-    /// happens to restate the provider defaults, so only real overrides are
-    /// recorded and logged.
+    /// True when at least one field was set, so the loader can tell a real `[model.quirks]`
+    /// override from a table that merely restates the provider defaults.
     pub fn is_set(&self) -> bool {
         let RawQuirks {
             max_tokens_field,
@@ -381,11 +347,9 @@ fn default_min_tokens() -> u32 {
 #[derive(Default)]
 pub struct ResolvedConfig {
     pub providers: Vec<(String, Arc<dyn kn9t_core::Provider>)>,
-    /// Plugin hosts spawned for `kind = "plugin"` providers, by provider name.
-    ///
-    /// R-SRV-CFG-100: `resolve` spawns a subprocess per provider plugin. Without a
-    /// handle here the old process could not be reaped on reload and every reload
-    /// would leak one. The `Arc` is shared with the `RemoteProvider` wrapping it.
+    /// Plugin hosts for `kind = "plugin"` providers, by name. R-SRV-CFG-100: without the
+    /// handle a reload could not reap the old subprocess (one leaked per reload); the `Arc`
+    /// is shared with the `RemoteProvider` wrapping it.
     pub provider_hosts: Vec<(String, Arc<kn9t_plugin::PluginHost>)>,
     pub models: Vec<ModelSpec>,
     /// The model id that should be the server default (first model if unspecified).
@@ -507,14 +471,10 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
                 validate_quirks(&quirks, &format!("provider {name:?}"))?;
                 provider_quirks.insert(name.clone(), quirks.clone());
 
-                // DESIGN 8.3: a `[[model]]` block may override any quirk. One
-                // gateway commonly fronts models that disagree on wire details, and
-                // the provider is resolved by NAME
-                // (`get_provider(&model.r#ref.provider)`), so the override cannot be
-                // a second provider instance -- that name reaches `ModelRef`,
-                // `ModelChanged` events and the DB. It travels in the config instead
-                // and is applied per request. Only models that actually declare an
-                // override get an entry, so the common path stays untouched.
+                // DESIGN §8.3: a `[[model]]` block may override any quirk. The provider is
+                // resolved by NAME, which reaches `ModelRef`/events/the DB, so a second
+                // provider instance is impossible — the override rides in config instead,
+                // per request, and only for models that declare one.
                 let model_quirks: HashMap<String, HttpQuirks> = raw
                     .models
                     .iter()
@@ -794,7 +754,7 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         Some(s) => PolicyMode::parse(s).map_err(|e| format!("config: {e}"))?,
     };
 
-    // Resolve user tool plugins — supports pin/disable/env-override (docs/internal/job/phase3.md 3.3).
+    // Resolve user tool plugins — supports pin/disable/env-override (docs/dev/job/phase3.md 3.3).
     let plugins: Vec<ResolvedPlugin> = raw.plugins.iter()
         .filter_map(|rp| {
             let disabled = rp.disabled.unwrap_or(false) || rp.enabled == Some(false);
@@ -854,9 +814,8 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
     })
 }
 
-/// The configured title model: `title_model`, else an explicit `default_model`. `None` means
-/// the caller uses the session's own model. Never falls back to `pick_default_model`'s "first
-/// small model" heuristic — that is how titling landed on a model that returns no text.
+/// Configured title model (`title_model` or an explicit `default_model`); `None` means use the
+/// session's own. Never falls back to the "first small model" heuristic (that returns no text).
 pub fn pick_title_model(resolved: &ResolvedConfig) -> Option<ModelSpec> {
     resolved
         .title_model_id
@@ -876,12 +835,8 @@ fn find_model_by_id(models: &[ModelSpec], want: &str) -> Option<ModelSpec> {
         .cloned()
 }
 
-/// Pick the default model: explicit `default_model` > first "small" model (haiku,
-/// mini, flash) > first model. Titling uses the default, so a cheap model is
-/// preferred to avoid burning tokens on it.
-///
-/// Shared by startup (`main.rs`) and hot-reload (`ServerState::reload_config`) so the
-/// two cannot drift.
+/// Pick the default model: explicit `default_model` > first small model (haiku/mini/flash) >
+/// first model. Shared by startup and hot-reload so the two cannot drift.
 pub fn pick_default_model(resolved: &ResolvedConfig) -> Option<ModelSpec> {
     resolved
         .default_model_id

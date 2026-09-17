@@ -621,17 +621,27 @@ Plugins with `host_api` capability can call back to the host via `request` messa
 
 | Op | Payload | Result | Description |
 |----|---------|--------|-------------|
-| `session_read` | `{session}` | `{messages, meta}` | Read session transcript |
-| `session_fork` | `{session, origin_seq?}` | `{session}` | Fork a session |
-| `session_prompt` | `{session, text}` | `{accepted, seq}` | Send a prompt |
-| `tool_execute` | `{session, name, args}` | `{content, is_error}` | Execute a tool |
-| `tool_list` | `{session}` | `{tools}` | List available tools |
-| `provider_complete` | `{session, model, messages, system?, tools?}` | streaming | LLM completion |
-| `ui_register_lua` | `{session, source, placement?, title?}` | `{ok}` | Register TUI |
-| `ui_set_state` | `{session, state}` | `{ok}` | Push TUI state |
-| `ui_clear` | `{session}` | `{ok}` | Clear TUI |
+| `session_read` | `{session, start?, end?}` | `{messages}` | Projected messages; whole transcript by default |
+| `session_create` | `{model?, cwd?}` | `{session}` | Brand-new independent session (no parent/fork) |
+| `session_fork` | `{session, origin_seq?, copy_events?, model?, budget_usd?}` | `{session}` | Fork as a subagent; `copy_events: false` is a bare, task-only child |
+| `session_prompt` | `{session, text, tools?}` | `{session, result}` | One synchronous turn; the parent's Cancel propagates, so ESC aborts the child |
+| `provider_complete` | `{session, model, messages, system?, tools?}` | streaming | One real provider call on the session's model and credentials |
+| `tool_list` | `{session}` | `{tools}` | Registry tool names, for composing a child toolset |
+| `tool_execute` | `{session, name, args}` | `{content, is_error}` | Run a tool through the normal approval path |
+| `tool_visibility` | `{hidden, tools?}` | `{tools}` | Hide or reveal **your own** tools; a `plugin` field is rejected |
+| `interaction_request` | `{session, payload}` | `{payload}` | Ask the client a question; blocks until `POST /ui-respond` |
+| `plugin_list` | `{}` | `{plugins}` | Plugin inventory: name, state, tools |
+| `plugin_start` / `plugin_stop` / `plugin_reload` | `{name}` | — | Lifecycle for a plugin the server already knows |
+| `plugin_load` | `{cmd?, env?, from_config?}` | `{loaded, tools}` | Load a new plugin without a restart |
+| `plugin_health` | `{}` | `{plugins}` | What the *server* observed per subprocess: a silent plugin cannot self-report |
+| `ui_register_lua` | `{session, source, placement?, title?, rows?, cols?}` | `{ok}` | Ship Lua defining `render(state)`; placement is a request, the TUI decides |
+| `ui_set_state` | `{session, state}` | `{ok}` | Push opaque state to `render(state)` |
+| `ui_clear` | `{session}` | `{ok}` | Drop the plugin's UI |
+| `ui_directive` (alias `ui_push`) | `{target, op, payload?}` | `{ok}` | Structured plugin→TUI directive, session-scoped |
 
-**Note:** Most ops require `session` in the payload. The SDK auto-injects it from hook context.
+**Note:** Most ops take `session`; the SDK auto-injects it from hook context. This table is
+checked against the host on every push (`scripts/check-contract.sh`) — if an op exists in the
+code and not here, or here and not in the code, the push fails.
 
 ---
 

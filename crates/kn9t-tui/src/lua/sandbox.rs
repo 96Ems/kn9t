@@ -48,7 +48,7 @@ pub fn apply_sandbox(lua: &Lua) -> LuaResult<()> {
     // Restrict collectgarbage to safe modes
     sandbox_collectgarbage(lua)?;
 
-    // 96E-43: Install panel API (kn9t.register_panel, etc.)
+    // Install panel API (kn9t.register_panel, etc.)
     super::panels::install_panel_api(lua)?;
 
     // Install keymap API (kn9t.map / kn9t.unmap)

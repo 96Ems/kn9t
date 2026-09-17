@@ -1,17 +1,10 @@
-//! 96E-17 — server-side plugin → host API (host_api capability).
+//! Server-side plugin → host API (host_api capability).
 //!
-//! kn9t does not embed sub-agents: this is the open API that lets external
-//! plugins run their own agent loops with the session's own infrastructure.
-//!
-//! Ops v1:
-//! - `provider_complete` — run the session's model through the real provider
-//!   (same credentials/cache; usage recorded as `UsageKind::Subagent`).
-//! - `session_read` — read projected messages by seq range (ID → content
-//!   resolution for tool results / spans).
-//! - `tool_execute` — run a registry tool through the normal approval path.
-//!
-//! Session id travels INSIDE each payload (`"session"`) — the host reader's
-//! thread-local session belongs to the turn thread, not the API worker (96E-5).
+//! kn9t does not embed sub-agents: this is the open API that lets external plugins run their own
+//! agent loops with the session's infrastructure. Ops: `provider_complete` (the session's model
+//! through the real provider, usage `UsageKind::Subagent`), `session_read` (projected messages by
+//! seq range) and `tool_execute` (normal approval path). The session id travels INSIDE each
+//! payload — the reader's thread-local session belongs to the turn thread, not the API worker.
 
 use std::sync::Arc;
 
@@ -101,10 +94,8 @@ impl ServerHostApi {
         Ok(json!({ "messages": rows }))
     }
 
-    /// `session_create` — create a brand new session (no parent, no fork).
-    /// Use this for fully independent workers that don't need context from the caller.
-    /// Optional: `"model"` (model id), `"cwd"` (working directory, defaults to caller's).
-    /// Reply: `{"session":"<new-id>"}`.
+    /// `session_create` — a brand new session (no parent/fork) for independent workers. Optional
+    /// `"model"` and `"cwd"` (defaults to the caller's); reply `{"session":"<new-id>"}`.
     fn session_create(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
         let new_id = SessionId::new();
         
@@ -143,12 +134,10 @@ impl ServerHostApi {
         Ok(json!({ "session": new_id.0 }))
     }
 
-    /// `session_fork` — spawn a new session from `session` (fork_reason=subagent).
-    /// `copy_events: true` (default) inherits the parent transcript; `false`
-    /// creates a bare child (task-only — the compactor use case). The fork
-    /// captures the budget in the ForkSnapshot (R-PLUG-130).
-    /// Reply: `{"session":"<new-id>"}`. A spawned session running a turn IS a
-    /// sub-agent — there is no separate sub-agent concept in kn9t.
+    /// `session_fork` — fork `session` (fork_reason=subagent). `copy_events: true` (default)
+    /// inherits the transcript; `false` is a bare, task-only child (the compactor case). The fork
+    /// captures budget in the ForkSnapshot (R-PLUG-130). A spawned session running a turn *is* a
+    /// sub-agent — kn9t has no separate concept.
     fn session_fork(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
         let session = self.require_session(session)?;
         let copy_events = payload
@@ -208,11 +197,9 @@ impl ServerHostApi {
         Ok(json!({ "session": child.0 }))
     }
 
-    /// `session_prompt` — run one full synchronous turn on `session` with `text`
-    /// (the session's own model, tool subset optional, fork budget enforced).
-    /// Reply: `{"session":"...","result":"..."}`.
-    ///
-    /// 96E-39: passes parent session's Cancel so ESC propagates to subagent.
+    /// `session_prompt` — one synchronous turn on `session` with `text` (its own model, optional
+    /// tool subset, fork budget enforced); reply `{"session","result"}`. The parent's Cancel
+    /// propagates, so ESC aborts the sub-agent.
     fn session_prompt(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
         let session = self.require_session(session)?;
         let text = payload
@@ -228,7 +215,7 @@ impl ServerHostApi {
             .get("timeout_s")
             .and_then(|v| v.as_u64())
             .unwrap_or(600);
-        // 96E-39: get parent session's Cancel so ESC propagates to subagent
+        // The parent's Cancel, so ESC propagates into the sub-agent.
         let parent_cancel = crate::turn::get_cancel(&self.state, session);
         let result = crate::turn::run_session_turn(
             &self.state,
@@ -241,7 +228,7 @@ impl ServerHostApi {
         Ok(json!({ "session": session, "result": result }))
     }
 
-    /// `tool_list` — 96E-17: registry tool names (for composing child toolsets).
+    /// `tool_list` — registry tool names (for composing child toolsets).
     /// Reply: `{"tools":["bash","read",...]}`.
     fn tool_list(&self, _session: Option<&str>, _payload: &Value) -> Result<Value, String> {
         let names: Vec<String> = self
@@ -254,7 +241,7 @@ impl ServerHostApi {
         Ok(json!({ "tools": names }))
     }
 
-    /// `plugin_list` — 96E-49: plugin inventory for the agent-facing plugin manager.
+    /// `plugin_list` — plugin inventory for the agent-facing plugin manager.
     /// Reply: `{"plugins":[{"name":..,"state":"running"|"stopped","tools":[..]}]}`.
     fn plugin_list(&self) -> Result<Value, String> {
         let plugins: Vec<Value> = self
@@ -272,11 +259,8 @@ impl ServerHostApi {
         Ok(json!({ "plugins": plugins }))
     }
 
-    /// `plugin_stop` / `plugin_start` / `plugin_reload` / `plugin_load` — 96E-49.
-    ///
-    /// These delegate to the same `ServerState` methods the HTTP routes call, so the human
-    /// path (`POST /plugin/...`) and the agent path (a tool call through the plugin
-    /// manager) cannot drift apart. Nothing here re-implements lifecycle logic.
+    /// `plugin_stop` / `plugin_start` / `plugin_reload` / `plugin_load` — thin wrappers over the
+    /// same `ServerState` methods the HTTP routes call, so the human and agent paths cannot drift.
     fn plugin_stop(&self, payload: &Value) -> Result<Value, String> {
         let name = Self::require_plugin_name(payload)?;
         let stopped = self.state.stop_plugin(name)?;
@@ -341,13 +325,10 @@ impl ServerHostApi {
             .ok_or_else(|| "op requires a plugin name in payload (\"plugin\")".to_string())
     }
 
-    /// `plugin_health` — 96E-50: what the *server* observed about each subprocess.
-    ///
-    /// Reply: `{"plugins":[{"name":..,"running":bool,"healthy":bool,"error":..}]}`.
-    /// `healthy: false` means this server's reader thread saw a protocol violation on that
-    /// host. It is deliberately the server reporting, not a plugin self-declaring: a plugin
-    /// that has gone silent cannot report its own silence, and a third party must not be
-    /// able to claim another is broken.
+    /// `plugin_health` — what the *server* observed per subprocess; reply
+    /// `{"plugins":[{"name","running","healthy","error"}]}`. `healthy: false` means the reader
+    /// thread saw a protocol violation — deliberately server-reported, so a silent plugin cannot
+    /// report itself and no third party can accuse another.
     fn plugin_health(&self) -> Result<Value, String> {
         let plugins: Vec<Value> = self
             .state
@@ -365,21 +346,13 @@ impl ServerHostApi {
         Ok(json!({ "plugins": plugins }))
     }
 
-    /// `tool_visibility` — 96E-50: a plugin sets the `hidden` flag on **its own** tools.
+    /// `tool_visibility` — a plugin sets the `hidden` flag on **its own** tools. The lazy-discovery
+    /// mechanism is deliberately generic: the server holds no list of plugins deserving special
+    /// treatment, so a plugin ships `hidden: true` and reveals itself when it judges it useful.
     ///
-    /// This is the whole lazy-discovery mechanism, and it is deliberately generic: the
-    /// server holds no list of plugins that deserve special visibility treatment. A plugin
-    /// ships `hidden: true` in its handshake, watches whatever signal it cares about
-    /// (`plugin_declared` events, `plugin_health` polling, its own heuristics), and asks to
-    /// be shown when it judges it useful.
-    ///
-    /// **Scope is the caller, always.** `plugin` comes from the host's dispatch, not from
-    /// the payload, so a plugin cannot reveal — or bury — another plugin's tools. Passing a
-    /// `plugin` field is an error rather than being silently ignored, so a plugin author
-    /// finds out immediately instead of shipping a no-op.
-    ///
-    /// Optional `tools: [names]` narrows the change to a subset of the caller's own tools;
-    /// omitted, it applies to all of them. Reply: `{"tools":[affected names]}`.
+    /// Scope is always the caller: `plugin` comes from the host dispatch, not the payload, so a
+    /// plugin cannot reveal or bury another's tools, and passing a `plugin` field is an error.
+    /// Optional `tools: [names]` narrows the change; reply `{"tools":[...]}`.
     fn tool_visibility(&self, payload: &Value, plugin: &str) -> Result<Value, String> {
         if payload.get("plugin").is_some() {
             return Err(
@@ -433,12 +406,9 @@ impl ServerHostApi {
         Ok(json!({ "tools": affected }))
     }
 
-    /// `interaction_request` — 96E-28 generic primitive: register a pending
-    /// interaction with `payload` (plugin's own opaque shape) and block until
-    /// the client responds via `POST /ui-respond {id, payload}`.
-    /// Emits `LiveEvent::InteractionRequest {id, plugin, payload}` to the
-    /// session bus so the TUI (or any SSE client) can render it generically.
-    /// Reply: `{"payload": <client response>}` — the client's opaque answer.
+    /// `interaction_request` — register a pending interaction (`payload` is the plugin's opaque
+    /// shape), emit `LiveEvent::InteractionRequest` so any client renders it, and block until
+    /// `POST /ui-respond`. Reply `{"payload": <client answer>}`.
     fn interaction_request(
         &self,
         session: Option<&str>,
@@ -452,27 +422,20 @@ impl ServerHostApi {
             .get("payload")
             .cloned()
             .unwrap_or_else(|| payload.clone());
-        // Create pending slot
         let (id, handle) = self.state.interaction_registry.create(
             session,
             plugin,
             &prompt_payload,
         );
-        // Emit to session bus — TUI renders generically from `payload`.
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
         sink.emit(kn9t_core::LiveEvent::InteractionRequest {
             id,
             plugin: plugin.to_string(),
             payload: prompt_payload,
         });
-        // Block on condvar until `POST /ui-respond` resolves it.
-        // 96E-39: get the session's Cancel so ESC can abort the wait.
-        //
-        // B10: a `None` here means no turn is registered, and the old
-        // `unwrap_or_else(Cancel::new)` fallback produced a handle nobody else holds — so
-        // nothing could ever fire it and the wait was unbounded, taking out the plugin's
-        // worker thread permanently. When there is no reachable `Cancel`, the deadline is
-        // the only way out, so it is mandatory in that case.
+        // Block on a condvar until `POST /ui-respond`. B10: with no turn registered there is no
+        // reachable `Cancel`, so the deadline is the only way out and is mandatory — a fresh
+        // unwatchable handle left the wait unbounded and killed the worker thread.
         let live_cancel = crate::turn::get_cancel(&self.state, session);
         let deadline = match &live_cancel {
             // A live turn can be cancelled by the user, but a client that simply walks away
@@ -491,11 +454,8 @@ impl ServerHostApi {
         }
     }
 
-    /// `provider_complete` — one real provider call with the session's model.
-    /// Reply: `{"content":[...],"stop":"...","usage":{"input":..,"output":..}}`.
-    /// Optional: `"tools"` — array of tool specs to enable tool_use responses.
-    ///
-    /// 96E-39: uses session's Cancel so ESC can abort the provider call.
+    /// `provider_complete` — one real provider call with the session's model; optional `"tools"`
+    /// enables tool_use. Reply `{"content","stop","usage"}`. The session's Cancel lets ESC abort.
     fn provider_complete(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
         let session = self.require_session(session)?;
         let model = self.resolve_model(payload)?;
@@ -513,11 +473,9 @@ impl ServerHostApi {
             .and_then(|v| v.as_u64())
             .map(|t| t as u32);
 
-        // Optional tools: either inline specs or names to look up from registry
+        // Optional tools: array of names (looked up) or array of inline specs.
         let tools: Vec<kn9t_core::ToolSpec> = if let Some(tools_val) = payload.get("tools") {
             if let Some(arr) = tools_val.as_array() {
-                // If array of strings -> look up from registry
-                // If array of objects -> parse as ToolSpec
                 if arr.first().map(|v| v.is_string()).unwrap_or(false) {
                     let names: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
                     let registry = self.state.tools_snapshot();
@@ -551,7 +509,7 @@ impl ServerHostApi {
             cache: &[],
             session: Some(session),
         };
-        // 96E-39: use session's Cancel so ESC can abort the provider call.
+        // use session's Cancel so ESC can abort the provider call.
         // B10: an unfireable fallback `Cancel` is acceptable here — a provider call is bounded
         // by its own HTTP/stream behaviour, not by cancellation, so it cannot wait forever.
         let cancel = crate::turn::get_cancel(&self.state, session).unwrap_or_default();
@@ -600,11 +558,11 @@ impl ServerHostApi {
         }))
     }
 
-    /// `ui_directive` / `ui_push` — 96E-23 structured plugin→TUI directive (session-scoped).
+    /// `ui_directive` / `ui_push` — structured plugin→TUI directive (session-scoped).
     /// Required: `"target"` (string, non-empty) + `"op"` (string, non-empty).
     /// Optional: `"payload"` (any JSON, defaults to null) — forwarded verbatim (opaque).
     /// Emits `LiveEvent::UiDirective {plugin, target, op, payload}` to the session's bus,
-    /// reusing 96E-21's session-scoped routing (no broadcast fallback).
+    /// reusing the session-scoped routing (no broadcast fallback).
     /// Reply: `{"ok":true}`.
     fn ui_directive(
         &self,
@@ -747,7 +705,7 @@ impl ServerHostApi {
 
     /// `tool_execute` — run a registry tool through the normal approval path.
     /// Reply: `{"content":[...],"is_error":bool}`.
-    /// 96E-22 fix: CallId must be unique per invocation, not `plugin-{name}` (which
+    /// CallId must be unique per invocation, not `plugin-{name}` (which
     /// collides on repeated same-tool calls and silently overwrites live_tool_calls via
     /// INSERT OR REPLACE).
     fn tool_execute(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
@@ -769,7 +727,7 @@ impl ServerHostApi {
             .clone();
 
         // Normal approval path: the approver shows/answers the request.
-        // 96E-22: unique per invocation — static atomic counter avoids colliding on repeated same-tool calls.
+        // unique per invocation — static atomic counter avoids colliding on repeated same-tool calls.
         static TOOL_EXEC_COUNTER: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(0);
         let call = ToolCall {
@@ -783,11 +741,11 @@ impl ServerHostApi {
         // Use the session's cwd, not the server's process cwd.
         let session_cwd = self.session_cwd(session);
 
-        // 96E-33: the session and its sink are passed explicitly. This call runs on an API
+        // the session and its sink are passed explicitly. This call runs on an API
         // worker thread, not the turn thread, so the old thread-local sink was always unset
         // here and every approval fell through to "no sink" -> Deny. Now the prompt actually
         // reaches the session's SSE stream.
-        // 96E-39: use session's cancel so ESC can abort the approval wait and tool execution.
+        // use session's cancel so ESC can abort the approval wait and tool execution.
         // B10: `None` here yields a `Cancel` nobody can fire. That is no longer a hang: the
         // approver's own deadline (`[server] approval_timeout_secs`) bounds the wait and
         // denies on expiry, so the worst case is a refused call rather than a dead thread.
@@ -815,7 +773,7 @@ impl ServerHostApi {
         }
 
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
-        // 96E-39: reuse session's cancel (already fetched above)
+        // reuse session's cancel (already fetched above)
         let ctx = ToolCtx {
             cwd: session_cwd,
             read: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -845,14 +803,14 @@ impl HostApi for ServerHostApi {
             "session_create" => self.session_create(session, payload),
             "session_prompt" => self.session_prompt(session, payload),
             "tool_list" => self.tool_list(session, payload),
-            // 96E-49: plugin lifecycle as agent-callable ops. Same `state.*` functions the
+            // plugin lifecycle as agent-callable ops. Same `state.*` functions the
             // HTTP routes use — one implementation, two callers (human and agent).
             "plugin_list" => self.plugin_list(),
             "plugin_stop" => self.plugin_stop(payload),
             "plugin_start" => self.plugin_start(payload),
             "plugin_reload" => self.plugin_reload(payload),
             "plugin_load" => self.plugin_load(payload),
-            // 96E-50: lazy visibility as a generic primitive. `plugin` is the caller, so a
+            // lazy visibility as a generic primitive. `plugin` is the caller, so a
             // plugin can only ever change its own tools' visibility.
             "plugin_health" => self.plugin_health(),
             "tool_visibility" => self.tool_visibility(payload, plugin),

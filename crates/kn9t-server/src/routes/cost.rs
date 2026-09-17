@@ -1,10 +1,8 @@
 //! R-SRV-110, R-SRV-120 — cost analytics and budget (DESIGN §7.3, §8.7.3, §18.8).
 //!
-//! `GET /cost?since=&group_by=` serves analytics over the usage projection
-//! (STOR R-STOR-180): totals grouped by model/kind/session, plus the local
-//! aggregate. `GET /budget` returns both the locally computed estimate and the
-//! provider-reported spend where available; drift between them is NOT warned in v1
-//! (SPEC-OPEN §18.8).
+//! `GET /cost?since=&group_by=` serves totals over the usage projection (R-STOR-180) grouped by
+//! model/kind/session; `GET /budget` returns the local estimate and the provider-reported spend.
+//! Drift between them is not warned in v1 (SPEC-OPEN §18.8).
 
 use kn9t_macros::safe_expect;
 use std::sync::Arc;

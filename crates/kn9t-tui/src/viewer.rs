@@ -1,12 +1,9 @@
 //! The read-only file viewer (PLAN §P7 L2 / D4/D5).
 //!
-//! Choosing a file in the explorer opens it here, stacked above the transcript — the same
-//! placement a `placement="main"` plugin view uses (D5). It is deliberately **not** an editor:
-//! no cursor, no save, no LSP. The TUI's editor is the conversation (D1); this is the reference
-//! pane you open while you talk about a file.
-//!
-//! Bounded on purpose. A file is capped at [`MAX_VIEWER_BYTES`] / [`MAX_VIEWER_LINES`], and
-//! hitting the cap is stated in the header instead of silently truncating.
+//! Choosing a file in the explorer opens it here, stacked above the transcript (the placement a
+//! `placement="main"` plugin view uses, D5). Deliberately not an editor — the TUI's editor is the
+//! conversation (D1). A file is capped at [`MAX_VIEWER_BYTES`] / [`MAX_VIEWER_LINES`], and hitting
+//! the cap is stated in the header rather than silently truncating.
 
 use std::path::Path;
 

@@ -1,13 +1,10 @@
 //! The file explorer column (PLAN §P7 L2 / D3).
 //!
-//! One view over the same [`FileIndex`] that backs the `@` dropdown (D6). The index owns the
-//! walk; this owns the tree *shape* — which directories are open and which row is selected.
-//! Rendering is native (`ui::render::render_explorer`) so the index never has to be serialised
-//! into Lua, and hit-testing follows the tool cards.
+//! One view over the same `FileIndex` backing the `@` dropdown (D6): the index owns the walk,
+//! this owns tree shape (expanded directories, selected row). Rendering is native
+//! (`ui::render::render_explorer`), so the index is never serialised into Lua.
 //!
-//! Focus is explicit. F1 opens the column and gives it the keyboard; Esc gives the keyboard
-//! back to the prompt without closing it. A column that silently ate `j`/`k` while you typed
-//! would be worse than no column at all.
+//! Focus is explicit: F1 shows/focuses, Esc returns the keyboard without closing the column.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

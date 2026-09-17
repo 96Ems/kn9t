@@ -1,14 +1,10 @@
 //! Session lifecycle + write routes (R-SRV-010, R-SRV-060, R-SRV-100).
 //!
 //! Create/list/snapshot/fork/delete, the write lease, and the writer commands
-//! (`prompt`/`steer`/`abort`/`model`/`approve`). `prompt` drives a ReAct turn on a
-//! background thread, publishing events to the session bus; after the first
-//! assistant turn of a nameless session it issues one cheap title call
-//! (R-SRV-100), best-effort.
-//!
-//! Request bodies are **typed** — the router deserializes into `crate::api` structs
-//! (schema-generated, `deny_unknown_fields`), so an unknown/mistyped field is a
-//! 400, never a silent ignore (F6).
+//! (`prompt`/`steer`/`abort`/`model`/`approve`). `prompt` drives a ReAct turn on a background
+//! thread; a nameless session gets one cheap best-effort title call after its first assistant turn
+//! (R-SRV-100). Bodies are typed (`crate::api`, `deny_unknown_fields`), so a bad field is a 400,
+//! never a silent ignore (F6).
 
 use std::sync::Arc;
 
@@ -19,10 +15,8 @@ use crate::http_util::{millis_to_iso, JsonResp};
 use crate::state::ServerState;
 use crate::turn;
 
-/// `POST /session` — create; body `{cwd?, model?, name?}`.
-///
-/// Returns 503 if plugins are still loading (non-blocking startup). The client
-/// should retry after a short delay or poll `GET /health` for `plugins_ready: true`.
+/// `POST /session` — create; body `{cwd?, model?, name?}`. Returns 503 while plugins load;
+/// the client polls `GET /health` for `plugins_ready`.
 pub fn create(state: &Arc<ServerState>, req: api::CreateSessionReq) -> JsonResp {
     if !state.plugins_ready() {
         return JsonResp::error(503, "loading", "plugins loading, retry shortly");
@@ -69,15 +63,9 @@ pub fn create(state: &Arc<ServerState>, req: api::CreateSessionReq) -> JsonResp 
     }))
 }
 
-/// `GET /session` — list sessions.
-///
-/// F5: `created_at` is stored as INTEGER millis; the schema pins it as an ISO8601
-/// string, so the boundary normalizes here (`millis_to_iso`).
-///
-/// 96E-52: `origin_session`/`origin_seq`/`fork_reason` are projected too. The columns were
-/// always written by `fork_session` but never returned, so no client could tell a fork from
-/// a root session — which is all a tree view needs. Additive and `null` on roots, so an
-/// older client that ignores unknown fields is unaffected.
+/// `GET /session` — list sessions. F5: `created_at` is INTEGER millis but the schema pins
+/// ISO8601, so `millis_to_iso` normalizes at the boundary. `origin_session`/`origin_seq`/
+/// `fork_reason` are projected too, so a client can tell a fork from a root (`null` on roots).
 pub fn list(state: &Arc<ServerState>) -> JsonResp {
     let sql = "SELECT json_object('id', id, 'name', name, 'cwd', cwd, 'head_seq', head_seq, \
                'created_at', created_at, 'origin_session', origin_session, \
@@ -106,7 +94,7 @@ pub fn snapshot(state: &Arc<ServerState>, id: &str) -> JsonResp {
     };
 
     // Meta. `created_at` normalized to ISO8601 at the boundary (F5).
-    // 96E-52: same parentage fields as `list`, so the `/tree` overlay can query one node
+    // same parentage fields as `list`, so the `/tree` overlay can query one node
     // without having to fetch the whole list to learn its parent.
     let meta_sql = "SELECT json_object('id', id, 'name', name, 'cwd', cwd, \
                     'created_at', created_at, 'origin_session', origin_session, \
@@ -235,16 +223,9 @@ pub fn lease_release(state: &Arc<ServerState>, id: &str, holder: Option<&str>) -
     }
 }
 
-/// `POST /session/{id}/prompt` — `{text?, blobs?, images?}` [lease required].
-/// Appends the user message and runs a turn on a background thread.
-///
-/// Returns 503 if plugins are still loading (non-blocking startup).
-/// Returns 409 Conflict if a turn is already running for this session. The client
-/// should wait for the turn to complete (via SSE TurnEnded event) before sending
-/// another prompt. This prevents transcript corruption when the user aborts a turn
-/// and immediately sends a new prompt before the abort completes.
-///
-/// F12: debug scaffolding moved from `eprintln!` to `crate::log!`.
+/// `POST /session/{id}/prompt` — `{text?, blobs?, images?}` [lease required]; appends the user
+/// message and runs a turn on a background thread. 503 while plugins load, 409 if a turn is already
+/// running — sending again around an abort would corrupt the transcript.
 pub fn prompt(state: &Arc<ServerState>, id: &str, req: api::PromptReq) -> JsonResp {
     if !state.plugins_ready() {
         return JsonResp::error(503, "loading", "plugins loading, retry shortly");
@@ -261,10 +242,8 @@ pub fn prompt(state: &Arc<ServerState>, id: &str, req: api::PromptReq) -> JsonRe
         images.len()
     );
 
-    // Check if a turn is already running for this session.
-    // This prevents the race condition where abort + immediate new prompt
-    // causes the user message to be appended before tool_results, corrupting
-    // the transcript and causing "tool_use ids without tool_result blocks" errors.
+    // Reject a second prompt mid-turn: abort + immediate prompt would append before
+    // tool_results and corrupt the transcript.
     if turn::is_turn_running(state, id) {
         crate::log!("[prompt] turn already running, rejecting");
         return JsonResp::error(409, "turn_running",
@@ -337,7 +316,7 @@ pub fn prompt(state: &Arc<ServerState>, id: &str, req: api::PromptReq) -> JsonRe
             return JsonResp::error(404, "not_found", &e.0);
         }
     };
-    // 96E-18: the durable SSE echo happens in the store after-append observer
+    // the durable SSE echo happens in the store after-append observer
     // (ServerState::new), not here — one publisher, no duplicates.
 
     // Run the turn asynchronously (background OS thread; GI-5: no async runtime).
@@ -346,16 +325,9 @@ pub fn prompt(state: &Arc<ServerState>, id: &str, req: api::PromptReq) -> JsonRe
     JsonResp::ok(serde_json::json!({ "accepted": true, "seq": seq }))
 }
 
-/// `POST /session/{id}/steer` — `{text}` [lease required]. Queues a steering
-/// message that the running/next turn folds in.
-///
-/// If a turn is running: the message is queued in-memory and will be drained by
-/// `get_steering()` AFTER tool_results. This prevents transcript corruption:
-/// `[tool_use] -> [tool_result] -> [steer]` instead of the invalid
-/// `[tool_use] -> [steer] -> [tool_result]`.
-///
-/// If no turn is running: the message is appended immediately to the store
-/// (original behavior).
+/// `POST /session/{id}/steer` — `{text}` [lease required]. With a turn running the message is
+/// queued and drained by `get_steering()` after tool_results (order `[tool_use] -> [tool_result] ->
+/// [steer]`); otherwise it is appended immediately.
 pub fn steer(state: &Arc<ServerState>, id: &str, req: api::SteerReq) -> JsonResp {
     let text = req.text;
     let sid = SessionId(id.to_owned());
@@ -382,7 +354,7 @@ pub fn steer(state: &Arc<ServerState>, id: &str, req: api::SteerReq) -> JsonResp
         },
     ) {
         Ok(seq) => {
-            // 96E-18: SSE echo via the store after-append observer.
+            // SSE echo via the store after-append observer.
             JsonResp::ok(serde_json::json!({ "steered": true, "seq": seq }))
         }
         Err(e) => JsonResp::error(404, "not_found", &e.0),
@@ -417,7 +389,7 @@ pub fn set_model(state: &Arc<ServerState>, id: &str, req: api::SetModelReq) -> J
     ) {
         Ok(seq) => {
             crate::log!("[set_model] success seq={seq}");
-            // 96E-18: SSE echo via the store after-append observer.
+            // SSE echo via the store after-append observer.
             JsonResp::ok(serde_json::json!({ "model_set": true, "seq": seq }))
         }
         Err(e) => {
@@ -427,14 +399,10 @@ pub fn set_model(state: &Arc<ServerState>, id: &str, req: api::SetModelReq) -> J
     }
 }
 
-/// `POST /session/{id}/tools` — `{disabled: [String]}` [lease required].
-/// Sets the full list of tools DISABLED for this session. Appends a `ToolsToggled`
-/// durable event. Blocking is enforced at tool-execution time (the provider still
-/// sees every tool spec so the cache prefix is unchanged).
-///
-/// The response includes `reenabled`: tools that were disabled and are no longer.
-/// The server also stores them in `pending_reactivation` so the next `spawn_turn`
-/// can inject a one-shot `<system-reminder>` informing the agent.
+/// `POST /session/{id}/tools` — `{disabled: [String]}` [lease required]; appends a
+/// `ToolsToggled` event. Blocking is enforced at execution, so the provider still sees every spec
+/// and the cache prefix is unchanged. The response lists `reenabled` tools, also queued for the
+/// next turn's `<system-reminder>`.
 pub fn set_tools(state: &Arc<ServerState>, id: &str, req: api::SetToolsReq) -> JsonResp {
     let sid = SessionId(id.to_owned());
 
@@ -487,13 +455,10 @@ pub fn set_tools(state: &Arc<ServerState>, id: &str, req: api::SetToolsReq) -> J
     }
 }
 
-/// `POST /approve` — `{id, decision, scope}` [lease required]. Records an approval
-/// decision that the tool-dispatch policy consults. In v1 the decision is signaled
-/// to the running turn via the approval registry. `scope` is `once` (default),
-/// `session`, or `always` (writes back to `~/.kn9t/config.toml`). The TUI's legacy
-/// `"always"` decision is treated as `decision=allow, scope=always` for compat.
-/// Unknown `decision` or `scope` values are 400 (not default-deny) — validation
-/// lives in `turn::resolve_approval` and is surfaced verbatim.
+/// `POST /approve` — `{id, decision, scope}` [lease required]; signals the running turn via the
+/// approval registry. `scope` is `once` (default), `session`, or `always` (writes
+/// `~/.kn9t/config.toml`); legacy decision `"always"` maps to `allow`/`always`. Unknown values are
+/// a 400 from `turn::resolve_approval`.
 pub fn approve(state: &Arc<ServerState>, req: api::ApproveReq) -> JsonResp {
     let decision = req.decision.as_str();
     let scope = req.scope.as_deref();
@@ -507,10 +472,8 @@ pub fn approve(state: &Arc<ServerState>, req: api::ApproveReq) -> JsonResp {
     }
 }
 
-/// `POST /session/{id}/rename` — `{name}` action endpoint (no PATCH).
-/// Updates `sessions.name` and emits `TitleChanged` so the TUI can update
-/// the sidebar. A manual rename suppresses auto-titling (R-SRV-100 already
-/// checks for an existing name before title-calling).
+/// `POST /session/{id}/rename` — `{name}` action endpoint (no PATCH). Updates `sessions.name`,
+/// emits `TitleChanged`, and suppresses auto-titling (R-SRV-100).
 pub fn rename(state: &Arc<ServerState>, id: &str, req: api::RenameReq) -> JsonResp {
     let name = req.name.trim().to_owned();
     if name.is_empty() {
@@ -543,12 +506,9 @@ pub fn rename(state: &Arc<ServerState>, id: &str, req: api::RenameReq) -> JsonRe
     JsonResp::ok(serde_json::json!({ "id": id, "name": name }))
 }
 
-/// `POST /session/{id}/compact` — manually trigger compaction [lease required].
-///
-/// Fire-and-forget (mirrors `prompt`): spawns a background thread and returns
-/// `{"accepted": true}` immediately so the TUI never blocks. The compactor plugin
-/// streams live progress over SSE and the result arrives as `Event::Compacted`.
-/// 96E-17: no compactor plugin means no compaction — there is no host-side fallback.
+/// `POST /session/{id}/compact` — trigger compaction [lease required]. Fire-and-forget like
+/// `prompt`: background thread, immediate `{"accepted": true}`, progress over SSE, result as
+/// `Event::Compacted`. No compactor plugin means no compaction (fail-closed).
 pub fn compact(state: &Arc<ServerState>, id: &str) -> JsonResp {
     let sid = SessionId(id.to_owned());
     // 404 if session missing.

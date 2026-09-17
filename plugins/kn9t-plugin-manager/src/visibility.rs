@@ -1,4 +1,4 @@
-//! Self-managed visibility (96E-50).
+//! Self-managed visibility.
 //!
 //! The five lifecycle tools ship `hidden: true`, so they cost nothing in the
 //! cache prefix while the plugin set is behaving. This sink is what brings them

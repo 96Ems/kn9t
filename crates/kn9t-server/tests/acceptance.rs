@@ -422,8 +422,8 @@ mod srv {
         h.handle.shutdown();
     }
 
-    /// 96E-18 — durable appends echo on the SSE bus after commit, exactly once.
-    /// 96E-47 — `stop` and `start` are distinct from `reload`.
+    /// durable appends echo on the SSE bus after commit, exactly once.
+    /// `stop` and `start` are distinct from `reload`.
     ///
     /// Shares `plugin_reload`'s harness (and its Windows `#[ignore]`, for the same reason:
     /// the dummy plugin is a POSIX shell script). What it pins down beyond the state-level
@@ -434,7 +434,7 @@ mod srv {
         windows,
         ignore = "plugin lifecycle harness needs a POSIX shell script as the dummy plugin binary"
     )]
-    fn p1_96e47_plugin_stop_start() {
+    fn plugin_stop_start() {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("cycle-tools");
         write_dummy_plugin(&bin, "cycle-tools", "cycle_tool");
@@ -520,14 +520,14 @@ mod srv {
         h.handle.shutdown();
     }
 
-    /// 96E-52 — `GET /session` and `GET /session/{id}` must expose parentage.
+    /// `GET /session` and `GET /session/{id}` must expose parentage.
     ///
     /// `fork_session` has always written `origin_session`/`origin_seq`/`fork_reason`, but
     /// neither route projected them, so no client could tell a branch from a root — which is
     /// the one fact a tree view needs. Roots must report `null` rather than omitting the
     /// fields inconsistently.
     #[test]
-    fn p1_96e52_session_list_exposes_fork_parentage() {
+    fn session_list_exposes_fork_parentage() {
         let (h, _tmp) = harness();
         let root = make_session(&h);
 
@@ -598,14 +598,14 @@ mod srv {
     }
 
     ///
-    /// Regression guard for 96E-12: `EventSink` is transient-only, so `MessageAppended`
+    /// Regression guard for `EventSink` is transient-only, so `MessageAppended`
     /// emitted by the loop/routes reach SSE observers solely through the store
     /// after-append observer installed in `ServerState::new`. Without it the TUI never
     /// sees assistant/tool messages live (no tool cards, streamed text dropped on the
     /// next turn start). The prompt route previously published manually; now the
     /// observer is the single publisher — this test fails if either side regresses
     /// (missing echo, or duplicate echo).
-    #[test]    fn p1_96e18_durable_appends_echo_on_sse_bus() {
+    #[test]    fn durable_appends_echo_on_sse_bus() {
         let (state, _tmp) = fresh_state();
         let h = start(state.clone());
         let id = make_session(&h);
@@ -3548,7 +3548,7 @@ mod srv {
         unreachable!("plugin_reload is #[ignore]d on Windows");
     }
 
-    // ── 96E-17: plugin → host API ops (host_api capability) ─────────────────────
+    // ── plugin → host API ops (host_api capability) ─────────────────────
 
     struct StubProvider {
         text: String,
@@ -3630,7 +3630,7 @@ mod srv {
     }
 
     #[test]
-    fn p1_96e17_host_api_ops_session_read_provider_complete_tool_execute() {
+    fn host_api_ops_session_read_provider_complete_tool_execute() {
         use kn9t_plugin::HostApi as _;
         use kn9t_server::host_api::ServerHostApi;
 
@@ -3786,7 +3786,7 @@ mod srv {
     }
 
     #[test]
-    fn p1_96e17_session_fork_and_prompt_spawns_a_real_child() {
+    fn session_fork_and_prompt_spawns_a_real_child() {
         use kn9t_plugin::HostApi as _;
         use kn9t_server::host_api::ServerHostApi;
 

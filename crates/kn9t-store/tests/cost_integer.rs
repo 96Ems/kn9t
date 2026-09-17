@@ -1,7 +1,7 @@
-//! 96E-14 regression: persisted cost must use integer micros, not f64.
+//! Regression: persisted cost must use integer micros, not f64.
 
 #[test]
-fn p1_96e14_price_and_cost_are_integer_micros() {
+fn price_and_cost_are_integer_micros() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let model_rs = manifest
         .ancestors()
@@ -69,7 +69,7 @@ fn p1_96e14_price_and_cost_are_integer_micros() {
 }
 
 #[test]
-fn p1_96e14_rounding_boundary_deterministic() {
+fn rounding_boundary_deterministic() {
     use kn9t_core::{cost_micros, Price, Tokens};
     // Price section must be integer (checked above); now test deterministic calc
     let model_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -81,7 +81,7 @@ fn p1_96e14_rounding_boundary_deterministic() {
     let price_section = txt.split("struct Price").nth(1).unwrap_or("");
     let price_def = price_section.split("}").next().unwrap_or("");
     if price_def.contains("f64") {
-        panic!("96E-14 not yet fixed: Price still f64");
+        panic!("Price is still f64; it must be integer micros");
     }
 
     // Tricky float case: price 0.035 (35000 micros) with 1M tokens.

@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Partially superseded by ADR-0008 (2026-08-31) — plugins still declare `effects`, but the
+server no longer maps them to risk. Judgement moved to the `before_tool_call` hook, and the
+`[policy.paths]` / `[policy] mode` rules this ADR describes are gone.
 
 ## Date
 

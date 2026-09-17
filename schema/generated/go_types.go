@@ -67,6 +67,13 @@ type PluginLoadReq struct {
 	FromConfig *bool `json:"from_config,omitempty"`
 }
 
+// UiEventReq — request body.
+type UiEventReq struct {
+	Data *any `json:"data,omitempty"`
+	Event string `json:"event"`
+	SessionID string `json:"session_id"`
+}
+
 // UiRespondReq — request body.
 type UiRespondReq struct {
 	ID uint64 `json:"id"`

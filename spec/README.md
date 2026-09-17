@@ -113,7 +113,7 @@ defect regardless of which crate introduced it.
   only** — what a crate links at build time. Test-only siblings in
   `[dev-dependencies]` are exempt, since they cannot create a runtime coupling or a
   cycle in the shipped artifact; `scripts/check-gi1.sh` lists the ones it skips so the
-  exemption stays auditable (96E-32).
+  exemption stays auditable.
 - **GI-2 → DESIGN §1, §4.** `kn9t-core` depends only on `serde`/`serde_json`. Every event
   payload is `Serialize + Deserialize` with no `Arc`, file handle, `&dyn`, or closure.
 - **GI-3 → DESIGN §8.4.2.1.** No `HashMap` is ever serialized into a request or a cached
@@ -182,7 +182,7 @@ native Bedrock is a performance/independence upgrade, not a capability gate.
 Items from DESIGN §18 that remain genuinely undecided and are **not** closed here, each
 tracked as `SPEC-OPEN` at the relevant site with the stated interim behavior:
 
-- **compaction prompt text** (§18.1) — **CLOSED 2026-09-02 (96E-17)** — the fixed template was deleted; compaction is delegated to a `compactor`-capability plugin (see §08b `compactor_compact`), fail-closed when no plugin is installed.
+- **compaction prompt text** (§18.1) — **CLOSED 2026-09-02** — the fixed template was deleted; compaction is delegated to a `compactor`-capability plugin (see §08b `compactor_compact`), fail-closed when no plugin is installed.
 - **custom provider model catalog disk cache** (§18.7) — interim: fetch per process, no cache.
 - **budget drift warning** (§18.8) — interim: `GET /budget` reports both figures, no warn.
 - **cache-hit reporting in `kn9t cost`** (§18.11) — interim: not surfaced.

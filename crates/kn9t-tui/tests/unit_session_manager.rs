@@ -13,7 +13,7 @@ fn entry(id: &str, name: &str) -> SessionEntry {
     }
 }
 
-/// 96E-19 — id filtering must be substring, not fuzzy: every long random id
+/// id filtering must be substring, not fuzzy: every long random id
 /// contains most letters somewhere, so fuzzy matching made the picker useless.
 #[test]
 fn session_filter_matches_id_by_substring_only() {

@@ -117,7 +117,7 @@ pub fn project(session_id: &str, ts: i64, event: &Event) -> Vec<Row> {
             estimated,
             ..
         } => {
-            // R-STOR-070 — deterministic integer cost (96E-14). Use the event's cost_micros if present,
+            // R-STOR-070 — deterministic integer cost. Use the event's cost_micros if present,
             // otherwise compute from tokens*price/1e6 via integer arithmetic.
             let computed_micros = kn9t_core::cost_micros(tokens, price_snapshot);
             let micros = if *cost_micros != 0 {

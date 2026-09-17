@@ -1,4 +1,4 @@
-//! 96E-48 / 96E-47 — the live `ToolSource` and execution-time blocking.
+//! The live `ToolSource` and execution-time blocking.
 //!
 //! Two properties the tickets turn on, both invisible from the outside if you only look at
 //! one turn:
@@ -91,7 +91,7 @@ impl Tool for Counted {
     }
 }
 
-/// A `ToolSource` a test can mutate between calls — the whole point of 96E-48 is that the
+/// A `ToolSource` a test can mutate between calls — the whole point of is that the
 /// loop observes such a change without being rebuilt. Also counts snapshots, which is how
 /// "re-read per call" is proven rather than assumed.
 struct MutableTools {
@@ -179,10 +179,10 @@ fn is_error(c: &Content) -> bool {
     matches!(c, Content::ToolResult { is_error: true, .. })
 }
 
-// ── 96E-48: the registry is live ────────────────────────────────────────────
+// ── the registry is live ────────────────────────────────────────────
 
 /// A tool added after the loop was built is dispatchable without rebuilding the loop. Before
-/// 96E-48, `ReactLoop.tools` was a clone taken once per turn, so this call would have hit
+/// `ReactLoop.tools` was a clone taken once per turn, so this call would have hit
 /// "unknown tool" until the next prompt.
 #[test]
 fn a_tool_added_after_the_loop_was_built_is_dispatchable() {
@@ -257,7 +257,7 @@ fn one_batch_dispatches_against_a_single_snapshot() {
     );
 }
 
-// ── 96E-47: blocked, but still advertised ──────────────────────────────────
+// ── blocked, but still advertised ──────────────────────────────────
 
 /// A stopped plugin's tool is refused with a message that names the recoverable cause, and
 /// `execute` is never reached. Distinct from `disabled_tools` (a session-scoped user choice)
@@ -328,7 +328,7 @@ fn blocking_one_tool_leaves_its_siblings_runnable() {
     assert_eq!(hits.load(Ordering::SeqCst), 1);
 }
 
-// ── the sub-agent filter still composes (96E-17) ────────────────────────────
+// ── the sub-agent filter still composes ────────────────────────────
 
 /// `FilteredTools` narrows a live source per snapshot, not once, so a child session keeps
 /// observing lifecycle changes for the tools it was granted — while still never seeing the

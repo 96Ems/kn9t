@@ -1,57 +1,25 @@
 //! The workspace file index (PLAN §P7 L2 / D6).
 //!
-//! One walk feeds three surfaces — the explorer tree, the file viewer and the `@` mention
-//! dropdown — because three separate listings is three things to keep consistent. The tree
-//! and the dropdown are two *views* of this list, not two sources of it.
+//! One walk feeds the explorer tree, the file viewer and the `@` dropdown, so the three cannot
+//! drift. The TUI owns it: an index needs the filesystem the TUI already sits on, and PLAN §P7
+//! draws the line — a view over host state is native, over external data a plugin.
 //!
-//! **Why the TUI owns this rather than the server.** The diff review is a plugin because it
-//! needs `git`; an index needs the filesystem the TUI is already sitting on, and the server's
-//! job is sessions and events. The dividing line is in PLAN §P7: a view over *host state* is
-//! native, a view over *external data* is a plugin.
+//! The search path is the hot path (a dropdown re-searches on every keystroke), so paths live in
+//! two contiguous buffers (`paths` plus an ASCII-lowercased `lower` mirror) with `(start, end)`
+//! ranges, scoring allocates nothing per candidate, and top-k selection is a bounded min-heap
+//! rather than a full sort per keystroke. ASCII-only lowercasing keeps the paths/lower offsets
+//! aligned; a non-ASCII path simply matches case-sensitively.
 //!
-//! # Fast, not just "not slow"
-//!
-//! A dropdown re-searches on **every keystroke**, so the search path is the hot path and the
-//! shape of the data matters more than the walk. The design follows what `fff`
-//! (<https://github.com/dmtrKovalenko/fff>) gets right — one resident index, reused for every
-//! query — with the three things a naive version gets wrong:
-//!
-//! 1. **One arena, not one `String` per file.** Paths live in two contiguous buffers
-//!    (`paths`, and an ASCII-lowercased mirror `lower`) with `(start, end)` ranges. 100k
-//!    paths cost two allocations instead of 100k, and scoring walks memory in order, which
-//!    is where the CPU-cache win comes from.
-//! 2. **No allocation per candidate, per keystroke.** The lowercase mirror is built *at index
-//!    time*. Lowercasing during the search allocated a `String` per file per keystroke —
-//!    the single biggest cost at 100k files, and invisible in a small repo.
-//! 3. **Top-k selection, not a full sort.** A bounded min-heap keeps the best `limit`
-//!    results in O(n log k) with one allocation, instead of sorting every match in
-//!    O(n log n) per keystroke.
-//!
-//! ASCII-only lowercasing is deliberate: `char::to_lowercase` can change a string's byte
-//! length, which would break the shared offsets between `paths` and `lower`. Paths are
-//! ASCII in practice; a non-ASCII path simply matches case-sensitively.
-//!
-//! **Frecency.** Every file carries a hit count and a last-used tick, so a file you open
-//! repeatedly and recently ranks above a cold one with the same match quality. That is the
-//! same idea as VS Code's recently-opened list, applied to *every* result rather than only a
-//! sidebar.
-//!
-//! **Ignore rules are a documented subset, not a `.gitignore` implementation.** Matching
-//! patterns needs a glob engine, a dependency for a feature whose whole value is a shorter,
-//! more searchable list. The subset covers what actually keeps a workspace unreadable, and
-//! `DEFAULT_SKIPS` covers the rest. Negations (`!pattern`) and globs are deliberately *not*
-//! honoured — mistaking `*.log` for a filename would skip nothing, and mistaking `src/gen`
-//! for a name would skip the wrong thing.
+//! Frecency (hit count + last-used tick) ranks a familiar file above a cold equal match. Ignore
+//! rules are a documented subset, not a `.gitignore` implementation — negations and globs are not
+//! honoured, and `DEFAULT_SKIPS` covers the rest.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::path::{Path, PathBuf};
 
-/// Directory names never worth indexing, whatever `.gitignore` says.
-///
-/// A workspace with no `.gitignore` (or one that forgets `target/`) would otherwise index
-/// tens of thousands of build artifacts, which makes both the tree and the dropdown useless
-/// exactly when they are needed most.
+/// Directory names never worth indexing, even without a `.gitignore` — otherwise build
+/// artifacts flood the tree and dropdown.
 pub const DEFAULT_SKIPS: &[&str] = &[
     ".git",
     "target",
@@ -65,10 +33,8 @@ pub const DEFAULT_SKIPS: &[&str] = &[
     "build",
 ];
 
-/// How many files a walk will index before giving up.
-///
-/// A guard against a symlink loop or a pathological tree turning a keystroke into a hang.
-/// Hitting it is reported ([`FileIndex::truncated`]), never silently ignored.
+/// Walk ceiling, guarding against a symlink loop or pathological tree turning a keystroke into
+/// a hang; hitting it is reported via [`FileIndex::truncated`], never silently ignored.
 pub const MAX_INDEXED: usize = 200_000;
 
 /// Score added per recorded access, and per recent access. Small enough that match quality
@@ -79,9 +45,7 @@ const RECENCY_WEIGHT: i64 = 10;
 /// How many ticks back a use still counts as "recent".
 const RECENCY_WINDOW: u32 = 200;
 
-/// The workspace file list, relative to a root.
-///
-/// See the module docs for why it is an arena rather than a `Vec<String>`.
+/// The workspace file list, relative to a root; an arena rather than `Vec<String>` (see module docs).
 #[derive(Debug, Default, Clone)]
 pub struct FileIndex {
     root: Option<PathBuf>,
@@ -133,11 +97,8 @@ impl FileIndex {
         (0..self.ranges.len()).filter_map(|i| self.path_at(i))
     }
 
-    /// Build from an explicit list of relative paths, instead of a walk.
-    ///
-    /// For callers that already hold the list — a test, or a future picker over a
-    /// `git ls-files` result — and for the tests of anything that consumes an index, so
-    /// they do not have to duplicate the arena layout to make a fixture.
+    /// Build from an explicit relative-path list instead of a walk (a test, or a
+    /// `git ls-files` picker).
     pub fn from_paths<I: IntoIterator<Item = String>>(paths: I) -> Self {
         let mut idx = Self::default();
         let mut sorted: Vec<String> = paths.into_iter().collect();
@@ -146,11 +107,8 @@ impl FileIndex {
         idx
     }
 
-    /// Like [`from_paths`](Self::from_paths), but for a named root.
-    ///
-    /// A consumer that compares the index root (the explorer resets its expansion set when the
-    /// workspace changes) needs the root set, and a test should not have to walk a filesystem
-    /// to get one.
+    /// Like [`from_paths`](Self::from_paths) but with a root set, for consumers that compare it
+    /// (the explorer resets its expansion set when the workspace changes).
     pub fn from_paths_at<P: Into<PathBuf>, I: IntoIterator<Item = String>>(
         root: P,
         paths: I,
@@ -189,11 +147,8 @@ impl FileIndex {
         debug_assert_eq!(self.paths.len(), self.lower.len());
     }
 
-    /// Rebuild for `root`, unless the index is already for that root.
-    ///
-    /// Returns true when a walk actually happened. Re-indexing per frame would make the
-    /// TUI's cost scale with the repository, which is the thing the render cache exists to
-    /// avoid.
+    /// Rebuild for `root` unless the index already covers it; returns true when a walk happened.
+    /// Re-indexing per frame would scale cost with the repository.
     pub fn refresh(&mut self, root: &Path) -> bool {
         if self.root.as_deref() == Some(root) && !self.ranges.is_empty() {
             return false;
@@ -202,10 +157,8 @@ impl FileIndex {
         true
     }
 
-    /// Walk `root` unconditionally.
-    ///
-    /// Frecency survives a rebuild for paths that still exist: a file you open often is still
-    /// the file you open often, and losing that on a refresh would make the ranking flicker.
+    /// Walk `root` unconditionally, carrying frecency forward for paths that still exist
+    /// (losing it would make the ranking flicker).
     pub fn rebuild(&mut self, root: &Path) {
         let mut collected: Vec<String> = Vec::new();
         let mut truncated = false;
@@ -278,11 +231,8 @@ impl FileIndex {
         self.last_used[i] = self.tick;
     }
 
-    /// Files under `dir` (a `/`-separated relative directory, empty for the root), one level.
-    ///
-    /// Derived from the file list rather than a second `read_dir`, so the tree cannot
-    /// disagree with the dropdown about what exists — and so an empty directory is simply
-    /// absent, which is what a file *tree* wants.
+    /// One level under `dir` (empty string = root), derived from the file list so the tree
+    /// cannot disagree with the dropdown; an empty directory is simply absent.
     pub fn children(&self, dir: &str) -> Vec<TreeEntry> {
         let prefix = if dir.is_empty() {
             String::new()
@@ -320,12 +270,9 @@ impl FileIndex {
         seen
     }
 
-    /// Best matches for a fuzzy `query`, best first.
-    ///
-    /// An empty query returns the most frecency-ranked files, so a bare `@` offers what you
-    /// actually work on rather than an arbitrary alphabetical head. A non-empty query
-    /// requires a subsequence match (so `ktsrc` finds `crates/kn9t-tui/src`) and ranks by
-    /// where the match landed.
+    /// Best fuzzy matches for `query`, best first. An empty query returns the most
+    /// frecency-ranked files, so a bare `@` offers what you work on rather than an alphabetical
+    /// head; otherwise the path must contain the query as a subsequence.
     pub fn search(&self, query: &str, limit: usize) -> Vec<String> {
         if limit == 0 || self.ranges.is_empty() {
             return Vec::new();
@@ -348,8 +295,8 @@ impl FileIndex {
                 .collect();
         }
 
-        // Bounded min-heap: O(n log k), no per-candidate allocation, and only one `Vec` of
-        // size `limit` at the end. A full `sort` here was O(n log n) per keystroke.
+        // Bounded min-heap: O(n log k), no per-candidate allocation (a full sort was O(n log n)
+        // per keystroke).
         let mut best: BinaryHeap<Reverse<(i64, usize)>> = BinaryHeap::with_capacity(limit + 1);
         for i in 0..self.ranges.len() {
             let (s, e) = self.ranges[i];
@@ -400,12 +347,9 @@ pub struct TreeEntry {
     pub is_dir: bool,
 }
 
-/// Candidate ordering: best score first, and for equal scores the *earlier* path.
-///
-/// The tie-break is load-bearing. Comparing the index descending (the obvious
-/// `b.cmp(a)` over `(score, index)`) reverses path order for equal scores, so the
-/// dropdown's list flipped between keystrokes as scores tied and untied. Sorted-path order
-/// is stable, which is what makes a list feel like it is converging rather than churning.
+/// Best score first; for equal scores the *earlier* path. The tie-break is load-bearing — the
+/// obvious descending index compare reverses path order for ties, so the dropdown churned between
+/// keystrokes as scores tied and untied.
 fn better(a: &(i64, usize), b: &(i64, usize)) -> std::cmp::Ordering {
     b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1))
 }
@@ -417,13 +361,9 @@ fn is_subsequence(hay: &str, needle: &str) -> bool {
     needle.bytes().all(|n| chars.any(|h| h == n))
 }
 
-/// Score an already-lowercased path against an already-lowercased needle.
-///
-/// The needle is known to be a subsequence, so this only decides *how good* the match is.
-/// Two properties do most of the work: a **contiguous run** in the basename beats scattered
-/// hits (that is what typing a word means), and **unmatched gaps** cost. Without the run
-/// term, `module1999` scored below `module199` purely because the latter's path is shorter —
-/// the wrong answer to "I typed the number".
+/// Score an already-lowercased path against a subsequence needle: a contiguous run in the
+/// basename beats scattered hits and unmatched gaps cost, so typing a longer number ranks its
+/// file above a shorter prefix that happens to have a shorter path.
 fn score(hay: &str, needle: &str) -> i64 {
     let base_start = hay.rfind('/').map(|i| i + 1).unwrap_or(0);
     let base = &hay[base_start..];
@@ -664,12 +604,8 @@ mod tests {
         assert_eq!(hits.len(), 10, "the limit is honoured");
     }
 
-    /// A gross-regression guard, not a benchmark.
-    ///
-    /// The design (arena, precomputed lowercase, top-k heap) is what makes this fast; a
-    /// timing bound only catches the catastrophic case — re-walking the filesystem or
-    /// re-lowercasing the index per keystroke, both of which are seconds at this size. The
-    /// bound is deliberately loose so it does not flake on a loaded machine.
+    /// A gross-regression guard, not a benchmark: the bound is deliberately loose and only
+    /// catches the catastrophic case (re-walking or re-lowercasing per keystroke).
     #[test]
     fn searching_a_large_index_stays_interactive() {
         let idx = big_index(50_000);
@@ -687,9 +623,8 @@ mod tests {
 
     #[test]
     fn a_walk_indexes_files_and_respects_the_built_in_skips() {
-        // A dedicated parent, so the "different root walks again" assertion below cannot
-        // accidentally walk all of `%TEMP%` (which is what `temp_dir().parent()` is, and it
-        // made this test take eight seconds).
+        // A dedicated parent, so the "new root walks" assertion cannot accidentally walk all of
+        // `%TEMP%` (it made this test take eight seconds).
         let parent = std::env::temp_dir().join(format!("kn9t-index-{}", std::process::id()));
         let root = parent.join("w");
         let _ = std::fs::remove_dir_all(&parent);
@@ -712,8 +647,7 @@ mod tests {
             "build artifacts must not be indexed"
         );
         assert!(!idx.truncated());
-        // Paths use `/` regardless of platform, because they are keys for Lua and for
-        // `@` mentions, and a `\` there is an escape character in half the places.
+        // Paths use `/` on every platform — they are keys for Lua and `@` mentions, where `\` escapes.
         assert!(idx.paths().all(|f| !f.contains('\\')));
 
         // Frecency survives a rebuild.

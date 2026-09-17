@@ -56,7 +56,7 @@ impl Tool for RemoteTool {
         let payload = serde_json::json!({
             "tool": self.spec.name,
             "args": args,
-            // 96E-17: the calling session — plugin tools that spawn sessions
+            // the calling session — plugin tools that spawn sessions
             // (fork/prompt) need it. Set by the server per turn via TLS.
             "session": self.host.session_id(),
             // The session's working directory, as the ReAct loop resolved it.
@@ -78,7 +78,7 @@ impl Tool for RemoteTool {
 
         // Tool calls can be long-running (bash has 120s default, but builds can take longer).
         // Use 5 minutes as the host timeout; the tool's internal timeout takes precedence.
-        // Cancellable: polls `Cancel` every 10ms and sends `HostMsg::Cancel` on fire (`docs/internal/job/instant-cut.md`).
+        // Cancellable: polls `Cancel` every 10ms and sends `HostMsg::Cancel` on fire (`docs/dev/job/instant-cut.md`).
         let result = self.host.call_raw_hook_str_streaming_cancellable(
             "tool_call",
             payload,

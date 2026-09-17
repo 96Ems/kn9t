@@ -1,4 +1,4 @@
-//! Dynamic panel registry — 96E-43.
+//! Dynamic panel registry.
 //!
 //! Panels are no longer a closed set known at compile time.
 //! Lua can register panels at runtime via `register_panel(id, spec)`.

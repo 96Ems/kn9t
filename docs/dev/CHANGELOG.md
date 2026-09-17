@@ -9,6 +9,135 @@ pointer current.
 
 ---
 
+## Session — 2026-09-17d — Release prep: repo hygiene, doc truth, and a contract guard
+
+**Next session starts here:** the rename pass for ticket-named test identifiers, then P7-L2's `d`
+diff action / L3 / L4. Everything else in this session is finished and verified.
+
+### Repo hygiene
+
+Deleted tracked junk that had accumulated: `ANALYSIS_INDEX.md` and `ANALYSIS_SUMMARY.txt` (they
+indexed a dozen report files that do not exist, and were machine-generated noise),
+`package.json` + `package-lock.json` at the root (tailwind/postcss, referenced nowhere), and
+`crates/clippy_warnings.txt` (a captured console dump committed by accident). The three
+multi-hundred-megabyte logs sitting in the tree were ignored by git but moved out of the working
+copy. `git ls-files` is now free of build logs, editor droppings and orphan artifacts.
+
+`docs/internal/` became `docs/dev/`, and `PLAN.md`, `TRACKING.md` and `CHANGELOG.md` moved in with
+it — the repo root is now a reader's root: `README.md`, `AGENTS.md`, `DESIGN.md`, `CONTEXT.md`,
+`LICENSE`, `API.md`, the manifest, and the docs trees. Every reference was rewritten, including
+eight doc-comment paths in `crates/**`; all markdown links in the repository resolve.
+
+### Docs that described code which no longer exists
+
+- `CONTEXT.md` still defined `policy` as a `Policy` trait with `ConfigPolicy`/`InteractivePolicy`
+  impls, and `effect` as "proposed". ADR-0008 deleted all of that. Both entries now describe the
+  plugin/hook reality, and the stale `classifier` mention in the replay-fixture entry is gone.
+- `DESIGN.md §10` was the pre-ADR-0008 design presented as current: `Policy::check`,
+  `dispatch_effects`, `eval_effect`, a `[policy.bash]` rules table, a classifier in
+  `classify.rs`. §10 and §10.1 are rewritten against the code (`HookVeto`, strictest-wins
+  composition, the approval *mechanism* the server still owns) and §10.1 now records why the
+  classifier was deleted instead of pretending it exists. `§14` no longer lists `[policy.bash]`
+  as a privileged key.
+- `ADR-0002` was still "Accepted"; its "server decides risk" half was superseded when ADR-0008
+  deleted the effect→risk mapping. It is now marked partially superseded (0001 and 0006 were
+  already marked).
+- `docs/ARCHITECTURE.md` claimed measurements from 2026-09-03 — headline crate sizes, per-file
+  line counts, route count and test totals were all stale, and §11.1 documented the removed typed
+  placeholder API (`text|number|bar|list`) instead of the Lua mechanism that replaced it.
+  Re-measured 2026-09-17 and marked as such.
+- Finding F5 claimed `CHANGELOG.md` contained ~25 mangled sequences and that the mojibake guard
+  could not see them. Re-measured: the file is valid UTF-8, and the guard scans the whole tree, so
+  F5 is marked FIXED with the evidence.
+- Schema descriptions no longer cite ADR numbers or internal ticket ids. A wire contract that says
+  "96E-52: session this one was forked from" tells a third-party plugin author nothing.
+
+### The contract gap: the schema had drifted from the code, and nothing could see it
+
+This is the important one. `API.md` documented **10 of 19** host-API ops, and `GET /policy` and
+`POST /plugin/{name}/ui_event` were absent from the HTTP reference entirely.
+
+The cause is structural, not an oversight. `scripts/check-schema.sh` proves exactly one direction —
+schema → generated files — so a primitive added straight to a `match` arm leaves the generated
+documentation silently incomplete while every gate stays green. `xtask --check` reported "no drift"
+and was right: `API.md` faithfully rendered an incomplete schema. Nine ops had been added to
+`host_api.rs` across three commits without ever reaching `schema/plugin.json`.
+
+Two changes make that class of drift impossible instead of unlikely:
+
+- **The schema declares the primitives as data.** `plugin_to_host.Request.properties.op` is now a
+  JSON-Schema `enum` (all 20 op names, including the `ui_push` alias) instead of prose, so the
+  existing markdown generator renders it into `API.md` rather than trusting a hand-written list.
+  The two missing routes were added with real request/response shapes.
+- **`scripts/check-contract.sh` checks the reverse direction.** For three surfaces with a code
+  counterpart — host-API ops (`host_api.rs`), routes (`router.rs`, including the inline SSE paths),
+  and hooks (`HookVeto`/`tool_call`) — it asserts that the schema and the code agree *both ways*:
+  a primitive in the code but not the schema is undocumented; one in the schema but not the code is
+  a lie. It parses, it does not build, so it is cheap. It runs in a new `.githooks/pre-push` (the
+  handbook rule "update the schema when you add an op" was never enforcement) and in
+  `scripts/check-ci.sh`.
+
+Generated code now comes *only* from the schema: `routes/plugin.rs` re-declared `UiEventReq` by
+hand; it now consumes the generated `api::UiEventReq`, and `req_name_for_path` knows the route so
+the generator fails loudly rather than emitting nothing.
+
+The guard immediately earned its keep by catching a mojibake sequence that this session's own F5
+rewrite had embedded in `docs/ARCHITECTURE.md` — the document quoted the corrupted glyphs instead
+of describing them as codepoints, which is precisely the trap the original text had avoided.
+
+### Comments and ticket references
+
+Internal Linear ticket ids are gone from the code. They are noise to an outside reader: a comment
+reading `// (96E-28) generic interaction` documents nothing about the code. Requirement ids
+(`R-TOOL-080`), ADR ids and `file:line` citations stay — those are load-bearing. Comment length was
+trimmed throughout: the target is at most two lines, one when possible, and never a comment that
+merely restates the next line. Net effect in `crates/**` + `plugins/**`: **−771 comment lines**.
+
+The ticket ids also came out of test **identifiers**, which are code: 37 functions renamed
+(`p1_96e15_no_mojibake` → `no_mojibake`), six test files renamed (`p1_96e28_interaction.rs` →
+`interaction.rs`), and `migrate_96e14` → `migrate_money_to_integer_micros` in the store. Two spec
+lines that named those tests were updated with them. The tickets stay in `docs/dev/` — that is the
+development journal, and rewriting its history would be falsifying it.
+
+### The plugin skill was a third hand-written copy of the contract
+
+`docs/PLUGIN_DEVELOPMENT.md` (851 lines) and `.agents/skills/kn9t-plugin-creation/SKILL.md`
+(949 lines) both restated the wire protocol, the hook table and the host-API op list, in parallel
+with the generated `API.md`. Three hand-maintained copies, and **two had already drifted**: the
+guide listed 9 of 20 ops, the skill 5 of 20. Nothing linked the guide — it was an orphan.
+
+The skill is now derived, which is the only form that cannot rot:
+
+- `xtask` gained `gen_skill.rs`. It writes `references/api.md` (the same bytes as `API.md`) and
+  `references/sdk/` (a byte-for-byte copy of `crates/kn9t-plugin-sdk`: `Cargo.toml` + `src/**`), so
+  an agent without the repo still has the exact API.
+- `xtask --check` covers them, so editing the SDK without regenerating the skill is a red gate.
+  Proven both ways: a probe appended to the copied `lib.rs` was caught, and `generate` removed it.
+- `SKILL.md` lost its duplicated protocol and hook tables (`## The wire contract` now points at the
+  generated references) and its factual error (`kn9t-mcp` was listed as TypeScript; it is Python).
+  `references/SCHEMA-LOCATIONS.md` was deleted — a hand-written file inside a generated directory.
+- `check_contract.py` gained a fourth surface: every op the schema declares must be named in
+  `docs/PLUGIN_DEVELOPMENT.md`. The check compares sets, not substrings — `session_createX` must not
+  satisfy `session_create`.
+
+The human guide stays as the draft for the planned landing page; it is no longer a competing source
+of truth for the wire contract.
+
+### Discovered
+
+| # | what | status |
+|---|---|---|
+| 1 | Host-API ops and two routes were absent from `schema/*.json`, so `API.md` was incomplete for plugin authors while every gate passed | **fixed** — ops are an enum, routes added, `check-contract.sh` guards both directions |
+| 2 | The plugin skill and the human guide were hand-written copies of the generated contract; two of three had drifted (5/20 and 9/20 ops) | **fixed** — skill references are generated and checked; the guide is checked by contract |
+| 3 | `scripts/check-sse-race.sh` ran `cargo test --lib <name>`, but the test lives in `tests/unit_sse.rs` — an integration target. It could never find it, so the guard failed closed for the wrong reason and CI was red | **fixed** — `--test unit_sse`; the guard now reports the test passing |
+| 4 | `srv::approve_session_caches` fails (`acceptance.rs:3258`): the third leg never sees the `ApprovalRequest` it expects. The test's provider is stateful on a shared counter, and the approval path resolves its session through a thread-local sink | open — **pre-existing**: reproduces identically at `25beb7b` (verified in a detached worktree), so it is not from this session |
+| 5 | `api.rs` claims "the server implementation never duplicates these shapes", but `routes/plugin.rs` still re-declares `LoadPluginReq` instead of using the generated `api::PluginLoadReq` | open |
+| 6 | `ToolSpec.effects` is declared by every tool and crosses the plugin wire, but nothing server-side reads it — ADR-0008 deleted the effect→risk mapping and left the field behind | open |
+| 7 | `.kn9t/tui.lua.example` still advertises pre-Lua "phases" as "AVAILABLE NOW", and nothing in the repo references it | open — decide: refresh or delete |
+| 8 | 10 `variable does not need to be mutable` warnings in `kn9t-server` test "acceptance"; CI builds with `-D warnings`, so CI is red on this alone | open |
+
+---
+
 ## Session -- 2026-09-17c -- Titling, and the explorer/viewer ergonomics
 
 **Next session starts here:** unchanged — P7-L2 is code-complete except the explorer's `d`

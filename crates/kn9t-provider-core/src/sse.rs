@@ -7,7 +7,7 @@ use std::io::{self, BufRead, BufReader, Read};
 /// Returns an iterator over complete SSE event payloads (the `data: ...` part),
 /// correctly reassembled across chunk boundaries.
 ///
-/// 96E-40: When `cancel` is `Some`, checks `cancel.cancelled()` at each parsed
+/// When `cancel` is `Some`, checks `cancel.cancelled` at each parsed
 /// event, not just at read() boundaries. This ensures cancel takes effect even
 /// when BufReader has buffered multiple events from a single underlying read().
 pub fn sse_lines(

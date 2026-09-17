@@ -1,4 +1,4 @@
-//! Plugin lifecycle as tools the agent can call itself (96E-49).
+//! Plugin lifecycle as tools the agent can call itself.
 //!
 //! # Why this is a plugin and not five server tools
 //!

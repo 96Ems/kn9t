@@ -135,7 +135,7 @@ pub trait PluginKv: Send + Sync {
     fn kv_del_scope(&self, plugin: &str, scope: &str) -> Result<(), StoreErr>;
 }
 
-// -- 96E-16: pluggable compaction --
+// -- pluggable compaction
 
 /// Handoff plan: which calls to keep/summarize/drop and resume actions.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

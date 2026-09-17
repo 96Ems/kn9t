@@ -39,7 +39,7 @@ fn with_seq(e: &Event, seq: u64) -> Event {
 }
 
 #[test]
-fn p1_96e7_attach_does_not_lose_interleaved_event() {
+fn attach_does_not_lose_interleaved_event() {
     // Deterministic race: subscribe first, then while read_durable_since is
     // sleeping between its two queries, a new durable event is committed and
     // published to the bus. With the buggy two-query implementation that event
@@ -117,7 +117,7 @@ fn p1_96e7_attach_does_not_lose_interleaved_event() {
 }
 
 #[test]
-fn p1_96e7_no_duplicate_when_no_interleaving() {
+fn no_duplicate_when_no_interleaving() {
     // Without interleaving, still no gap/no dup
     std::env::remove_var("KN9T_SSE_TEST_DELAY_MS");
     let (store, _tmp) = temp_store();

@@ -1,4 +1,4 @@
-//! Declarative widget tree — 96E-43.
+//! Declarative widget tree.
 //!
 //! Lua builds a tree of typed widget tables. Rust renders them via ratatui.
 //! Lua never emits spans/glyphs directly — it configures widget *properties*.

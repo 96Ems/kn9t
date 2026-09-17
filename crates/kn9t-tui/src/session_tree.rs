@@ -1,7 +1,7 @@
-//! Session parentage as a tree (96E-53).
+//! Session parentage as a tree.
 //!
 //! Pure data: no client, no ratatui, no `App`. Both consumers of the shape — the
-//! enriched sidebar and the `/tree` overlay (96E-54) — call [`build_forest`] and
+//! enriched sidebar and the `/tree` overlay — call [`build_forest`] and
 //! render the same [`Forest`], so there is exactly one place where "who is whose
 //! child" is decided.
 //!
@@ -156,7 +156,7 @@ pub fn reason_badge(reason: Option<&str>) -> &'static str {
 /// The picker's row order: indices into the **full** session list, arranged so a branch
 /// follows the session it came from, with its depth for indentation.
 ///
-/// 96E-19 is the reason this is one function rather than two loops: the renderer and the
+/// is the reason this is one function rather than two loops: the renderer and the
 /// key handler MUST agree on the order, or `selected` highlights one row and Enter opens
 /// another. Both call this.
 ///
@@ -178,7 +178,7 @@ pub fn picker_order(entries: &[SessionEntry], filter: &str) -> Vec<(usize, usize
 }
 
 /// What `/fork` or `/undo` resolves to: the fork reason, the seq to branch at, and the note
-/// to show. 96E-55.
+/// to show..
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForkPlan {
     /// `"fork"` or `"rewind"` — the `reason` sent to `POST /session/{id}/fork`.

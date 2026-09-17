@@ -1,10 +1,7 @@
 //! Application state and main loop.
 //!
-//! Managers are composed as fields:
-//! - `session`    → SessionManager  (session list, id, title, lease, SSE handle, last_seq)
-//! - `model_sel`  → ModelSelector   (model list, selected index)
-//! - `tokens`     → TokenTracker    (cumulative + per-turn token counts, cost, throughput)
-//! - `transcript` → Transcript      (messages, live_delta, scroll)
+//! Managers are composed as fields: `session` (SessionManager), `model_sel` (ModelSelector),
+//! `tokens` (TokenTracker), `transcript` (Transcript).
 
 use std::io;
 use std::sync::mpsc::Sender;
@@ -55,7 +52,7 @@ pub enum Overlay {
         args: String,
         selected: usize,
     },
-    /// 96E-28 generic interaction — payload is plugin's opaque shape, rendered generically.
+    /// generic interaction — payload is plugin's opaque shape, rendered generically.
     Interaction {
         id: u64,
         plugin: String,
@@ -77,7 +74,7 @@ pub enum Overlay {
         selected: usize,
         filter: String,
     },
-    /// 96E-54 — the session tree, drawn from the same `build_forest` the sidebar uses.
+    /// the session tree, drawn from the same `build_forest` the sidebar uses.
     /// `selected` indexes the flattened (depth-first) node list, not `sessions`, so
     /// moving down the view follows what is on screen rather than list order.
     SessionTree {
@@ -204,12 +201,9 @@ impl InteractionState {
                 header,
                 selected: obj.get("default").and_then(|v| v.as_bool()).unwrap_or(true),
             },
-            // Unknown `type`. Note there is no `choices` handling here: the
-            // legacy `{question, choices}` shape is normalized into
-            // `{type:"choice", options}` by the plugin itself
-            // (kn9t-ask-user executeLegacy), so it never reaches the TUI.
-            // Keeping a second decoder here would be the old/new format
-            // duplication AGENTS.md 10 forbids.
+            // Unknown `type`: the plugin (kn9t-ask-user) normalizes the legacy
+            // `{question, choices}` shape, so a second decoder here would be the duplication
+            // AGENTS.md §10 forbids.
             _ => {
                 if !question.is_empty() {
                     Self::Text {
@@ -314,7 +308,7 @@ pub enum Screen {
     Chat,
 }
 
-/// 96E-45: A prompt queued for later sending (during plugins loading or streaming).
+/// A prompt queued for later sending (during plugins loading or streaming).
 #[derive(Debug, Clone)]
 pub struct QueuedPrompt {
     pub text: String,
@@ -325,11 +319,8 @@ pub struct QueuedPrompt {
 #[derive(Debug, Clone)]
 pub struct ToolHitArea {
     pub call_id: String,
-    /// The call ids this area owns when it is a turn's group header, empty otherwise.
-    ///
-    /// One struct for both because a click resolves the same way — find the area under
-    /// the cursor, act on the ids it names — and a header is just an area that names
-    /// several calls instead of one (PLAN §P7 D11).
+    /// Call ids this area owns when it is a turn's group header, empty otherwise. A click
+    /// resolves both the same way, and a header is just an area naming several calls (PLAN §P7 D11).
     pub group_calls: Vec<String>,
     pub header_y: u16,              // Y position of header line
     pub content_y_start: u16,       // Y start of content area (tabs + output/input)
@@ -441,12 +432,12 @@ pub struct App {
     // Pending images (base64-encoded, to be sent with next prompt).
     pub staged_images: Vec<String>,
 
-    // 96E-45: Steering buffer — injected into the current/next turn.
+    // Steering buffer — injected into the current/next turn.
     // When streaming: added as steer messages to the current turn.
     // When plugins loading: sent as first message(s) when ready.
     pub steering: Vec<QueuedPrompt>,
 
-    // 96E-45: Queue buffer — sent sequentially, one per turn.
+    // Queue buffer — sent sequentially, one per turn.
     // Each message triggers a new turn after the previous one completes.
     pub queue: std::collections::VecDeque<QueuedPrompt>,
 
@@ -459,7 +450,7 @@ pub struct App {
     pub phrase_idx: usize,
     pub overlay: Option<Overlay>,
     pub active_approval_id: Option<u64>,
-    /// 96E-28: active generic interaction id (if any) — analogous to approval but opaque.
+    /// active generic interaction id (if any) — analogous to approval but opaque.
     pub active_interaction_id: Option<u64>,
     pub slash: SlashState,
     pub quit: bool,
@@ -485,9 +476,9 @@ pub struct App {
     // Command palette state.
     pub command_palette: crate::command_palette::CommandPalette,
 
-    // 96E-23: structured UI directives (session-scoped, transport only until 96E-25).
+    // Structured UI directives (session-scoped, transport only).
     pub ui_directives: Vec<(String, String, String, serde_json::Value)>,
-    // 96E-27: collapsible subagent sub-entries
+    // collapsible subagent sub-entries
     pub subagents: Vec<crate::reducer::SubagentEntry>,
     pub attached_subagent: Option<(String, Vec<crate::wire::TranscriptMessage>)>,
 
@@ -496,39 +487,25 @@ pub struct App {
     tick_ctl: TickControl,
     term_width: u16,
 
-    /// Rect of the transcript as actually drawn last frame.
-    ///
-    /// Recorded during render (like `scrollbar_area`) so hit-testing follows the
-    /// real geometry — including when a Lua `render_ui()` places it anywhere.
+    /// Transcript rect as actually drawn last frame, so hit-testing follows the real geometry
+    /// even when Lua places it.
     pub transcript_area: Option<ratatui::layout::Rect>,
-    /// Width of the input region as actually drawn last frame.
-    ///
-    /// Feeds `input_height_for`, closing the loop between what Lua laid out and
-    /// the row count Rust publishes back as `ctx.input_height`.
+    /// Input width as drawn last frame; feeds `input_height_for`, keeping the published
+    /// `ctx.input_height` in step with the layout.
     pub input_width: Option<u16>,
-    /// `(id, rect)` for every `id="..."` widget in last frame's `render_ui()`
-    /// tree, in the same paint order as `collect_clickable_areas` walks the
-    /// tree (base layout, not floating panels — those are recorded separately
-    /// in `lua_panel_areas` since they paint on top and must be hit-tested
-    /// first).
+    /// `(id, rect)` for every `id="..."` widget in last frame's `render_ui()`, in paint order.
+    /// Floats are recorded separately (below) and hit-tested first.
     pub lua_click_areas: Vec<(String, ratatui::layout::Rect)>,
-    /// Same as `lua_click_areas` but for `kn9t.register_panel` floats, which
-    /// render after (on top of) the base tree and so must be checked first.
+    /// As `lua_click_areas`, for `kn9t.register_panel` floats: they paint on top, so they
+    /// hit-test first.
     pub lua_panel_click_areas: Vec<(String, ratatui::layout::Rect)>,
-    /// `(plugin, id, rect)` for every `id="..."` widget inside a plugin view's
-    /// own subtree, recorded per frame by `render_plugin_views`.
-    ///
-    /// Separate from `lua_click_areas` because dispatch has to know which
-    /// plugin owns the id: the registries are keyed by `(plugin, id)` so two
-    /// plugins may legitimately use the same id.
+    /// `(plugin, id, rect)` for widgets inside a plugin view, recorded by `render_plugin_views`.
+    /// Separate from `lua_click_areas` because registries are keyed by `(plugin, id)`.
     pub plugin_click_areas: Vec<(String, String, ratatui::layout::Rect)>,
-    /// `(plugin, rect)` for each plugin view drawn last frame. Clicking inside
-    /// one focuses it, which is what routes subsequent keys there.
+    /// `(plugin, rect)` for each plugin view drawn last frame; clicking inside focuses it.
     pub plugin_view_areas: Vec<(String, ratatui::layout::Rect)>,
-    /// Which plugin view currently receives keys, if any.
-    ///
-    /// Focus is required for key routing so a plugin cannot swallow global
-    /// keys while its panel merely happens to be visible.
+    /// Plugin view currently receiving keys. Focus is required so a plugin cannot swallow
+    /// global keys just by being visible.
     pub focused_plugin: Option<String>,
 
     /// Lua key handlers, refreshed on every config (re)load.
@@ -541,7 +518,7 @@ pub struct App {
     // Render cache for transcript (avoids re-parsing markdown on every frame).
     pub render_cache: crate::render_cache::RenderCache,
 
-    // 96E-41: Lua customization runtime (optional, initialized if config file exists).
+    // Lua customization runtime (optional, initialized if config file exists).
     pub lua_runtime: Option<std::sync::Arc<crate::lua::LuaRuntime>>,
     // Watcher handle kept alive to continue hot-reload.
     #[allow(dead_code)]
@@ -551,9 +528,9 @@ pub struct App {
     #[allow(dead_code)]
     lua_dir_watcher: Option<crate::lua::WatcherHandle>,
 
-    // 96E-43: Dynamic panel registry for Lua-registered panels.
+    // Dynamic panel registry for Lua-registered panels.
     pub lua_panels: crate::lua::panels::PanelRegistry,
-    // 96E-43: Input states for Lua Input widgets (id -> current value).
+    // Input states for Lua Input widgets (id -> current value).
     pub lua_input_states: std::collections::HashMap<String, String>,
 
     /// True when server plugins are fully loaded. While false, session creation
@@ -681,7 +658,7 @@ impl App {
             runtime.load_dir(dir);
         }
 
-        // 96E-43: Process any panels registered during load
+        // Process any panels registered during load
         runtime.process_panels(&mut self.lua_panels);
 
         // Apply keymaps declared at load time.
@@ -708,7 +685,7 @@ impl App {
         crate::log!("Lua: runtime initialized");
     }
 
-    /// 96E-43: Process Lua panel updates (called on each frame or event).
+    /// Process Lua panel updates (called on each frame or event).
     pub fn process_lua_panels(&mut self) {
         if let Some(ref runtime) = self.lua_runtime {
             let before = self.lua_panels.len();
@@ -761,11 +738,8 @@ impl App {
         self.lua_runtime.as_ref().and_then(|rt| rt.last_error())
     }
 
-    /// Connect to server and load session list + models for welcome screen.
-    ///
-    /// Non-blocking: if plugins are still loading, we set `plugins_ready = false`
-    /// and let the main loop poll for readiness. The welcome screen is displayed
-    /// immediately with a loading indicator.
+    /// Connect and load the session list + models for the welcome screen. Non-blocking: if
+    /// plugins are still loading, `plugins_ready = false` and the main loop polls.
     pub fn connect(&mut self) -> Result<(), ClientError> {
         let client = Client::new(&self.config.base_url, self.config.token.as_deref());
 
@@ -812,14 +786,14 @@ impl App {
             }
             crate::log!("plugins ready, refreshed tools");
 
-            // 96E-45: Process any steering/queue that was waiting for plugins.
+            // Process any steering/queue that was waiting for plugins.
             self.process_pending_on_ready(tx);
             return true; // State changed, force redraw
         }
         false
     }
 
-    /// 96E-45: Process steering and queue buffers when plugins become ready.
+    /// Process steering and queue buffers when plugins become ready.
     /// Sends all steering as a single fused message, then triggers the first queue item.
     fn process_pending_on_ready(&mut self, tx: &Sender<Event>) {
         // Nothing to do if both buffers are empty.
@@ -914,7 +888,7 @@ impl App {
         self.active_approval_id = None;
         self.active_interaction_id = None;
 
-        // 96E-45: Clear steering and queue (don't carry over to new session).
+        // Clear steering and queue (don't carry over to new session).
         self.steering.clear();
         self.queue.clear();
         self.ui_directives.clear();
@@ -964,11 +938,8 @@ impl App {
         }
     }
 
-    /// Expand or collapse every card of a turn at once (PLAN §P7 D11).
-    ///
-    /// The group is a convenience over the cards, not a separate state: whether it reads
-    /// as open is derived from the cards it owns, so a single card collapsed by hand
-    /// cannot leave the header claiming the turn is open.
+    /// Expand or collapse every card of a turn at once (PLAN §P7 D11). Openness is derived
+    /// from the owned cards, so collapsing one by hand cannot leave the header claiming otherwise.
     pub fn toggle_tool_group(&mut self, calls: &[String]) {
         let any_open = calls.iter().any(|id| {
             self.transcript
@@ -990,14 +961,14 @@ impl App {
         }
     }
 
-    /// 96E-27: toggle collapse for a subagent sub-entry.
+    /// toggle collapse for a subagent sub-entry.
     pub fn toggle_subagent(&mut self, call_id: &str) {
         if let Some(entry) = self.subagents.iter_mut().find(|e| e.call_id == call_id) {
             entry.collapsed = !entry.collapsed;
         }
     }
 
-    /// 96E-27: attach — fetch subagent's full transcript via session_read (host_api).
+    /// attach — fetch subagent's full transcript via session_read (host_api).
     pub fn attach_subagent(&mut self, call_id: &str) {
         // If already attached to this one, detach.
         if self
@@ -1119,13 +1090,8 @@ impl App {
         self.focused_tool = None;
     }
 
-    /// Enter a session (from welcome screen or session list).
-    /// Switch to an existing session by id.
-    ///
-    /// Shared by `Overlay::SessionSelect`'s Enter key and `Action::SwitchSession`
-    /// (from `kn9t.action("switch_session", id)`) so a Lua-driven session list
-    /// switches exactly the way the built-in overlay does, not a parallel path
-    /// that could drift from it.
+    /// Switch to an existing session by id. Shared by the session-select overlay and
+    /// `kn9t.action("switch_session")`, so a Lua-driven list cannot drift from the built-in path.
     pub fn switch_to_session(&mut self, session_id: &str, tx: Sender<Event>) {
         crate::log!(
             "SESSION SWITCH: -> {}",
@@ -1239,7 +1205,7 @@ impl App {
         // Mark this session as active in the list.
         self.session.mark_active(session_id);
 
-        // 96E-45: If we have pending steering/queue and agent is idle, send now.
+        // If we have pending steering/queue and agent is idle, send now.
         if !self.streaming && self.has_pending_messages() {
             self.process_next_queue_item();
         }
@@ -1247,18 +1213,9 @@ impl App {
         Ok(())
     }
 
-    /// Create a new session and enter it.
-    ///
-    /// Returns `ServerLoading` error if plugins are still loading.
-    /// 96E-55 — `/fork [origin_seq]` and `/undo [n]`.
-    ///
-    /// Both are one `POST /session/{id}/fork`; only `reason` and `origin_seq` differ. The
-    /// event log is append-only, so "remove the last message" is a branch that stops short
-    /// of it (`reason: rewind`), never an edit in place.
-    ///
-    /// The switch is deliberately silent. Announcing "new session created" would describe
-    /// the mechanism rather than the intent: the user asked to go back one step, and what
-    /// they should see is a transcript one step shorter, with the cursor where they left it.
+    /// `/fork [origin_seq]` and `/undo [n]` are one `POST /session/{id}/fork` differing only in
+    /// `reason`/`origin_seq`; the log is append-only, so "remove the last message" is a branch that
+    /// stops short of it (`reason: rewind`). The switch is deliberately silent.
     fn handle_fork_command(&mut self, cmd: &str, args: &str, tx: Sender<Event>) {
         let sid = self.session.state.session_id.clone();
         if sid.is_empty() {
@@ -1398,13 +1355,9 @@ impl App {
                     if !self.plugins_ready && self.spinner_frame.is_multiple_of(5) {
                         plugins_just_ready = self.poll_plugins_ready(&tx);
                     }
-                    // 96E-43: Process Lua panel commands (show/hide/toggle/register)
+                    // Process Lua panel commands (show/hide/toggle/register)
                     self.process_lua_panels();
-                    // Redraw on tick if:
-                    // - streaming (spinner/content updates)
-                    // - visible Lua panels
-                    // - plugins still loading (spinner)
-                    // - plugins just became ready (clear loading indicator)
+                    // Redraw while streaming, Lua panels are visible, or plugin-ready changed.
                     needs_redraw = self.streaming 
                         || !self.lua_panels.is_empty() 
                         || !self.plugins_ready
@@ -1534,10 +1487,8 @@ impl App {
             return;
         }
 
-        // The explorer owns the keyboard while focused (PLAN §P7 L2 / D3). Placed after
-        // overlays (a modal is strictly on top) and before the input, so its arrows and Enter
-        // do not type into the prompt. F1/F3 are not consumed here, so they still reach the
-        // keybind matcher and toggle the panel.
+        // Explorer owns the keyboard while focused (PLAN §P7 L2 / D3), after overlays; F1/F3
+        // fall through to the keybind matcher, arrows/Enter never reach the prompt.
         if self.explorer.is_focused() && self.handle_explorer_key(key) {
             return;
         }
@@ -1554,13 +1505,8 @@ impl App {
             return;
         }
 
-        // A focused plugin view gets first refusal, but only for keys it
-        // actually binds — checked via `plugin_has_key` so an unbound key still
-        // reaches the host. Esc always blurs instead of dispatching, otherwise a
-        // plugin could trap focus with no way out.
-        //
-        // Placed after overlays (a modal is strictly on top) but before global
-        // keybinds, so a focused panel can own j/k without the host stealing them.
+        // A focused plugin view gets first refusal, but only for keys it binds (Esc always
+        // blurs, so it cannot trap focus). After overlays, before global keybinds.
         if let Some(plugin) = self.focused_plugin.clone() {
             if let Some(runtime) = self.lua_runtime.clone() {
                 if key.code == KeyCode::Esc {
@@ -1589,7 +1535,7 @@ impl App {
             return;
         }
 
-        // 96E-27: attached subagent view — Esc closes it.
+        // attached subagent view — Esc closes it.
         if self.attached_subagent.is_some() && key.code == KeyCode::Esc {
             self.attached_subagent = None;
             return;
@@ -1613,7 +1559,7 @@ impl App {
         }
 
         // Check for modifier+Enter.
-        // 96E-45: Shift+Enter = Queue (add to queue buffer, reliable cross-platform).
+        // Shift+Enter = Queue (add to queue buffer, reliable cross-platform).
         // Alt+Enter = insert newline.
         if key.code == KeyCode::Enter {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -2212,14 +2158,9 @@ impl App {
                     filter
                 );
 
-                // Get filtered sessions for bounds checking.
-                // 96E-53: same order as the renderer (tree order, branches under their
-                // parent) via the shared `picker_order` — 96E-19's rule that these two
-                // must never compute the list independently.
-                //
-                // There is no "New session" row any more (it duplicated `+ new`, Ctrl+N
-                // and `/new`), so index 0 is the first matching session and nothing here
-                // has to offset by one.
+                // Bounds-check against the renderer's list order via the shared `picker_order`
+                // (the two must not compute it independently). No "New session"
+                // row, so index 0 is the first match.
                 let filtered: Vec<usize> =
                     crate::session_tree::picker_order(&self.session.sessions, filter)
                         .into_iter()
@@ -2248,7 +2189,7 @@ impl App {
                     }
                     KeyCode::Backspace => {
                         filter.pop();
-                        // 96E-19: as soon as a filter is typed, highlight the first match
+                        // as soon as a filter is typed, highlight the first match
                         // so Enter opens it rather than creating something.
                         *selected = 0;
                     }
@@ -2378,7 +2319,7 @@ impl App {
                     _ => {}
                 }
             }
-            // 96E-54 — the tree overlay. Selection walks the *rendered* (depth-first)
+            // the tree overlay. Selection walks the *rendered* (depth-first)
             // order, so Down always moves to the row below rather than to whatever comes
             // next in list order.
             Some(Overlay::SessionTree { ref mut selected }) => {
@@ -2484,7 +2425,7 @@ impl App {
                     self.cycle_model_prev();
                     return;
                 }
-                // 96E-45: Queue action works on welcome screen too.
+                // Queue action works on welcome screen too.
                 Action::Queue => {
                     self.queue_prompt();
                     return;
@@ -2552,7 +2493,7 @@ impl App {
                 self.cursor_col += 1;
             }
             KeyCode::Enter => {
-                // 96E-45: Handle Enter on welcome screen.
+                // Handle Enter on welcome screen.
                 
                 // First: check for slash commands (they work even during plugin loading).
                 if self.input.starts_with('/') {
@@ -2632,13 +2573,8 @@ impl App {
         }
     }
 
-    /// Drain and run every `kn9t.action(...)` call queued by a Lua handler
-    /// (keymap, click, ...) since the last drain.
-    ///
-    /// Factored out because every Lua entry point that can queue an action
-    /// (a keymap handler, a click handler) needs this exact sequence, and it
-    /// used to be copy-pasted at each call site — which is how one of the two
-    /// copies could silently drift from the other.
+    /// Drain and run every `kn9t.action(...)` queued by a Lua entry point (keymap, click,
+    /// command) since the last drain. Factored out so the copies cannot drift.
     fn run_queued_lua_actions(&mut self, tx: &Sender<Event>) {
         let queued = self
             .lua_runtime
@@ -2651,15 +2587,9 @@ impl App {
         }
     }
 
-    /// Apply side effects queued by a plugin view's handlers.
-    ///
-    /// Plugin views deliberately cannot reach `kn9t.action`, so this is a much
-    /// narrower vocabulary than `run_queued_lua_actions`: a plugin nudges the
-    /// host, it does not drive it.
-    ///
-    /// Always invalidates the UI cache — a handler ran, so the view's Lua-local
-    /// state almost certainly changed, and the render fingerprint cannot see
-    /// inside a plugin's environment to notice.
+    /// Apply side effects queued by a plugin view's handlers. Deliberately narrower than
+    /// `run_queued_lua_actions` — a plugin nudges the host, it does not drive it. Always
+    /// invalidates the UI cache, since the render fingerprint cannot see inside a plugin's Lua.
     fn apply_plugin_effects(
         &mut self,
         runtime: &std::sync::Arc<crate::lua::LuaRuntime>,
@@ -2697,11 +2627,8 @@ impl App {
         runtime.invalidate_ui();
     }
 
-    /// Run a `kn9t.register_command` handler by its registered id, then run
-    /// any `kn9t.action(...)` it queued — same as a keymap or click handler,
-    /// since a command handler is just another Lua entry point that can want
-    /// to trigger a built-in action (e.g. a `/view diff` handler setting a
-    /// Lua-local `MAIN_VIEW` AND calling `kn9t.action("open_tools")`).
+    /// Run a `kn9t.register_command` handler by id, then any `kn9t.action(...)` it queued — a
+    /// command handler is just another Lua entry point.
     fn run_lua_command(&mut self, id: &str, args: &str, tx: &Sender<Event>) {
         let Some(runtime) = self.lua_runtime.clone() else {
             return;
@@ -2714,17 +2641,14 @@ impl App {
         self.run_queued_lua_actions(tx);
     }
 
-    /// Run a built-in action. `arg` carries the payload for the handful of
-    /// actions that need one (currently just `SwitchSession`); every other
-    /// variant ignores it. Kept as a plain parameter rather than a field on
-    /// `Action` so the enum stays `Copy` — see `keybind::Action::SwitchSession`.
+    /// Run a built-in action. `arg` carries the payload for the few that need one (currently
+    /// just `SwitchSession`); passing it separately keeps `Action` `Copy`.
     fn execute_action(&mut self, action: Action, arg: Option<&str>, tx: &Sender<Event>) {
         match action {
             Action::Quit => self.quit = true,
             Action::Abort => {
-                // 96E-45: Escape priority — cancel pending first, then abort turn.
-                // 1. If steering/queue has items, cancel last and restore to input.
-                // 2. Otherwise, if streaming, abort the turn.
+                // Escape cancels the last pending message and restores it to input,
+                // otherwise it aborts the streaming turn.
                 if self.has_pending_messages() {
                     if let Some(text) = self.cancel_last_pending() {
                         // Restore to input for editing.
@@ -2737,7 +2661,7 @@ impl App {
                     let lease = self.session.state.lease.clone();
                     if let (Some(client), Some(holder)) = (&self.client, lease) {
                         let _ = client.abort(&session_id, &holder);
-                        // Mark as aborting for visual feedback. streaming stays true until TurnEnded.
+                        // Mark as aborting for visual feedback; streaming stays true until TurnEnded.
                         self.aborting = true;
                     }
                 }
@@ -2748,7 +2672,7 @@ impl App {
             }
             Action::Send => self.send_prompt(tx),
             Action::Queue => {
-                // 96E-45: Ctrl+Enter always queues (for sequential execution).
+                // Ctrl+Enter always queues (for sequential execution).
                 self.queue_prompt();
             }
             Action::ScrollUp => self.transcript.scroll_up(3),
@@ -2954,10 +2878,7 @@ impl App {
                     // Scroll transcript to show the current match.
                     if let Some(m) = s.current_match() {
                         let msg_idx = m.msg_idx;
-                        // Approximate scroll: jump to message position.
-                        // We scroll to put the matching message near the top.
-                        // The transcript scroll is in lines-from-bottom; we use a
-                        // heuristic of scrolling to a large value then back down.
+                        // Approximate: a heuristic from-bottom value puts the match near the top.
                         let total = self.transcript.messages().len();
                         let lines_per_msg = 4usize; // rough estimate
                         let lines_from_bottom = (total.saturating_sub(msg_idx + 1)) * lines_per_msg;
@@ -3102,10 +3023,8 @@ impl App {
         }
     }
 
-    /// Handle a click inside the explorer column. Returns true when it was consumed.
-    ///
-    /// Clicking anywhere in the column focuses it; clicking a row selects it and then does the
-    /// D4 thing: a directory toggles, a file opens in the viewer.
+    /// Handle a click in the explorer column: any click focuses it, a row click selects and
+    /// does the D4 thing (directory toggles, file opens in the viewer).
     fn handle_explorer_click(&mut self, x: u16, y: u16) -> bool {
         let Some((ax, ay, aw, ah)) = self.explorer_area else {
             return false;
@@ -3237,12 +3156,9 @@ impl App {
     }
 
     fn handle_click(&mut self, x: u16, y: u16, button: &str, tx: &Sender<Event>) {
-        // Lua gets first refusal, and floating panels before the base layout
-        // (they paint on top, so they should be hit-tested first) — same
-        // "topmost wins, false falls through" contract as `dispatch_keymap`.
-        // Checked before the transcript-only early return below, since a
-        // Lua widget can be placed anywhere on screen (sidebar, header, ...),
-        // not just inside the transcript.
+        // Lua gets first refusal, floats before the base layout (topmost wins, false falls
+        // through, as in `dispatch_keymap`). Checked before the transcript-only early return,
+        // since a Lua widget can sit anywhere on screen.
         if let Some(runtime) = self.lua_runtime.clone() {
             for (id, rect) in self.lua_panel_click_areas.clone() {
                 if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
@@ -3256,10 +3172,8 @@ impl App {
                 }
             }
 
-            // Plugin views before the base tree: a plugin subtree is painted
-            // *into* a slot of that tree, so it is strictly on top of it.
-            // Clicking a plugin view also focuses it, which is what makes its
-            // `on_key` bindings live.
+            // Plugin views are painted into a slot of the base tree, so they are on top;
+            // clicking one focuses it, which makes its `on_key` bindings live.
             let plugin_hit = self
                 .plugin_view_areas
                 .iter()
@@ -3431,7 +3345,7 @@ impl App {
     }
 
     fn handle_sse(&mut self, frame: SseFrame) {
-        // 96E-45: If we receive a user message, clear matching item from steering buffer
+        // If we receive a user message, clear matching item from steering buffer
         // and add to transcript (since reducer ignores user messages to avoid duplicates,
         // but for steered messages we haven't added them to transcript yet).
         if let SseFrame::MessageAppended { ref msg, .. } = frame {
@@ -3516,7 +3430,7 @@ impl App {
             }
         }
 
-        // 96E-45: If turn just ended, process any pending steering/queue.
+        // If turn just ended, process any pending steering/queue.
         if was_streaming && !self.streaming {
             self.process_next_queue_item();
         }
@@ -3540,17 +3454,12 @@ impl App {
         }
     }
 
-    /// Bring the views that read the file index in step with the session (PLAN §P7 L2).
-    ///
-    /// Called once per event-loop turn, not from the render path: the index refresh is a no-op
-    /// unless the session cwd changed, `explorer.sync` re-flattens only when the expansion set
-    /// did, and the mention search short-circuits when the cursor is not in an `@token`.
+    /// Bring the file-index views in step with the session (PLAN §P7 L2), once per event-loop
+    /// turn rather than from the render path. Each step no-ops unless its input changed.
     fn sync_index_views(&mut self) {
-        // The index root is where the user launched the TUI, **not** the server's session cwd.
-        // The explorer and the viewer read *local* files, so the launch directory is the one
-        // the user is actually sitting in; the session cwd can be resolved server-side and name
-        // a path this machine cannot see. It is also the only root the welcome screen has.
-        // `refresh` is a no-op unless the root changed, so this is one `getcwd` per turn.
+        // Root is where the user launched the TUI, not the session cwd: the viewer/explorer read
+        // local files, and the session cwd may name a path this machine cannot see. `refresh`
+        // no-ops unless the root changed, so this is one `getcwd` per turn.
         if let Ok(root) = std::env::current_dir() {
             self.file_index.refresh(&root);
         }
@@ -3558,20 +3467,16 @@ impl App {
         self.mention.sync(&self.file_index, &self.input, self.cursor_col);
     }
 
-    /// Force the Lua layout to be rebuilt next frame.
-    ///
-    /// Needed whenever host state that `render_ui` reads changes without a fingerprint field
-    /// moving: opening the viewer, or toggling the explorer column.
+    /// Force the Lua layout to rebuild next frame, for host state `render_ui` reads that has no
+    /// fingerprint field (viewer open, explorer toggle).
     fn invalidate_lua_ui(&self) {
         if let Some(rt) = self.lua_runtime.as_ref() {
             rt.invalidate_ui();
         }
     }
 
-    /// Keys for the focused explorer. Returns true when the key was consumed.
-    ///
-    /// Arrows navigate; Left collapses or walks to the parent; Right/Enter expands a directory
-    /// or opens a file in the viewer (D4); `m` inserts the `@path` mention; Esc releases the
+    /// Keys for the focused explorer: arrows navigate, Left collapses or goes to the parent,
+    /// Right/Enter expands or opens in the viewer (D4), `m` inserts the mention, Esc releases the
     /// keyboard without closing the column.
     fn handle_explorer_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
@@ -3656,10 +3561,8 @@ impl App {
         self.explorer.blur();
     }
 
-    /// Keys for the focused viewer. Returns true when consumed.
-    ///
-    /// `j`/`k` move the line cursor, `v` opens a range, `c` drops the `@path:lines` reference
-    /// into the prompt so a comment can be typed straight after it (D4).
+    /// Keys for the focused viewer: `j`/`k` move the line cursor, `v` opens a range, `c` drops
+    /// the `@path:lines` reference into the prompt so a comment can follow it (D4).
     fn handle_viewer_key(&mut self, key: KeyEvent) -> bool {
         if self.viewer.is_none() {
             return false;
@@ -3727,12 +3630,8 @@ impl App {
         }
     }
 
-    /// Handle keys while the mention dropdown is open. Returns true if handled.
-    ///
-    /// Unlike the slash dropdown, this does **not** swallow typing: the query is narrowed by
-    /// ordinary character input, so only the keys that mean something to the list are taken.
-    /// Consuming everything, as the slash menu does, would make the mention unusable — you
-    /// could not type the file name you are looking for.
+    /// Keys while the mention dropdown is open. Unlike the slash menu, it does not swallow
+    /// typing: the query narrows on ordinary characters, so only meaningful keys are taken.
     fn handle_mention_key(&mut self, key: KeyEvent) -> bool {
         if !self.mention.active {
             return false;
@@ -3764,12 +3663,7 @@ impl App {
         }
     }
 
-    /// 96E-45: Send prompt (Enter key).
-    /// - First: parse slash commands (e.g. `/queue hello`, `/model gpt-4`)
-    /// - If plugins loading: add to steering buffer (sent when ready).
-    /// - If streaming: call /steer immediately to inject into current turn.
-    /// - If idle: send as new prompt.
-    /// Handle key events when slash dropdown is active. Returns true if handled.
+    /// Key handling while the slash dropdown is active.
     fn handle_slash_key(&mut self, key: KeyEvent, tx: &Sender<Event>) -> bool {
         match key.code {
             KeyCode::Esc => {
@@ -3871,7 +3765,7 @@ impl App {
         // Clear undo/redo history for new prompt
         self.input_history.clear();
 
-        // 96E-45: If plugins not ready, buffer to steering (sent when ready).
+        // If plugins not ready, buffer to steering (sent when ready).
         if !self.plugins_ready {
             crate::log!("STEERING: plugins loading, buffering message");
             self.steering.push(QueuedPrompt { text, images });
@@ -4111,7 +4005,7 @@ impl App {
         }
     }
 
-    /// 96E-45: Queue a message (Ctrl+Enter key).
+    /// Queue a message (Ctrl+Enter key).
     /// Adds to the queue buffer — will be sent one-per-turn when agent goes idle.
     fn queue_prompt(&mut self) {
         if self.input.trim().is_empty() && self.staged_images.is_empty() {
@@ -4134,7 +4028,7 @@ impl App {
         crate::log!("QUEUE: message queued ({} total)", self.queue.len());
     }
 
-    /// 96E-45: Process the next queued item after turn ends.
+    /// Process the next queued item after turn ends.
     /// Called when streaming ends (TurnEnded).
     fn process_next_queue_item(&mut self) {
         // Safety: don't send if already streaming (409 conflict).
@@ -4180,7 +4074,7 @@ impl App {
             }
         }
     }
-    /// 96E-45: Cancel the last item from steering (if any), then queue.
+    /// Cancel the last item from steering (if any), then queue.
     /// Returns the cancelled prompt text to restore to input, or None if both empty.
     fn cancel_last_pending(&mut self) -> Option<String> {
         // Priority: steering first, then queue.
@@ -4195,7 +4089,7 @@ impl App {
         None
     }
 
-    /// 96E-45: Check if there are any pending messages (steering or queue).
+    /// Check if there are any pending messages (steering or queue).
     pub fn has_pending_messages(&self) -> bool {
         !self.steering.is_empty() || !self.queue.is_empty()
     }
@@ -4211,7 +4105,7 @@ impl App {
         }
     }
 
-    /// 96E-28: respond to a generic interaction with an opaque payload.
+    /// respond to a generic interaction with an opaque payload.
     fn respond_interaction(&mut self, payload: serde_json::Value) {
         if let (Some(client), Some(id)) = (&self.client, self.active_interaction_id) {
             let _ = client.ui_respond(id, payload);

@@ -42,11 +42,8 @@ pub fn append(store: &SqliteStore, session: &SessionId, event: Event) -> Result<
         .map_err(|e| StoreErr(format!("read head_seq (session '{}' not found?): {e}", sid)))?;
     let seq = (head_seq + 1) as u64;
 
-    // R-STOR-040/060 — the store owns seq assignment: callers construct durable
-    // events with a placeholder `seq` and rely on append to stamp the true value.
-    // Stamp it *before* serializing the payload and projecting, so `events.payload`
-    // (the reproject source of truth, G2) and every projection row carry the
-    // authoritative, gapless seq rather than the caller's placeholder.
+    // R-STOR-040/060 — the store owns seq assignment: stamp it before serializing and projecting,
+    // so `events.payload` (the G2 reproject source) and every projection row carry the gapless seq.
     let event = event.with_seq(seq);
     let payload =
         serde_json::to_string(&event).map_err(|e| StoreErr(format!("serialize event: {e}")))?;
@@ -87,7 +84,7 @@ pub fn append(store: &SqliteStore, session: &SessionId, event: Event) -> Result<
     conn.execute_batch("COMMIT")
         .map_err(|e| StoreErr(format!("commit: {e}")))?;
 
-    // 96E-18: notify the after-append observer (SSE echo) OUTSIDE the connection
+    // notify the after-append observer (SSE echo) OUTSIDE the connection
     // lock — the callback must never block or deadlock other store users.
     drop(conn);
     if let Ok(guard) = store.after_append.lock() {
@@ -146,10 +143,9 @@ pub fn snapshot(store: &SqliteStore, session: &SessionId) -> Result<SessionSnaps
     })
 }
 
-/// Reconstruct the set of disabled tools for a session: the latest `ToolsToggled`
-/// event wins (full-list semantics, like `reconstruct_model` for `ModelChanged`).
-/// No projection row exists for `ToolsToggled`, so read it straight from `events`.
-/// Empty when the session never toggled anything.
+/// Latest `ToolsToggled` wins (full-list semantics, like `reconstruct_model` for
+/// `ModelChanged`), read straight from `events` since there is no projection row. Empty when the
+/// session never toggled anything.
 fn reconstruct_disabled_tools(
     conn: &rusqlite::Connection,
     session_id: &str,

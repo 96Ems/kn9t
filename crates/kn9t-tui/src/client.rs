@@ -134,7 +134,7 @@ impl Client {
             .ok_or_else(|| ClientError::Json("missing id".into()))
     }
 
-    /// 96E-55 — fork a session: `POST /session/{id}/fork {origin_seq?, reason}`.
+    /// fork a session: `POST /session/{id}/fork {origin_seq?, reason}`.
     ///
     /// One generic route serves `/fork`, `/undo`, and the tree view; only `reason` and
     /// `origin_seq` differ (R-STOR-130). `origin_seq: None` means "at head".
@@ -493,7 +493,7 @@ impl Client {
             .map_err(|e| ClientError::Json(e.to_string()))
     }
 
-    /// 96E-28: respond to a pending generic interaction — opaque payload forwarded verbatim.
+    /// respond to a pending generic interaction — opaque payload forwarded verbatim.
     pub fn ui_respond(&self, id: u64, payload: serde_json::Value) -> Result<(), ClientError> {
         let req = UiRespondReq { id, payload };
         self.request("POST", "/ui-respond")

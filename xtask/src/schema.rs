@@ -22,6 +22,7 @@ pub fn req_name_for_path(path: &str) -> Option<&'static str> {
         "/approve" => Some("ApproveReq"),
         "/ui-respond" => Some("UiRespondReq"),
         "/plugin/load" => Some("PluginLoadReq"),
+        "/plugin/{name}/ui_event" => Some("UiEventReq"),
         _ => None,
     }
 }

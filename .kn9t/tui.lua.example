@@ -3,8 +3,8 @@
 -- This file is hot-reloaded: save it and changes apply immediately,
 -- no restart required. Syntax errors are shown in the status line.
 --
--- 96E-41 (phase 1): Foundation only. Layout scripting (96E-42),
--- widgets (96E-43), and plugin bridge (96E-44) are separate phases.
+-- Phase 1: foundation only. Layout scripting,
+-- widgets and the plugin bridge are separate phases.
 
 --[[ =====================================================================
      AVAILABLE GLOBALS (safe, sandboxed)
@@ -23,7 +23,7 @@
        os.execute, os.exit, os.getenv, os.remove, os.rename, os.tmpname
        load() with bytecode or reader function
        
-     Coming in phase 4 (96E-44):
+     Coming in phase 4:
        kn9t.http.get(url)   -- scoped to kn9t-server routes only
        kn9t.http.post(url, body)
        
@@ -33,7 +33,7 @@
 print("tui.lua loaded at " .. os.date("%Y-%m-%d %H:%M:%S"))
 
 -- =========================================================================
--- PHASE 2 (96E-42): Layout customization — AVAILABLE NOW
+-- PHASE 2: Layout customization — AVAILABLE NOW
 -- =========================================================================
 -- Define compute_layout(width, height, state) to customize panel positions.
 -- state contains:
@@ -108,7 +108,7 @@ end
 --]]
 
 -- =========================================================================
--- PHASE 3 (96E-43): Widget tree + dynamic panels — AVAILABLE NOW
+-- PHASE 3: Widget tree + dynamic panels — AVAILABLE NOW
 -- =========================================================================
 -- 
 -- WIDGET TYPES:
@@ -206,7 +206,7 @@ kn9t.register_panel("files", {
 --]]
 
 -- =========================================================================
--- PHASE 4 (96E-44): Plugin UI bridge + scoped HTTP — AVAILABLE NOW
+-- PHASE 4: Plugin UI bridge + scoped HTTP — AVAILABLE NOW
 -- =========================================================================
 --
 -- SCOPED HTTP CLIENT:
@@ -230,7 +230,7 @@ end
 --]]
 
 -- PLUGIN UI BRIDGE:
--- Callbacks for plugin-declared pages (96E-24):
+-- Callbacks for plugin-declared pages:
 --   kn9t.plugin.on_page_declared(plugin, page_id, layout)
 --   kn9t.plugin.on_page_updated(plugin, page_id, placeholder_id, value)
 --   kn9t.plugin.on_page_cleared(plugin, page_id)

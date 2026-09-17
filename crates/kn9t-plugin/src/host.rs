@@ -89,7 +89,7 @@ pub struct PluginHost {
     /// Monotonic call-id counter — also used by `RemoteProvider`.
     pub(crate) next_id: AtomicU64,
     event_state: Mutex<EventState>,
-    /// 96E-5 fix: per-session bus map for async event routing; hook calls use
+    /// per-session bus map for async event routing; hook calls use
     /// thread-local TL_SESSION/TL_BUS for isolation under concurrency.
     session_buses: Arc<Mutex<HashMap<String, Arc<dyn EventSink>>>>,
     /// Persistent KV store — namespaced by this plugin's name in the host.
@@ -99,12 +99,12 @@ pub struct PluginHost {
     /// store alive for as long as the host lives.
     #[allow(dead_code)]
     kv: Arc<dyn PluginKv>,
-    /// 96E-10: protocol health — once a malformed message is seen the connection
+    /// protocol health — once a malformed message is seen the connection
     /// is poisoned; new calls fail fast and the reader terminates.
     unhealthy: Arc<std::sync::atomic::AtomicBool>,
     poison_reason: Arc<Mutex<Option<String>>>,
-    /// 96E-17: plugin → host API handler (host_api capability). Requests are
-    /// dispatched to a worker thread so a slow op never blocks the reader (96E-9).
+    /// plugin → host API handler (host_api capability). Requests are
+    /// dispatched to a worker thread so a slow op never blocks the reader.
     api_handler: Arc<Mutex<Option<Arc<dyn HostApi>>>>,
     /// R-PLUG2-110: callback for hot re-declaration. Called when plugin sends `declare`.
     on_declare: Arc<Mutex<Option<OnDeclareCallback>>>,
@@ -130,7 +130,7 @@ impl PluginHost {
         let plugin_name = declaration.name.clone();
         let kv_for_reader = Arc::clone(&kv);
 
-        // 96E-10: health flag shared with reader thread
+        // health flag shared with reader thread
         let unhealthy: Arc<std::sync::atomic::AtomicBool> =
             Arc::new(std::sync::atomic::AtomicBool::new(false));
         let poison_reason: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -163,7 +163,7 @@ impl PluginHost {
                 let msg = match serde_json::from_str::<PluginMsg>(trimmed) {
                     Ok(m) => m,
                     Err(e) => {
-                        // 96E-10 fix: malformed output is a connection-level protocol
+                        // malformed output is a connection-level protocol
                         // violation. Fail all pending calls, mark unhealthy, stop
                         // accepting new calls, and terminate the reader (poisoned).
                         let reason = format!("protocol violation: malformed message: {e}");
@@ -192,7 +192,7 @@ impl PluginHost {
                         }
                     }
                     PluginMsg::Event { event } => {
-                        // 96E-9 fix: transient plugin events must not block the reader.
+                        // transient plugin events must not block the reader.
                         // The same reader demultiplexes RPC responses; a bounded blocking
                         // send would stall unrelated hook calls when a noisy plugin floods
                         // events. Drop under pressure — transient, safe to lose.
@@ -281,10 +281,10 @@ impl PluginHost {
                             let _ = write_host_msg(&mut **w, &reply);
                         }
                     }
-                    // ── 96E-17: plugin → host API request ──────────────────
+                    // ── plugin → host API request ──────────────────
                     // Dispatched to a worker thread: a slow op (provider_complete)
-                    // must never block the reader (96E-9). The session id travels
-                    // INSIDE the payload (TLS session is turn-thread-local, 96E-5).
+                    // must never block the reader. The session id travels
+                    // INSIDE the payload (TLS session is turn-thread-local).
                     PluginMsg::Request { id, op, payload } => {
                         let handler =safe_expect!(api_for_reader.lock(), "poisoned").clone();
                         let writer = Arc::clone(&writer_clone);
@@ -374,7 +374,7 @@ impl PluginHost {
             }
         });
 
-        // 96E-21 fix: per-session event routing is explicit — a plugin event
+        // per-session event routing is explicit — a plugin event
         // reaches a session's client IFF its `session_id` matches a registered
         // bus. Missing or unknown `session_id` is DROPPED (diagnostic, no
         // broadcast). The old "broadcast to all when untagged" leaked subagent
@@ -401,7 +401,7 @@ impl PluginHost {
                     }
                     // unknown sid -> drop (no broadcast)
                 } else {
-                    // No session_id: drop — never broadcast to all (96E-21)
+                    // No session_id: drop — never broadcast to all
                     // Could log to stderr for diagnostics, but must not fan out to every session.
                 }
             }
@@ -465,7 +465,7 @@ impl PluginHost {
 
     /// Set the event bus for forwarding plugin events.
     /// Called by the server before each turn. Uses thread-local for isolation
-    /// under concurrent sessions (96E-5 fix).
+    /// under concurrent sessions.
     pub fn set_bus(&self, bus: Arc<dyn EventSink>) {
         TL_BUS.with(|c| *c.borrow_mut() = Some(bus.clone()));
         // If session already set on this thread, register in the per-session map
@@ -607,7 +607,7 @@ impl PluginHost {
         safe_expect!(self.declaration.lock(), "poisoned").hooks.contains(&hook)
     }
 
-    /// 96E-17: whether the plugin declared a given capability in its hello.
+    /// whether the plugin declared a given capability in its hello.
     pub fn has_capability(&self, cap: &str) -> bool {
         self.declaration
             .lock()
@@ -617,7 +617,7 @@ impl PluginHost {
             .any(|c| c == cap)
     }
 
-    /// 96E-17: install the plugin → host API handler (server-side ops).
+    /// install the plugin → host API handler (server-side ops).
     pub fn set_api_handler(&self, api: Arc<dyn HostApi>) {
         *safe_expect!(self.api_handler.lock(), "poisoned") = Some(api);
     }
@@ -712,7 +712,7 @@ impl PluginHost {
     }
 
     /// Cancellable streaming hook — polls `Cancel` every 10ms and sends `HostMsg::Cancel` on fire.
-    /// `docs/internal/job/instant-cut.md` step 5.
+    /// `docs/dev/job/instant-cut.md` step 5.
     pub fn call_raw_hook_str_streaming_cancellable(
         &self,
         hook_str: &str,
@@ -809,7 +809,7 @@ impl PluginHost {
     }
 
     /// Cancellable streaming wait — polls `Cancel` every 10ms, sends `HostMsg::Cancel` on fire.
-    /// `docs/internal/job/instant-cut.md` step 4.
+    /// `docs/dev/job/instant-cut.md` step 4.
     pub fn wait_for_streaming_cancellable(
         &self,
         expected_id: u64,

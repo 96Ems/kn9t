@@ -94,10 +94,9 @@ pub fn plan_request(store: &SqliteStore, session: &SessionId) -> Result<RequestP
     // R-STOR-115: the log stays honest, the read is made usable.
     repair_unparseable_tool_args(&mut messages);
 
-    // R-STOR-115 — the fold, not the log, closes tool calls the process never lived
-    // to answer. Runs before `breakpoints`/`compact_span` so both see the same
-    // §7.5-clean message list that the provider will. R-STOR-116: each synthesized
-    // result carries whatever `ToolProgress` the dead process had salvaged.
+    // R-STOR-115/116 — the fold closes tool calls the process never answered, before
+    // `breakpoints`/`compact_span` so all three see the same §7.5-clean list; each synthesized
+    // result carries whatever progress the dead process had salvaged.
     close_orphan_tool_calls_with(&mut seqs, &mut messages, &|id| {
         store.get_live_tool_progress(session, id).ok().flatten()
     });
@@ -205,24 +204,10 @@ pub fn compact_span(seqs: &[u64], messages: &[Message]) -> CompactSpan {
     }
 }
 
-/// R-STOR-117 → DESIGN §7.5 — replace any `ToolCall::args_json` that is not parseable JSON
-/// with an empty object, so the folded message list is one the provider will accept.
-///
-/// R-PCORE-050 now rejects an incomplete args concat at assemble time, so no *new* message
-/// can carry one. But sessions written before that guard have the broken bytes durable in
-/// `events`, and append-only (GI-4) means they can never be rewritten: every `plan_request`
-/// replays them, litellm/Bedrock fails to convert the tool call, and the turn 500s — the
-/// session is unusable forever. Same failure shape as R-STOR-115, so same remedy and same
-/// seam: the log keeps the honest record of what the model actually emitted, and the read
-/// derives a usable message list from it.
-///
-/// `{}` is the substitute because the *call* must survive: deleting it would orphan the
-/// matching `ToolResult` (§7.5) and drop a turn the transcript already accounts for. The
-/// paired result — which for these calls is the tool's own error — carries the real story,
-/// so the model is not misled into thinking the call did anything.
-///
-/// Only invalid values are touched; a valid `args_json` is left byte-identical, preserving
-/// key order and the message-level cache (R-CORE-062).
+/// R-STOR-117 → DESIGN §7.5 — replace unparseable `ToolCall::args_json` with `{}` so the provider
+/// accepts the folded list. Pre-R-PCORE-050 sessions have the broken bytes durable and append-only
+/// (GI-4), so every replay would fail forever. `{}` keeps the call (deleting it would orphan its
+/// result) and only invalid values change, preserving key order and the cache (R-CORE-062).
 fn repair_unparseable_tool_args(messages: &mut [Message]) {
     for m in messages.iter_mut() {
         for c in m.content.iter_mut() {
@@ -235,32 +220,17 @@ fn repair_unparseable_tool_args(messages: &mut [Message]) {
     }
 }
 
-/// R-STOR-115 → DESIGN §7.5, §9.1 — close every `ToolCall` in `messages` that has no
-/// matching `ToolResult`, by inserting a synthesized `is_error` result immediately after
-/// the assistant message that opened it.
-///
-/// §9.1 makes the loop synthesize these at abort time, but that only covers aborts the
-/// loop survives. A killed process (`kill -9`, server restart, panic) leaves the assistant
-/// `MessageAppended` durable with no tool-role message after it, and every provider 400s
-/// on the orphan — permanently, because the log is append-only (GI-4) so the missing
-/// result can never be back-filled.
-///
-/// The repair therefore belongs in the fold, not the log: `events` keeps the honest
-/// record that the call never answered, and `plan_request` derives a §7.5-clean message
-/// list from it on every read. `seqs` is kept in step with `messages` so `compact_span`
-/// still reports real `SeqRange`s (synthesized messages borrow the opening message's seq).
+/// R-STOR-115 → DESIGN §7.5, §9.1 — close every `ToolCall` with no matching `ToolResult` by
+/// inserting a synthesized `is_error` result after its assistant message. §9.1 covers aborts the
+/// loop survives; a killed process leaves the orphan durable and append-only (GI-4), so the repair
+/// lives in the fold, not the log. `seqs` stays in step for `compact_span`.
 pub fn close_orphan_tool_calls(seqs: &mut Vec<u64>, messages: &mut Vec<Message>) {
     close_orphan_tool_calls_with(seqs, messages, &|_| None)
 }
 
-/// R-STOR-116 — as [`close_orphan_tool_calls`], but `salvage` may supply the partial
-/// output the dead process had streamed for a call: `(tool, progress, truncated)`.
-///
-/// A bare "interrupted" result is honest but useless — the model cannot tell a command
-/// that never started from one that ran for two minutes and printed the answer. Replaying
-/// the salvaged `ToolProgress` turns the synthesized result from a dead end into a usable
-/// (if unverified) observation. It stays `is_error: true` regardless: the tool never
-/// confirmed completion, so the content is evidence, not a return value.
+/// R-STOR-116 — as [`close_orphan_tool_calls`], but `salvage` may supply the partial output the
+/// dead process streamed, turning a bare "interrupted" into a usable (if unverified)
+/// observation. It stays `is_error: true`: the tool never confirmed completion.
 pub fn close_orphan_tool_calls_with(
     seqs: &mut Vec<u64>,
     messages: &mut Vec<Message>,

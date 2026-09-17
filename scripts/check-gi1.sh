@@ -13,7 +13,7 @@ FAILED=0
 #
 # That scope was previously implicit, so three crates named two siblings each
 # while the gate passed green and nobody could tell whether it was an accepted
-# exception or an escape hatch (96E-32). The script now reports every dev-dep it
+# exception or an escape hatch. The script now reports every dev-dep it
 # skips, so the exception is visible instead of invisible.
 echo "GI-1 scope: [dependencies] only; [dev-dependencies] reported but not enforced."
 echo ""

@@ -1,4 +1,4 @@
-//! 96E-40: SSE cancel is intermittent due to BufReader buffering.
+//! SSE cancel is intermittent due to BufReader buffering.
 //!
 //! When BufReader pulls multiple SSE events in one underlying read(), the
 //! cancel check (which only happens at read() boundaries) is bypassed for
@@ -81,7 +81,7 @@ fn cancel_not_passed_means_no_check() {
     eprintln!("None cancel: events continue as expected");
 }
 
-/// 96E-40 FIX: sse_lines with Some(cancel) checks cancel at each parsed event.
+/// sse_lines with Some(cancel) checks cancel at each parsed event.
 #[test]
 fn cancel_passed_is_checked_each_event() {
     // Three events that will fit in one BufReader read

@@ -218,13 +218,9 @@ impl Transcript {
         self.follow
     }
 
-    /// Reconcile the scroll position with what was just rendered.
-    ///
-    /// While following, the view sits at the bottom (`scroll = 0`). Once the user has
-    /// scrolled up, new lines must not drag the view away: the same absolute line is kept at
-    /// the top by adding the frame's growth to the from-bottom offset. Without this, a
-    /// streaming turn pulls the view down — `scroll` is measured from the bottom, so a fixed
-    /// offset moves as the content grows, and the user loses whatever they were reading.
+    /// Reconcile the scroll position after a render. When the user has scrolled up, add the
+    /// frame's growth to the from-bottom offset so the same absolute line stays at the top —
+    /// otherwise a streaming turn drags the view down and loses their place.
     pub fn on_render(&mut self, total: usize, max_scroll: usize) {
         if self.follow {
             self.scroll = 0;
@@ -354,15 +350,11 @@ impl Default for Transcript {
 pub struct TranscriptParser;
 
 impl TranscriptParser {
-    /// Parse a transcript from server JSON format.
-    ///
-    /// The server returns messages with content as either a string or array of blocks.
-    /// Tool results are in separate messages and need to be matched by call_id.
+    /// Parse a server-JSON transcript: content is a string or a block array, and tool results
+    /// arrive in separate messages that must be matched by call_id.
     pub fn parse(transcript: &[serde_json::Value]) -> Vec<Message> {
-        // First pass: collect all tool results by call_id.
         let tool_results = Self::collect_tool_results(transcript);
 
-        // Second pass: build messages with tools.
         let mut messages = Vec::new();
 
         for msg in transcript {

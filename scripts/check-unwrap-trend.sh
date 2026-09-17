@@ -1,5 +1,5 @@
 #!/bin/bash
-# 96E-18/96E-20 — unwrap/expect trend guard.
+# Unwrap/expect trend guard.
 #
 # Counts bare `.unwrap()` outside `#[cfg(test)]` and reports the total.
 # In CI we compare against the committed baseline on `main` (or a stored
@@ -7,7 +7,7 @@
 # Locally (no baseline) we just report and warn on increase vs last commit.
 #
 # Security-critical files: policy.rs, host.rs (approval + plugin bus).
-# The 96E-18 fix drove policy.rs to 0 bare unwraps in non-test code —
+# policy.rs is held at 0 bare unwraps in non-test code —
 # this script prevents silent regrowth.
 
 set -e
@@ -40,10 +40,10 @@ for f in $CRITICAL; do
     if [ "$c" -gt 0 ]; then
       echo "    WARN: $f has bare .unwrap() in non-test code — prefer .expect(\"reason\")"
       # Fail only if critical file regresses (has any bare unwrap)
-      # 96E-20 criterion says "even if just a warning initially" — we warn, but also
+      # The criterion says "even if just a warning initially" — we warn, but also
       # enforce for policy.rs which was fixed to 0.
       if [ "$f" = "crates/kn9t-server/src/policy.rs" ]; then
-        echo "    FAIL: policy.rs must have 0 bare .unwrap() in non-test (96E-18)"
+        echo "    FAIL: policy.rs must have 0 bare .unwrap() in non-test code"
         FAILED=1
       fi
     fi
@@ -70,7 +70,7 @@ if git rev-parse --verify main >/dev/null 2>&1; then
     echo "Fix: replace .unwrap() with .expect(\"reason\") or handle the error."
     # Warning mode for now except policy.rs which already fails above
     if [ "$FAILED" -eq 0 ]; then
-      echo "(warning only — not failing CI yet, per 96E-20)"
+      echo "(warning only — not failing CI yet)"
     fi
   else
     echo "  trend vs main ($BASELINE): OK (no increase)"
