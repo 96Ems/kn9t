@@ -14,20 +14,35 @@
 set -e
 cd "$(dirname "$0")/.."
 
-PYTHON="${PYTHON:-}"
-if [ -z "$PYTHON" ]; then
-  for candidate in python3 python py; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-      PYTHON="$candidate"
-      break
+# Find a Python that actually runs. `command -v python` is not enough on Windows:
+# the Microsoft Store ships a `python` shim on PATH that exists, exits non-zero and
+# prints "Python introuvable" — which read as a guard failure and blocked the push.
+resolve_python() {
+  for candidate in "${PYTHON:-}" python3 python py; do
+    [ -n "$candidate" ] || continue
+    if "$candidate" --version >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
     fi
   done
-fi
+  # Usual install locations, which are not always on bash's PATH even when the
+  # PowerShell side finds them.
+  for exe in "$HOME"/AppData/Local/Programs/Python/Python3*/python.exe \
+             /c/Python3*/python.exe \
+             "/c/Program Files/Python3"*/python.exe; do
+    [ -x "$exe" ] || continue
+    if "$exe" --version >/dev/null 2>&1; then
+      printf '%s' "$exe"
+      return 0
+    fi
+  done
+  return 1
+}
 
-if [ -z "$PYTHON" ]; then
+if ! PYTHON="$(resolve_python)"; then
   # Exit 2 ("cannot check"), never 1 ("invariant broken"), so a missing
   # interpreter is never mistaken for a contract violation.
-  echo "contract: SKIPPED (no python interpreter found; set PYTHON=...)" >&2
+  echo "contract: SKIPPED (no working python interpreter; set PYTHON=...)" >&2
   exit 2
 fi
 
