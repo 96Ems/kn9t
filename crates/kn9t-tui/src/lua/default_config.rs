@@ -16,11 +16,13 @@ use std::path::Path;
 /// Each tuple is (filename, content).
 ///
 /// **This is the shipped default.** A fresh install renders these, seeded into
-/// `~/.kn9t/tui/`; there is no separate single-file fallback, so what the tests boot
-/// (`LuaRuntime::load_builtin`) and what a user sees are the same source. Two copies would
+/// `~/.kn9t/tui/`; there is no separate single-file source, so what the tests boot
+/// (`LuaRuntime::load_builtin`) and what a user sees are the same files. Two copies would
 /// drift, and the drift would be invisible — a test can be green against a default nobody
-/// renders. (It was, until PLAN §P7 L1: the catalogue and `default_tui.lua` disagreed and
-/// the test asserted the file that was not shipped.)
+/// renders. That happened: `assets/default_tui.lua` was a second, diverged copy of this
+/// catalogue and the contract test asserted *it*. The file is gone; the single-file
+/// `~/.kn9t/tui.lua` layout a user may still choose is generated from this list by
+/// [`builtin_source`].
 pub const DEFAULT_TUI_FILES: &[(&str, &str)] = &[
     (
         "00_theme.lua",

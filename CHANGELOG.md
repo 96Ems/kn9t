@@ -9,7 +9,237 @@ pointer current.
 
 ---
 
-## Session -- 2026-09-16f -- Reasoning: replayed where forbidden, silent where wanted
+## Session -- 2026-09-17c -- Titling, and the explorer/viewer ergonomics
+
+**Next session starts here:** unchanged — P7-L2 is code-complete except the explorer's `d`
+diff action (needs a host→plugin diff request); L3 (terminal) and L4 (mascot) are next.
+
+### Auto-titling named nothing, and picked the wrong model
+
+Two bugs, one cause. `find_title_model` iterated a `HashMap`, so the titled model changed
+between calls (`glm-5.2`, `glm-5.3-flash`, `qwen3.8-flash` on the same provider), and `glm-5.2`
+returns no text — `raw title: ""` — which the code treated as "skip", silently leaving new
+sessions unnamed.
+
+That whole heuristic is gone. The rule is two lines: **a configured `default_model` (or a
+dedicated `title_model`) if set, else the session's own model.** A title is ~200 in / ~30 out
+tokens, a fraction of a cent, so reliability beats price — and the session model just answered
+a turn, so it is known to work. New top-level config keys (both `provider:id` or bare id):
+
+```toml
+default_model = "opencode-go:deepseek-v4.1-flash"
+title_model   = "opencode-go:deepseek-v4.1-flash"   # optional, overrides default_model
+```
+
+An unset `default_model` is no longer back-filled by "the first model" for titling: the two are
+kept distinct, so the caller can fall back to the session model instead of inventing one.
+
+### The real cause: `Thinking::Off` did not turn reasoning off
+
+Picking `deepseek-v4.1-flash` still produced `raw title: ""`. Probed the gateway directly with
+the same prompt:
+
+| request | result |
+|---|---|
+| `reasoning_effort` omitted, `max_tokens: 16` | `finish_reason: length`, content `""`, 63 chars of `reasoning_content` |
+| `reasoning_effort: "none"` | content `"Adding a File Explorer"`, 0 reasoning |
+| `reasoning_effort: "minimal"` | still reasons (495 chars), budget gone |
+| `reasoning_effort: "low"` | reasons 186 chars, then the title |
+
+`Thinking::Off` encoded as *omit the field*, on the theory that omitting means "no reasoning".
+It does not: it leaves the model's default, which is **on** for DeepSeek, so the scratchpad ate
+the whole output budget. `Off` now sends `reasoning_effort: "none"` on the effort path. The
+escape hatch for a gateway that rejects `"none"` is `quirks.reasoning = "none"`, which sends
+nothing at all. The old test asserted the wrong thing (`oai_thinking_off_omits_reasoning_effort`)
+and is replaced by one that pins `"none"`.
+
+Same caveat on the Responses path (`/v1/responses`) is unverified; only the chat path was
+probed.
+
+### Explorer and viewer ergonomics
+
+* The explorer is **visible by default** but does not take the keyboard until engaged. `F1`
+  cycles show+focus → hide, **Esc closes it** (it used to only blur, which looked like a no-op),
+  and a click anywhere else releases focus. `m` inserts `@path` — now shown in its title.
+* The viewer **takes the keyboard when opened**, so it can answer keys: `j/k` move a line
+  cursor, `v` opens a range, and **`c` drops `@path:L` or `@path:L1-L2` into the prompt** ready
+  for a comment. Clicking a line places the cursor. `F3` closes it, and the title says so.
+* The two sidebars and the plugin column are now `border = "rounded"`, matching the prompt
+  frame and the overlays; they were drawing two different corner glyphs side by side.
+
+---
+
+## Session -- 2026-09-17b -- L2 lands: the explorer and the viewer
+
+**Next session starts here:** P7-L2 is code-complete except the explorer's **`d` = diff-vs-HEAD**
+action, which needs a host→plugin diff request the plugin protocol does not have yet. What is
+left of the epic: **L3** (persistent shell in `kn9t-tools` + server exec endpoint) and **L4** (the
+animated mascot). The lot's acceptance still asks for a **live screenshot pair through
+`tui-control`** — the automated `chrome_layout` coverage exists, the human-visible pair does not.
+
+### The finder that could never open
+
+`App::sync_mention` was written, documented and **never called**. The `@` dropdown was wired to
+the keyboard, the index and the pointer — and the one call that sets it active was missing, so
+typing `@` did nothing. There is now one call site, `App::sync_index_views`, run once per
+event-loop turn, which refreshes the index and syncs the dropdown, the explorer and the viewer.
+The lesson is the one this repo keeps relearning: *a unit test proving a function works in
+isolation says nothing about whether it is wired up.*
+
+### The explorer and the viewer are native views
+
+`widgets::NATIVE_VIEWS` gained `explorer` and `viewer`. The dividing line (recorded here because
+AGENTS §14 and §11.1 both bear on it): **a view over host state is native; a view over external
+data is a plugin.** The file index is host state — the TUI walks the workspace it is already
+sitting in — so the tree and the viewer are native, exactly as the tool cards are. The diff
+review stays a plugin because it needs `git`, which is external.
+
+* `src/explorer.rs` — the tree *shape*: expansion set, selection, and a `flatten` over
+  `FileIndex::children`. `FileIndex::from_paths_at` was added so a consumer that compares roots
+  (the explorer resets its expansion when the workspace changes) can be built in a test without
+  walking a filesystem.
+* `src/viewer.rs` — a capped read (1 MiB / 5000 lines, stated in the header rather than silently
+  truncating) and an extension→syntax token; `render_viewer` highlights through the same
+  `syntax::highlight_code_inline` the tool cards use, so there is one highlighter.
+* `F1` toggles the explorer **and its keyboard focus together**, `F3` closes the viewer. Both are
+  Rust default bindings, not Lua maps: visibility and focus are one struct, and a config flag
+  would be a second copy that could disagree. The layout reads
+  `kn9t.state.explorer_visible` / `.viewer_open` — the same fields the fingerprint folds in, or
+  toggling a panel would reuse last frame's tree.
+
+### Two warnings, one of them ours
+
+`unused variable: buf` in `chrome_layout` and `unused import: hyperlink` in `unit_hyperlinks`
+were both dead weight and are gone. `safe_unwrap`/`safe_expect` stay — they are the accepted
+warnings, and each use must be a panic that genuinely cannot happen.
+
+### A latent test failure the broken build hid
+
+`placement_routes_a_view_to_the_main_column` asserted that a `placement="main"` plugin lands in
+the centre column **while unfocused**. It does not, by design: `TUI.show.main_plugins` is false
+and an unfocused main plugin is hidden so it cannot seize the centre pane. The test never ran
+because `unit_lua_default_config` did not compile (`DEFAULT_TUI_LUA`); the migration fixed the
+import and exposed it. The test now focuses the plugin, which is the state in which placement is
+observable.
+
+---
+
+## Session -- 2026-09-17a -- Auto-scroll that stays where you put it
+
+**Next session starts here:** unchanged from 2026-09-16g — **P7-L2** remains the left explorer
+tree (D3) and the centre-top viewer (D4/D5, with `m` and `d`); the index and the `@` finder are
+done. Checkpoint commit for the tree at this point: `9a80c4a`.
+
+### D22 — the transcript follows the tail only when you are at the bottom
+
+The transcript's `scroll` is measured from the bottom (`0 = bottom`), which is exactly why a
+scrolled-up view drifted: as a streaming turn appended lines, a fixed from-bottom offset moved
+down, so whatever you were reading slid away line by line. Reading a tool card through a live
+turn was impossible.
+
+`Transcript` now carries a `follow` flag:
+
+* scrolling up (wheel, PageUp, `Up`, scrollbar drag, `scroll_top`) clears it;
+* reaching the bottom (`scroll_down` to 0, `End`, `jump_bottom`, a drag to the last line) sets it;
+* `on_render(total, max_scroll)` — called from `render_transcript` — pins `scroll` to 0 while
+  following, and otherwise adds the frame's growth to `scroll` so the **same absolute line stays
+  at the top**. Content shorter than the screen has nowhere to scroll to, so it is following by
+  definition.
+
+Four tests in `unit_message_handler` cover the drift, the re-arm after reaching the bottom, and
+the fits-on-screen case. Recorded as **D22** in `PLAN.md` §P7.
+
+---
+
+## Session -- 2026-09-16g -- The chrome L1 left behind: a dead click, four models, four doors
+
+**Next session starts here:** the small stuff is done. **What remains of P7-L2** is the two
+surfaces that read the index `crates/kn9t-tui/src/file_index.rs` already maintains: the left
+explorer tree (D3) and the centre-top viewer (D4/D5, with `m` and `d`). The `@` finder is **done**
+(`App::sync_mention` / `handle_mention_key`, `render_mention_dropdown`) — do not rebuild it. The
+explorer's column is reserved but switched off (`TUI.EXPLORER_VISIBLE = false`,
+`EXPLORER_WIDTH = 32`, `F1` unbound). One L1 deferral is still open on purpose: **no per-turn
+duration in the tool group header** — `ToolCard` carries no timing and threading
+`started_at`/`finished_at` from the SSE handler is a data-model change, not a polish pass.
+
+### The bug worth naming
+
+**The session tabs were never clickable.** `20_header.lua` registered
+`kn9t.on_click("tab_" .. s.id, ...)` for every session — and then drew all the tabs as *spans*
+inside one `text` widget. A span has no rectangle: `collect_clickable_areas` only walks widgets
+carrying `id=`, so `handle_click` had nothing to hit and every one of those handlers was dead
+code. The `+ new` button worked only because it is a separate widget.
+
+The fix is that each tab is its own widget with `id="tab_<session>"`. The underlying constraint is
+worth keeping in mind when adding chrome: **clickability is a widget property, not a styling
+one.** `chrome_layout::session_tabs_are_click_targets` now asserts the geometry *and* that a
+handler is bound to the same id, because "the label is on screen" is what a broken tab also looks
+like.
+
+Both halves of the tab bar were also the one place the `id="tabbar"` wrapper was used; it is gone,
+and nothing bound it.
+
+### Three redundancies, removed
+
+* **The model was printed on four rows at once** — the breadcrumb, the status bar, the right
+  panel's box title and the prompt frame's title. It now appears once, on the frame (D12), which
+  is the row you act in. `chrome_layout` had three assertions *locking the duplication in*
+  (`the model belongs in the breadcrumb…`, the status bar's expected strings); they are now
+  negative assertions with the reason attached.
+* **The right panel repeated the status bar** number for number: `$cost`, `t/s` and the four
+  message counts were all on both lines. The transcript section, the cost footer and the speed row
+  are gone. The context **percentage** stays on both deliberately — the status chip is a glance
+  while you type, the panel is what you open to decide, and a gauge without its number beside it
+  is not readable — so what the 34 columns now hold is the gauge and the token breakdown, which a
+  single status row has no room for.
+* **Four doors to "new session"** (`+ new`, Ctrl+N, `/new`, plus a selectable row pinned at index 0
+  of the session *picker*). The picker row is gone. It was also the cause of a small oddity: a
+  filter matching nothing still left "New session" selected, so Enter created one instead of doing
+  nothing. Index 0 is now the first matching session, and the picker's `Delete`/`Enter` arithmetic
+  lost its `- 1` offsets.
+
+### Dead code that shipped
+
+* **`assets/default_tui.lua` was still in the tree with nothing pointing at it.** `DEFAULT_TUI_LUA`
+  had been deleted in L1; the file was not. `tests/unit_lua_default_config.rs` still imported the
+  constant, so **`cargo test -p kn9t-tui` did not compile** — the one red test 2026-09-16f recorded
+  was not the `file_index::a_root_gitignore_contributes_plain_names` it named. The test now reads
+  `builtin_source()`, and the file is deleted. `AGENTS.md` §11.1 described it as "the legacy
+  single-file form, still fully supported", which is what kept it alive: a single-file
+  `~/.kn9t/tui.lua` *is* still supported, but it is **generated** by concatenating the catalogue
+  (`builtin_source()`), so there is no second source to keep in sync.
+* **The `welcome` native view was unreachable.** `NATIVE_VIEWS` advertised it and
+  `render_native_view` drew it, but the welcome screen is chosen by `App::screen` before Lua runs —
+  a config that placed `view="welcome"` inside the chat layout got a centred logo in the
+  transcript. Removed from `NATIVE_VIEWS` and from the arm. (`render_welcome` itself stays; it is
+  `Screen::Welcome`'s renderer.)
+
+### The L1 deferral that was cheap
+
+**Overlays are now positioned, not just framed** (deferral 3): the command palette is pinned to the
+top row — VS Code's quick-open position, clamped so a short terminal keeps the whole box — and
+`Overlay::Help` takes the full screen. The model and session pickers stay centred; help is a wall
+of reference text and a dialog is not.
+
+### Verified
+
+Static review only — the tree could not be built in this session (the build ran on the same
+machine as a live `kn9t-tui`). What to run first:
+
+```
+cargo test -p kn9t-tui            # was not compiling before this session
+cargo test --workspace
+cargo clippy --workspace --all-targets
+```
+
+`chrome_layout` gained `session_tabs_are_click_targets` (10 tests) and lost none. The palette and
+help overlays were repositioned against the existing golden tests
+(`golden_help_overlay_renders` renders `Overlay::Help` at 60x15 and only asserts its headings, so
+full-screen is safe for it).
+
+---
+
+
 
 **Next session starts here:** the **TUI reasoning display** is not started (the user is editing
 the TUI in parallel, which is why one `kn9t-tui` test is red — see below). Everything else here

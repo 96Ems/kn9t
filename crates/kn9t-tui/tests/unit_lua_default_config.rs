@@ -3,9 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use kn9t_tui::lua::default_config::{
-    export_config, ExportOutcome, DEFAULT_TUI_LUA,
-};
+use kn9t_tui::lua::default_config::{builtin_source, export_config, ExportOutcome};
 use kn9t_tui::lua::LuaRuntime;
 
 // ── local helpers ─────────────────────────────────────────────────────────────
@@ -76,7 +74,7 @@ fn publish_focused(rt: &LuaRuntime, focused: &str) {
 #[test]
 fn embedded_default_is_not_empty() {
     assert!(
-        DEFAULT_TUI_LUA.len() > 500,
+        builtin_source().len() > 500,
         "default config looks truncated"
     );
 }
@@ -84,11 +82,11 @@ fn embedded_default_is_not_empty() {
 #[test]
 fn embedded_default_defines_the_entry_points() {
     assert!(
-        DEFAULT_TUI_LUA.contains("function render_ui"),
+        builtin_source().contains("function render_ui"),
         "built-in must own the layout"
     );
     assert!(
-        DEFAULT_TUI_LUA.contains("function render_status"),
+        builtin_source().contains("function render_status"),
         "built-in must own the status bar"
     );
 }
@@ -266,7 +264,7 @@ fn missing_user_config_is_not_an_error() {
 fn export_writes_the_builtin() {
     let p = temp_path("export");
     assert_eq!(export_config(&p, false), ExportOutcome::Written);
-    assert_eq!(std::fs::read_to_string(&p).unwrap(), DEFAULT_TUI_LUA);
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), builtin_source());
     std::fs::remove_dir_all(p.parent().unwrap()).ok();
 }
 
@@ -280,7 +278,7 @@ fn export_refuses_to_clobber_without_force() {
     assert_eq!(std::fs::read_to_string(&p).unwrap(), "-- mine");
 
     assert_eq!(export_config(&p, true), ExportOutcome::Written);
-    assert_eq!(std::fs::read_to_string(&p).unwrap(), DEFAULT_TUI_LUA);
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), builtin_source());
 
     std::fs::remove_dir_all(p.parent().unwrap()).ok();
 }
@@ -369,7 +367,10 @@ fn placement_routes_a_view_to_the_main_column() {
                 cols: None,
             },
         });
-        publish_focused(&rt, "");
+        // A `main`-zone view is hidden until it is focused (or `TUI.show.main_plugins` is
+        // turned on), which is what stops a plugin from seizing the centre column. Focus it,
+        // then the placement is observable.
+        publish_focused(&rt, "demo");
         let root = match rt.build_ui_outcome(area.width, area.height) {
             UiOutcome::Ok(w) => w,
             other => panic!("built-in did not build: {other:?}"),

@@ -16,7 +16,7 @@ use crate::config::ThemeSection;
 ///
 /// The values are the mascot's own colours, quantised to what a terminal can show. They are
 /// defined once here because `Theme` is the single source `kn9t.theme` publishes to Lua — a
-/// second literal in `default_tui.lua` is how a slot ends up meaning two things.
+/// second literal in `00_theme.lua` is how a slot ends up meaning two things.
 mod palette {
     use ratatui::style::Color;
 

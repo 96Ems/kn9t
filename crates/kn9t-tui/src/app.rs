@@ -25,7 +25,7 @@ use crate::model_selector::ModelSelector;
 use crate::prompt_history::PromptHistory;
 use crate::prompt_stash::PromptStash;
 use crate::search::SearchState;
-use crate::session_manager::{session_matches, SessionManager};
+use crate::session_manager::SessionManager;
 use crate::slash::{fuzzy_match, SlashState};
 use crate::token_tracker::TokenTracker;
 use crate::ui::render::render;
@@ -372,6 +372,18 @@ pub struct ThinkingHitArea {
     pub x_end: u16,
 }
 
+/// Hit area for one explorer row, so a click selects it and a directory toggles (D4).
+#[derive(Debug, Clone)]
+pub struct ExplorerHit {
+    /// Path relative to the index root — the key the row is looked up by.
+    pub path: String,
+    pub is_dir: bool,
+    /// Screen Y of the row.
+    pub y: u16,
+    pub x_start: u16,
+    pub x_end: u16,
+}
+
 /// Main app state.
 pub struct App {
     pub config: Config,
@@ -395,6 +407,16 @@ pub struct App {
     pub file_index: crate::file_index::FileIndex,
     /// `@path` mention completion (PLAN §P7 L2 / D19).
     pub mention: crate::mention::MentionState,
+    /// The file explorer column (PLAN §P7 L2 / D3), a native view over `file_index`.
+    pub explorer: crate::explorer::ExplorerState,
+    /// The read-only file viewer (PLAN §P7 L2 / D4/D5), opened from the explorer.
+    pub viewer: Option<crate::viewer::ViewerState>,
+    /// Row hit areas recorded while drawing the explorer, for click-to-select.
+    pub explorer_hit_areas: Vec<ExplorerHit>,
+    /// Rect the explorer was drawn in, for mouse hit-testing.
+    pub explorer_area: Option<(u16, u16, u16, u16)>,
+    /// Rect the viewer was drawn in, for mouse scrolling.
+    pub viewer_area: Option<(u16, u16, u16, u16)>,
 
     /// Tools available this session, as reported by `GET /tools`.
     pub tools: Vec<ToolEntry>,
@@ -579,6 +601,11 @@ impl App {
             slash: SlashState::new(),
             file_index: crate::file_index::FileIndex::new(),
             mention: crate::mention::MentionState::new(),
+            explorer: crate::explorer::ExplorerState::new(),
+            viewer: None,
+            explorer_hit_areas: Vec::new(),
+            explorer_area: None,
+            viewer_area: None,
             quit: false,
             theme_mode,
             tool_mode: false,
@@ -1469,6 +1496,11 @@ impl App {
                     }
                 }
             }
+
+            // One place, once per turn: the index, the explorer tree and the `@` dropdown all
+            // read the same walk (PLAN §P7 L2 / D6). Doing it here rather than in the render
+            // path keeps "the input/index changed" and "the views changed" together.
+            self.sync_index_views();
         }
 
         // Release lease on exit (uses current session_id).
@@ -1499,6 +1531,20 @@ impl App {
         if self.overlay.is_some() {
             crate::log!("  -> overlay handler");
             self.handle_overlay_key(key, tx);
+            return;
+        }
+
+        // The explorer owns the keyboard while focused (PLAN §P7 L2 / D3). Placed after
+        // overlays (a modal is strictly on top) and before the input, so its arrows and Enter
+        // do not type into the prompt. F1/F3 are not consumed here, so they still reach the
+        // keybind matcher and toggle the panel.
+        if self.explorer.is_focused() && self.handle_explorer_key(key) {
+            return;
+        }
+
+        // The viewer owns the keyboard while focused (D4: `c` comments on a line/range).
+        // F3 is not consumed here, so it still reaches the keybind matcher and closes it.
+        if self.viewer.as_ref().is_some_and(|v| v.focused) && self.handle_viewer_key(key) {
             return;
         }
 
@@ -2167,16 +2213,19 @@ impl App {
                 );
 
                 // Get filtered sessions for bounds checking.
-                // Selection index 0 = "New session", 1+ = filtered sessions.
                 // 96E-53: same order as the renderer (tree order, branches under their
                 // parent) via the shared `picker_order` — 96E-19's rule that these two
                 // must never compute the list independently.
+                //
+                // There is no "New session" row any more (it duplicated `+ new`, Ctrl+N
+                // and `/new`), so index 0 is the first matching session and nothing here
+                // has to offset by one.
                 let filtered: Vec<usize> =
                     crate::session_tree::picker_order(&self.session.sessions, filter)
                         .into_iter()
                         .map(|(idx, _)| idx)
                         .collect();
-                let total_selectable = 1 + filtered.len(); // "New session" + filtered sessions
+                let total_selectable = filtered.len();
 
                 match key.code {
                     KeyCode::Esc => {
@@ -2191,7 +2240,7 @@ impl App {
                         }
                     }
                     KeyCode::Down => {
-                        if *selected < total_selectable.saturating_sub(1) {
+                        if *selected + 1 < total_selectable {
                             *selected += 1;
                         } else {
                             *selected = 0;
@@ -2199,39 +2248,27 @@ impl App {
                     }
                     KeyCode::Backspace => {
                         filter.pop();
-                        // 96E-19: when the filter matches, highlight the FIRST match
-                        // (not "New session") so Enter opens it — previously typing a
-                        // filter then Enter always created a new session.
-                        let matches = self
-                            .session
-                            .sessions
-                            .iter()
-                            .any(|s| session_matches(s, filter));
-                        *selected = if matches { 1 } else { 0 };
+                        // 96E-19: as soon as a filter is typed, highlight the first match
+                        // so Enter opens it rather than creating something.
+                        *selected = 0;
                     }
                     KeyCode::Char(c) => {
                         filter.push(c);
-                        let matches = self
-                            .session
-                            .sessions
-                            .iter()
-                            .any(|s| session_matches(s, filter));
-                        *selected = if matches { 1 } else { 0 };
+                        *selected = 0;
                     }
                     KeyCode::Delete => {
-                        // Delete selected session (not "New session" which is index 0).
-                        if *selected > 0 {
-                            if let Some(&session_idx) = filtered.get(*selected - 1) {
-                                let session_id = self.session.sessions[session_idx].id.clone();
-                                crate::log!("  SessionSelect: DELETE session {}", session_id);
-                                if let Some(client) = &self.client {
-                                    if client.delete_session(&session_id).is_ok() {
-                                        // Remove from local list.
-                                        self.session.sessions.remove(session_idx);
-                                        // Adjust selection if needed.
-                                        if *selected >= total_selectable {
-                                            *selected = total_selectable.saturating_sub(2);
-                                        }
+                        // Delete the selected session.
+                        if let Some(&session_idx) = filtered.get(*selected) {
+                            let session_id = self.session.sessions[session_idx].id.clone();
+                            crate::log!("  SessionSelect: DELETE session {}", session_id);
+                            if let Some(client) = &self.client {
+                                if client.delete_session(&session_id).is_ok() {
+                                    // Remove from local list.
+                                    self.session.sessions.remove(session_idx);
+                                    // The list just got one shorter; keep the selection on
+                                    // the row that is now last instead of past the end.
+                                    if *selected > total_selectable.saturating_sub(2) {
+                                        *selected = total_selectable.saturating_sub(2);
                                     }
                                 }
                             }
@@ -2239,23 +2276,9 @@ impl App {
                     }
                     KeyCode::Enter => {
                         crate::log!("  SessionSelect: ENTER pressed, selected={}", *selected);
-                        let is_new = *selected == 0;
-                        let target_idx = if !is_new {
-                            filtered.get(*selected - 1).copied()
-                        } else {
-                            None
-                        };
+                        let target = filtered.get(*selected).copied();
                         self.overlay = None;
-                        if is_new {
-                            crate::log!("  SessionSelect: creating new session");
-                            self.reset_session_state();
-                            if let Err(e) = self.create_new_session(tx.clone()) {
-                                self.transcript.push(Message::new(
-                                    "error",
-                                    format!("Failed to create session: {}", e),
-                                ));
-                            }
-                        } else if let Some(session_idx) = target_idx {
+                        if let Some(session_idx) = target {
                             if session_idx < self.session.sessions.len() {
                                 let new_session = self.session.sessions[session_idx].id.clone();
                                 self.switch_to_session(&new_session, tx.clone());
@@ -2772,6 +2795,19 @@ impl App {
                     self.enter_tool_mode();
                 }
             }
+            Action::ToggleExplorer => {
+                // Opening also focuses: "show me the files" is the same intent as "let me walk
+                // the files". Closing releases the keyboard with it.
+                if self.explorer.toggle() {
+                    self.explorer.sync(&self.file_index);
+                }
+                self.invalidate_lua_ui();
+            }
+            Action::CloseViewer => {
+                if self.viewer.take().is_some() {
+                    self.invalidate_lua_ui();
+                }
+            }
             Action::Paste => {
                 // Bracketed paste handles text; this is fallback for images only.
                 crate::log!("ACTION: Paste triggered, trying image paste");
@@ -2987,6 +3023,18 @@ impl App {
                 self.scrollbar_dragging = false;
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                // The explorer owns clicks inside its column (D4): select, then toggle a
+                // directory or open a file in the viewer.
+                if self.handle_explorer_click(mouse.column, mouse.row) {
+                    return;
+                }
+                // Clicking a line in the viewer puts the cursor on it (D4).
+                if self.handle_viewer_click(mouse.column, mouse.row) {
+                    self.explorer.blur();
+                    return;
+                }
+                // A click outside the column releases its keyboard focus.
+                self.explorer.blur();
                 // Check if clicking on scrollbar
                 if self.handle_scrollbar_click(mouse.column, mouse.row) {
                     return;
@@ -3000,6 +3048,10 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp => {
+                // The viewer scrolls under the wheel without taking the keyboard.
+                if self.scroll_viewer_at(mouse.column, mouse.row, true) {
+                    return;
+                }
                 // Check if scrolling over a tool card (both X and Y must be inside card)
                 if let Some(call_id) = self.find_tool_at(mouse.column, mouse.row) {
                     // Scroll within tool output
@@ -3014,6 +3066,10 @@ impl App {
                 self.transcript.scroll_up(3);
             }
             MouseEventKind::ScrollDown => {
+                // The viewer scrolls under the wheel without taking the keyboard.
+                if self.scroll_viewer_at(mouse.column, mouse.row, false) {
+                    return;
+                }
                 // Check if scrolling over a tool card (both X and Y must be inside card)
                 if let Some(call_id) = self.find_tool_at(mouse.column, mouse.row) {
                     // Scroll within tool output
@@ -3044,6 +3100,76 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Handle a click inside the explorer column. Returns true when it was consumed.
+    ///
+    /// Clicking anywhere in the column focuses it; clicking a row selects it and then does the
+    /// D4 thing: a directory toggles, a file opens in the viewer.
+    fn handle_explorer_click(&mut self, x: u16, y: u16) -> bool {
+        let Some((ax, ay, aw, ah)) = self.explorer_area else {
+            return false;
+        };
+        if x < ax || x >= ax + aw || y < ay || y >= ay + ah {
+            return false;
+        }
+        self.explorer.focus();
+
+        let hit = self
+            .explorer_hit_areas
+            .iter()
+            .find(|h| h.y == y && x >= h.x_start && x < h.x_end)
+            .cloned();
+        if let Some(hit) = hit {
+            if let Some(i) = self.explorer.rows().iter().position(|r| r.path == hit.path) {
+                self.explorer.select(i);
+            }
+            if hit.is_dir {
+                let _ = self.explorer.activate(&self.file_index);
+            } else {
+                self.open_viewer(&hit.path);
+            }
+        }
+        true
+    }
+
+    /// Focus the viewer and put the cursor on the clicked line. Returns true when consumed.
+    fn handle_viewer_click(&mut self, x: u16, y: u16) -> bool {
+        let Some((vx, vy, vw, vh)) = self.viewer_area else {
+            return false;
+        };
+        if x < vx || x >= vx + vw || y < vy || y >= vy + vh {
+            return false;
+        }
+        let Some(viewer) = self.viewer.as_mut() else {
+            return false;
+        };
+        viewer.focus();
+        // The panel draws a one-cell border; the gutter shifts columns, not rows.
+        let inner_y = vy + 1;
+        if y >= inner_y {
+            viewer.set_cursor(viewer.scroll + (y - inner_y) as usize);
+        }
+        true
+    }
+
+    /// Scroll the file viewer when the wheel is over it. Returns true when consumed.
+    fn scroll_viewer_at(&mut self, x: u16, y: u16, up: bool) -> bool {
+        let Some((vx, vy, vw, vh)) = self.viewer_area else {
+            return false;
+        };
+        if x < vx || x >= vx + vw || y < vy || y >= vy + vh {
+            return false;
+        }
+        let Some(viewer) = self.viewer.as_mut() else {
+            return false;
+        };
+        if up {
+            viewer.scroll_up(3);
+        } else {
+            viewer.scroll_down(3);
+        }
+        true
     }
 
     /// Find tool call_id if mouse Y is within a tool's content area.
@@ -3414,16 +3540,191 @@ impl App {
         }
     }
 
-    /// Keep the `@` dropdown in step with the input (PLAN §P7 L2).
+    /// Bring the views that read the file index in step with the session (PLAN §P7 L2).
     ///
-    /// The index refresh is a no-op unless the session cwd changed (it compares the root), so
-    /// this is affordable on every keystroke — and calling it here rather than from the render
-    /// path keeps "the input changed" and "the dropdown changed" in one place.
-    fn sync_mention(&mut self) {
-        if let Some(cwd) = self.session.state.cwd.clone() {
-            self.file_index.refresh(std::path::Path::new(&cwd));
+    /// Called once per event-loop turn, not from the render path: the index refresh is a no-op
+    /// unless the session cwd changed, `explorer.sync` re-flattens only when the expansion set
+    /// did, and the mention search short-circuits when the cursor is not in an `@token`.
+    fn sync_index_views(&mut self) {
+        // The index root is where the user launched the TUI, **not** the server's session cwd.
+        // The explorer and the viewer read *local* files, so the launch directory is the one
+        // the user is actually sitting in; the session cwd can be resolved server-side and name
+        // a path this machine cannot see. It is also the only root the welcome screen has.
+        // `refresh` is a no-op unless the root changed, so this is one `getcwd` per turn.
+        if let Ok(root) = std::env::current_dir() {
+            self.file_index.refresh(&root);
         }
+        self.explorer.sync(&self.file_index);
         self.mention.sync(&self.file_index, &self.input, self.cursor_col);
+    }
+
+    /// Force the Lua layout to be rebuilt next frame.
+    ///
+    /// Needed whenever host state that `render_ui` reads changes without a fingerprint field
+    /// moving: opening the viewer, or toggling the explorer column.
+    fn invalidate_lua_ui(&self) {
+        if let Some(rt) = self.lua_runtime.as_ref() {
+            rt.invalidate_ui();
+        }
+    }
+
+    /// Keys for the focused explorer. Returns true when the key was consumed.
+    ///
+    /// Arrows navigate; Left collapses or walks to the parent; Right/Enter expands a directory
+    /// or opens a file in the viewer (D4); `m` inserts the `@path` mention; Esc releases the
+    /// keyboard without closing the column.
+    fn handle_explorer_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Up => {
+                self.explorer.select_prev();
+                true
+            }
+            KeyCode::Down => {
+                self.explorer.select_next();
+                true
+            }
+            KeyCode::Home => {
+                self.explorer.select_first();
+                true
+            }
+            KeyCode::End => {
+                self.explorer.select_last();
+                true
+            }
+            KeyCode::Left => {
+                self.explorer.collapse_or_parent(&self.file_index);
+                true
+            }
+            KeyCode::Right | KeyCode::Enter => {
+                if let crate::explorer::Activate::File(path) =
+                    self.explorer.activate(&self.file_index)
+                {
+                    self.open_viewer(&path);
+                }
+                true
+            }
+            KeyCode::Char('m') => {
+                self.mention_selected_file();
+                true
+            }
+            KeyCode::Esc => {
+                // Same as F1 on a focused explorer: close it. (It stays visible by default, so
+                // reopening is one key away.)
+                self.explorer.close();
+                self.invalidate_lua_ui();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Open `rel` (relative to the workspace root) in the read-only viewer (D4/D5).
+    fn open_viewer(&mut self, rel: &str) {
+        let Some(root) = self.file_index.root().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        match crate::viewer::ViewerState::open(&root, rel) {
+            Ok(viewer) => {
+                crate::log!("viewer: {} ({} lines)", viewer.path(), viewer.line_count());
+                self.viewer = Some(viewer);
+                // The viewer takes the keyboard from the explorer: the user opened a file to
+                // read/comment on it, not to keep walking the tree.
+                self.explorer.blur();
+                self.invalidate_lua_ui();
+            }
+            Err(e) => {
+                crate::log!("viewer: {e}");
+                self.transcript.push_system(format!("viewer: {e}"));
+            }
+        }
+    }
+
+    /// Insert text at the input cursor.
+    fn insert_into_input(&mut self, text: &str) {
+        let pos = self.cursor_pos();
+        self.input.insert_str(pos, text);
+        self.cursor_col += text.chars().count();
+    }
+
+    /// Insert the selected file as an `@path` mention at the cursor (D4 / D19).
+    fn mention_selected_file(&mut self) {
+        let Some(path) = self.explorer.selected_file().map(str::to_string) else {
+            return;
+        };
+        let inserted = format!("@{path}");
+        self.insert_into_input(&inserted);
+        self.explorer.blur();
+    }
+
+    /// Keys for the focused viewer. Returns true when consumed.
+    ///
+    /// `j`/`k` move the line cursor, `v` opens a range, `c` drops the `@path:lines` reference
+    /// into the prompt so a comment can be typed straight after it (D4).
+    fn handle_viewer_key(&mut self, key: KeyEvent) -> bool {
+        if self.viewer.is_none() {
+            return false;
+        }
+        match key.code {
+            KeyCode::Char('c') => {
+                let reference = self.viewer.as_ref().map(|v| v.reference()).unwrap_or_default();
+                if !reference.is_empty() {
+                    self.insert_into_input(&reference);
+                }
+                if let Some(v) = self.viewer.as_mut() {
+                    v.blur();
+                }
+                true
+            }
+            KeyCode::Esc => {
+                if let Some(v) = self.viewer.as_mut() {
+                    v.blur();
+                }
+                true
+            }
+            KeyCode::Char('v') => {
+                if let Some(v) = self.viewer.as_mut() {
+                    v.toggle_selection();
+                }
+                true
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(v) = self.viewer.as_mut() {
+                    v.move_cursor(-1);
+                }
+                true
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(v) = self.viewer.as_mut() {
+                    v.move_cursor(1);
+                }
+                true
+            }
+            KeyCode::PageUp => {
+                if let Some(v) = self.viewer.as_mut() {
+                    v.move_cursor(-10);
+                }
+                true
+            }
+            KeyCode::PageDown => {
+                if let Some(v) = self.viewer.as_mut() {
+                    v.move_cursor(10);
+                }
+                true
+            }
+            KeyCode::Home => {
+                if let Some(v) = self.viewer.as_mut() {
+                    v.set_cursor(0);
+                }
+                true
+            }
+            KeyCode::End => {
+                if let Some(v) = self.viewer.as_mut() {
+                    v.set_cursor(usize::MAX);
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Handle keys while the mention dropdown is open. Returns true if handled.

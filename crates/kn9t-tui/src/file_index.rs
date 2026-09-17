@@ -146,6 +146,20 @@ impl FileIndex {
         idx
     }
 
+    /// Like [`from_paths`](Self::from_paths), but for a named root.
+    ///
+    /// A consumer that compares the index root (the explorer resets its expansion set when the
+    /// workspace changes) needs the root set, and a test should not have to walk a filesystem
+    /// to get one.
+    pub fn from_paths_at<P: Into<PathBuf>, I: IntoIterator<Item = String>>(
+        root: P,
+        paths: I,
+    ) -> Self {
+        let mut idx = Self::from_paths(paths);
+        idx.root = Some(root.into());
+        idx
+    }
+
     /// Fill the arenas from a sorted path list, carrying frecency forward for paths that
     /// still exist.
     fn install(&mut self, sorted: &[String], previous: &[(String, u32, u32)]) {

@@ -10,6 +10,12 @@
 #
 # Docs: https://opencode.ai/docs/go/  https://opencode.ai/docs/zen/
 
+# Optional top-level keys (must precede every [table]).
+# `default_model`: the default for new sessions. `title_model`: the model that names a session;
+# defaults to `default_model` when set, otherwise the session's own model. `provider:id` or id.
+# default_model = "opencode-go:deepseek-v4.1-flash"
+# title_model   = "opencode-go:deepseek-v4.1-flash"
+
 # ══════════════════════════════════════════════════════════════════════════════
 # OpenCode Go — $10/mo subscription, open-source models
 # Limits: $12/5h · $30/week · $60/month

@@ -1,4 +1,4 @@
-use kn9t_tui::hyperlinks::{file_url, hyperlink};
+use kn9t_tui::hyperlinks::file_url;
 
 #[test]
 fn test_file_url_unix() {

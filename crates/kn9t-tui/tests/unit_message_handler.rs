@@ -29,6 +29,68 @@ fn test_transcript_scroll() {
 }
 
 #[test]
+fn test_scrolling_up_stops_auto_scroll() {
+    let mut transcript = Transcript::new();
+    assert!(transcript.is_following(), "a fresh transcript follows the tail");
+
+    // Render a transcript that overflows the viewport: 100 lines, 20 visible.
+    transcript.on_render(100, 80);
+    assert!(transcript.is_following());
+
+    transcript.scroll_up(10);
+    assert!(!transcript.is_following(), "scrolling up must stop the follow");
+    assert_eq!(transcript.scroll(), 10);
+
+    // Reaching the bottom by scrolling down restores it.
+    transcript.scroll_down(10);
+    assert!(transcript.is_following());
+    assert_eq!(transcript.scroll(), 0);
+}
+
+#[test]
+fn test_a_scrolled_up_view_does_not_drift_as_content_grows() {
+    let mut transcript = Transcript::new();
+    // Frame 1: 100 lines, 20 visible → max scroll 80.
+    transcript.on_render(100, 80);
+    transcript.scroll_up(10);
+    transcript.on_render(100, 80);
+
+    // The top line on screen is `max_scroll - scroll` = 70.
+    let top_before = 80 - transcript.scroll();
+
+    // Frame 2: a streaming turn adds 30 lines.
+    transcript.on_render(130, 110);
+
+    // The offset from the bottom grew by exactly the growth, so the same absolute line is
+    // still at the top instead of the view having slid down by 30 lines.
+    let top_after = 110 - transcript.scroll();
+    assert_eq!(top_after, top_before, "the view must stay anchored to its content");
+    assert!(!transcript.is_following(), "growing content must not re-enable follow");
+}
+
+#[test]
+fn test_following_pins_to_the_bottom_as_content_grows() {
+    let mut transcript = Transcript::new();
+    transcript.on_render(100, 80);
+    assert!(transcript.is_following());
+
+    transcript.on_render(130, 110);
+    assert_eq!(transcript.scroll(), 0, "following keeps the newest line in view");
+    assert!(transcript.is_following());
+}
+
+#[test]
+fn test_content_that_fits_the_screen_is_always_following() {
+    let mut transcript = Transcript::new();
+    // The user tries to scroll up, but there is nowhere to go: max_scroll is 0.
+    transcript.scroll_up(10);
+    transcript.on_render(10, 0);
+
+    assert_eq!(transcript.scroll(), 0);
+    assert!(transcript.is_following(), "no overflow means the view is at the bottom");
+}
+
+#[test]
 fn test_transcript_push_messages() {
     let mut transcript = Transcript::new();
 

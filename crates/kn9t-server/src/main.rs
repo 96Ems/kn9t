@@ -46,6 +46,7 @@ fn run() -> std::io::Result<()> {
             provider_hosts: Vec::new(),
             models: Vec::new(),
             default_model_id: None,
+            title_model_id: None,
             idle_exit: None,
             timeouts: config::ServerTimeouts::default(),
             policy_mode: config::PolicyMode::default(),
@@ -138,6 +139,12 @@ fn run() -> std::io::Result<()> {
             state = state.with_provider(p);
         }
         state = state.with_default_model(spec.clone());
+    }
+
+    // Titling model: `title_model` if configured, else the default model.
+    if let Some(spec) = config::pick_title_model(&resolved) {
+        kn9t_server::log!("title model: {}:{}", spec.r#ref.provider, spec.r#ref.id);
+        state = state.with_title_model(spec);
     }
     state.set_models(resolved.models.clone());
     *state

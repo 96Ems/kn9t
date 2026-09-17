@@ -150,6 +150,8 @@ pub struct ServerState {
     pub providers: RwLock<std::collections::HashMap<String, Arc<dyn Provider>>>,
     /// Default model spec for new sessions and titling. `RwLock` for hot-reload.
     pub default_model: RwLock<Option<ModelSpec>>,
+    /// Model used to title sessions (config `title_model` / explicit `default_model`).
+    pub title_model: RwLock<Option<ModelSpec>>,
     /// ADR-0008 -- turns a policy plugin's `Ask` into a `Decision`. Not a decider: the
     /// judgement already happened in the plugin. `RwLock` so a non-interactive run can swap
     /// in the deny-on-ask adapter at startup.
@@ -289,6 +291,7 @@ impl ServerState {
             provider: RwLock::new(None),
             providers: RwLock::new(std::collections::HashMap::new()),
             default_model: RwLock::new(None),
+            title_model: RwLock::new(None),
             approver: std::sync::RwLock::new(approver),
             approval_registry,
             approval_cache,
@@ -1025,6 +1028,16 @@ impl ServerState {
             );
         }
 
+        // `title_model` change applies to the next title; call before `set_models` moves them.
+        if let Some(spec) = crate::config::pick_title_model(&resolved) {
+            *self.title_model.write().expect("title_model poisoned") = Some(spec.clone());
+            crate::log!(
+                "config-reload: title model {}:{}",
+                spec.r#ref.provider,
+                spec.r#ref.id
+            );
+        }
+
         self.set_models(resolved.models);
 
         *safe_expect!(self.provider_hosts.lock(), "provider_hosts poisoned") = resolved.provider_hosts;
@@ -1114,6 +1127,19 @@ impl ServerState {
     pub fn with_default_model(self, m: ModelSpec) -> Self {
         *self.default_model.write().expect("default_model poisoned") = Some(m);
         self
+    }
+
+    pub fn with_title_model(self, m: ModelSpec) -> Self {
+        *self.title_model.write().expect("title_model poisoned") = Some(m);
+        self
+    }
+
+    /// Snapshot the configured title model, if any.
+    pub fn title_model_snapshot(&self) -> Option<ModelSpec> {
+        self.title_model
+            .read()
+            .expect("title_model poisoned")
+            .clone()
     }
 
     /// Snapshot the titling/fallback provider. Clones the `Arc` out so no guard is

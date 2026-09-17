@@ -105,11 +105,19 @@ pub fn build_request(
         body["tools"] = json!(tools_json);
     }
 
-    // Reasoning / thinking quirk. `Off` sends nothing: omitting the field means "no
-    // reasoning", where a substituted value silently forces it on.
+    // Reasoning / thinking quirk. On the effort-based path an `Off` turn sends
+    // `reasoning_effort: "none"`: omitting the field leaves reasoning at the model's default,
+    // which is **on** for models like DeepSeek. That ate the whole output budget and returned
+    // an empty message — the auto-title case (`finish_reason: length`, no content). A gateway
+    // that rejects `"none"` is configured `quirks.reasoning = "none"` instead, which sends
+    // nothing at all.
     match quirks.reasoning.as_str() {
         "reasoning_effort" => {
-            if let Some(effort) = effort_of(req.thinking) {
+            let effort = match req.thinking {
+                Thinking::Off => Some("none"),
+                other => effort_of(other),
+            };
+            if let Some(effort) = effort {
                 body["reasoning_effort"] = json!(effort);
             }
         }

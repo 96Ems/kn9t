@@ -411,23 +411,27 @@ needs something awkward, fix the API — don't ship the awkwardness.
 ### 11.1 The TUI is Lua-owned — Rust renders, Lua decides
 
 The entire screen is defined in Lua. Rust provides native views (see
-`widgets::NATIVE_VIEWS`: `transcript`, `input`, `status`, `welcome`, published to Lua as
+`widgets::NATIVE_VIEWS`: `transcript`, `input`, `status`, published to Lua as
 `kn9t.native_views`) and draws them where Lua says; **Lua owns layout, content and
 styling**. Diff review is *not* a native view — it ships as the `kn9t-git-integration`
-plugin, and `assets/default_tui.lua` says so in its own header.
+plugin, and `assets/tui/90_render.lua` says so in its own header.
 
 The goal is that a user can rice the TUI entirely from `~/.kn9t/tui.lua`, with **no
 recompile**. When you add a rendering decision, ask where it belongs: *mechanism* (markdown
 parsing, syntax highlighting, scroll maths, diff parsing, the render cache) is Rust;
 *policy* (what is shown, where, in which colour, under which key) is Lua.
 
-* **The default UI is embedded in the binary, in two layers** (`src/lua/default_config.rs`).
-  The catalogue is `crates/kn9t-tui/assets/tui/*.lua` — eight files, `00_theme.lua` …
-  `90_render.lua`, compiled in as `DEFAULT_TUI_FILES` — and it is what a fresh install
-  renders. `assets/default_tui.lua` (`DEFAULT_TUI_LUA`) is the legacy single-file form: it is
-  the hot-reload baseline and what `--print-config` / `--export-config [--force]` read and
-  write. The binary is self-contained, but the first run **does** write: an empty
-  `~/.kn9t/tui/` is seeded from the catalogue so the config is immediately editable.
+* **The default UI is the catalogue** (`crates/kn9t-tui/assets/tui/*.lua` — eight files,
+  `00_theme.lua` … `90_render.lua`, compiled in as `DEFAULT_TUI_FILES` in
+  `src/lua/default_config.rs`) and it is what a fresh install renders. **There is no second
+  copy.** A single-file `~/.kn9t/tui.lua` is still a supported *user* layout, but it is
+  generated on demand by concatenating the catalogue (`builtin_source()`), not shipped as a
+  parallel source file. The old `assets/default_tui.lua` was deleted precisely because two
+  copies drift and the drift is invisible — the catalogue and the single file had already
+  disagreed, and the contract test was asserting the one nobody rendered. `--print-config`
+  prints the concatenation; `--export-config [--force]` writes it to `~/.kn9t/tui.lua`. The
+  binary is self-contained, but the first run **does** write: an empty `~/.kn9t/tui/` is
+  seeded from the catalogue so the config is immediately editable.
 * **Startup loads `~/.kn9t/tui/*.lua`, in filename order** (non-recursive, so `00_theme.lua`
   runs before `90_render.lua`). A user file only defines what it overrides; hot-reload re-runs
   the baseline first and then the user's files, so deleting a definition restores the default
@@ -439,7 +443,7 @@ parsing, syntax highlighting, scroll maths, diff parsing, the render cache) is R
   `~/.kn9t/tui/` copy in sync. The copy on disk is what startup renders, so a stale copy
   hides your edit.
 * **A documented Lua symbol must exist at runtime.** `tests/lua_api_contract.rs` asserts that
-  every symbol named in the header of `default_tui.lua` is non-nil and callable in a booted
+  every symbol named in the header of `assets/tui/90_render.lua` is non-nil and callable in a booted
   runtime. This test exists because three documented APIs were dead at once: `render_status()`
   was never called, `kn9t.get_messages`/`kn9t.get_tools` were only installed by their own unit
   tests, and `kn9t.http` was an inert leaking no-op. **A unit test proving a function works in
@@ -594,9 +598,9 @@ The list of available views comes from `kn9t.state.plugin_views` (stable, sorted
 A broken or absent plugin still gets its slot and the error is drawn there. Blanking the area
 would look like a layout bug and hide the cause.
 
-Note "sidebar" is now only a **Lua** concept (`build_sidebar` in `default_tui.lua`). Rust's
-native views are `transcript`, `input`, `status`, `welcome` (`widgets::NATIVE_VIEWS`) — there
-is no Rust sidebar.
+Note "sidebar" is now only a **Lua** concept (`TUI.build_sidebar_right` in
+`40_sidebar_right.lua`). Rust's native views are `transcript`, `input`, `status`
+(`widgets::NATIVE_VIEWS`) — there is no Rust sidebar.
 
 ### 14.2 Reference implementation: `kn9t-ask-user`
 

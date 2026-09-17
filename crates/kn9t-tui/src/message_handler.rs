@@ -105,6 +105,12 @@ pub struct Transcript {
     live_thinking: String,
     /// Scroll position (0 = bottom, higher = scrolled up).
     scroll: usize,
+    /// Auto-scroll. While true the view is pinned to the newest line, so streaming output
+    /// arrives in view. Scrolling up clears it; returning to the bottom sets it again.
+    follow: bool,
+    /// Rendered line count from the previous frame. `on_render` uses the delta to keep a
+    /// scrolled-up view anchored to its content instead of to the bottom.
+    last_total: usize,
 }
 
 impl Transcript {
@@ -114,6 +120,8 @@ impl Transcript {
             live_delta: String::new(),
             live_thinking: String::new(),
             scroll: 0,
+            follow: true,
+            last_total: 0,
         }
     }
 
@@ -123,6 +131,8 @@ impl Transcript {
         self.live_delta.clear();
         self.live_thinking.clear();
         self.scroll = 0;
+        self.follow = true;
+        self.last_total = 0;
     }
 
     /// Get all messages.
@@ -173,26 +183,63 @@ impl Transcript {
     /// Set scroll position.
     pub fn set_scroll(&mut self, scroll: usize) {
         self.scroll = scroll;
+        // Landing at the bottom means the user is following the turn again.
+        self.follow = scroll == 0;
     }
 
     /// Scroll up by amount.
     pub fn scroll_up(&mut self, amount: usize) {
         self.scroll = self.scroll.saturating_add(amount);
+        self.follow = false;
     }
 
     /// Scroll down by amount.
     pub fn scroll_down(&mut self, amount: usize) {
         self.scroll = self.scroll.saturating_sub(amount);
+        if self.scroll == 0 {
+            self.follow = true;
+        }
     }
 
     /// Scroll to top.
     pub fn scroll_top(&mut self) {
         self.scroll = usize::MAX;
+        self.follow = false;
     }
 
     /// Scroll to bottom.
     pub fn scroll_bottom(&mut self) {
         self.scroll = 0;
+        self.follow = true;
+    }
+
+    /// Whether the view is pinned to the newest line.
+    pub fn is_following(&self) -> bool {
+        self.follow
+    }
+
+    /// Reconcile the scroll position with what was just rendered.
+    ///
+    /// While following, the view sits at the bottom (`scroll = 0`). Once the user has
+    /// scrolled up, new lines must not drag the view away: the same absolute line is kept at
+    /// the top by adding the frame's growth to the from-bottom offset. Without this, a
+    /// streaming turn pulls the view down — `scroll` is measured from the bottom, so a fixed
+    /// offset moves as the content grows, and the user loses whatever they were reading.
+    pub fn on_render(&mut self, total: usize, max_scroll: usize) {
+        if self.follow {
+            self.scroll = 0;
+        } else {
+            if total > self.last_total {
+                self.scroll = self.scroll.saturating_add(total - self.last_total);
+            }
+            self.scroll = self.scroll.min(max_scroll);
+            // Content that fits on screen has nowhere to scroll up to, so the user is at the
+            // bottom by definition and following resumes.
+            if self.scroll == 0 {
+                self.follow = true;
+            }
+        }
+        self.last_total = total;
     }
 
     /// Push a message.

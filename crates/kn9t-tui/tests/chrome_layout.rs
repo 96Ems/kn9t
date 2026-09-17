@@ -35,7 +35,7 @@ fn chat_app(tweak: impl FnOnce(&mut App)) -> App {
     let rt = LuaRuntime::new().expect("lua runtime");
     // Order matters and is not obvious: the real startup publishes the palette
     // *before* the config runs (`App::init_lua`), so `kn9t.theme` exists at the
-    // moment `default_tui.lua` builds its `C` table. Reversed, every `T.x or
+    // moment the built-in `00_theme.lua` builds its `C` table. Reversed, every `T.x or
     // "fallback"` silently takes the fallback and the frame is drawn in ANSI
     // colours the theme never chose — a wrong frame that still looks plausible.
     rt.install_environment(&Theme::dark());
@@ -161,12 +161,18 @@ fn header_is_tab_bar_over_breadcrumb() {
     assert!(tabs.contains("Provider audit"), "tab bar row: {tabs:?}");
     assert!(tabs.contains("+ new"), "tab bar row: {tabs:?}");
 
-    // Row 2: where we are. The breadcrumb is cwd, title, model.
+    // Row 2: where we are. The breadcrumb is cwd, then the session title.
     assert!(crumbs.contains("_ddm"), "breadcrumb row: {crumbs:?}");
     assert!(crumbs.contains("▸"), "breadcrumb row: {crumbs:?}");
     assert!(
-        crumbs.contains("deepseek-v4.1-flash"),
-        "the model belongs in the breadcrumb, not only in the sidebar: {crumbs:?}"
+        crumbs.contains("TUI polish"),
+        "the session title belongs in the breadcrumb: {crumbs:?}"
+    );
+    // The model is the prompt frame's title (D12). It used to be here *and* in the status
+    // bar *and* in the right panel's title *and* on the frame — four copies of one string.
+    assert!(
+        !crumbs.contains("deepseek-v4.1-flash"),
+        "the model must not be repeated in the breadcrumb: {crumbs:?}"
     );
 
     // The active tab is a solid accent block, not merely bold text.
@@ -184,9 +190,14 @@ fn status_bar_is_segmented() {
     let status = row_text(&buf, row);
     println!("status: {status:?}");
 
-    for expected in ["ctx", "$0.0842", "deepseek-v4.1-flash", "commands"] {
+    for expected in ["ctx", "$0.0842", "commands"] {
         assert!(status.contains(expected), "status bar missing {expected:?}: {status:?}");
     }
+    // The model lives on the prompt frame, not here (see `input_is_a_boxed_prompt`).
+    assert!(
+        !status.contains("deepseek-v4.1-flash"),
+        "the model must not be repeated on the status bar: {status:?}"
+    );
     // A chip has a background; a plain text line never does.
     let ok = Theme::dark().success;
     let mut with_bg = String::new();
@@ -237,10 +248,14 @@ fn input_is_a_boxed_prompt() {
     let (frame, buf) = chat_frame(190, 44, |_| {});
     assert!(frame.contains("› "), "the prompt marker moved but must still exist");
 
-    // Find the frame's top border by its corner glyph.
+    // Find the frame's top border by its corner glyph *and* its title: the sidebars are boxes
+    // too now, so "the first row with a ╭" is not the prompt.
     let top = (buf.area.top()..buf.area.bottom())
-        .find(|&y| row_text(&buf, y).contains('╭'))
-        .expect("the input is drawn as a box");
+        .find(|&y| {
+            let r = row_text(&buf, y);
+            r.contains('╭') && r.contains("deepseek-v4.1-flash")
+        })
+        .expect("the input is drawn as a box titled with the model");
     let top_row = row_text(&buf, top);
 
     assert!(
@@ -387,7 +402,149 @@ fn narrow_frame_hides_sidebars() {
     assert!(!frame.contains("usage"), "the sidebar must yield below the min width");
     assert!(
         frame.contains("deepseek-v4.1-flash"),
-        "the breadcrumb must survive at 80 columns"
+        "the prompt frame must still name the model at 80 columns"
     );
     assert!(buf.area.width == 80);
+}
+
+/// Every tab must be a real click target carrying the same `id` the Lua handler binds.
+///
+/// This is a named failure mode in this repo: `on_click("tab_<session>")` was registered for
+/// every session while the tabs were spans inside a single text node — a span has no rect,
+/// so `collect_clickable_areas` never recorded one and no click could ever reach the
+/// handler. Asserting the label is on screen proves nothing about that; this asserts the
+/// geometry *and* that a handler is bound to the same id.
+#[test]
+fn session_tabs_are_click_targets() {
+    let mut app = chat_app(|_| {});
+    let (frame, _) = draw(&mut app, 190, 44);
+    println!("\n=== tab bar ===\n{frame}");
+
+    // Bindings queued by `kn9t.on_click` during the frame are drained by the app loop.
+    let rt = app.lua_runtime.clone().expect("lua runtime");
+    rt.drain_clicks(&mut app.lua_clicks);
+
+    let tab_ids: Vec<String> = app
+        .session
+        .sessions
+        .iter()
+        .map(|s| format!("tab_{}", s.id))
+        .collect();
+    assert!(tab_ids.len() >= 2, "the fixture opens several sessions");
+
+    for id in &tab_ids {
+        let rect = app
+            .lua_click_areas
+            .iter()
+            .find(|(i, _)| i == id)
+            .map(|(_, r)| *r)
+            .unwrap_or_else(|| panic!("no clickable rect for {id}: {:?}", app.lua_click_areas));
+        assert_eq!(rect.y, 0, "{id} must be on the tab row, got {rect:?}");
+        assert!(rect.width > 0, "{id} rect: {rect:?}");
+        assert!(
+            app.lua_clicks.has(id),
+            "{id} has a rect but no Lua handler bound to it"
+        );
+    }
+
+    // And the button keeps working the same way.
+    assert!(
+        app.lua_click_areas.iter().any(|(i, _)| i == "tab_new"),
+        "the `+ new` button must stay a click target: {:?}",
+        app.lua_click_areas
+    );
+    assert!(app.lua_clicks.has("tab_new"), "`+ new` lost its handler");
+}
+
+/// The `@` finder must work on the welcome screen, not only inside a session (PLAN §P7 L2).
+///
+/// The welcome screen draws its own input rather than the native `input` view, so it needed its
+/// own dropdown call: the finder opened in a session and did nothing before one was picked.
+#[test]
+fn the_mention_dropdown_opens_on_the_welcome_screen() {
+    use kn9t_tui::file_index::FileIndex;
+
+    let mut app = chat_app(|app| {
+        app.screen = Screen::Welcome;
+        app.file_index = FileIndex::from_paths_at(
+            "C:\\work",
+            ["crates/kn9t-tui/src/app.rs", "docs/design.md"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        app.input = "@".into();
+        app.cursor_col = 1;
+        app.mention.sync(&app.file_index, &app.input, app.cursor_col);
+    });
+
+    let (frame, _) = draw(&mut app, 120, 40);
+    println!("\n=== welcome + mention ===\n{frame}");
+
+    assert!(app.mention.active, "a bare `@` must open the finder");
+    assert!(
+        frame.contains("app.rs") || frame.contains("design.md"),
+        "the welcome screen must draw the mention rows, got:\n{frame}"
+    );
+}
+
+/// The viewer must show which line `c` will reference, and mark it.
+#[test]
+fn the_viewer_marks_the_cursor_and_shows_the_reference() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut viewer = kn9t_tui::viewer::ViewerState::open(root, "Cargo.toml").expect("opens");
+    viewer.move_cursor(4); // line 5
+    let mut app = chat_app(|app| app.viewer = Some(viewer));
+
+    let (frame, buf) = draw(&mut app, 160, 44);
+    println!("\n=== viewer cursor ===\n{frame}");
+
+    assert!(
+        frame.contains("L5 · c comment"),
+        "the status line must name the line and the action, got:\n{frame}"
+    );
+    let (vx, vy, _, _) = app.viewer_area.expect("viewer rect");
+    assert_eq!(
+        buf[(vx + 1, vy + 1 + 4)].symbol(),
+        "▌",
+        "the cursor line needs a marker"
+    );
+}
+
+/// The explorer column appears when `kn9t.state.explorer_visible` is set (PLAN §P7 L2 / D3).
+#[test]
+fn the_explorer_column_appears_when_opened() {
+    let mut app = chat_app(|app| app.explorer.focus());
+    let (frame, _) = draw(&mut app, 190, 44);
+    println!("\n=== explorer ===\n{frame}");
+
+    assert!(frame.contains("files"), "the column has no title");
+    assert!(
+        app.explorer_area.is_some(),
+        "the explorer rect was not recorded, so clicks cannot hit it"
+    );
+    // An index that has not walked yet is a stated empty state, not a blank column.
+    assert!(frame.contains("(no files)"), "an empty index must say so");
+}
+
+/// The viewer stacks above the transcript and shows the file (PLAN §P7 L2 / D4/D5).
+#[test]
+fn the_viewer_stacks_above_the_transcript() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let viewer = kn9t_tui::viewer::ViewerState::open(root, "Cargo.toml")
+        .expect("the crate manifest is readable");
+
+    let mut app = chat_app(|app| app.viewer = Some(viewer));
+    let (frame, _) = draw(&mut app, 160, 44);
+    println!("\n=== viewer ===\n{frame}");
+
+    assert!(frame.contains("Cargo.toml"), "the header must name the file");
+    assert!(frame.contains("lines"), "the header must state the line count");
+    assert!(
+        frame.contains("[package]"),
+        "the file body must be drawn, got:\n{frame}"
+    );
+    assert!(
+        app.viewer_area.is_some(),
+        "the viewer rect was not recorded, so the wheel cannot scroll it"
+    );
 }

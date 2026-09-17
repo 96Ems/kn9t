@@ -65,6 +65,7 @@ mod tui {
 pub mod command_palette;
 pub mod config;
 pub mod event;
+pub mod explorer;
 pub mod file_index;
 pub mod hyperlinks;
 pub mod input_history;
@@ -87,6 +88,7 @@ pub mod theme;
 pub mod thinking;
 pub mod token_tracker;
 pub mod ui;
+pub mod viewer;
 pub mod which_key;
 pub mod wire;
 pub mod word_segmenter;

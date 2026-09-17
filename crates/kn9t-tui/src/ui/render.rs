@@ -313,7 +313,8 @@ fn render_native_view(f: &mut Frame, app: &mut App, view: &str, area: Rect, them
             }
         }
         "status" => render_status(f, app, area, theme),
-        "welcome" => render_welcome(f, app, area, theme),
+        "explorer" => render_explorer(f, app, area, theme),
+        "viewer" => render_viewer(f, app, area, theme),
         other => {
             crate::log!("Lua native view: unknown '{}'", other);
         }
@@ -365,6 +366,247 @@ fn render_plugin_views(
                 f.render_widget(para, rect);
             }
         }
+    }
+}
+
+/// The rect one cell inside `area`, where a panel's content goes.
+fn panel_inner(area: Rect) -> Rect {
+    Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    }
+}
+
+/// The file explorer column (PLAN §P7 L2 / D3).
+///
+/// Reads the flattened tree from `App::explorer` and records a hit area per drawn row, so a
+/// click selects it and the D4 action follows. Nothing here knows how the tree was built — the
+/// index does that.
+fn render_explorer(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
+    app.explorer_area = Some((area.x, area.y, area.width, area.height));
+    app.explorer_hit_areas.clear();
+
+    let inner = panel_inner(area);
+    {
+        let buf = f.buffer_mut();
+        draw_panel_border(buf, area, theme);
+        let focused = app.explorer.is_focused();
+        let label = if focused {
+            " [F1] files · m @ · Esc "
+        } else {
+            " [F1] files "
+        };
+        let fg = if focused { theme.primary } else { theme.muted };
+        buf.set_string(
+            area.x + 2,
+            area.y,
+            label,
+            Style::default().fg(fg).bg(theme.panel_bg),
+        );
+    }
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    if app.explorer.is_empty() {
+        f.buffer_mut().set_string(
+            inner.x,
+            inner.y,
+            " (no files)",
+            Style::default().fg(theme.muted),
+        );
+        return;
+    }
+
+    // Keep the selection on screen: the renderer owns the viewport, the state owns the
+    // selection, so the clamp has to happen where both are known.
+    let visible = inner.height as usize;
+    let len = app.explorer.rows().len();
+    if app.explorer.selected < app.explorer.offset {
+        app.explorer.offset = app.explorer.selected;
+    } else if app.explorer.selected >= app.explorer.offset + visible {
+        app.explorer.offset = app.explorer.selected + 1 - visible;
+    }
+    let offset = app.explorer.offset.min(len.saturating_sub(1));
+    let selected = app.explorer.selected;
+
+    let mut hits: Vec<crate::app::ExplorerHit> = Vec::new();
+    {
+        let buf = f.buffer_mut();
+        for (i, row) in app
+            .explorer
+            .rows()
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(visible)
+        {
+            let y = inner.y + (i - offset) as u16;
+            let indent = "  ".repeat(row.depth);
+            let chevron = if row.is_dir {
+                if app.explorer.is_expanded(&row.path) {
+                    '▾'
+                } else {
+                    '▸'
+                }
+            } else {
+                ' '
+            };
+            let label = format!("{indent}{chevron} {}", row.name);
+            let label: String = label.chars().take(inner.width as usize).collect();
+
+            let style = if i == selected {
+                Style::default()
+                    .fg(theme.ink)
+                    .bg(theme.primary)
+                    .add_modifier(Modifier::BOLD)
+            } else if row.is_dir {
+                Style::default().fg(theme.primary)
+            } else {
+                Style::default().fg(theme.fg)
+            };
+            buf.set_string(inner.x, y, &label, style);
+
+            hits.push(crate::app::ExplorerHit {
+                path: row.path.clone(),
+                is_dir: row.is_dir,
+                y,
+                x_start: inner.x,
+                x_end: area.x + area.width,
+            });
+        }
+    }
+    app.explorer_hit_areas = hits;
+}
+
+/// The read-only file viewer (PLAN §P7 L2 / D4/D5).
+///
+/// Line numbers in the gutter, syntax highlighting when the extension names a language. The
+/// header states the path and the line count so a truncated file says so (the viewer caps at
+/// `MAX_VIEWER_LINES`).
+fn render_viewer(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
+    app.viewer_area = Some((area.x, area.y, area.width, area.height));
+    let Some((title, focused)) = app.viewer.as_ref().map(|v| (v.title(), v.focused)) else {
+        return;
+    };
+
+    let inner = panel_inner(area);
+    {
+        let buf = f.buffer_mut();
+        draw_panel_border(buf, area, theme);
+        let hint = if focused {
+            " · j/k · v select · c comment · F3 close "
+        } else {
+            " · F3 close "
+        };
+        let label = format!("{}{hint}", title.trim_end());
+        let label: String = label.chars().take(area.width.saturating_sub(4) as usize).collect();
+        let fg = if focused { theme.primary } else { theme.muted };
+        buf.set_string(
+            area.x + 2,
+            area.y,
+            label,
+            Style::default().fg(fg).bg(theme.panel_bg),
+        );
+    }
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let Some(viewer) = app.viewer.as_mut() else {
+        return;
+    };
+    let focused = viewer.focused;
+    // The last inner row is the status line, so it states the reference about to be inserted.
+    let visible = (inner.height as usize).saturating_sub(1).max(1);
+    let max_scroll = viewer.line_count().saturating_sub(visible);
+    if viewer.scroll > max_scroll {
+        viewer.scroll = max_scroll;
+    }
+    // Keep the cursor on screen; the renderer owns the viewport.
+    if viewer.cursor < viewer.scroll {
+        viewer.scroll = viewer.cursor;
+    } else if viewer.cursor >= viewer.scroll + visible {
+        viewer.scroll = (viewer.cursor + 1).saturating_sub(visible).min(max_scroll);
+    }
+    let scroll = viewer.scroll;
+    let cursor = viewer.cursor;
+    let selection = viewer.selection();
+    let lang = viewer.lang().map(str::to_string);
+    let line_count = viewer.line_count();
+    let num_w = format!("{line_count}").len().max(3);
+    let gutter = num_w + 3;
+    let text_w = (inner.width as usize).saturating_sub(gutter);
+
+    let buf = f.buffer_mut();
+    for (i, line) in viewer.lines().iter().enumerate().skip(scroll).take(visible) {
+        let y = inner.y + (i - scroll) as u16;
+        let in_selection = selection.is_some_and(|(lo, hi)| {
+            let n = i + 1;
+            n >= lo && n <= hi
+        });
+        let row_bg = if i == cursor {
+            theme.tool_focus_bg
+        } else if in_selection {
+            theme.selection
+        } else {
+            theme.bg
+        };
+
+        // Fill the whole row: a highlight that stops where the text does reads as stray colour.
+        if row_bg != theme.bg {
+            for x in inner.x..inner.x + inner.width {
+                buf[(x, y)].set_style(Style::default().bg(row_bg));
+            }
+        }
+        // A marker column, so the cursor line is findable at a glance.
+        let marker = if i == cursor {
+            '▌'
+        } else if in_selection {
+            '│'
+        } else {
+            ' '
+        };
+        buf.set_string(
+            inner.x,
+            y,
+            marker.to_string(),
+            Style::default().fg(theme.primary).bg(row_bg),
+        );
+
+        let num = format!("{:>width$} ", i + 1, width = num_w);
+        let num_fg = if i == cursor { theme.primary } else { theme.muted };
+        buf.set_string(inner.x + 2, y, &num, Style::default().fg(num_fg).bg(row_bg));
+
+        let clipped: String = line.chars().take(text_w).collect();
+        let spans = if lang.is_some() {
+            syntax::highlight_code_inline(&clipped, lang.as_deref(), theme)
+        } else {
+            vec![Span::raw(clipped)]
+        };
+        let mut x = inner.x + gutter as u16;
+        for span in spans {
+            if x >= inner.x + inner.width {
+                break;
+            }
+            buf.set_string(x, y, &span.content, span.style.bg(row_bg));
+            x = x.saturating_add(span.content.chars().count() as u16);
+        }
+    }
+
+    // Status line: exactly what `c` would insert, so the action is never a guess.
+    if focused && inner.height >= 2 {
+        let text = match selection {
+            Some((lo, hi)) => format!("▌ L{lo}-{hi} · c comment · v clear · Esc release "),
+            None => format!("▌ L{} · c comment · v select · Esc release ", cursor + 1),
+        };
+        let text: String = text.chars().take(inner.width as usize).collect();
+        let y = inner.y + inner.height - 1;
+        for x in inner.x..inner.x + inner.width {
+            buf[(x, y)].set_style(Style::default().bg(theme.primary));
+        }
+        buf.set_string(inner.x, y, &text, Style::default().fg(theme.ink).bg(theme.primary));
     }
 }
 
@@ -636,6 +878,18 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     // Render slash command dropdown if active.
     if app.slash.active {
         render_slash_dropdown(
+            f,
+            app,
+            Rect::new(input_x, input_y + input_box_height, input_width, 8),
+            theme,
+        );
+    }
+
+    // The `@` mention dropdown, same placement as the `/` one. The welcome screen draws its own
+    // input rather than the native `input` view, so it needs its own call: without this the
+    // finder worked in a session and did nothing before one was picked (PLAN §P7 L2).
+    if app.mention.active {
+        render_mention_dropdown(
             f,
             app,
             Rect::new(input_x, input_y + input_box_height, input_width, 8),
@@ -1201,6 +1455,10 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     let visible = area.height as usize;
     let max_scroll = total.saturating_sub(visible);
 
+    // Pin to the bottom only while following; a scrolled-up view is re-anchored to its own
+    // content so a streaming turn cannot drag it away (D22).
+    app.transcript.on_render(total, max_scroll);
+
     // Clamp scroll to valid range
     let effective_scroll = app.transcript.scroll().min(max_scroll);
 
@@ -1589,20 +1847,34 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
         }
     }
 
-    // Center the overlay.
-    let overlay_w = 60.min(area.width.saturating_sub(4));
+    // D18's positions: help is a wall of reference text and wants the whole screen;
+    // everything else is a dialog and stays centred.
+    let full_screen = matches!(overlay, Overlay::Help);
+    let overlay_w = if full_screen {
+        area.width
+    } else {
+        60.min(area.width.saturating_sub(4))
+    };
     let base_overlay_h = 15u16;
 
     // Calculate dynamic height for Interaction overlays
-    let overlay_h = if let Overlay::Interaction { state, .. } = overlay {
+    let overlay_h = if full_screen {
+        area.height
+    } else if let Overlay::Interaction { state, .. } = overlay {
         let inner_w = (overlay_w.saturating_sub(4)) as usize;
         compute_interaction_height(state, inner_w, area.height.saturating_sub(4))
     } else {
         base_overlay_h.min(area.height.saturating_sub(4))
     };
 
-    let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
-    let overlay_y = area.y + (area.height.saturating_sub(overlay_h)) / 2;
+    let (overlay_x, overlay_y) = if full_screen {
+        (area.x, area.y)
+    } else {
+        (
+            area.x + (area.width.saturating_sub(overlay_w)) / 2,
+            area.y + (area.height.saturating_sub(overlay_h)) / 2,
+        )
+    };
 
     // Clear overlay area.
     for y in overlay_y..overlay_y + overlay_h {
@@ -1722,6 +1994,11 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
         }
 
         Overlay::Help => {
+            // Full screen, so its frame goes on the rect's own edge (`draw_overlay_border`
+            // would bail: a rect flush with the screen has no outside to ring). Content is
+            // kept one cell inside that frame.
+            draw_panel_border(buf, Rect::new(overlay_x, overlay_y, overlay_w, overlay_h), theme);
+
             let mut y = overlay_y + 1;
 
             let title = "HELP";
@@ -1758,18 +2035,27 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
             ];
 
             for line in help_lines {
-                if y >= overlay_y + overlay_h - 2 {
+                if y >= overlay_y + overlay_h - 1 {
                     break;
                 }
                 for (i, ch) in line.chars().enumerate() {
-                    if (overlay_x + 2 + i as u16) < overlay_x + overlay_w {
-                        buf[(overlay_x + 2 + i as u16, y)]
+                    let x = overlay_x + 2 + i as u16;
+                    if x < overlay_x + overlay_w - 1 {
+                        buf[(x, y)]
                             .set_char(ch)
                             .set_fg(theme.fg)
                             .set_bg(theme.panel_bg);
                     }
                 }
                 y += 1;
+            }
+
+            // The rest of a full-screen panel is empty space, and space that keeps the
+            // screen's own background inside the frame looks like a hole in it.
+            for yy in y..(overlay_y + overlay_h - 1) {
+                for xx in (overlay_x + 1)..(overlay_x + overlay_w - 1) {
+                    buf[(xx, yy)].set_char(' ').set_bg(theme.panel_bg);
+                }
             }
         }
 
@@ -1905,6 +2191,37 @@ fn render_mention_dropdown(f: &mut Frame, app: &App, input_area: Rect, theme: &T
         })
         .collect();
     render_completion_dropdown(f, &rows, app.mention.selected, input_area, theme);
+}
+
+/// Draw a rounded border *on* a rect's own edge (PLAN §P7 D18).
+///
+/// [`draw_overlay_border`] rings a rect from the *outside*, which is right for a dialog: its
+/// rect is sized to its content exactly, so a border drawn on the edge would eat a row. A
+/// full-screen panel has no outside — its rect *is* the screen — so the ring has to sit on
+/// the edge, which is what makes it read as a pane rather than as a box that fell off the
+/// terminal.
+fn draw_panel_border(buf: &mut Buffer, rect: Rect, theme: &Theme) {
+    if rect.width < 2 || rect.height < 2 {
+        return;
+    }
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = rect.x + rect.width - 1;
+    let y1 = rect.y + rect.height - 1;
+
+    let edge = Style::default().fg(theme.primary).bg(theme.panel_bg);
+    buf[(x0, y0)].set_char('╭').set_style(edge);
+    buf[(x1, y0)].set_char('╮').set_style(edge);
+    buf[(x0, y1)].set_char('╰').set_style(edge);
+    buf[(x1, y1)].set_char('╯').set_style(edge);
+    for x in (x0 + 1)..x1 {
+        buf[(x, y0)].set_char('─').set_style(edge);
+        buf[(x, y1)].set_char('─').set_style(edge);
+    }
+    for y in (y0 + 1)..y1 {
+        buf[(x0, y)].set_char('│').set_style(edge);
+        buf[(x1, y)].set_char('│').set_style(edge);
+    }
 }
 
 /// Draw a rounded border one cell outside an overlay's content rect (PLAN §P7 D18).
@@ -2185,14 +2502,15 @@ fn render_session_select(
     #[derive(Clone)]
     enum SessionRow<'a> {
         DateHeader(String), // "Today", "Yesterday", "Aug 27", etc.
-        NewSession,
         Session(&'a crate::session_manager::SessionEntry, usize),
     }
 
     let mut rows: Vec<SessionRow> = Vec::new();
 
-    // Add "New session" option at top.
-    rows.push(SessionRow::NewSession);
+    // No "New session" row: the tab bar's pinned `+ new` button, Ctrl+N and `/new` all
+    // create one from anywhere, so an extra selectable row at the top of a *picker* was a
+    // fourth door to the same room — and it stole index 0, so a filter that matched
+    // nothing still offered to create a session.
 
     // Group sessions by date. Only roots get a header: a branch belongs under the
     // conversation it came from, not under the day it happened to be created.
@@ -2290,26 +2608,6 @@ fn render_session_select(
                     }
                 }
                 y += 1;
-            }
-            SessionRow::NewSession => {
-                let is_selected = selectable_idx == selected;
-                let (fg, bg) = if is_selected {
-                    (theme.bg, theme.primary)
-                } else {
-                    (theme.success, theme.panel_bg)
-                };
-                let line = "  ✚ New session";
-                for (j, ch) in line.chars().enumerate() {
-                    let x = overlay_x + 2 + j as u16;
-                    if x < overlay_x + overlay_w - 2 {
-                        buf[(x, y)].set_char(ch).set_fg(fg).set_bg(bg);
-                    }
-                }
-                for x in (overlay_x + 2 + line.chars().count() as u16)..overlay_x + overlay_w - 2 {
-                    buf[(x, y)].set_char(' ').set_bg(bg);
-                }
-                y += 1;
-                selectable_idx += 1;
             }
             SessionRow::Session(session, depth) => {
                 let is_selected = selectable_idx == selected;
@@ -2765,7 +3063,10 @@ fn render_command_palette(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         .min(area.height.saturating_sub(4))
         .max(6);
     let overlay_x = area.x + (area.width.saturating_sub(overlay_w)) / 2;
-    let overlay_y = area.y + (area.height.saturating_sub(overlay_h)) / 3; // Upper third
+    // VS Code puts quick-open at the top rather than floating it mid-screen (D18): it is a
+    // jump-to, not a dialog, and the eye should not have to find it. Clamped so a short
+    // terminal still keeps the whole box on screen.
+    let overlay_y = (area.y + 1).min(area.y + area.height.saturating_sub(overlay_h));
 
     // Draw background.
     for y in overlay_y..overlay_y + overlay_h {
@@ -5005,6 +5306,13 @@ mod golden {
         assert!(
             snap.contains("HELP") || snap.contains("Navigation") || snap.contains("Actions"),
             "help overlay must contain headings, got:\n{snap}"
+        );
+        // Help is the one full-screen overlay (D18). `draw_overlay_border` bails when the
+        // rect is flush with the screen and has no outside to ring, so a full-screen panel
+        // must use `draw_panel_border` instead — without this the frame silently vanished.
+        assert!(
+            snap.contains('╭') && snap.contains('╯'),
+            "a full-screen help panel must still be framed, got:\n{snap}"
         );
     }
 }

@@ -38,7 +38,8 @@ function render_status()
     end
     block(" " .. phase .. " ", C.ink, phase_col, { bold = true })
 
-    text(" " .. (ctx.model or "no model") .. " ", C.value)
+    -- No model chip: the prompt frame's title already names it (D12), and it was also in
+    -- the breadcrumb and the right panel's title. One fact, one place.
 
     -- ── Context pressure: the number that decides when compaction bites ─────
     local live = (turn.input or 0) + (turn.cache_read or 0)

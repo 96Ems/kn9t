@@ -65,6 +65,8 @@ pub struct RawConfig {
     pub models: Vec<RawModel>,
     /// Optional: which model id to use as the default for new sessions.
     pub default_model: Option<String>,
+    /// Optional: model used to title sessions. `provider:id` or bare `id`.
+    pub title_model: Option<String>,
     /// Optional [server] section.
     #[serde(default)]
     pub server: RawServer,
@@ -388,6 +390,8 @@ pub struct ResolvedConfig {
     pub models: Vec<ModelSpec>,
     /// The model id that should be the server default (first model if unspecified).
     pub default_model_id: Option<String>,
+    /// `title_model`, else an explicit `default_model`. `None` → use the session model.
+    pub title_model_id: Option<String>,
     /// Idle-exit duration from `[server] idle_exit_secs`. `None` → use default (30 min).
     /// `Some(0)` → disable auto-exit.
     pub idle_exit: Option<std::time::Duration>,
@@ -770,9 +774,12 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         }
     }
 
-    let default_model_id = raw
-        .default_model
-        .or_else(|| models.first().map(|m| m.r#ref.id.clone()));
+    // Explicit default kept apart from the "first model" fallback, so `title_model_id` can tell
+    // "the user configured this" from "we picked something".
+    let explicit_default = raw.default_model.clone();
+    let default_model_id =
+        explicit_default.clone().or_else(|| models.first().map(|m| m.r#ref.id.clone()));
+    let title_model_id = raw.title_model.clone().or(explicit_default);
 
     let idle_exit = raw
         .server
@@ -839,11 +846,34 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
         provider_hosts,
         models,
         default_model_id,
+        title_model_id,
         idle_exit,
         timeouts,
         policy_mode,
         plugins,
     })
+}
+
+/// The configured title model: `title_model`, else an explicit `default_model`. `None` means
+/// the caller uses the session's own model. Never falls back to `pick_default_model`'s "first
+/// small model" heuristic — that is how titling landed on a model that returns no text.
+pub fn pick_title_model(resolved: &ResolvedConfig) -> Option<ModelSpec> {
+    resolved
+        .title_model_id
+        .as_deref()
+        .and_then(|want| find_model_by_id(&resolved.models, want))
+}
+
+/// Find a model by `provider:id` or bare `id`.
+fn find_model_by_id(models: &[ModelSpec], want: &str) -> Option<ModelSpec> {
+    let (provider, id) = match want.split_once(':') {
+        Some((p, i)) => (Some(p), i),
+        None => (None, want),
+    };
+    models
+        .iter()
+        .find(|m| m.r#ref.id == id && provider.map_or(true, |p| m.r#ref.provider == p))
+        .cloned()
 }
 
 /// Pick the default model: explicit `default_model` > first "small" model (haiku,

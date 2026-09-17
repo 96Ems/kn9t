@@ -120,6 +120,10 @@ struct UiFingerprint {
     cost_centicents: i64,
     turn_input: usize,
     turn_output: usize,
+    /// Whether the explorer column and the viewer pane are shown: they change the
+    /// layout, so the tree must be rebuilt when either flips (PLAN §P7 L2).
+    explorer_visible: bool,
+    viewer_open: bool,
     /// Bumped by `kn9t.invalidate()`. Lua-local state the fingerprint above
     /// cannot see (toggles, `MAIN_VIEW`, ...) forces a rebuild by bumping this
     /// instead of being modeled field-by-field.
@@ -979,6 +983,8 @@ fn read_ui_fingerprint(lua: &Lua, width: u16, height: u16) -> UiFingerprint {
         cost_centicents: (cost * 10_000.0).round() as i64,
         turn_input: as_usize(get(&kn9t, &["state", "usage", "turn", "input"])),
         turn_output: as_usize(get(&kn9t, &["state", "usage", "turn", "output"])),
+        explorer_visible: as_bool(get(&kn9t, &["state", "explorer_visible"])),
+        viewer_open: as_bool(get(&kn9t, &["state", "viewer_open"])),
         manual_epoch: keymap::read_epoch(lua),
     }
 }

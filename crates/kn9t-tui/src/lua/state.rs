@@ -79,6 +79,16 @@ pub struct StateSnapshot {
     /// Published so a config can render focus affordances (a highlighted border
     /// on the focused panel) instead of guessing where keys are going.
     pub focused_plugin: String,
+    /// Whether the file explorer column is shown (PLAN §P7 L2 / D3).
+    ///
+    /// Visibility lives in Rust — F1 toggles it and the same flag decides whether the
+    /// explorer takes the keyboard — so the layout reads it from here rather than keeping a
+    /// second Lua copy that could disagree.
+    pub explorer_visible: bool,
+    /// Whether the explorer currently owns the keyboard (it draws a focus affordance).
+    pub explorer_focused: bool,
+    /// Whether the read-only file viewer is open (PLAN §P7 L2 / D5).
+    pub viewer_open: bool,
 }
 
 /// One plugin view as Lua sees it: its id plus whatever layout it asked for.
@@ -192,6 +202,9 @@ impl StateSnapshot {
                 })
                 .unwrap_or_default(),
             focused_plugin: app.focused_plugin.clone().unwrap_or_default(),
+            explorer_visible: app.explorer.is_visible(),
+            explorer_focused: app.explorer.is_focused(),
+            viewer_open: app.viewer.is_some(),
         }
     }
 }
@@ -283,6 +296,9 @@ pub fn update_state(lua: &Lua, snap: &StateSnapshot) -> LuaResult<()> {
     state.set("plugin_view_specs", specs)?;
 
     state.set("focused_plugin", snap.focused_plugin.as_str())?;
+    state.set("explorer_visible", snap.explorer_visible)?;
+    state.set("explorer_focused", snap.explorer_focused)?;
+    state.set("viewer_open", snap.viewer_open)?;
 
     kn9t.set("state", state)?;
     globals.set("kn9t", kn9t)?;

@@ -4,7 +4,7 @@
 //! `render_status()` was never called, `kn9t.get_messages`/`kn9t.get_tools` were
 //! only ever installed by their own unit tests, and `kn9t.http` was a no-op
 //! whose queue grew without bound. Each was documented in the header of
-//! `assets/default_tui.lua`, so a user following that header wrote code against
+//! `assets/tui/90_render.lua`, so a user following that header wrote code against
 //! nothing and landed in the red error shell.
 //!
 //! The rule these tests encode: **if the built-in config's header names it, it

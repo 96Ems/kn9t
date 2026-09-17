@@ -6,11 +6,66 @@
 #![allow(clippy::unwrap_used)]
 
 use kn9t_server::config::{
-    build_http_quirks, merge_quirks, resolve, PolicyMode, RawConfig,
+    build_http_quirks, merge_quirks, pick_title_model, resolve, PolicyMode, RawConfig,
 };
 
 fn parse_raw(toml: &str) -> RawConfig {
     toml::from_str(toml).expect("parse RawConfig")
+}
+
+/// Titling: `title_model` > explicit `default_model` > nothing (caller uses the session model).
+#[test]
+fn title_model_precedence() {
+    let config = |extra: &str| {
+        format!(
+            r#"{extra}
+
+[provider.gw]
+kind = "openai"
+base_url = "http://localhost:9/v1"
+api_key = "x"
+
+[[model]]
+provider = "gw"
+id = "big"
+ctx = 1000
+max_out = 100
+price_in = 15.0
+price_out = 75.0
+cache = "none"
+cache_breakpoints = 0
+cache_min_tokens = 0
+
+[[model]]
+provider = "gw"
+id = "small"
+ctx = 1000
+max_out = 100
+price_in = 0.1
+price_out = 0.3
+cache = "none"
+cache_breakpoints = 0
+cache_min_tokens = 0
+"#
+        )
+    };
+
+    let id = |extra: &str| {
+        let resolved = resolve(parse_raw(&config(extra))).unwrap();
+        pick_title_model(&resolved).map(|m| m.r#ref.id)
+    };
+
+    assert_eq!(id("default_model = \"big\"").as_deref(), Some("big"));
+    assert_eq!(
+        id("default_model = \"big\"\ntitle_model = \"small\"").as_deref(),
+        Some("small"),
+        "title_model wins"
+    );
+    assert_eq!(
+        id(""),
+        None,
+        "nothing configured: the caller falls back to the session model"
+    );
 }
 
 /// DESIGN §8.3: `[model.quirks]` used to be parsed, merged, then dropped

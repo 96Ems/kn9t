@@ -534,15 +534,16 @@ re-litigate one silently.
 | D10 | terminal visibility | **private by default** (transient events only, never in the log); `a` promotes the current exec to a durable tool call/result the agent sees |
 | D11 | tool cards | **grouped per turn**: header `▸ 4 tools · 1.2s`, plus one compact line per call; clicking the header expands all, and each line still expands alone |
 | D12 | input | **bordered box**, Copilot-Chat shaped: mode + model in the border, actions at the right, context gauge beneath |
-| D13 | status bar | **coloured segments** (left: git/phase/model · right: ctx/cost/tok-s/contextual help) |
-| D14 | top of centre | **two rows**: session tab bar + breadcrumb `cwd ▸ session ▸ model` |
-| D15 | where the style lives | the **embedded default** (`assets/default_tui.lua` + native views); the personal layered config is reset and then re-added only where it deviates |
+| D13 | status bar | **coloured segments** (left: phase/ctx/cost/tok-s · right: contextual help). The model is the prompt frame's title, not a status segment |
+| D14 | top of centre | **two rows**: session tab bar + breadcrumb `cwd ▸ session`. The model is deliberately not repeated here (see D12) |
+| D15 | where the style lives | the **embedded default** (`assets/tui/*.lua` + native views); the personal layered config is reset and then re-added only where it deviates |
 | D16 | palette | **violet = accent · amber = alert · silver = chrome**; green/red reserved for diffs. Derived from the mascot; max 3 meaningful colours |
 | D17 | mascot | **native Rust view**, pixel art converted from the mascot PNG, **fully animated** in the Fuzzbit style (`Canvas` + `Marker::HalfBlock` + `Points`, colours grouped in a `BTreeMap` so draw order is deterministic — see `C:\_ddm\projects\Fuzzbit\src\ui.rs:416`) |
 | D18 | overlays | one visual grammar everywhere (rounded box, title, result count, shortcut footer, fuzzy-match highlighting) + VS Code positions: quick-open at the top, model/session pickers centred, help full-screen |
 | D19 | `@` mentions | **text only**: the TUI inserts `@path`, the agent reads the file with the `read` tool. Deliberately overrides R-TUI-100 |
 | D20 | order | chrome → explorer → terminal → mascot |
 | D21 | tracking | spec requirements + acceptance tests for everything that touches a contract; a 96E-style issue register in `TRACKING.md` for the purely visual |
+| D22 | auto-scroll | the transcript follows the tail **only while the user is at the bottom**. Scrolling up freezes the view on its content, and a streaming turn must not drag it away; returning to the bottom (End, jump-to-end, or scrolling down to it) re-arms the follow |
 
 Two facts confirmed while designing, worth not re-deriving:
 

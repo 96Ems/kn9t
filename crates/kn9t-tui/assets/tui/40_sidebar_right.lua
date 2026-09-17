@@ -1,7 +1,16 @@
 -- 40_sidebar_right.lua — session context/usage dashboard.
+--
+-- This panel used to repeat the status bar one number at a time: the cost, the token rate and
+-- the four message counts were on both lines, so 34 columns bought a second copy of a row you
+-- can already read. Those are gone. The context percentage stays on both on purpose: the
+-- status chip is a glance while you type, this is the panel you open to *decide*, and a gauge
+-- without its number beside it is not readable.
 
 local C = TUI.color
 
+-- Context pressure: a number and a bar. The `%` is deliberately repeated from the status
+-- bar's chip — the chip is a glance while you type, this is the panel you open to *decide*,
+-- and the gauge is useless without its number on the same screen.
 local function section_context(inner_w)
     local live, frac = TUI.live_context()
     local left = math.max(0, TUI.context_window() - live)
@@ -12,36 +21,22 @@ local function section_context(inner_w)
         direction = "vertical",
         size = { fixed = 4 },
         children = {
-            {
-                type = "text",
-                size = { fixed = 1 },
-                content = TUI.kv_lines({
-                    { "context", string.format("%d%%", math.floor(frac * 100)) },
-                }, inner_w),
-                fg = col,
-            },
-            {
-                type = "gauge",
-                size = { fixed = 1 },
-                frac = frac,
-                fg = col,
-            },
-            {
-                type = "text",
-                size = { fixed = 1 },
-                content = TUI.kv_lines({ { "used", TUI.fmt_tokens(live) } }, inner_w),
-                fg = C.label,
-            },
-            {
-                type = "text",
-                size = { fixed = 1 },
-                content = TUI.kv_lines({ { "left", TUI.fmt_tokens(left) } }, inner_w),
-                fg = C.label,
-            },
+            { type = "text", size = { fixed = 1 },
+              content = TUI.kv_lines({ { "context", string.format("%d%%", math.floor(frac * 100)) } }, inner_w),
+              fg = col },
+            { type = "gauge", size = { fixed = 1 }, frac = frac, fg = col },
+            { type = "text", size = { fixed = 1 },
+              content = TUI.kv_lines({ { "used", TUI.fmt_tokens(live) } }, inner_w),
+              fg = C.label },
+            { type = "text", size = { fixed = 1 },
+              content = TUI.kv_lines({ { "left", TUI.fmt_tokens(left) } }, inner_w),
+              fg = C.label },
         },
     }
 end
 
+-- The token breakdown the status bar has no room for. `speed` is not here: it is on the
+-- status bar, where it is the number you watch while a turn streams.
 local function section_usage(inner_w)
     local usage = kn9t.state and kn9t.state.usage or {}
     local turn  = usage.turn or {}
@@ -60,30 +55,10 @@ local function section_usage(inner_w)
         { "total in", TUI.fmt_tokens(input) },
         { "cache",    hit .. "%" },
     }
-    if (usage.toks_per_sec or 0) > 0 then
-        table.insert(rows, { "speed", string.format("%.0f t/s", usage.toks_per_sec) })
-    end
 
     return {
         type = "box",
         title = " usage ",
-        border = true,
-        size = { fixed = #rows + 2 },
-        child = { type = "text", content = TUI.kv_lines(rows, inner_w - 2), fg = C.value },
-    }
-end
-
-local function section_transcript(inner_w)
-    local ctx = kn9t.context or {}
-    local rows = {
-        { "messages",  tostring((kn9t.state and kn9t.state.message_count) or 0) },
-        { "user",      tostring(ctx.user_count or 0) },
-        { "assistant", tostring(ctx.assistant_count or 0) },
-        { "tools",     tostring(ctx.tool_count or 0) },
-    }
-    return {
-        type = "box",
-        title = " transcript ",
         border = true,
         size = { fixed = #rows + 2 },
         child = { type = "text", content = TUI.kv_lines(rows, inner_w - 2), fg = C.value },
@@ -123,38 +98,28 @@ function TUI.build_sidebar_right(width, height)
         },
         section_context(inner_w),
         section_usage(inner_w),
-        section_transcript(inner_w),
-    }
-    local foot = {
-        {
-            type = "text",
-            size = { fixed = 1 },
-            content = TUI.kv_lines({
-                { "cost", string.format("$%.4f", (kn9t.state and kn9t.state.usage
-                    and kn9t.state.usage.cost) or 0) },
-            }, inner_w),
-            fg = C.warn,
-        },
     }
 
     local used = 0
     for _, s in ipairs(head) do used = used + (s.size and s.size.fixed or 0) end
-    for _, s in ipairs(foot) do used = used + (s.size and s.size.fixed or 0) end
 
-    -- Whatever is left over belongs to the plugins, not to a list the transcript already
-    -- shows. This used to be a "recent calls" panel, which repeated the tool names the
-    -- conversation's own cards carry, one column over (PLAN §P7 D7).
+    -- Whatever is left over belongs to the plugins (D7). The transcript counters and the
+    -- cost that used to fill this space repeated the status bar; a spacer is honest about
+    -- there being nothing else to say here.
     local slots = math.max(1, height - 2 - used)
 
     local children = {}
     for _, s in ipairs(head) do table.insert(children, s) end
     table.insert(children, { type = "spacer", size = { fixed = slots } })
-    for _, s in ipairs(foot) do table.insert(children, s) end
 
     return {
         type = "box",
-        title = " [F2] " .. (ctx.model or "kn9t") .. " ",
-        border = true,
+        -- The model was here as the box title *and* in the breadcrumb *and* in the status
+        -- bar *and* on the prompt frame. The panel is the session, so it says so.
+        title = " [F2] session ",
+        -- Rounded to match the explorer column and the prompt frame: the three side by side
+        -- were drawing two different corner glyphs.
+        border = "rounded",
         child = {
             type = "split",
             direction = "vertical",

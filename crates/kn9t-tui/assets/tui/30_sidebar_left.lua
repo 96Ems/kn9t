@@ -1,10 +1,10 @@
--- 30_sidebar_left.lua — the file explorer column.
+-- 30_sidebar_left.lua — the file explorer column (PLAN §P7 L2 / D3).
 --
--- **Reserved for PLAN §P7 L2.** It is deliberately absent rather than filled with a
--- placeholder: sessions are the tab bar now (20_header.lua), so a session list here would
--- be the same information twice, and an empty frame would look like a bug.
+-- The tree itself is a **native view**: `{type="native", view="explorer"}`, placed by
+-- `90_render.lua` and fed by the one Rust file index that also backs the `@` dropdown and the
+-- viewer (D6). Nothing is defined here because there is nothing for Lua to decide beyond the
+-- placement — and the placement already lives in `90_render.lua` next to the other columns.
 --
--- L2 adds `TUI.build_explorer(width, height)` here, fed by the same Rust file index that
--- backs the `@` mention dropdown and the centre-top viewer (one walk, three surfaces —
--- PLAN §P7 D6). `90_render.lua` already reserves the column, gated on
--- `TUI.EXPLORER_VISIBLE`.
+-- Visibility is Rust's: `F1` toggles `kn9t.state.explorer_visible` and the keyboard focus with
+-- it (`toggle_explorer`), so a user binding F1 would fight the host. Width is
+-- `TUI.EXPLORER_WIDTH`; keys while focused are arrows/Left/Right/Enter/`m`/Esc.

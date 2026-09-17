@@ -49,7 +49,7 @@ fn test_parse_color_invalid() {
     assert_eq!(parse_color("#gg"), None); // invalid short hex
 }
 
-/// The bright ANSI colours must parse: `default_tui.lua` styles its context
+/// The bright ANSI colours must parse: the built-in `50_status.lua` styles its context
 /// gauge with `lightgreen`/`lightred`, and while the parser lacked them the
 /// built-in palette silently fell back to the theme default.
 #[test]

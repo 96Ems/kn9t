@@ -38,6 +38,12 @@ pub enum Action {
     // Tool mode
     ToolMode, // Ctrl+T: enter/exit tool mode
 
+    // Panels native to the TUI (PLAN §P7 L2)
+    /// F1: show the file explorer and take the keyboard, or hide it and release.
+    ToggleExplorer,
+    /// F3: close the read-only file viewer.
+    CloseViewer,
+
     // Undo/Redo
     Undo, // Ctrl+Z: undo input change
     Redo, // Ctrl+Y or Ctrl+Shift+Z: redo input change
@@ -261,6 +267,19 @@ impl Keybinds {
             Action::CycleModelPrev,
         ); // Shift+F2: prev model
 
+        // ─── Panels native to the TUI (PLAN §P7 L2) ───
+        // F1 opens the file explorer (and focuses it); F3 closes the viewer. Bound here
+        // rather than in Lua so the explorer's keyboard focus and its visibility cannot
+        // disagree: both live in the same Rust struct.
+        bindings.insert(
+            kp(KeyCode::F(1), false, false, false),
+            Action::ToggleExplorer,
+        );
+        bindings.insert(
+            kp(KeyCode::F(3), false, false, false),
+            Action::CloseViewer,
+        );
+
         Self { bindings }
     }
 
@@ -305,6 +324,8 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "session_picker" | "toggle_left" => Some(Action::SessionPicker),
         "new_session" => Some(Action::NewSession),
         "tool_mode" | "toolmode" => Some(Action::ToolMode),
+        "toggle_explorer" | "open_explorer" => Some(Action::ToggleExplorer),
+        "close_viewer" => Some(Action::CloseViewer),
         "undo" => Some(Action::Undo),
         "redo" => Some(Action::Redo),
         "kill_to_end" | "kill_line" => Some(Action::KillToEnd),

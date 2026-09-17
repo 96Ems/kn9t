@@ -3,7 +3,9 @@
 -- ── The widget vocabulary (what `render_ui` may return) ─────────────────────
 --
 --   {type="native", view=...}   one of kn9t.native_views:
---                               "transcript" | "input" | "status" | "welcome"
+--                               "transcript" | "input" | "status" | "explorer" | "viewer"
+--                               (the explorer column and the read-only file viewer; their
+--                                visibility is kn9t.state.explorer_visible / .viewer_open)
 --   {type="text", content=... | spans={{text=,fg=,bg=,bold=},...},
 --                 markdown=bool, syntax="lang", math=bool, linkify=bool,
 --                 align="left"|"center"|"right", wrap=bool}
@@ -95,7 +97,7 @@ local function plugin_views_in(zone)
                 table.insert(out, {
                     type = "box",
                     title = box_title,
-                    border = true,
+                    border = "rounded",
                     -- The accent slot, not a literal: a focused panel must follow the theme.
                     border_fg = is_focused and TUI.color.accent or nil,
                     size = { fixed = rows },
@@ -107,11 +109,12 @@ local function plugin_views_in(zone)
     return out
 end
 
--- The centre column: transcript, input, status — with plugin views that declared
--- placement="main" stacked above the transcript, which is what makes a full-size review or
--- diff panel possible without this file knowing which plugin provides it.
+-- The centre column: transcript, input, status — with panes stacked above the transcript: the
+-- file viewer (D5) and any plugin view that declared placement="main". Stacking is what makes
+-- a full-size review or diff panel possible without this file knowing which plugin provides it.
 local function main_pane()
     local ctx = kn9t.context or {}
+    local st = kn9t.state or {}
 
     local main = {
         type = "split",
@@ -123,15 +126,27 @@ local function main_pane()
         },
     }
 
-    local main_plugins = plugin_views_in("main")
-    if #main_plugins > 0 then
+    local top = {}
+    if st.viewer_open then
+        table.insert(top, {
+            type = "box",
+            border = false,
+            size = { percent = TUI.VIEWER_PERCENT or 50 },
+            child = { type = "native", view = "viewer" },
+        })
+    end
+    for _, p in ipairs(plugin_views_in("main")) do
+        table.insert(top, p)
+    end
+
+    if #top > 0 then
         local stacked = {
             size = { flex = 1 },
             type = "split",
             direction = "vertical",
             children = {},
         }
-        for _, p in ipairs(main_plugins) do
+        for _, p in ipairs(top) do
             table.insert(stacked.children, p)
         end
         table.insert(stacked.children, main)
@@ -144,20 +159,22 @@ end
 
 function render_ui(width, height)
     local narrow = width < SIDEBAR_MIN_W
+    local st = kn9t.state or {}
 
     local main = main_pane()
     local plugins = plugin_views_in("sidebar")
     local columns = { main }
 
-    -- The file explorer column (PLAN §P7 L2). There is no session column any more: the
-    -- tab bar in the header is the session list (D2/D3), so listing sessions here too
-    -- would be the same information twice.
-    if TUI.EXPLORER_VISIBLE and TUI.build_explorer and not narrow then
+    -- The file explorer column (PLAN §P7 L2 / D3). There is no session column any more: the
+    -- tab bar in the header is the session list (D2/D3), so listing sessions here too would be
+    -- the same information twice. Visibility is Rust's (`kn9t.state.explorer_visible`, F1);
+    -- this file only decides where the column goes.
+    if st.explorer_visible and not narrow then
         table.insert(columns, 1, {
             type = "box",
             border = false,
             size = { fixed = EXPLORER_W },
-            child = TUI.build_explorer(EXPLORER_W, height),
+            child = { type = "native", view = "explorer" },
         })
     end
 

@@ -38,10 +38,13 @@ TUI.color = {
 TUI.SIDEBAR_WIDTH   = 34
 TUI.SIDEBAR_MIN_W   = 110     -- auto-hide sidebars below this terminal width
 
--- The file explorer column. Reserved for PLAN §P7 L2; the width is declared here so the
--- layout maths does not have to move when the tree lands.
-TUI.EXPLORER_WIDTH   = 32
-TUI.EXPLORER_VISIBLE = false
+-- The file explorer column (PLAN §P7 L2 / D3). Visibility is owned by Rust (F1 toggles it,
+-- and the same flag decides whether the explorer takes the keyboard), so it is read from
+-- kn9t.state.explorer_visible rather than kept here, where the two could disagree.
+TUI.EXPLORER_WIDTH = 32
+
+-- The file viewer (PLAN §P7 L2 / D5) takes this share of the centre column when open.
+TUI.VIEWER_PERCENT = 50
 
 -- Session tabs (PLAN §P7 D2/D14). They are the only session list on screen, so the cap is
 -- generous; past it the command palette's session picker is the way to reach a session.

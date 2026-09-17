@@ -5,9 +5,10 @@
 -- the stale tree.
 
 -- ── Panel toggles ───────────────────────────────────────────────────────────
--- F1 was the session column's toggle. The tab bar replaced that column (PLAN §P7 D3), so
--- F1 is free; L2 binds it to the file explorer. F5 is kept as an alias: it was this file's
--- original right-sidebar toggle.
+-- F1 (explorer) and F3 (close viewer) are bound in Rust: their visibility and the keyboard
+-- focus they imply live in the same struct, and a Lua map here would be a second flag that
+-- could disagree. `kn9t.action("toggle_explorer")` / `"close_viewer"` reach the same arms.
+-- F5 is kept as an alias: it was this file's original right-sidebar toggle.
 kn9t.map("F2", function()
     TUI.show.right_sidebar = not TUI.show.right_sidebar
     kn9t.invalidate()

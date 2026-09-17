@@ -144,7 +144,12 @@ pub enum Widget {
 ///
 /// Published to Lua as `kn9t.native_views` so a config can degrade gracefully
 /// on an older binary instead of silently leaving a hole in the layout.
-pub const NATIVE_VIEWS: &[&str] = &["transcript", "input", "status", "welcome"];
+///
+/// `welcome` is deliberately not here. The welcome screen is chosen by `App::screen`
+/// before any Lua runs, and `render_welcome` lays out a centred logo plus a prompt — it is
+/// not a view that means anything dropped into the chat layout. Listing it invited a config
+/// to place one and get a confusing frame.
+pub const NATIVE_VIEWS: &[&str] = &["transcript", "input", "status", "explorer", "viewer"];
 
 impl Widget {
     /// Concatenated text of a `Text` node, ignoring per-span styling.

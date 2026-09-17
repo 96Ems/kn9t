@@ -10,7 +10,35 @@ Legend: `☐` pending · `▣` in progress · `☑` done (acceptance test passin
 
 ## Current position
 
-**2026-09-16f (reasoning: what we ask for vs what we replay):** a live 400 on DeepSeek via
+**2026-09-16g (the chrome L1 left behind):** four redundancies and a dead click, found by reading
+the emitted frame rather than the source. No new feature.
+
+| what | where | test |
+|---|---|---|
+| **session tabs are clickable** — each tab is its own widget with `id="tab_<id>"`; they were spans inside one text node, so `collect_clickable_areas` recorded no rect and every `on_click("tab_*")` handler was unreachable | `assets/tui/20_header.lua` | `chrome_layout::session_tabs_are_click_targets` |
+| **the model is on one row, not four** — breadcrumb, status bar and right-panel title dropped it; the prompt frame's title (D12) keeps it | `assets/tui/{20_header,50_status,40_sidebar_right}.lua` | `chrome_layout::{header_is_tab_bar_over_breadcrumb,status_bar_is_segmented,input_is_a_boxed_prompt}` (now negative assertions) |
+| **the right panel stops repeating the status bar** — the transcript section, the cost footer and the speed row are gone; the context gauge, its `%` and the token breakdown stay | `assets/tui/40_sidebar_right.lua` | `chrome_layout::right_panel_drops_recent_calls` |
+| **three doors to a new session, not four** — the picker's pinned "New session" row is gone (that also removes "a filter matching nothing still creates one") | `src/{app,ui/render}.rs` | — |
+| **overlays positioned** (L1 deferral 3): command palette pinned to the top row, `Overlay::Help` full screen. Help needs `draw_panel_border` — `draw_overlay_border` bails on a rect flush with the screen, so the frame would have vanished | `src/ui/render.rs` | `golden_help_overlay_renders` |
+| **tab width counts cells, not bytes** — `#label` in Lua is UTF-8 bytes, so a truncated `…` sized its widget 2 cells too wide | `assets/tui/20_header.lua` | — |
+| **`welcome` removed from `NATIVE_VIEWS`** — unreachable since `c6c4ebd`: the welcome screen is chosen by `App::screen` before Lua runs, so it can never be a view placed in the chat layout | `src/lua/widgets.rs` | `lua_api_contract::builtin_renders_a_usable_screen` |
+| **`assets/default_tui.lua` deleted** — dead but shipped: `DEFAULT_TUI_LUA` was deleted in L1 and nothing referenced the file, while `tests/unit_lua_default_config.rs` still imported the constant, so `cargo test -p kn9t-tui` did **not compile**. `builtin_source()` is now the only single-file form | `assets/default_tui.lua` (removed), `tests/unit_lua_default_config.rs` | the suite compiles |
+
+**Correction to 2026-09-16f:** the red `kn9t-tui` test it named
+(`file_index::a_root_gitignore_contributes_plain_names`) was not the failure — the crate did not
+*compile*, because of the dangling `DEFAULT_TUI_LUA` import above.
+
+Open next: the rest of **P7-L2** — only the left explorer tree (D3) and the centre-top viewer
+(D4/D5, `m` and `d`) are missing. The `@` finder is **done** (`App::sync_mention`,
+`App::handle_mention_key`, `render_mention_dropdown`); see the correction in the P7 register. The
+column is reserved and off (`TUI.EXPLORER_VISIBLE = false`, `F1` unbound). L3 (terminal) and L4
+(mascot) are untouched.
+
+---
+
+## Position — 2026-09-16f (reasoning: what we ask for vs what we replay)
+
+**2026-09-16f:** a live 400 on DeepSeek via
 OpenCode Go (`unknown variant 'thinking'`, `messages[6]`) root-caused to `kn9t-provider-openai`:
 the chat encoder ignored `Quirks::thinking_replay` and replayed persisted thinking as an
 Anthropic content part — and since the block is persisted, every later turn repeated the 400.
@@ -54,7 +82,7 @@ per open session, and an `App` that stops assuming a single transcript. And `@` 
 **no implementation today** (R-TUI-100 has no test; `slash.rs` only implements the `/` dropdown).
 
 Open next: **P7-L1 (chrome)**, starting with the palette in `theme.rs` + the `C` table of
-`assets/default_tui.lua`. Reset `~/.kn9t/tui/*.lua` first — they load *after* the embedded
+`assets/tui/00_theme.lua`. Reset `~/.kn9t/tui/*.lua` first — they load *after* the embedded
 default and override it wholesale.
 
 ---
@@ -330,13 +358,42 @@ test row. A lot is `☑` only when its acceptance test and its before/after scre
 
 | lot | subject | status |
 |---|---|---|
-| L1 | chrome: palette (violet/amber/silver), transcript hierarchy, tool cards grouped per turn, bordered input, segmented status bar, two-row header + session tabs, right panel without `recent calls`, overlays | ▣ **code done + verified**, three deferrals below |
-| L2 | explorer + viewer + `@` finder (one Rust file index, three surfaces) | ▣ **index done**; tree/viewer/`@` not started |
+| L1 | chrome: palette (violet/amber/silver), transcript hierarchy, tool cards grouped per turn, bordered input, segmented status bar, two-row header + session tabs, right panel without `recent calls`, overlays, conditional auto-scroll (D22) | ▣ **code done + verified**, three deferrals below |
+| L2 | explorer + viewer + `@` finder (one Rust file index, three surfaces) | ▣ **all three surfaces done** (index, `@` finder, native explorer + viewer); live screenshot + the explorer's `d` diff action pending |
 | L3 | terminal: persistent shell in `kn9t-tools`, server exec endpoint, private-by-default + promotable | ☐ |
 | L4 | animated pixel-art mascot (native view, Fuzzbit mechanism) | ☐ |
 
+> **The `@` finder (2026-09-16g, corrected 2026-09-17a):** `App::sync_index_views`
+> (`src/app.rs`) refreshes the index once per event-loop turn and syncs the `@` dropdown, the
+> explorer and the viewer; `App::handle_mention_key` owns the arrows/Enter/Esc while the dropdown
+> is open; `render_mention_dropdown` draws it above the input frame — including on the welcome
+> screen, which draws its own input rather than the native `input` view. (The old `sync_mention`
+> was never called — the code existed and nothing invoked it, so the dropdown never actually
+> opened. The single-call-site rename is what makes it reachable.)
+>
+> **The index root is the launch directory** (`std::env::current_dir()`), not the server's
+> `session.state.cwd`: the explorer and the viewer read *local* files, the session cwd can be
+> resolved server-side to a path this machine cannot see, and the launch directory is the only
+> root the welcome screen has. `file_index.refresh` is a no-op unless the root changed, so this
+> is one `getcwd` per turn.
+>
+> **The explorer and the viewer (2026-09-17a):** both are **native views** (`widgets::NATIVE_VIEWS`
+> gained `explorer` and `viewer`), placed by `90_render.lua`:
+>
+> | surface | state | rendered by | keys |
+> |---|---|---|---|
+> | explorer column (D3) | `src/explorer.rs` — flatten over `FileIndex::children`, expansion set, selection | `ui::render::render_explorer`, per-row hit areas | visible by default; `F1` cycles show+focus → hide; Esc closes; ↑/↓, ←, →/Enter; `m` inserts `@path` |
+> | viewer pane (D4/D5) | `src/viewer.rs` — capped read (1 MiB / 5000 lines), extension→syntax token, line cursor + range | `ui::render::render_viewer`, syntax highlighted, wheel-scrollable, click places the cursor | `F3` close; `j/k`/↑↓ cursor; `v` select; `c` inserts `@path:L` / `@path:L1-L2` into the prompt; Esc releases |
+>
+> One walk, three surfaces (D6): the explorer, the viewer and the `@` dropdown all read the same
+> `file_index.rs`; none of them walks the filesystem itself.
+>
+> **Still open on L2:** the explorer's `d` = diff-vs-HEAD action (D4) routes to the
+> `kn9t-git-integration` plugin, which needs a host→plugin diff request that does not exist yet;
+> and the lot's acceptance calls for a live screenshot pair through `tui-control`.
+
 **L2 what shipped so far:** `crates/kn9t-tui/src/file_index.rs` — the single index (D6) that the tree,
-the viewer and the `@` dropdown will all read. 13 tests. Built for the hot path (it re-searches on
+the viewer and the `@` dropdown all read. 13 tests. Built for the hot path (it re-searches on
 every keystroke), with the three things a naive version gets wrong:
 
 | property | why |
@@ -362,15 +419,16 @@ Whoever picks this up should ask rather than assume.
 | change | where | test |
 |---|---|---|
 | mascot palette + `ink` slot (text on a colour block) + `panel_bg` slot (overlay surfaces) | `src/theme.rs` | `unit_theme` 16, rewritten off literals |
-| session tabs + breadcrumb `cwd ▸ title ▸ model` replace the one-row header | `assets/default_tui.lua` | `chrome_layout::header_is_tab_bar_over_breadcrumb` |
+| session tabs + breadcrumb `cwd ▸ title` replace the one-row header | `assets/tui/20_header.lua` | `chrome_layout::header_is_tab_bar_over_breadcrumb`, `session_tabs_are_click_targets` |
 | `cwd` published to Lua (`kn9t.state.session.cwd`) | `src/lua/state.rs` | (part of the above) |
-| segmented status bar, context chip as a solid block | `assets/default_tui.lua` | `chrome_layout::status_bar_is_segmented` |
-| `recent calls` dropped; leftover space is a spacer | `assets/default_tui.lua` | `chrome_layout::right_panel_drops_recent_calls` |
-| session column removed (sessions are tabs) | `assets/default_tui.lua` | `chrome_layout::there_is_no_session_column` |
+| segmented status bar, context chip as a solid block | `assets/tui/50_status.lua` | `chrome_layout::status_bar_is_segmented` |
+| `recent calls` dropped; leftover space is a spacer | `assets/tui/40_sidebar_right.lua` | `chrome_layout::right_panel_drops_recent_calls` |
+| session column removed (sessions are tabs) | `assets/tui/90_render.lua` | `chrome_layout::there_is_no_session_column` |
 | bordered prompt, cursor scrolling, `INPUT_CHROME_COLS` shared with the height math | `src/ui/render.rs`, `src/ui/layout.rs` | `chrome_layout::input_is_a_boxed_prompt`, `tiny_input_falls_back_to_a_bare_prompt` |
 | tool cards grouped per turn: rollup header, one compact line per call, diff badge, group toggle | `src/ui/render.rs`, `src/app.rs`, `src/render_cache.rs` | `chrome_layout::a_turn_groups_its_tool_calls` |
 | overlays themed (86 hardcoded `Color::Black` cells) + rounded frame | `src/ui/render.rs` | `chrome_layout::overlays_are_themed_and_framed` |
-| render harness: built-in UI → `TestBackend` → text, no server needed | `tests/chrome_layout.rs` | 9 tests |
+| auto-scroll follows the tail only at the bottom (D22); a scrolled-up view is re-anchored to its content so a streaming turn cannot drag it away | `src/message_handler.rs`, `src/ui/render.rs` | `unit_message_handler` 4 |
+| render harness: built-in UI → `TestBackend` → text, no server needed | `tests/chrome_layout.rs` | 10 tests |
 
 **L1 deferrals, recorded rather than hidden:**
 
@@ -379,8 +437,23 @@ Whoever picks this up should ask rather than assume.
    `SessionView` refactor, which is the plan's largest non-visual item and was not started.
 2. **No per-turn duration in the group header.** `ToolCard` carries no timing, and a fabricated
    `· 1.2s` was refused. Needs `started_at`/`finished_at` threaded from the SSE handler.
-3. **Overlays are themed and framed but not repositioned.** The VS Code positions (quick-open at
-   the top, full-screen help) are not done; the pickers are still centred.
+3. ~~**Overlays are themed and framed but not repositioned.**~~ **DONE (2026-09-16g):** the model
+   picker's geometry is untouched; the command palette is now pinned to the top row (VS Code's
+   quick-open position) and `Overlay::Help` takes the full screen.
+
+### Session 2026-09-16g — the chrome fixes L1 left behind
+
+Found by reading the frame rather than the source; all four are fixed and covered.
+
+| # | severity | area | bug | status |
+|---|---|---|---|---|
+| C6 | high | kn9t-tui | **The session tabs were not clickable.** `20_header.lua` registered `on_click("tab_<id>")` for every session while the tabs were *spans* inside one text node; a span has no rect, so `collect_clickable_areas` never recorded one and `handle_click` could never reach the handler. Each tab is now its own widget with `id="tab_<id>"`. | DONE (`chrome_layout::session_tabs_are_click_targets`) |
+| C7 | low | kn9t-tui | **The model was printed on four rows at once** — breadcrumb, status bar, right-panel title, prompt frame. It now appears once, as the prompt frame's title (D12). | DONE |
+| C8 | low | kn9t-tui | **The right panel repeated the status bar** number for number (ctx %, cost, t/s, message counts). The transcript section, the cost footer and the speed row are gone. | DONE |
+| C9 | low | kn9t-tui | **Four doors to "new session"** (`+ new`, Ctrl+N, `/new`, a selectable row at index 0 of the session picker). The picker row is gone, which also removes the "a filter that matches nothing still offers to create a session" oddity. | DONE |
+| C10 | low | kn9t-tui | **The `welcome` native view was unreachable.** `NATIVE_VIEWS` advertised it and `render_native_view` drew it, but nothing can place the welcome screen inside the chat layout — it is chosen by `App::screen` before Lua runs. Removed from both. | DONE |
+| C11 | medium | kn9t-tui | **`assets/default_tui.lua` was dead but shipped.** `DEFAULT_TUI_LUA` had been deleted with nothing pointing at the file, and `tests/unit_lua_default_config.rs` still imported the constant — so `cargo test -p kn9t-tui` did not compile. File deleted; the test reads `builtin_source()`. | DONE |
+
 
 Also: the verification used a **renamed-aside** personal config
 (`~/.kn9t/tui` → `~/.kn9t/tui.disabled-20260916`), not a `kn9t tui reset`. The files are intact;

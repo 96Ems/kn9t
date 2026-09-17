@@ -85,6 +85,8 @@ fn oai_request_shape_completion_tokens_quirk() {
     assert_eq!(body["messages"][0]["role"], json!("developer"));
 }
 
+
+
 // ── oai::decode (R-OAI-020) ──────────────────────────────────────────────────
 
 #[test]
@@ -945,10 +947,16 @@ fn req_with_thinking<'a>(model: &'a ModelSpec, thinking: Thinking) -> kn9t_core:
     }
 }
 
-/// `Off` must omit the field. Substituting `low` silently forced reasoning on a turn
-/// that asked for none — which is how persisted thinking blocks appeared at all.
+/// `Off` must send `reasoning_effort: "none"`.
+///
+/// It used to omit the field, on the theory that omitting means "no reasoning". It does not:
+/// omitting leaves the model's default, which is *on* for DeepSeek. Verified against
+/// `opencode-go` with the same prompt — omitted + `max_tokens: 16` returned
+/// `finish_reason: length`, empty content and a 63-char reasoning scratchpad; `"none"` returned
+/// the title and zero reasoning. That is what left auto-titling silent. Substituting a level
+/// (`low`/`medium`) is the opposite mistake: it forces reasoning on.
 #[test]
-fn oai_thinking_off_omits_reasoning_effort() {
+fn oai_thinking_off_sends_reasoning_effort_none() {
     let model = make_model("deepseek-v4.1-flash");
     let body = build_request(
         &req_with_thinking(&model, Thinking::Off),
@@ -957,10 +965,10 @@ fn oai_thinking_off_omits_reasoning_effort() {
         false,
     );
 
-    assert!(
-        body.get("reasoning_effort").is_none(),
-        "off must send nothing, got {:?}",
-        body.get("reasoning_effort")
+    assert_eq!(
+        body.get("reasoning_effort"),
+        Some(&json!("none")),
+        "off must ask the model to skip reasoning, not leave it at its default"
     );
 }
 

@@ -866,26 +866,12 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
         return;
     }
 
-    // Auto-title with a lightweight model from the session's provider. Prefer haiku
-    // or a non-thinking variant to avoid expensive/slow title generation.
+    // Configured title model, else the session's own. Never a model the user did not choose:
+    // the old cheapest-on-provider pick landed on one that returns no text.
     let session_model = state.store.get_model_spec_for_session(&session.0);
     let default_model = state.default_model_snapshot();
-    // Owned: these used to borrow `&str` out of `state.default_model`, which is now
-    // behind a lock and cannot lend a reference past the guard.
-    let provider_name: Option<String> = session_model
-        .as_ref()
-        .map(|m| m.r#ref.provider.clone())
-        .or_else(|| default_model.as_ref().map(|m| m.r#ref.provider.clone()));
-
-    let Some(provider_name) = provider_name else {
-        crate::log!("[autotitle] no provider available");
-        return;
-    };
-
-    // Find a cheap model from the same provider (prefer haiku, avoid thinking models)
     let model = state
-        .store
-        .find_title_model(&provider_name)
+        .title_model_snapshot()
         .or_else(|| session_model.clone())
         .or_else(|| default_model.clone());
 
@@ -940,7 +926,10 @@ pub fn maybe_autotitle(state: &Arc<ServerState>, session: &SessionId) {
         messages: &messages,
         tools: &no_tools,
         thinking: Thinking::Off,
-        max_tokens: Some(16),
+        // The title itself is ~10 tokens, but a reasoning model spends the budget on its
+        // scratchpad first: at 32 the stream ended with empty text (`finish_reason: length`),
+        // which read as "skip". Room for the reasoning plus a few words.
+        max_tokens: Some(512),
         cache: &no_cache,
         session: Some(session.0.as_str()),
     };
