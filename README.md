@@ -141,9 +141,9 @@ This repository ships with:
 |---|---|---|
 | `kn9t-tools` | Rust | default toolset — `bash` / `read` / `edit` / `write` |
 
-Additional plugins (providers, policy, compaction, MCP bridge, etc.) are available in a
-separate repository. See [`docs/PLUGIN_DEVELOPMENT.md`](docs/PLUGIN_DEVELOPMENT.md) for
-how to write your own.
+Additional plugins (providers, policy, compaction, MCP bridge, etc.) are available at
+[github.com/96Ems/kn9t-plugins](https://github.com/96Ems/kn9t-plugins). See
+[`docs/PLUGIN_DEVELOPMENT.md`](docs/PLUGIN_DEVELOPMENT.md) for how to write your own.
 
 **Protocol:** newline-delimited JSON on stdin/stdout. One object per line, debuggable with
 `cat`. Capabilities are negotiated at handshake, so a plugin that declares neither
