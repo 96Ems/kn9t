@@ -106,7 +106,7 @@ corrected here rather than left as an aspiration):
 
 Two structural reasons the floor is ~550 rather than ~250:
 
-1. **Wire mapping is genuinely two directions.** Encode (messages → provider JSON, cache
+1. **Wire mapping is two directions.** Encode (messages → provider JSON, cache
    breakpoint placement, thinking/effort quirks) and decode (SSE deltas → `Chunk`, tool-call
    correlation, usage partition per §8.4.3) are each ~200 lines before any provider
    eccentricity.
@@ -182,12 +182,12 @@ built through a constructor rather than a struct literal.
 
 Under full actors, executing three tool calls requires correlation IDs, a
 pending-request map, and a select loop over `ToolResult | Abort | Steer` — at every
-call site, in a language with no built-in `select!`. Worse, cancellation genuinely
-does not work: the abort message arrives at the ReAct mailbox while the tool thread is
-blocked in `read()` on a subprocess pipe and is not reading its own mailbox.
+call site, in a language with no built-in `select!`. Worse, cancellation does not work:
+the abort message arrives at the ReAct mailbox while the tool thread is blocked in
+`read()` on a subprocess pipe and is not reading its own mailbox.
 
-With traits the loop stays straight-line, and cancellation lives where it can actually
-work — inside the tool, which checks the token and `kill()`s the child.
+With traits the loop stays straight-line, and cancellation lives where it can work —
+inside the tool, which checks the token and `kill()`s the child.
 
 **Accepted cost:** module boundaries are not transparently relocatable across
 processes. The one boundary that must be a process boundary (server↔client) is an
@@ -351,7 +351,7 @@ cache on **every turn that replays a tool call**, which is every turn of a tool 
 class of bug as §8.4.2.1, self-inflicted.
 
 A `before_tool_call` hook returning `replace{args}` does change the bytes and costs one
-cache write. That is correct: the request genuinely differs.
+cache write. That is correct: the request differs.
 
 ### 4.2 `Thinking` blocks are persisted with their signature
 
@@ -980,8 +980,8 @@ changed, ③ still hits.
 
 Caching only pays from the **second** call onward, because the first is a write at ~1.25x.
 Any turn containing a tool call already makes at least two calls, so the anchor pays off
-even under `-p`. A genuinely single-call run pays the write premium for nothing; that is
-the one case where `cache = false` is correct.
+even under `-p`. A single-call run pays the write premium for nothing; that is the one
+case where `cache = false` is correct.
 
 One divergence from the plugin, forced by §8.4's split: the plugin decides *placement* and
 *encoding* in the same function, and therefore has to branch on `providerID` inside it —
@@ -1017,9 +1017,9 @@ So the three real hazards are narrow:
 1. **Editing the system `.md` mid-session.** Reloading it between turns changes the level-2
    prefix and forces one re-write. Correct behavior, worth knowing.
 2. **Anything dynamic inside the system text.** A timestamp, `cwd` listing, or git branch
-   interpolated into the prompt moves ① *every turn*, which is the one way to genuinely
-   re-bill the system prompt forever. Dynamic context belongs in a message after the
-   anchor. Reading a static file verbatim is exactly right.
+   interpolated into the prompt moves ① *every turn*, re-billing the system prompt forever.
+   Dynamic context belongs in a message after the anchor. Reading a static file verbatim
+   is exactly right.
 3. **Unstable `tools` serialization.** Tool definitions sit at level 1, so any instability
    there invalidates all three levels — the single most expensive failure available.
 

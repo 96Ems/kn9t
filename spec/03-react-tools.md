@@ -1,14 +1,15 @@
 # 03 — `kn9t-react` + `kn9t-tools`
 
-**Crates:** `kn9t-react`, `kn9t-tools`
-**Depends on:** each on `kn9t-core` only (GI-1). `kn9t-react` sees the store/provider/tool/
-policy only as `dyn Trait` (GI-1, §2).
+**Crate:** `kn9t-react`
+**Plugin:** `plugins/kn9t-tools` (external subprocess, auto-discovered)
+**Depends on:** `kn9t-react` depends on `kn9t-core` only (GI-1). `kn9t-tools` depends on
+`kn9t-plugin-sdk` only (no workspace deps).
 **DESIGN:** §9, §9.1, §10, §10.1, §11, §11.1, §11.2, §8.6.6.
 **Build order:** stage 3 of 10. Gate **G1**: the full loop runs end-to-end against the
 replay provider (02) with no network and no spend (§16).
 
-Two crates, one file, because they are gated together by G1 and the loop is meaningless
-without tools to call.
+One crate (`kn9t-react`) plus one external plugin (`kn9t-tools`), gated together by G1
+because the loop is meaningless without tools to call.
 
 ---
 

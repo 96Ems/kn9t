@@ -2,10 +2,10 @@
 
 **Crate:** `kn9t-server`
 **Depends on:** this is the **one** crate permitted more than one workspace dependency
-(GI-1 exception): it wires `kn9t-core`, `kn9t-store`, `kn9t-react`, `kn9t-tools`, every
-provider crate, and `kn9t-plugin`. External: `tiny_http`. It is the only crate that names
-concrete `Provider`/`Tool`/`Store`/`Policy` types (§2, §12).
-**DESIGN:** §12, §12.1–12.7, §8.7.3, §18.3, §18.14.
+(GI-1 exception): it wires `kn9t-core`, `kn9t-store`, `kn9t-react`, every provider crate,
+and `kn9t-plugin`. External: `tiny_http`. It is the only crate that names concrete
+`Provider`/`Store`/`Policy` types (§2, §12). Tools are external plugins, not workspace deps.
+**DESIGN:** §12, §12.1–12.7, §18.3, §18.14.
 **Build order:** stage 6 of 10.
 
 The server is **always** a separate process, even when a client just spawned it — one

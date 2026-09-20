@@ -334,7 +334,7 @@
       "method": "GET",
       "path": "/policy",
       "lease": false,
-      "description": "Informational policy state. Decisions are made by the policy plugin; `mode` is reporting-only and `approvals` is the persisted scope=always ledger. Edit ~/.kn9t/policy.py to change behaviour.",
+      "description": "Informational policy state. Decisions are made by the policy plugin; `mode` is reporting-only and `approvals` is the persisted scope=always ledger.",
       "response": {
         "type": "object",
         "properties": {

@@ -417,7 +417,7 @@ Write operations require an **X-Lease** header: the holder token minted by
 | `running_turns` | u64 |  |
 
 
-### `GET /policy` — Informational policy state. Decisions are made by the policy plugin; `mode` is reporting-only and `approvals` is the persisted scope=always ledger. Edit ~/.kn9t/policy.py to change behaviour.
+### `GET /policy` — Informational policy state. Decisions are made by the policy plugin; `mode` is reporting-only and `approvals` is the persisted scope=always ledger.
 
 - **Lease required:** no
 
