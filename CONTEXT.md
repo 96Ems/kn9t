@@ -1,6 +1,6 @@
 # CONTEXT — kn9t Domain Glossary
 
-Lookup reference for domain terms used across DESIGN.md, `docs/dev/CHANGELOG.md`, and the spec.
+Lookup reference for domain terms used across DESIGN.md and the spec.
 Each entry points to its authoritative DESIGN section. Alphabetical order.
 
 ---

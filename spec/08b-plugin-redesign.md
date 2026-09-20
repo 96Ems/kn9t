@@ -7,9 +7,8 @@ remain valid and are not repeated here. The built-in "spawn tool" from 08 §8 is
 **deleted**: there are no built-in tools — sub-agent sessions are created
 by plugins through the host_api ops (`session_fork`/`session_prompt`, §2.5).
 
-**Decision log:** this spec was derived from a full design-challenge session recorded in
-`docs/dev/CHANGELOG.md` (2026-08-26 — Plugin redesign). Every branch in that session maps to a
-section here.
+**Decision log:** this spec was derived from a full design-challenge session. Every branch
+in that session maps to a section here.
 
 **Language neutrality:** this document is the canonical protocol reference. It is written
 in terms of JSON structures and observable behaviour, not Rust types. Any language can

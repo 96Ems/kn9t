@@ -57,10 +57,7 @@ never narrow it. Omitting effects triggers the strictest path, so a plugin that 
 run unattended must declare its effects truthfully.
 
 **Protocol change:** This is a breaking change to the plugin handshake (`hello` message).
-We do it now while:
-
-- `proto == 1` (no versioning burden).
-- There are no external plugin authors (only internal-plugins in the repo).
+We do it now while `proto == 1` (no versioning burden).
 
 ## Consequences
 

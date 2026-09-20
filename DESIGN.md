@@ -940,10 +940,7 @@ provider (§8.5) with no network, and a provider bug cannot silently change stra
 
 #### 8.4.1 Placement: two anchors and a sliding pair
 
-This is the algorithm already proven in the opencode NXP plugin
-(`packages/opencode/src/provider/transform.ts`, `applyCaching`). It is reproduced rather
-than redesigned, because it is load-bearing for cost and its behavior on real sessions is
-known. Four breakpoints, two anchored and two sliding:
+Four breakpoints, two anchored and two sliding:
 
 ```
 turn 2   [Sys ①] [User ②] [Asst] [Tool ③④] [Asst ...]
@@ -1149,8 +1146,8 @@ Providers that report neither leave them zero, which costs correctly by construc
 | provider | mode | wire form | attach to | breakpoints |
 |---|---|---|---|---|
 | `anthropic` | Explicit | `"cache_control": {"type":"ephemeral"}` | message level | 4, `min_tokens` per model |
-| `nxp-bedrock` (LiteLLM) | Explicit | same, passed through to Bedrock | message level | 4 |
-| `kn9t-custom-provider` plugin | Explicit | `cache_control` on a custom content part | part level | 4 |
+| LiteLLM gateway | Explicit | same, passed through to Bedrock | message level | 4 |
+| custom provider plugin | Explicit | `cache_control` on a custom content part | part level | 4 |
 | `openrouter` | Explicit | `cache_control` ephemeral | part level | 4, varies by upstream |
 | `bedrock` native | Explicit | `cachePoint` as its **own content block** | appended element | 4 (v2) |
 | `openai` | Automatic | **nothing** | n/a | server-side, 1024 min |
@@ -1191,8 +1188,7 @@ kn9t core knows exactly two provider kinds:
   full test suite runnable offline.
 - **`kind = "openai"`** — the one real HTTP provider. Covers everything OpenAI-compatible:
   OpenAI, LiteLLM, Groq, Together, Fireworks, OpenRouter, DeepSeek, xAI, llama.cpp,
-  Ollama — they differ only by base URL and quirks (§8.2). NXP Bedrock's LiteLLM
-  gateway is also `kind = "openai"` (§8.7).
+  Ollama — they differ only by base URL and quirks (§8.2).
 - **`kind = "plugin"`** — a subprocess binary that speaks the plugin protocol (§13.7).
   The server spawns it at startup via `PluginHost::spawn()` and wraps it as a
   `RemoteProvider`. Everything else — kn9t-custom-provider (custom plugin), Anthropic, Bedrock native — is a
@@ -1315,135 +1311,6 @@ text-encoded tool calls, etc.). Anthropic has its own content-block protocol and
 thinking signatures. **These details live in `spec/09-anthropic.md` and `spec/09a-custom-provider.md`**, not
 here. The design boundary is clear: if it is about a specific external API, it is in the
 plugin spec, not in DESIGN.md.
-
-### 8.7 NXP Bedrock — LiteLLM gateway
-
-Reference implementation:
-`opencode/packages/opencode/src/plugin/nxp/providers/bedrock/` (`gateway.ts` 473 lines,
-`plugin.ts` 348, `config.ts` 130).
-
-The gateway is LiteLLM, OpenAI-compatible under `/v1`. So it is **`kind = "openai"`**
-— §8.2's quirk table carries it, and this section is only the delta. The Converse
-endpoint is deliberately not used: `/v1` exposes prompt-cache counters
-(`cached_tokens`, `cache_creation_input_tokens`) in `usage`, and without those, cost
-analytics and context tracking are blind.
-
-```toml
-[provider.nxp-bedrock]
-kind        = "openai"
-base_url    = "https://llm-gateway.rnd.nxp.com/v1"
-api_key     = "env:NXP_BEDROCK_API_KEY"   # optional
-auth_scheme = "omit"       # send NO Authorization header when unset
-
-[provider.nxp-bedrock.headers]
-source_identifier = "llm_vscode_vC5t068vYTsd"
-# X-User-Id is injected from the resolved WBI identity, never from config.
-
-[provider.nxp-bedrock.gateway]
-check_access      = "/ldap/check_access"   # POST {} -> {"result": 0}
-check_ttl_secs    = 43200                  # 12h
-budget            = "/user/usage"          # POST {} -> max_budget / spend
-models            = "/models"
-tls_insecure      = false                  # see §8.7.5
-
-[provider.nxp-bedrock.quirks]
-max_tokens_field = "max_tokens"
-usage_in_stream  = true
-finish_reason    = true
-reasoning        = "reasoning_effort"
-thinking_style   = "reasoning_content"
-```
-
-#### 8.7.1 Identity is billing, so config must not be able to set it
-
-Requests are attributed by the `X-User-Id` header carrying a WBI ID, and the gateway
-bills that identity. Resolution order:
-
-1. LDAP-verified identity from the launcher's keyring (`NXP_LDAP_USER`) — **always wins**.
-2. `wbiID` from config.
-3. `NXP_WBI_ID` / `WBI_ID` / OS username.
-
-The precedence is the point. A project-local, repo-committed config file must never be
-able to bill another engineer, so a verified identity overrides config rather than the
-reverse, and a mismatch is logged. This inverts kn9t's normal "config wins" rule; the
-exception is deliberate and belongs in the decision log.
-
-#### 8.7.2 Access preflight
-
-`POST /ldap/check_access` with `{}` returns `{"result": 0}` when provisioned. kn9t caches
-success for `check_ttl_secs` and shares one in-flight check across concurrent requests.
-A `401`/`403` on any later call **invalidates the cache immediately**, because the gateway
-has a second authorization layer (ACC group membership) that the preflight does not cover
-— without invalidation every request fails opaquely until the TTL lapses. Access is
-provisioned out-of-band via ServiceNow, so the error text must name the onboarding URL;
-there is no API to fix it programmatically.
-
-#### 8.7.3 Budget feeds the cost model directly
-
-`POST /user/usage` returns `max_budget`, `spend`, `budget_duration`,
-`budget_reset_date`, and optional weekly counterparts. This is authoritative
-server-side spend, and it is what `budget_remaining_usd` in `SessionForked` (§7.3) and
-the §6.1 cost projection should reconcile against. Locally computed cost from
-hand-written prices stays an estimate; this endpoint is ground truth.
-
-`/v1/models` lists available models but **does not expose pricing**, which is exactly why
-§8.2 requires hand-written prices.
-
-#### 8.7.4 Three request rewrites
-
-1. **Adaptive thinking.** `claude-opus-4-8` and the `claude-*-5` family rejected the
-   legacy `thinking: { type: "enabled", budget_tokens }` shape that LiteLLM still
-   generates from `reasoning_effort`. They require
-   `thinking: { type: "adaptive" }` plus `output_config: { effort }`, with effort in
-   `low | medium | high`. This is the per-model `reasoning = "adaptive"` override from
-   §8.3, not a provider-wide setting — siblings on the same endpoint still take
-   `reasoning_effort`.
-2. **Adaptive thinking demands a `tools` array.** The gateway does not set
-   `litellm.modify_params`, so a tool-less call — title generation, compaction — 400s.
-   `require_tools = true` injects a single never-called placeholder tool with
-   `tool_choice: "auto"`.
-3. **Non-streaming models.** Some models reject `stream: true`. `streaming = false` on
-   the model makes `kn9t-provider-core` issue a synchronous request and synthesize the
-   `Chunk` sequence from the complete response, so the `Iterator` contract in §7 is
-   unchanged and nothing downstream can tell.
-
-Two rewrites the plugin needs and kn9t does **not**:
-
-- **Terminal usage chunk.** LiteLLM attaches final `usage` to a chunk that still carries
-  a choice, while `@ai-sdk/openai-compatible` only reads usage from a chunk with
-  `choices: []`, so the plugin re-emits a synthetic terminal chunk. `Chunk::Usage` is
-  independent of content, so there is nothing to synthesize.
-- **Field-stripping workarounds.** The AI SDK parses `prompt_tokens_details` with a
-  strict schema that drops `cache_creation_input_tokens`, forcing the plugin to also emit
-  it at the root. kn9t's `Usage` reads whichever field is present.
-
-Also inherited: `providerOptions` keys that a strict gateway does not recognize get
-spread into the request body and 400 the whole call
-(`anthropicBeta: Extra inputs are not permitted`). kn9t sends only fields named in the
-quirk table — no passthrough of unknown options.
-
-#### 8.7.5 Two hazards worth naming
-
-**`tls_insecure` defaults to `true` in the plugin.** kn9t defaults it to **`false`**.
-Disabling certificate verification by default turns a corporate MITM proxy into an
-undetectable one; if a specific deployment needs it, that is an explicit opt-in with a
-startup warning, not a silent default.
-
-**The 1M-context model pair.** Some inference profiles are provisioned at 1M context.
-That is a property of gateway provisioning, not of any beta flag — the
-`context-1m-2025-08-07` flag is accepted by models that remain capped at 200K, so
-accepting the flag proves nothing; only an oversized prompt does. kn9t registers such
-models **twice**, both entries pointing at the same API id:
-
-| config id | `ctx` | purpose |
-|---|---|---|
-| `us.anthropic.claude-opus-5` | 200 000 | guardrail: compacts early and cheaply |
-| `us.anthropic.claude-opus-5:1m` | 1 000 000 | opts into the full window at tier pricing |
-
-The 200K figure on a 1M-capable model is an intentional cost and auto-compaction
-guardrail, not a capability limit. Do not "correct" it. Above 200K, pricing changes
-(roughly 2x input), so the `:1m` entry carries its own prices and §6.1's write-time
-price snapshot records which was actually used.
 
 ---
 
@@ -2140,7 +2007,7 @@ flowchart LR
     S2["2. kn9t-provider-replay<br/>raw provider bytes<br/>through the real parser"]
     S3["3. kn9t-react + kn9t-tools<br/>read/write/edit/bash (integration harness)"]
     S4["4. kn9t-store<br/>events, projections, reproject"]
-    S5["5. kn9t-provider-core<br/>+ openai/LiteLLM<br/>+ nxp-bedrock gateway"]
+    S5["5. kn9t-provider-core<br/>+ openai/LiteLLM"]
     S6["6. kn9t-server<br/>HTTP, SSE, blobs, leases"]
     S7["7. kn9t-tui<br/>ratatui + images"]
     S8["8. kn9t-plugin + kn9t-plugin-sdk<br/>protocol v2: chunk/done/cancel<br/>tool/provider/hook/event traits"]
@@ -2180,7 +2047,7 @@ flowchart LR
 | Q6c | custom plugin: hard error below api-version 9 | legacy `/.api/llm/chat/completions` fallback | an old server is unusable rather than silently degraded |
 | Q6d | text-encoded tool-call scraping **off** by default | always-on recovery (Pi/plugin behavior) | a model that cannot emit native calls needs an explicit opt-in |
 | Q6e | truncation retry policy lives in the ReAct loop, not the provider | per-session counter inside `Provider` | providers stay stateless, so §8 owns one more concern |
-| Q6f | NXP Bedrock verified LDAP identity overrides config `wbiID` | config-wins (kn9t's normal rule) | one deliberate inversion, because this field is billing |
+| Q6f | enterprise gateways may override identity from config | config-wins (kn9t's normal rule) | billing identity should not be repo-committable |
 | Q6g | `tls_insecure` defaults to `false` | plugin's `true` default | some deployments need an explicit opt-in |
 | Q7 | 8 hooks over subprocess stdio; `Policy` trait; ask-on-mutation | `.so` (no stable ABI), WASM (80 crates), no hooks | ~1ms per hook call; no per-delta hooks |
 | Q8 | declared order; pipeline / veto / collect; per-hook fail open or closed | uniform posture, exclusive claims | two composition rules to document |
@@ -2201,13 +2068,13 @@ flowchart LR
 | Q22 | replay fixtures are raw provider bytes | decoded `Chunk` NDJSON, both formats | fixtures are per-provider |
 | Q23 | plugin protocol v2: `chunk`/`done`/`cancel` on same NdJSON channel; demux by `id` | second channel (socket/pipe pair), polling `cancel` flag, per-call timeout only | same channel requires `Mutex<BufReader>` shared between dispatch and cancel threads; accepted as SDK implementation detail invisible to plugin authors |
 | Q24 | capability flags in hello (`"streaming"`, `"cancelable"`) instead of proto version bump | integer `proto` bump | v1 plugins continue to work alongside v2 plugins on the same host; unrecognised flags ignored |
-| Q25 | tools (`bash`/`read`/`write`/`edit`) ship as an **external** subprocess plugin (`plugins/kn9t-tools`, auto-discovered in `~/.kn9t/plugins/` per ADR-0004); bootstrap installs it on first run | keep tools in-process; in-process "plugin" adapter; or bundle as `crates/internal-plugins` | subprocess validates the full plugin code path; enables hot-reload; external + auto-discovered makes the repo `plugins/` build source vs `~/.kn9t/plugins/` install target; IPC overhead (~1ms) negligible vs tool execution time |
+| Q25 | tools (`bash`/`read`/`write`/`edit`) ship as an **external** subprocess plugin (`plugins/kn9t-tools`, auto-discovered in `~/.kn9t/plugins/` per ADR-0004); bootstrap installs it on first run | keep tools in-process; in-process "plugin" adapter | subprocess validates the full plugin code path; enables hot-reload; external + auto-discovered makes the repo `plugins/` build source vs `~/.kn9t/plugins/` install target; IPC overhead (~1ms) negligible vs tool execution time |
 | Q26 | providers pluggable via `hook:"provider_complete"` streaming the same `chunk`/`done` shapes; `kn9t-provider-core` becomes the reference library plugin authors may link | hard-coded in-process only; per-provider hook surface | provider plugin streams chunks whose `kind` values the existing assembler consumes unchanged — no new host assembly code |
 | Q27 | read-tracking map (`read`→`edit` conflict detection) lives inside `kn9t-tools` process, not on wire | carry map in hook payload on every call; drop conflict detection | only viable because `read` and `edit` always ship in the same binary; mixing them across two plugins would break detection |
 | Q28 | hot-reload: cancel in-flight calls, then shutdown old process, spawn new, re-handshake | drain (wait for completion), kill without cancel | user initiating reload accepts disruption; cancelled calls return error ToolResults the model can retry |
 | Q29 | `kn9t-plugin-sdk` has zero workspace deps (only `serde`/`serde_json`) for crates.io publishability | depend on `kn9t-core` for shared types | SDK authors depend on one tiny crate; protocol schema is self-contained in §2.5–2.6 of `spec/08b` |
 | Q30 | protocol spec (`spec/08b`) is language-neutral; Rust SDK is one reference implementation; Python/Node/Go SDKs are tracked follow-ups | ship SDKs in all languages before stabilising protocol | protocol must be stable before SDKs; Rust SDK proves it; other SDKs are a weekend each once protocol is proven |
-| Q31 | kn9t-custom-provider + Anthropic ship as **external** standalone subprocess provider plugins (`plugins/kn9t-custom-provider`, `plugins/kn9t-anthropic`) using `kn9t-plugin-sdk`; `RemoteProvider` in `kn9t-plugin` adapts the stream into the `Provider` trait. **Refined 2026-08-28:** `kn9t-custom-provider` moved to external (outside the workspace); **Phase 3:** all plugins external — `plugins/kn9t-tools`, `kn9t-anthropic`, `kn9t-test-plugin` all standalone, auto-discovered in `~/.kn9t/plugins/` (ADR-0004); no `internal-plugins/` remains | build as `kn9t-provider-custom` / `kn9t-provider-anthropic` workspace crates depending on `kn9t-provider-core`; or keep plugins as workspace members | plugin route: no workspace dep bloat; providers become hot-reloadable; full provider-plugin code path validated in production; external enforces the SDK-only boundary structurally rather than by review (workspace membership shares a lock file and target dir and cannot prevent an in-tree dep creeping in); accepted cost: ~1ms IPC overhead per stream start, separate build step, and `binary` must be an absolute path |
+| Q31 | provider plugins ship as **external** standalone subprocess binaries using `kn9t-plugin-sdk`; `RemoteProvider` in `kn9t-plugin` adapts the stream into the `Provider` trait; all plugins external and auto-discovered in `~/.kn9t/plugins/` (ADR-0004) | build as workspace crates depending on `kn9t-provider-core` | plugin route: no workspace dep bloat; providers become hot-reloadable; full provider-plugin code path validated in production; external enforces the SDK-only boundary structurally; accepted cost: ~1ms IPC overhead per stream start, separate build step |
 | Q32 | TUI session access via `/session` command and modal overlay with fuzzy search; no left sidebar | hover-to-expand left sidebar with session list | overlay: keyboard-driven, works on welcome+chat screens, no horizontal space waste, consistent with `/models`; accepted cost: one extra keystroke to access sessions |
 
 ---

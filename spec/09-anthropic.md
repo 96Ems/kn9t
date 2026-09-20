@@ -1,6 +1,6 @@
 # 09 — `kn9t-anthropic` (provider plugin)
 
-**Binary:** `internal-plugins/kn9t-anthropic` (bundled)
+**Binary:** external plugin (see [kn9t-plugins](https://github.com/96Ems/kn9t-plugins))
 **Depends on:** `kn9t-plugin-sdk` only (zero workspace deps — GI-1 satisfied by design).
 **Host bridge:** `RemoteProvider` in `kn9t-plugin` (its one workspace dep is `kn9t-core`).
 **DESIGN:** §8.5, §8.4.2, §8.4.3, §8.4.4, §13.8, Q26, Q31.

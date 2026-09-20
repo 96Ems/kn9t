@@ -12,13 +12,12 @@
 >   and now refreshes from `GET /tools` instead of lying.
 > - **R-TUI-110** amended — `pending_images` renamed to `staged_images` (`app.rs:128`) per AGENTS.md §10
 >   patch-smell fix; multiple `queued_*` buffers eliminated Phase 4.4c.
-> - **R-TUI-220** deferred to v2 per `docs/dev/job/phase4.md:9` user decision — "Do not add an extensibility seam to a
->   2,814-line god object. Decompose first (4.4), then revisit widgets (4.5)". Spec shape (`SidebarWidget` enum)
->   is correct and will be populated from server data once the TUI is decomposed; `tui::plugin_sidebar` will remain
->   `✗` until then.
+> - **R-TUI-220** deferred to v2 — "Do not add an extensibility seam to a 2,814-line god object.
+>   Decompose first, then revisit widgets". Spec shape (`SidebarWidget` enum) is correct and will be
+>   populated from server data once the TUI is decomposed; `tui::plugin_sidebar` will remain `✗` until then.
 > - **R-TUI-230** built Phase 4 — `app.rs:630` reconnects from `last_seq` (`session_manager.rs:115 ?from=`), honestly
 >   shows "reconnecting..." (`reducer::sse_reconnect_seq_tracking` + `tui::sse_reconnect` green).
-> - Remaining R-TUI-01x–21x/24x without tests are honest `☐`/`▣` in `docs/dev/TRACKING.md`; no silent `☑`.
+> - Remaining R-TUI-01x–21x/24x without tests are honest `☐`/`▣`; no silent `☑`.
 
 ## 1. Crate Structure
 
@@ -349,7 +348,7 @@
 
 ## 22. Plugin Sidebar API
 
-> **R-TUI-220 → TUI-DESIGN §4.4 (deferred to v2 per docs/dev/job/phase4.md:9)**
+> **R-TUI-220 → TUI-DESIGN §4.4 (deferred to v2)**
 > Plugins MUST be able to contribute sidebar widgets via structured data:
 >
 > ```rust

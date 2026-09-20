@@ -12,11 +12,11 @@ decisions move to a user-installed policy plugin via the `before_tool_call` hook
 ## Context
 
 Stage 08b (plugin protocol v2) moved the default tools (`bash`, `read`, `edit`) to an
-external subprocess plugin (`internal-plugins/kn9t-tools`). Commit 5b65819 deleted the
-entire `crates/kn9t-tools/src/classify.rs` (323 lines) — the bash safety classifier that
+external subprocess plugin (`plugins/kn9t-tools`). Commit 5b65819 deleted the entire
+`crates/kn9t-tools/src/classify.rs` (323 lines) — the bash safety classifier that
 implemented spec requirements R-TOOL-080/R-TOOL-090 (the Ask/AllowReadOnly/HardDeny
-decision pipeline). The commit message claimed "migrated to internal-plugins," but the
-classifier was never reimplemented.
+decision pipeline). The commit message claimed "migrated to plugin," but the classifier
+was never reimplemented.
 
 Consequences of the deletion:
 
@@ -65,6 +65,4 @@ and the `/approve` route — they are just dead code because the only `Policy` i
 - The server must be able to inspect tool arguments to run the classifier. For internal
   tools this is trivial (the server dispatches them). For plugin tools, this motivates
   ADR-0002: plugins must declare argument effects so the server knows *what* to inspect.
-- docs/dev/TRACKING.md's R-TOOL-070/080/090/095 rows must be flipped from `☑` to `✗` until the
-  classifier is restored.
-- Gate G1 is no longer green for the classifier requirements.
+- R-TOOL-070/080/090/095 requirements are not green until the classifier is restored.

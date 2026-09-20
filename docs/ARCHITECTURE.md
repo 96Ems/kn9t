@@ -727,9 +727,8 @@ never a silent ignore.
 
 ## 13. Invariants and how each is actually enforced
 
-The stated lesson in `docs/dev/TRACKING.md` is *"the invariant claim was untrue for an unknown
-period because nothing checked it. Prefer a script over an assertion."* That lesson is
-mostly applied:
+The lesson is *"the invariant claim was untrue for an unknown period because nothing
+checked it. Prefer a script over an assertion."* That lesson is mostly applied:
 
 | invariant | enforced by | status |
 |---|---|---|
@@ -878,15 +877,9 @@ chunked-encoding bug will eventually live.
   continuation word (`/// and the …`, `/// then …`), meaning a first line was stripped at
   some point. The remaining prose is excellent; the summary line is missing, so
   `cargo doc` reads oddly. Mechanical to spot, tedious to fix.
-* **README describes a tree that has moved on.** It references
-  `plugins/kn9t-custom-provider` (28 mentions across docs — the directory does not exist)
-  and `internal-plugins/` (also absent), and its Status and Architecture tables have empty
-  bodies where content was cut. `spec/09` still points at `internal-plugins/kn9t-anthropic`.
-* **Untracked reorganization in flight:** `plugins/kn9t-policy.py` is deleted and
-  `plugins/kn9t-policy/kn9t-policy.py` is untracked. Harmless, but commit it — the policy
-  plugin is the safety mechanism and should not be in limbo.
-* **Two Go binaries committed** (`kn9t-agents-md` + `.exe`, 5.1 MB total). `.gitignore`
-  covers `target/` but not built plugin binaries.
+* **Some doc references point to moved directories.** Cross-check doc paths after any
+  major reorganization.
+* **.gitignore coverage:** ensure built plugin binaries are excluded.
 * **233 `.unwrap()` / 85 `.expect()`** across `crates/`. The trend script guards only
   `policy.rs` and `host.rs`. Most of the rest are in tests or genuinely-infallible spots,
   and lock `.expect("… poisoned")` is a defensible convention — but the number only moves
