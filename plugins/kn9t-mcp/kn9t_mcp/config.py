@@ -23,6 +23,7 @@ Example config:
     url = "https://mcp.example.com/mcp"
     [mcp.headers]
     api-key = "env:MCP_API_KEY"
+    User-Agent = "optional override of the default kn9t-mcp UA"
 
 Environment variable resolution:
     - "env:VAR_NAME" → reads from os.environ["VAR_NAME"]

@@ -23,7 +23,16 @@ import urllib.error
 from dataclasses import dataclass
 from typing import Any
 
+from kn9t_mcp import __version__
 from kn9t_mcp.mcp_client import McpTool, McpError
+
+# urllib defaults to `User-Agent: Python-urllib/<version>`. Some MCP endpoints sit
+# behind Cloudflare bot rules that ban that exact string with HTTP 403
+# `Access denied / browser_signature_banned` — which reads like a missing or bad
+# token and sends you hunting for an auth bug that isn't there. Identify as kn9t
+# instead. A server can still override it via `[mcp.headers]` in mcp.toml; do not
+# "clean this up" as redundant, it is load-bearing.
+DEFAULT_USER_AGENT = f"kn9t-mcp/{__version__} (+https://github.com/kn9t/kn9t)"
 
 
 class McpHttpClient:
@@ -101,6 +110,7 @@ class McpHttpClient:
         http_headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
+            "User-Agent": DEFAULT_USER_AGENT,
             **self.headers,
         }
         
@@ -235,6 +245,7 @@ class McpHttpClient:
         
         http_headers = {
             "Content-Type": "application/json",
+            "User-Agent": DEFAULT_USER_AGENT,
             **self.headers,
         }
         

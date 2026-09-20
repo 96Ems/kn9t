@@ -320,9 +320,10 @@ pub fn parse_widget(lua: &Lua, table: &Table) -> LuaResult<Widget> {
 
 /// Parse the styled runs of a `text` or list item.
 ///
-/// Accepts either `content="..."` (one span, inheriting the node style) or
-/// `spans={{text=..., fg=...}, ...}`. Supporting both means adding a colour to
-/// part of a line never requires restructuring the surrounding config.
+/// Accepts `content="..."` (one span, inheriting the node style),
+/// `spans={{text=..., fg=...}, ...}`, or a bare `text="..."`. `text` is accepted
+/// as a synonym for `content` because it is the obvious key to reach for and a
+/// list item that silently renders empty is a bug that hides in a rendered frame.
 fn parse_spans(table: &Table, fallback: &WidgetStyle) -> LuaResult<Vec<TextSpan>> {
     if let Ok(spans_table) = table.get::<Table>("spans") {
         let mut out = Vec::new();
@@ -358,10 +359,22 @@ fn parse_spans(table: &Table, fallback: &WidgetStyle) -> LuaResult<Vec<TextSpan>
         return Ok(out);
     }
 
-    let content: String = table.get("content").unwrap_or_default();
+    let content: String = table
+        .get::<String>("content")
+        .ok()
+        .or_else(|| table.get::<String>("text").ok())
+        .unwrap_or_default();
+    // The item's own colour wins; fall back to the node style for what it omits.
+    let mut style = parse_style(table)?;
+    if style.fg.is_none() {
+        style.fg = fallback.fg;
+    }
+    if style.bg.is_none() {
+        style.bg = fallback.bg;
+    }
     Ok(vec![TextSpan {
         text: content,
-        style: fallback.clone(),
+        style,
         syntax: None,
     }])
 }

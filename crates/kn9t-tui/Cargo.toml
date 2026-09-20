@@ -22,7 +22,7 @@ unicode-segmentation = "1.13"  # Word/grapheme boundaries for CJK/emoji-aware na
 
 # Lua customization — in-process embedding for per-frame UI scripting
 mlua          = { version = "0.10", features = ["lua54", "vendored", "send"] }
-notify        = "8"  # File watcher for hot-reload
+notify        = "8"  # File watcher: Lua config hot-reload + live workspace index
 
 [[bin]]
 name = "kn9t-tui"

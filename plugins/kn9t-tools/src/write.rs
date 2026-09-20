@@ -15,7 +15,8 @@ impl PluginTool for Write {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "write".into(),
-            description: "Write content to a file. For existing files, the file must have been \
+            description: "Write content to a file, creating any missing parent directories. \
+                For existing files, the file must have been \
                 observed first — via 'read', or a 'bash' command naming the file — and must \
                 not have been modified since. \
                 New files are created directly. Line endings are preserved for existing files."
@@ -78,6 +79,21 @@ impl PluginTool for Write {
             }
         }
 
+        // Create missing parent directories — `fs::write` only creates the
+        // file. Without this, writing `src/new/mod.rs` needs a separate `bash`
+        // mkdir first, which is a wasted round-trip the model has no way to
+        // predict it needed.
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    return ToolOutput::error(format!(
+                        "could not create directory {}: {e}",
+                        parent.display()
+                    ));
+                }
+            }
+        }
+
         // Write the file
         if let Err(e) = std::fs::write(&path, content.as_bytes()) {
             return ToolOutput::error(format!("write error: {e}"));
@@ -122,5 +138,56 @@ fn emit_write_diff(ctx: &ToolCallCtx, path: &str, content: &str, is_new_file: bo
         for (i, line) in lines.iter().enumerate() {
             ctx.progress.send(&format!("{:>4}: {}", i + 1, line));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{ctx, scratch, text};
+    use serde_json::json;
+
+    #[test]
+    fn creates_missing_parent_directories() {
+        let dir = scratch("write_parents");
+        let out = Write.execute(
+            &json!({ "path": "src/deep/new.rs", "content": "fn main() {}\n" }),
+            &ctx(Some(dir.clone())),
+        );
+        assert!(!out.is_error, "{}", text(&out));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/deep/new.rs")).unwrap(),
+            "fn main() {}\n"
+        );
+    }
+
+    #[test]
+    fn overwriting_an_unobserved_file_is_refused() {
+        let dir = scratch("write_guard");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"keep\n").unwrap();
+        crate::read::read_map().lock().unwrap().remove(&file);
+
+        let out = Write.execute(
+            &json!({ "path": "a.txt", "content": "clobber\n" }),
+            &ctx(Some(dir.clone())),
+        );
+        assert!(out.is_error);
+        assert_eq!(std::fs::read(&file).unwrap(), b"keep\n");
+    }
+
+    #[test]
+    fn overwriting_an_observed_file_is_allowed() {
+        let dir = scratch("write_observed");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"old\n").unwrap();
+        assert!(crate::read::track_as_read(&file));
+
+        let out = Write.execute(
+            &json!({ "path": "a.txt", "content": "new\n" }),
+            &ctx(Some(dir.clone())),
+        );
+        assert!(!out.is_error, "{}", text(&out));
+        assert_eq!(std::fs::read(&file).unwrap(), b"new\n");
     }
 }

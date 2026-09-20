@@ -408,6 +408,13 @@ pub struct App {
     pub explorer_area: Option<(u16, u16, u16, u16)>,
     /// Rect the viewer was drawn in, for mouse scrolling.
     pub viewer_area: Option<(u16, u16, u16, u16)>,
+    /// Live watch over the workspace root; flags a rebuild when a file appears, changes or is
+    /// removed. `None` when the platform watcher is unavailable (the index is then a snapshot,
+    /// as it was before). See `crate::workspace_watch`.
+    workspace_watcher: Option<crate::workspace_watch::WorkspaceWatcher>,
+    /// Root the watcher was started for, recorded even when `spawn` failed so a broken watcher
+    /// is not retried on every turn.
+    workspace_watch_root: Option<std::path::PathBuf>,
 
     /// Tools available this session, as reported by `GET /tools`.
     pub tools: Vec<ToolEntry>,
@@ -583,6 +590,8 @@ impl App {
             explorer_hit_areas: Vec::new(),
             explorer_area: None,
             viewer_area: None,
+            workspace_watcher: None,
+            workspace_watch_root: None,
             quit: false,
             theme_mode,
             tool_mode: false,
@@ -1452,8 +1461,9 @@ impl App {
 
             // One place, once per turn: the index, the explorer tree and the `@` dropdown all
             // read the same walk (PLAN §P7 L2 / D6). Doing it here rather than in the render
-            // path keeps "the input/index changed" and "the views changed" together.
-            self.sync_index_views();
+            // path keeps "the input/index changed" and "the views changed" together. A live
+            // rebuild must also repaint, since an idle `Tick` turn skips the redraw.
+            needs_redraw |= self.sync_index_views();
         }
 
         // Release lease on exit (uses current session_id).
@@ -1484,6 +1494,12 @@ impl App {
         if self.overlay.is_some() {
             crate::log!("  -> overlay handler");
             self.handle_overlay_key(key, tx);
+            return;
+        }
+
+        // A plugin-rendered interaction has no overlay, so Esc cancels it here.
+        if self.active_interaction_id.is_some() && key.code == KeyCode::Esc {
+            self.respond_interaction(serde_json::json!({"cancelled": true}));
             return;
         }
 
@@ -1522,6 +1538,22 @@ impl App {
                         if consumed {
                             crate::log!("  -> plugin '{}' consumed {}", plugin, key_str);
                             return;
+                        }
+                    }
+                }
+                // Printable input; exact `on_key` bindings matched first.
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                {
+                    if let KeyCode::Char(ch) = key.code {
+                        if runtime.plugin_has_text(&plugin) {
+                            let consumed =
+                                runtime.dispatch_plugin_text(&plugin, &ch.to_string());
+                            self.apply_plugin_effects(&runtime, tx);
+                            if consumed {
+                                crate::log!("  -> plugin '{}' consumed text '{}'", plugin, ch);
+                                return;
+                            }
                         }
                     }
                 }
@@ -2622,6 +2654,10 @@ impl App {
                         }
                     }
                 }
+                PluginEffect::Respond { payload, .. } => {
+                    // The view owns the answer; the host owns the transport.
+                    self.respond_interaction(payload);
+                }
             }
         }
         runtime.invalidate_ui();
@@ -3414,6 +3450,18 @@ impl App {
         self.session.set_session_title(st.session_title);
         self.session.sessions = st.sessions;
         self.model_sel = st.model_sel;
+
+        // A plugin that ships its own Lua UI renders its interaction; do not also
+        // open the generic overlay, and give that view the keyboard.
+        if let Some(Overlay::Interaction { plugin, .. }) = self.overlay.clone() {
+            if let Some(runtime) = self.lua_runtime.clone() {
+                if runtime.plugin_view_names().iter().any(|p| p == &plugin) {
+                    self.overlay = None;
+                    self.focused_plugin = Some(plugin);
+                    runtime.invalidate_ui();
+                }
+            }
+        }
         // Aborting is App-only (not in State): clear on terminal phases
         if matches!(self.turn_phase.as_str(), "aborted" | "idle" | "failed") {
             self.aborting = false;
@@ -3456,15 +3504,46 @@ impl App {
 
     /// Bring the file-index views in step with the session (PLAN §P7 L2), once per event-loop
     /// turn rather than from the render path. Each step no-ops unless its input changed.
-    fn sync_index_views(&mut self) {
+    ///
+    /// Returns true when the index was rebuilt, so the caller can force a redraw: an idle turn
+    /// receives only `Tick`s, whose handler deliberately skips the redraw, and a live tree
+    /// change would otherwise be applied to state that is not painted until the next key.
+    fn sync_index_views(&mut self) -> bool {
         // Root is where the user launched the TUI, not the session cwd: the viewer/explorer read
-        // local files, and the session cwd may name a path this machine cannot see. `refresh`
-        // no-ops unless the root changed, so this is one `getcwd` per turn.
-        if let Ok(root) = std::env::current_dir() {
-            self.file_index.refresh(&root);
-        }
+        // local files, and the session cwd may name a path this machine cannot see.
+        let Ok(root) = std::env::current_dir() else {
+            return false;
+        };
+        self.ensure_workspace_watcher(&root);
+
+        // A watcher hit means the walk is stale: rebuild in place, keeping frecency. Otherwise
+        // `refresh` still covers a root that changed under us and no-ops the rest of the time.
+        let changed = if self
+            .workspace_watcher
+            .as_ref()
+            .is_some_and(|w| w.take_changed())
+        {
+            self.file_index.rebuild(&root);
+            true
+        } else {
+            self.file_index.refresh(&root)
+        };
+
         self.explorer.sync(&self.file_index);
         self.mention.sync(&self.file_index, &self.input, self.cursor_col);
+        changed
+    }
+
+    /// Start the workspace watcher once, on the first turn, and re-point it if the root moves.
+    fn ensure_workspace_watcher(&mut self, root: &std::path::Path) {
+        if self.workspace_watch_root.as_deref() == Some(root) {
+            return;
+        }
+        self.workspace_watch_root = Some(root.to_path_buf());
+        self.workspace_watcher = crate::workspace_watch::spawn(root);
+        if self.workspace_watcher.is_none() {
+            crate::log!("workspace watch: unavailable; the explorer tree is a snapshot");
+        }
     }
 
     /// Force the Lua layout to rebuild next frame, for host state `render_ui` reads that has no
@@ -4111,6 +4190,8 @@ impl App {
             let _ = client.ui_respond(id, payload);
             self.active_interaction_id = None;
             self.overlay = None;
+            // A plugin-owned interaction view is done; release its keyboard.
+            self.focused_plugin = None;
         }
     }
 

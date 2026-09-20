@@ -2,7 +2,7 @@
 --
 -- Two rows, VS Code's grammar:
 --   row 1  the open sessions as tabs — the "editor group" of an agent
---   row 2  where you are: cwd ▸ title, with the phase on the right
+--   row 2  where you are: cwd ▸ title
 --
 -- Tabs are the only session navigation in the built-in UI: the left column is the file
 -- explorer (D3), so listing sessions there as well would show the same thing twice. The
@@ -133,15 +133,9 @@ local function tab_bar(width)
         table.insert(state_spans, { text = "  " .. TUI.alert.text, fg = TUI.alert.fg or C.danger, bold = true })
     end
 
-    -- Running state is a property of the *session*, and only the active one can be live
-    -- (one SSE stream), so the indicator goes on the bar rather than on a tab. Not
-    -- animated on purpose: the transcript's streaming line already spins, and a second
-    -- spinner for the same fact is noise.
-    if session.streaming then
-        table.insert(state_spans, { text = "  ● streaming", fg = C.ok })
-    elseif session.aborting then
-        table.insert(state_spans, { text = "  ● aborting", fg = C.danger, bold = true })
-    end
+    -- The turn phase (streaming/aborting/idle) is deliberately not shown here: it belongs
+    -- to the status bar, which is the one place that names it. A `● streaming` indicator on
+    -- this bar put the same word on several lines of chrome at once.
     table.insert(children, { type = "text", spans = state_spans, size = { flex = 1 }, wrap = false })
 
     table.insert(children, {
@@ -161,10 +155,12 @@ local function tab_bar(width)
     }
 end
 
--- Row 2: cwd ▸ title, with the phase on the right. Each part is its own span so a long
--- path can be dimmed while the session title stays legible.
+-- Row 2: cwd ▸ title. Each part is its own span so a long path can be dimmed while the
+-- session title stays legible.
+--
+-- No phase on the right: the status bar owns it. It used to be repeated here as a
+-- right-aligned word, so `streaming` showed up on three lines of chrome at once.
 local function breadcrumb(width)
-    local ctx     = kn9t.context or {}
     local session = (kn9t.state and kn9t.state.session) or {}
 
     local cwd = session.cwd or ""
@@ -181,23 +177,12 @@ local function breadcrumb(width)
         { text = title, fg = C.value },
     }
 
-    local phase = session.streaming and "streaming"
-        or (session.aborting and "aborting" or (ctx.phase or "idle"))
-    local right = { { text = phase .. " ", fg = session.aborting and C.danger or C.dim } }
-
     return {
         type = "split",
         direction = "horizontal",
         size = { fixed = 1 },
         children = {
             { type = "text", spans = left, size = { flex = 1 }, wrap = false },
-            {
-                type = "text",
-                spans = right,
-                size = { fixed = #phase + 1 },
-                align = "right",
-                wrap = false,
-            },
         },
     }
 end

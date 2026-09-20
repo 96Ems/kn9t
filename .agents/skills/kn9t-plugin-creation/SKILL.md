@@ -234,23 +234,50 @@ impl PluginHook for ApprovalGate {
 
 ## Host API (Subagents)
 
-Plugins with `host_api` capability can call back to the host:
+A plugin with the `host_api` capability calls back with `request`, answered by `api_result`.
+The Rust SDK wraps this as `ctx.host.call(op, payload)`; a hand-rolled TS/Python client writes
+the `request` itself.
+
+`ctx.host` **auto-injects the enclosing `tool_call`'s `session`** into any payload that lacks
+one. A hand-rolled client does not get that: send `session` yourself, or the host sees `None`
+and falls back to the server's cwd and default model.
+
+A sub-agent *is* a session running a turn — there is no separate concept:
+
+| op | what it does |
+|---|---|
+| `session_create` | A brand-new independent session. Optional `model`, `cwd`. |
+| `session_fork` | A child of the caller's session. `copy_events: false` gives a bare, task-only child; `copy_events: true` copies the parent transcript and captures `budget_usd` in the fork. |
+| `session_prompt` | One synchronous turn on that session with `text`, an optional `tools` subset, and `timeout_s`. Returns `{session, result}`, `result` being the final assistant text. |
 
 ```rust
-// Fork a session and run a turn
-let fork_result = ctx.api.session_fork(session_id, Some(0.5), None)?;
-let child_session = fork_result["session"].as_str().unwrap();
-
-let prompt_result = ctx.api.session_prompt(
-    child_session,
-    "Summarize this code",
-    Some(vec!["read", "bash"]),  // Tool subset
-    Some(30),  // Timeout
-)?;
+// 1. a bare child, 2. one turn, 3. read the text back.
+let child = ctx.host.call("session_fork",
+    json!({ "copy_events": false, "budget_usd": 0.5 }))?["session"]
+    .as_str().unwrap().to_string();
+let r = ctx.host.call("session_prompt", json!({
+    "session": child,
+    "text": "Summarize the auth module",
+    "tools": ["read", "bash"],   // tool subset; omit to inherit the session's tools
+    "timeout_s": 120,
+}))?;
+let answer = r["result"].as_str().unwrap_or_default();
 ```
 
-All host-API ops are listed in [`references/api.md`](references/api.md); the snippet above
-shows only the SDK shape.
+**Do not fork with `copy_events: true` to run a task from inside a tool call.** The parent's
+in-flight assistant message — the one carrying the very tool call being executed — is already
+in the transcript, and its `tool_result` does not exist yet. The child inherits a dangling
+tool call, and a real provider rejects it (OpenAI and Anthropic both require a `tool_result`
+immediately after `tool_use`). Pass the context the child needs inside `text` instead.
+
+**`tools` is a filter, not an addition:** the child sees exactly the named tools from the live
+registry. Omit it and the child gets everything visible — including `subagent`, so a
+sub-agent can fork its own children.
+
+**Cancel propagates:** Esc on the parent aborts the sub-agent; the child has its own `Cancel`,
+so it can never cancel its parent.
+
+All host-API ops are listed in [`references/api.md`](references/api.md).
 
 ## Python Plugin Structure
 
@@ -669,26 +696,16 @@ The server will:
 
 ## Testing
 
-### Unit test tools
+A plugin is a subprocess speaking NdJSON, so the honest test **spawns the built binary and
+plays the host**: send `hello`, answer each `request` it makes, assert the `done` it writes.
+That catches what a unit test cannot — a reply field named wrong, an `api_result` read and
+discarded, a hook path that never returns. Keep the pure logic in a plain function and unit
+test that separately.
 
-```rust
-#[test]
-fn test_echo() {
-    let tool = Echo;
-    let args = json!({"message": "test"});
-    let ctx = ToolCallCtx::mock();  // Fake context
-    
-    let result = tool.execute(&args, &ctx);
-    assert!(!result.is_error);
-    assert_eq!(result.content[0].text(), Some("test"));
-}
-```
-
-### Integration test with host
-
-```bash
-# Spawn plugin manually
-echo '{"t":"hello","proto":1,"kn9t":"test"}' | ./my-plugin
+```js
+const proc = spawn("node", ["dist/main.js"], { stdio: ["pipe", "pipe", "inherit"] });
+send({ t: "hello", proto: 1, kn9t: "test" });   // host → plugin, then a hook
+// … read the plugin's hello, send the hook, answer its `request`s.
 ```
 
 ## Reference Files
@@ -711,345 +728,194 @@ echo '{"t":"hello","proto":1,"kn9t":"test"}' | ./my-plugin
 
 ## Plugin TUI Integration
 
-Plugins can register interactive UIs in the TUI. The UI is defined in Lua and sent to the host.
+A plugin draws in the TUI by sending Lua source. There is no widget registry and no
+per-plugin Rust: the layout draws the frame (border, title, focus ring) and the plugin draws
+the content inside it.
 
-### Architecture
+### Lifecycle
 
-1. **Plugin sends Lua source** via `ui_register_lua` — defines `render(state)` returning a widget tree
-2. **Plugin pushes state** via `ui_set_state` — arbitrary JSON that `render(state)` uses
-3. **Keys are handled via `kn9t.on_key(key, fn)`** — registered in the Lua source
-4. **User interactions sent back** via `kn9t.action("plugin_msg", {plugin, msg})` — plugin handles in main loop
+1. **Register** with `ui_register_lua`. `source` defines `render(state)` returning a widget
+   tree. `placement` is a *request*: `main`, `sidebar`, `bottom`, `status`. `bottom`
+   reserves rows between the transcript and the prompt — the slot for a question that must
+   not cover what it is about.
+2. **Push data** with `ui_set_state` — arbitrary JSON, handed to `render(state)`.
+3. **Handle input** in Lua with `kn9t.on_key` / `kn9t.on_text`.
+4. **Tear down** with `ui_clear` when the view has nothing left to show. An idle session must
+   keep no panel; a view that registers once and never clears is a leak.
 
-### Key Concepts
+Register lazily: the `session_id` arrives with the first hook, not at handshake. A view that
+is only useful for the duration of one operation (a question, a progress bar) must clear
+itself when that operation ends, so the next one re-registers cleanly.
 
-| Concept | Description |
-|---------|-------------|
-| **Session-scoped** | UI is tied to a session, not global. Get `session_id` from hook payloads. |
-| **Lazy registration** | Register UI on first hook that provides `session_id` (e.g., `get_steering`). |
-| **Focus model** | Keys only reach a focused plugin (F10 cycles, Esc releases). |
-| **Widget tree** | `render(state)` returns `{type, children, ...}` — see widget reference below. |
+### What a view may call
 
-### Wire Protocol
+| Call | Purpose |
+|---|---|
+| `kn9t.on_key(key, fn)` | Bind a key while the view holds focus. Return `true` to consume, `false` to fall through. Exact `on_key` bindings are matched **before** `on_text`. |
+| `kn9t.on_text(fn)` | Every printable character, Space included. Return `false` to fall through. This is how text entry works — never bind one `on_key` per glyph. |
+| `kn9t.on_click(id, fn)` | A click on a widget carrying `id=`. |
+| `kn9t.respond(payload)` | Answer the `interaction_request` this view renders. The host owns the transport (`POST /ui-respond`) and the Esc cancel. |
+| `kn9t.notify({event = "...", ...})` | Send an event to *your plugin process*. Your plugin must subscribe to `ui_interaction` events. |
+| `kn9t.insert_input(text)` | Append text to the user's prompt. |
 
-**Register UI (once per session):**
+There is **no other reverse channel**: the Lua runs in the TUI process, so view state
+(cursor, input buffer, toggles) lives in the Lua and is mutated by its own handlers. Do not
+expect to round-trip it through your plugin process.
+
+### Rules that make a view behave
+
+* **Return content, not a frame.** The layout already wraps every view in a `box`. A view
+  whose top-level node is `{type="box"}` nests two borders and prints two titles.
+* **Declare your placement and size.** Do not rely on the default; say
+  `sidebar`/`bottom`/`main`, and pass `rows` so the slot fits the content when focused.
+* **Reserve the height that must be visible.** A `{flex=1}` row can be given zero height, and
+  the content silently disappears. Size the rows that matter with `{fixed=N}`, and make the
+  requested `rows` match what `render` returns.
+* **Advertise the keys.** A footer such as
+  `up/down move - Space toggle - Enter submit - Esc cancel` is the difference between a
+  usable panel and a guess.
+* **A focused `bottom` view is an interaction:** Esc cancels it, so the view cannot bind Esc
+  itself and should offer an explicit cancel answer through `kn9t.respond`.
+
+### Wire protocol
+
+**Register (once, lazily):**
 ```json
-{
-  "t": "request",
-  "id": 1,
-  "op": "ui_register_lua",
-  "payload": {
-    "session": "<session_id>",
-    "source": "-- Lua code...",
-    "placement": "main",
-    "title": "My Plugin"
-  }
-}
+{"t":"request","id":1,"op":"ui_register_lua","payload":{
+  "session":"<id>", "source":"-- Lua", "placement":"bottom", "title":"Question", "rows":8}}
 ```
 
-**Push state (on every update):**
+**Push state (cheap, per update):**
 ```json
-{
-  "t": "request",
-  "id": 2,
-  "op": "ui_set_state",
-  "payload": {
-    "session": "<session_id>",
-    "state": { "items": [...], "cursor": 0 }
-  }
-}
+{"t":"request","id":2,"op":"ui_set_state","payload":{"session":"<id>","state":{}}}
 ```
 
-### Lua UI Template
+**Tear down:**
+```json
+{"t":"request","id":3,"op":"ui_clear","payload":{"session":"<id>"}}
+```
+
+The three UI ops are **fire-and-forget**: none of their replies is needed. If you hand-roll
+the transport, do not issue a *blocking* call while another request is in flight — a
+blocking reader that discards replies it is not waiting for will swallow the other request's
+reply and hang. Either buffer every reply you do not consume, or keep at most one request
+outstanding.
+
+### Lua template
 
 ```lua
--- View state (survives state pushes)
-local V = { cursor = 0, input = "" }
+-- View state: lives in the TUI process, reset when the data's identity changes.
+local V = { cursor = 1, items = {}, text = "" }
+local seen = nil
 
--- Update view state from host pushes
-function on_state(s)
-    V.items = s.items or {}
-    V.cursor = s.cursor or 0
-end
-
--- Helper to send messages back to plugin
-local function send(t, extra)
-    local msg = { t = t }
-    if extra then for k, v in pairs(extra) do msg[k] = v end end
-    kn9t.action("plugin_msg", { plugin = "my-plugin", msg = msg })
-end
-
--- Register key handlers (NOT a global on_key function!)
-kn9t.on_key("j", function()
-    send("cursor_down")
-    return true  -- consumed
-end)
-
-kn9t.on_key("k", function()
-    send("cursor_up")
-    return true
-end)
-
+kn9t.on_key("Up",   function() V.cursor = math.max(1, V.cursor - 1) return true end)
+kn9t.on_key("Down", function() V.cursor = math.min(#V.items, V.cursor + 1) return true end)
 kn9t.on_key("Enter", function()
-    send("select_item")
+    kn9t.respond({ value = V.items[V.cursor] })
+    return true
+end)
+kn9t.on_text(function(ch)
+    if not V.typing then return false end   -- fall through when not typing
+    V.text = V.text .. ch
     return true
 end)
 
-kn9t.on_key("Escape", function()
-    return false  -- Let Esc release focus to TUI
-end)
+function render(state)
+    state = state or {}
+    -- The host re-renders every frame, so reset on the data's identity, not per call.
+    if state.question ~= seen then
+        seen = state.question
+        V.items = state.items or {}
+        V.cursor = 1
+        V.text = ""
+    end
 
--- Render the UI
-function render(s)
-    on_state(s)
     local out = {}
-    
+    table.insert(out, { type = "text", content = state.question or "",
+                        wrap = true, size = { fixed = 2 } })
     for i, item in ipairs(V.items) do
-        local prefix = (i - 1 == V.cursor) and "> " or "  "
-        local fg = (i - 1 == V.cursor) and "cyan" or "white"
         table.insert(out, {
             type = "text",
-            content = prefix .. item,
-            fg = fg,
-            size = { fixed = 1 }
+            content = (i == V.cursor and "> " or "  ") .. item,
+            fg = (i == V.cursor) and "cyan" or "white",
+            size = { fixed = 1 },
         })
     end
-    
-    -- Help bar at bottom
-    table.insert(out, { type = "spacer", size = { flex = 1 } })
-    table.insert(out, {
-        type = "text",
-        spans = {
-            { text = "[j/k]", fg = "cyan" },
-            { text = " nav  ", fg = "darkgray" },
-            { text = "[Enter]", fg = "cyan" },
-            { text = " select", fg = "darkgray" },
-        },
-        size = { fixed = 1 }
-    })
-    
+    table.insert(out, { type = "text", content = "up/down move - Enter submit - Esc cancel",
+                        fg = "darkgray", size = { fixed = 1 } })
     return { type = "split", direction = "vertical", children = out }
 end
 ```
 
-### Widget Reference
+### Widget reference
 
-| Type | Properties | Description |
-|------|------------|-------------|
-| `text` | `content`, `fg`, `bold`, `spans` | Single line of text |
-| `split` | `direction`, `children` | Vertical/horizontal layout |
-| `spacer` | `size` | Flexible space |
-| `box` | `title`, `border`, `child` | Bordered container |
+| Type | Properties |
+|---|---|
+| `text` | `content`, `spans`, `fg`, `bold`, `wrap`, `markdown`, `syntax`, `align` |
+| `split` | `direction` (`vertical`/`horizontal`), `children` |
+| `list` | `items`, `selected` (**0-based**), `offset` |
+| `box` | `title`, `border`, `border_fg`, `padding`, `child` |
+| `gauge` | `frac`, `label`, `fg`, `filled`, `empty` |
+| `input` | `id` — a text field whose editing Rust owns |
+| `float` | `x`, `y`, `w`, `h`, `clear`, `child` — a popup over the layout |
+| `spacer` | `size` |
 
-**Spans** (styled text segments):
-```lua
-{ type = "text", spans = {
-    { text = "[key]", fg = "cyan" },
-    { text = " description", fg = "darkgray" }
-}}
-```
+Any node also accepts `id="..."` to make it clickable (`kn9t.on_click`). Sizing is
+`size = { fixed = N } | { percent = N } | { flex = N }`. An unknown `type` logs and renders
+empty rather than erroring.
 
-**Size** options:
-- `{ fixed = N }` — exactly N rows/cols
-- `{ flex = N }` — proportional space
-- `{ min = N, max = M }` — constrained
+A `text` node (and each `list` item) is styled text: give it `content = "..."` or a bare
+`text = "..."`, or `spans = {{ text = "...", fg = "..." }, ...}` for more than one colour.
+An item's own `fg` overrides the node's. If a row renders blank, the key is wrong — a list
+item that is silently empty is a bug that hides inside a rendered frame.
 
-### Python Example with UI
+**Gotcha:** `list.selected` is **0-based**, while a cursor you keep yourself is usually
+1-based (it indexes the items array). Passing your cursor straight through makes the first row
+unreachable — and the rendered text alone cannot show it, because the row is highlighted in
+the wrong place, not missing.
 
-```python
-#!/usr/bin/env python3
-import json
-import sys
-from dataclasses import dataclass, asdict
+### Common mistakes
 
-# State
-@dataclass
-class State:
-    items: list = None
-    cursor: int = 0
-    
-    def __post_init__(self):
-        self.items = self.items or ["Item 1", "Item 2", "Item 3"]
+| Mistake | Correct approach |
+|---|---|
+| `"t": "host_api"` | Use `"t": "request"` |
+| Registering the UI at startup | Wait for the first hook: it carries `session_id` |
+| `function on_key(key)` | `kn9t.on_key("j", fn)` per key |
+| One `on_key` binding per printable character | One `kn9t.on_text(fn)` handler |
+| A blocking host call from inside another request's callback | Fire-and-forget, or buffer replies |
+| Missing `session` in a payload | Include it in every request |
+| `ui_set_state` without the `state` wrapper | `{"session": ..., "state": {}}` |
+| Returning a top-level `box` | Return content; the layout draws the frame |
+| Never calling `ui_clear` | Clear when the view has nothing to show |
 
-state = State()
-session_id = None
-_request_id = 0
+### Rust SDK shape
 
-# Lua UI source
-UI_LUA = r'''
-local V = { cursor = 0 }
-
-function on_state(s)
-    V.items = s.items or {}
-    V.cursor = s.cursor or 0
-end
-
-local function send(t)
-    kn9t.action("plugin_msg", { plugin = "my-plugin", msg = { t = t } })
-end
-
-kn9t.on_key("j", function() send("down"); return true end)
-kn9t.on_key("k", function() send("up"); return true end)
-kn9t.on_key("Escape", function() return false end)
-
-function render(s)
-    on_state(s)
-    local out = {}
-    for i, item in ipairs(V.items) do
-        local prefix = (i - 1 == V.cursor) and "> " or "  "
-        table.insert(out, { type = "text", content = prefix .. item,
-                           fg = (i - 1 == V.cursor) and "cyan" or "white",
-                           size = { fixed = 1 } })
-    end
-    return { type = "split", direction = "vertical", children = out }
-end
-'''
-
-def read_msg():
-    line = sys.stdin.readline()
-    return json.loads(line) if line else None
-
-def write_msg(msg):
-    sys.stdout.write(json.dumps(msg, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
-
-def send_request(op, payload):
-    global _request_id
-    _request_id += 1
-    write_msg({"t": "request", "id": _request_id, "op": op, "payload": payload})
-
-def register_ui():
-    if not session_id:
-        return
-    send_request("ui_register_lua", {
-        "session": session_id,
-        "source": UI_LUA,
-        "placement": "main",
-        "title": "My Plugin",
-    })
-
-def send_ui_state():
-    if not session_id:
-        return
-    send_request("ui_set_state", {
-        "session": session_id,
-        "state": asdict(state),
-    })
-
-def handle_plugin_msg(msg):
-    t = msg.get("t", "")
-    if t == "down":
-        state.cursor = min(state.cursor + 1, len(state.items) - 1)
-    elif t == "up":
-        state.cursor = max(state.cursor - 1, 0)
-    send_ui_state()
-
-def run():
-    global session_id
-    ui_registered = False
-    
-    # Handshake
-    hello = read_msg()
-    if not hello or hello.get("t") != "hello":
-        return
-    
-    write_msg({
-        "t": "hello",
-        "name": "my-plugin",
-        "capabilities": [],
-        "hooks": ["get_steering"],  # Need a hook to get session_id
-        "tools": [],
-    })
-    
-    while True:
-        msg = read_msg()
-        if not msg:
-            break
-        
-        t = msg.get("t", "")
-        
-        if t == "shutdown":
-            break
-        
-        elif t == "hook":
-            hook_id = msg.get("id", 0)
-            payload = msg.get("payload", {})
-            
-            # Get session_id from hook payload
-            if not session_id:
-                session_id = payload.get("session_id")
-            
-            # Register UI on first hook
-            if session_id and not ui_registered:
-                register_ui()
-                send_ui_state()
-                ui_registered = True
-            
-            # Reply to hook
-            write_msg({"t": "result", "id": hook_id, "messages": []})
-        
-        elif t == "plugin_msg":
-            handle_plugin_msg(msg.get("msg", {}))
-
-if __name__ == "__main__":
-    run()
-```
-
-### Common Mistakes
-
-| Mistake | Correct Approach |
-|---------|------------------|
-| Using `"t": "host_api"` | Use `"t": "request"` |
-| Calling `ui_register_lua` at startup | Wait for first hook with `session_id` |
-| Defining `function on_key(key)` | Use `kn9t.on_key("j", fn)` per key |
-| Missing `session` in payload | Include `"session": session_id` in every request |
-| Missing `"state"` wrapper | `ui_set_state` payload needs `{"session": ..., "state": ...}` |
-
-### Rust SDK Example
+The SDK exposes the same calls on the hook/tool context; there is no separate UI API:
 
 ```rust
 use kn9t_plugin_sdk::{Plugin, PluginHook};
-use kn9t_plugin_sdk::ctx::HookCtx;
-use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
-
-static UI_REGISTERED: AtomicBool = AtomicBool::new(false);
+use serde_json::json;
 
 const UI_LUA: &str = r#"
-local V = { count = 0 }
-function on_state(s) V.count = s.count or 0 end
-kn9t.on_key("j", function()
-    kn9t.action("plugin_msg", { plugin = "counter", msg = { t = "inc" } })
-    return true
-end)
-function render(s)
-    on_state(s)
-    return { type = "text", content = "Count: " .. V.count, fg = "cyan" }
-end
+kn9t.on_key("j", function() kn9t.notify({ event = "down" }) return true end)
+kn9t.on_text(function(ch) --[[ ... ]] return true end)
+function render(s) return { type = "text", content = "hi", size = { fixed = 1 } } end
 "#;
 
-struct Counter { count: u32 }
+struct Panel;
 
-impl PluginHook for Counter {
-    fn hooks(&self) -> Vec<&'static str> {
-        vec!["get_steering"]
-    }
-    
-    fn call_with_ctx(&self, _hook: &str, _payload: &Value, ctx: &HookCtx) -> Value {
-        // Register UI on first call
-        if !UI_REGISTERED.swap(true, Ordering::SeqCst) {
+impl PluginHook for Panel {
+    fn hooks(&self) -> Vec<&'static str> { vec!["get_steering"] }
+
+    fn call_with_ctx(&self, _hook: &str, payload: &serde_json::Value, ctx: &kn9t_plugin_sdk::ctx::HookCtx) -> serde_json::Value {
+        // `get_steering` runs each turn, so this is a reliable place to obtain session_id.
+        if let Some(session) = payload.get("session_id").and_then(|v| v.as_str()) {
             let _ = ctx.host.call("ui_register_lua", json!({
-                "source": UI_LUA,
-                "placement": "main",
-                "title": "Counter",
+                "session": session, "source": UI_LUA, "placement": "bottom", "rows": 6,
             }));
+            let _ = ctx.host.call("ui_set_state", json!({ "session": session, "state": {} }));
         }
-        
-        // Push state
-        let _ = ctx.host.call("ui_set_state", json!({
-            "state": { "count": self.count }
-        }));
-        
-        json!({"messages": []})
+        json!({ "messages": [] })
     }
 }
 ```

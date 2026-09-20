@@ -66,7 +66,6 @@ local function section_usage(inner_w)
 end
 
 function TUI.build_sidebar_right(width, height)
-    local ctx     = kn9t.context or {}
     local session = kn9t.state and kn9t.state.session or {}
     local inner_w = width - 2
 
@@ -77,23 +76,14 @@ function TUI.build_sidebar_right(width, height)
     local sid = session.id or ""
     if #sid > 8 then sid = sid:sub(1, 8) end
 
-    local status_text
-    if session.streaming then
-        status_text = "streaming"
-    elseif session.aborting then
-        status_text = "aborting"
-    else
-        status_text = ctx.phase or "idle"
-    end
-
+    -- No turn phase here: `streaming`/`aborting`/`idle` is the status bar's to name, and
+    -- repeating it beside the session id was a second copy of the same word on screen.
     local head = {
         { type = "text", content = title, fg = C.accent, size = { fixed = 1 } },
         {
             type = "text",
             size = { fixed = 1 },
-            content = TUI.kv_lines({
-                { sid ~= "" and ("#" .. sid) or "no session", status_text },
-            }, inner_w),
+            content = sid ~= "" and ("#" .. sid) or "no session",
             fg = C.dim,
         },
         section_context(inner_w),

@@ -100,12 +100,5 @@ function TUI.live_context()
     return live, live / TUI.context_window()
 end
 
-function TUI.phase_display(phase)
-    local C = TUI.color
-    if phase == "streaming" then return { "streaming", C.ok }
-    elseif phase == "aborting" then return { "aborting", C.danger }
-    elseif phase == "thinking" then return { "thinking", C.warn }
-    elseif phase == "tool" then return { "tool", C.tool }
-    else return { phase or "idle", C.dim }
-    end
-end
+-- No `phase_display` helper: the phase (streaming/idle/…) is named in exactly one place,
+-- the status bar (`50_status.lua`). A second mapping here was dead code waiting to drift.

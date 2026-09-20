@@ -136,13 +136,20 @@ class Plugin:
     4. Supports streaming progress and cancellation
     """
 
-    def __init__(self, mcp_clients: dict[str, McpClientType]) -> None:
+    def __init__(
+        self,
+        mcp_clients: dict[str, McpClientType],
+        mcp_configs: dict[str, McpServerConfig] | None = None,
+    ) -> None:
         """Initialize with MCP clients.
         
         Args:
             mcp_clients: Map of server name to connected client (local or remote).
+            mcp_configs: Config each client was built from, keyed by name. Used on
+                hot reload to detect that a server's definition changed.
         """
         self.mcp_clients = mcp_clients
+        self.mcp_configs: dict[str, McpServerConfig] = mcp_configs or {}
         self.tools: dict[str, ToolSpec] = {}
         self.inflight: dict[int, threading.Event] = {}  # for cancellation
         self._stdin_lock = threading.Lock()
@@ -159,6 +166,18 @@ class Plugin:
         
         self._discover_all_tools()
 
+    @staticmethod
+    def _make_client(cfg: McpServerConfig) -> McpClientType:
+        """Build a client for a server config (no handshake yet)."""
+        if cfg.type == "local":
+            return McpClient.spawn(cfg.name, cfg.cmd, cfg.env, cfg.timeout_ms)
+        return McpHttpClient(
+            name=cfg.name,
+            url=cfg.url,
+            headers=cfg.headers,
+            timeout=cfg.timeout_ms / 1000.0,
+        )
+
     @classmethod
     def from_config(cls) -> Plugin:
         """Load MCP server configs and connect to them.
@@ -173,26 +192,16 @@ class Plugin:
             return cls({})
 
         clients: dict[str, McpClientType] = {}
+        configs_by_name: dict[str, McpServerConfig] = {}
         
         for cfg in configs:
             try:
-                if cfg.type == "local":
-                    # Spawn subprocess
-                    client: McpClientType = McpClient.spawn(
-                        cfg.name, cfg.cmd, cfg.env, cfg.timeout_ms
-                    )
-                else:
-                    # Connect to remote HTTP server
-                    client = McpHttpClient(
-                        name=cfg.name,
-                        url=cfg.url,
-                        headers=cfg.headers,
-                        timeout=cfg.timeout_ms / 1000.0,
-                    )
+                client = cls._make_client(cfg)
                 
                 # Handshake with MCP server (discover capabilities)
                 client.discover()
                 clients[cfg.name] = client
+                configs_by_name[cfg.name] = cfg
                 print(f"Connected to MCP server '{cfg.name}' ({cfg.type})", file=sys.stderr)
             except McpError as e:
                 print(f"Failed to connect to MCP server '{cfg.name}': {e}", file=sys.stderr)
@@ -200,7 +209,7 @@ class Plugin:
             except Exception as e:
                 print(f"Unexpected error connecting to '{cfg.name}': {e}", file=sys.stderr)
 
-        return cls(clients)
+        return cls(clients, configs_by_name)
 
     def _discover_all_tools(self) -> None:
         """Query all MCP servers for their tools."""
@@ -664,70 +673,75 @@ class Plugin:
             except Exception as e:
                 print(f"Config watcher error: {e}", file=sys.stderr)
 
+    def _disconnect(self, name: str) -> None:
+        """Shut down a server and drop its tools."""
+        client = self.mcp_clients.pop(name, None)
+        if client is not None:
+            try:
+                client.shutdown()
+            except Exception as e:
+                print(f"Error shutting down '{name}': {e}", file=sys.stderr)
+        self.mcp_configs.pop(name, None)
+        self.tools = {k: v for k, v in self.tools.items() if v.mcp_server != name}
+
+    def _connect_and_discover(self, cfg: McpServerConfig) -> None:
+        """Connect to one server and register its tools. Failures are logged, not raised."""
+        try:
+            client = self._make_client(cfg)
+            client.discover()
+            self.mcp_clients[cfg.name] = client
+            self.mcp_configs[cfg.name] = cfg
+            print(f"Connected to MCP server '{cfg.name}' ({cfg.type})", file=sys.stderr)
+
+            # Discover tools from this server
+            try:
+                mcp_tools = client.list_tools()
+                for tool in mcp_tools:
+                    prefixed_name = f"mcp_{cfg.name}_{tool.name}"
+                    self.tools[prefixed_name] = ToolSpec(
+                        name=prefixed_name,
+                        description=f"[{cfg.name}] {tool.description}",
+                        schema=tool.input_schema,
+                        mcp_server=cfg.name,
+                        mcp_tool_name=tool.name,
+                    )
+                print(f"Discovered {len(mcp_tools)} tool(s) from '{cfg.name}'", file=sys.stderr)
+            except McpError as e:
+                print(f"Failed to list tools from '{cfg.name}': {e}", file=sys.stderr)
+
+        except McpError as e:
+            print(f"Failed to connect to MCP server '{cfg.name}': {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"Unexpected error connecting to '{cfg.name}': {e}", file=sys.stderr)
+
     def _reload_config(self) -> None:
         """Reload MCP servers from config and send declare message."""
         print("Reloading MCP configuration...", file=sys.stderr)
         
         old_tool_names = set(self.tools.keys())
-        old_server_names = set(self.mcp_clients.keys())
         
         # Load new config
         configs = load_mcp_config()
-        new_server_names = {c.name for c in configs}
+        new_by_name = {c.name: c for c in configs}
         
-        # Shutdown removed servers
-        for name in old_server_names - new_server_names:
-            print(f"Removing MCP server '{name}'", file=sys.stderr)
-            if name in self.mcp_clients:
-                try:
-                    self.mcp_clients[name].shutdown()
-                except Exception as e:
-                    print(f"Error shutting down '{name}': {e}", file=sys.stderr)
-                del self.mcp_clients[name]
-            # Remove tools from this server
-            self.tools = {k: v for k, v in self.tools.items() if v.mcp_server != name}
+        # Shut down servers removed from the config.
+        for name in list(self.mcp_clients.keys()):
+            if name not in new_by_name:
+                print(f"Removing MCP server '{name}'", file=sys.stderr)
+                self._disconnect(name)
         
-        # Connect to new servers
+        # Connect new servers, and reconnect any whose definition changed — a
+        # changed URL, header, cmd or env is invisible to a live connection, so
+        # an edited server must be torn down and rebuilt, not skipped.
         for cfg in configs:
-            if cfg.name in old_server_names:
-                continue  # Already connected
-            
-            print(f"Adding MCP server '{cfg.name}'", file=sys.stderr)
-            try:
-                if cfg.type == "local":
-                    client: McpClientType = McpClient.spawn(
-                        cfg.name, cfg.cmd, cfg.env, cfg.timeout_ms
-                    )
-                else:
-                    client = McpHttpClient(
-                        name=cfg.name,
-                        url=cfg.url,
-                        headers=cfg.headers,
-                        timeout=cfg.timeout_ms / 1000.0,
-                    )
-                
-                client.discover()
-                self.mcp_clients[cfg.name] = client
-                print(f"Connected to MCP server '{cfg.name}' ({cfg.type})", file=sys.stderr)
-                
-                # Discover tools from this server
-                try:
-                    mcp_tools = client.list_tools()
-                    for tool in mcp_tools:
-                        prefixed_name = f"mcp_{cfg.name}_{tool.name}"
-                        self.tools[prefixed_name] = ToolSpec(
-                            name=prefixed_name,
-                            description=f"[{cfg.name}] {tool.description}",
-                            schema=tool.input_schema,
-                            mcp_server=cfg.name,
-                            mcp_tool_name=tool.name,
-                        )
-                    print(f"Discovered {len(mcp_tools)} tool(s) from '{cfg.name}'", file=sys.stderr)
-                except McpError as e:
-                    print(f"Failed to list tools from '{cfg.name}': {e}", file=sys.stderr)
-                    
-            except Exception as e:
-                print(f"Failed to connect to '{cfg.name}': {e}", file=sys.stderr)
+            if cfg.name in self.mcp_clients:
+                if self.mcp_configs.get(cfg.name) == cfg:
+                    continue  # Connected, unchanged
+                print(f"MCP server '{cfg.name}' config changed, reconnecting", file=sys.stderr)
+                self._disconnect(cfg.name)
+            else:
+                print(f"Adding MCP server '{cfg.name}'", file=sys.stderr)
+            self._connect_and_discover(cfg)
         
         new_tool_names = set(self.tools.keys())
         tools_added = list(new_tool_names - old_tool_names)

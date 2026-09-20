@@ -310,8 +310,19 @@ impl PluginHost {
                                         .get("session")
                                         .and_then(|v| v.as_str())
                                         .map(|s| s.to_string());
-                                    let outcome =
-                                        h.handle(&name, session.as_deref(), &op, &payload);
+                                    // A panicking op must still answer. The worker is a bare
+                                    // thread: if it unwinds, no `ApiResult` is ever written
+                                    // and the plugin blocks on its reply forever — the caller
+                                    // (a tool call, a compactor) then hangs on a plugin that
+                                    // looks alive. Convert the panic into an error reply.
+                                    let outcome = std::panic::catch_unwind(
+                                        std::panic::AssertUnwindSafe(|| {
+                                            h.handle(&name, session.as_deref(), &op, &payload)
+                                        }),
+                                    )
+                                    .unwrap_or_else(|_| {
+                                        Err(format!("host API op '{op}' panicked"))
+                                    });
                                     let reply = match outcome {
                                         Ok(result) => HostMsg::ApiResult {
                                             id,
@@ -639,28 +650,49 @@ impl PluginHost {
 
     // ── internal: send a hook request and read the response ──────────────────
 
+    /// Register the reply channel for a new call, **then** send it.
+    ///
+    /// The order is load-bearing. The reader thread drops a reply whose call id
+    /// is not in `pending_calls` yet (`pending.get(&id)` → `None`), so a plugin
+    /// fast enough to answer between `write_host_msg` and `register_call` used to
+    /// lose its `done`. The caller then had nothing to wake it and waited out the
+    /// whole timeout — the parent's tool call hanging after the sub-agent had
+    /// already finished. The window is tiny but the failure is unbounded, so the
+    /// registration is hoisted rather than relied upon.
+    fn begin_call(
+        &self,
+        hook_str: &str,
+        payload: Value,
+    ) -> Result<(u64, mpsc::Receiver<ReaderMsg>), String> {
+        self.check_healthy()?;
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let rx = self.register_call(id);
+        let msg = HostMsg::Hook {
+            id,
+            hook: hook_str.to_string(),
+            payload,
+        };
+        let written = {
+            let mut w =safe_expect!(self.writer.lock(), "poisoned");
+            write_host_msg(&mut **w, &msg)
+        };
+        if let Err(e) = written {
+            self.unregister_call(id);
+            return Err(format!("write error: {e}"));
+        }
+        Ok((id, rx))
+    }
+
     pub(crate) fn call_hook_raw(
         &self,
         hook: HookName,
         payload: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
-        self.check_healthy()?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let msg = HostMsg::Hook {
-            id,
-            hook: hook_name_str(hook).to_string(),
-            payload,
-        };
-
-        // Send request
-        {
-            let mut w =safe_expect!(self.writer.lock(), "poisoned");
-            write_host_msg(&mut **w, &msg).map_err(|e| format!("write error: {e}"))?;
-        }
-
-        // Wait for response with timeout
-        self.wait_for_response(id, timeout)
+        let (id, rx) = self.begin_call(hook_name_str(hook), payload)?;
+        let result = self.wait_on_channel(&rx, id, timeout, |_| {});
+        self.unregister_call(id);
+        result
     }
 
     /// Send a raw hook message with a custom hook name string (for tool_call).
@@ -670,20 +702,10 @@ impl PluginHost {
         payload: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
-        self.check_healthy()?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let msg = HostMsg::Hook {
-            id,
-            hook: hook_str.to_string(),
-            payload,
-        };
-
-        {
-            let mut w =safe_expect!(self.writer.lock(), "poisoned");
-            write_host_msg(&mut **w, &msg).map_err(|e| format!("write error: {e}"))?;
-        }
-
-        self.wait_for_response(id, timeout)
+        let (id, rx) = self.begin_call(hook_str, payload)?;
+        let result = self.wait_on_channel(&rx, id, timeout, |_| {});
+        self.unregister_call(id);
+        result
     }
 
     /// Send a raw hook message with streaming support (for tool_call with progress).
@@ -695,20 +717,10 @@ impl PluginHost {
         timeout: Duration,
         on_chunk: impl FnMut(serde_json::Value),
     ) -> Result<Value, String> {
-        self.check_healthy()?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let msg = HostMsg::Hook {
-            id,
-            hook: hook_str.to_string(),
-            payload,
-        };
-
-        {
-            let mut w =safe_expect!(self.writer.lock(), "poisoned");
-            write_host_msg(&mut **w, &msg).map_err(|e| format!("write error: {e}"))?;
-        }
-
-        self.wait_for_streaming(id, timeout, on_chunk)
+        let (id, rx) = self.begin_call(hook_str, payload)?;
+        let result = self.wait_on_channel(&rx, id, timeout, on_chunk);
+        self.unregister_call(id);
+        result
     }
 
     /// Cancellable streaming hook — polls `Cancel` every 10ms and sends `HostMsg::Cancel` on fire.
@@ -721,18 +733,23 @@ impl PluginHost {
         cancel: &Cancel,
         on_chunk: impl FnMut(serde_json::Value),
     ) -> Result<Value, String> {
-        self.check_healthy()?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let msg = HostMsg::Hook {
-            id,
-            hook: hook_str.to_string(),
-            payload,
-        };
-        {
-            let mut w =safe_expect!(self.writer.lock(), "poisoned");
-            write_host_msg(&mut **w, &msg).map_err(|e| format!("write error: {e}"))?;
-        }
-        self.wait_for_streaming_cancellable(id, cancel, timeout, on_chunk)
+        self.call_streaming_cancellable(hook_str, payload, cancel, timeout, on_chunk)
+    }
+
+    /// The single streaming-cancellable entry point, for callers that also need
+    /// the register-before-send ordering (`RemoteProvider`).
+    pub(crate) fn call_streaming_cancellable(
+        &self,
+        hook_str: &str,
+        payload: Value,
+        cancel: &Cancel,
+        timeout: Duration,
+        on_chunk: impl FnMut(serde_json::Value),
+    ) -> Result<Value, String> {
+        let (id, rx) = self.begin_call(hook_str, payload)?;
+        let result = self.wait_on_channel_cancellable(&rx, id, cancel, timeout, on_chunk);
+        self.unregister_call(id);
+        result
     }
 
     /// Register a per-call channel and return the receiver.
@@ -746,28 +763,6 @@ impl PluginHost {
     /// Unregister a per-call channel (cleanup after call completes or times out).
     fn unregister_call(&self, id: u64) {
         safe_expect!(self.pending_calls.lock(), "poisoned").remove(&id);
-    }
-
-    /// Wait for the final body of call `expected_id`, discarding chunks (atomic path).
-    fn wait_for_response(&self, expected_id: u64, timeout: Duration) -> Result<Value, String> {
-        let rx = self.register_call(expected_id);
-        let result = self.wait_on_channel(&rx, expected_id, timeout, |_| {});
-        self.unregister_call(expected_id);
-        result
-    }
-
-    /// Stream all chunks then the final body for `expected_id`.
-    /// Calls `on_chunk` for each intermediate chunk; returns the final body.
-    pub fn wait_for_streaming(
-        &self,
-        expected_id: u64,
-        timeout: Duration,
-        on_chunk: impl FnMut(serde_json::Value),
-    ) -> Result<Value, String> {
-        let rx = self.register_call(expected_id);
-        let result = self.wait_on_channel(&rx, expected_id, timeout, on_chunk);
-        self.unregister_call(expected_id);
-        result
     }
 
     /// Common wait logic for both atomic and streaming paths.
@@ -809,45 +804,44 @@ impl PluginHost {
     }
 
     /// Cancellable streaming wait — polls `Cancel` every 10ms, sends `HostMsg::Cancel` on fire.
-    /// `docs/dev/job/instant-cut.md` step 4.
-    pub fn wait_for_streaming_cancellable(
+    /// `docs/dev/job/instant-cut.md` step 4. The channel for `call_id` must already be
+    /// registered (`begin_call`); the caller unregisters it.
+    fn wait_on_channel_cancellable(
         &self,
-        expected_id: u64,
+        rx: &mpsc::Receiver<ReaderMsg>,
+        call_id: u64,
         cancel: &Cancel,
         timeout: Duration,
         mut on_chunk: impl FnMut(serde_json::Value),
     ) -> Result<Value, String> {
-        let rx = self.register_call(expected_id);
         let deadline = std::time::Instant::now() + timeout;
         let plugin_name = self.name();
-        let result = loop {
+        loop {
             if cancel.cancelled() {
-                self.cancel_call(expected_id);
-                break Err("cancelled".to_string());
+                self.cancel_call(call_id);
+                return Err("cancelled".to_string());
             }
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                break Err(format!(
+                return Err(format!(
                     "plugin '{}' timed out (call {})",
-                    plugin_name, expected_id
+                    plugin_name, call_id
                 ));
             }
             let poll = remaining.min(Duration::from_millis(10));
             match rx.recv_timeout(poll) {
-                Ok(ReaderMsg::Final { body }) => break Ok(body),
+                Ok(ReaderMsg::Final { body }) => return Ok(body),
                 Ok(ReaderMsg::Chunk { body }) => on_chunk(body),
-                Ok(ReaderMsg::Err { reason }) => break Err(reason),
+                Ok(ReaderMsg::Err { reason }) => return Err(reason),
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    break Err(format!(
+                    return Err(format!(
                         "plugin '{}' disconnected (call {})",
-                        plugin_name, expected_id
+                        plugin_name, call_id
                     ))
                 }
             }
-        };
-        self.unregister_call(expected_id);
-        result
+        }
     }
 
     /// Send a cancel message for an in-flight call (R-PLUG2-050).

@@ -92,3 +92,4 @@ pub mod viewer;
 pub mod which_key;
 pub mod wire;
 pub mod word_segmenter;
+pub mod workspace_watch;

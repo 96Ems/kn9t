@@ -1,14 +1,11 @@
 //! RemoteProvider: adapts PluginHost into Provider trait.
 //! Sends request to plugin subprocess and collects streaming chunks.
 
-use kn9t_core::safe_expect;
-use crate::codec::{write_host_msg, HostMsg};
 use crate::host::PluginHost;
 use kn9t_core::{
     CallId, Cancel, Chunk, ModelRef, ProvErr, Provider, Request, StopReason, Tokens, Usage,
 };
 use serde_json::{json, Value};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,41 +36,34 @@ impl Provider for RemoteProvider {
         cancel: &Cancel,
     ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
         let payload = serialise_request(req);
-        let id = self.host.next_id.fetch_add(1, Ordering::Relaxed);
         let model_ref = req.model.r#ref.clone();
 
-        let msg = HostMsg::Hook {
-            id,
-            hook: "provider_complete".to_string(),
-            payload,
-        };
-        {
-            let mut w =safe_expect!(self.host.writer.lock(), "poisoned");
-            write_host_msg(&mut **w, &msg)
-                .map_err(|e| ProvErr::Connect(format!("plugin write: {e}")))?;
-        }
-
-        // Collect all chunks synchronously from the plugin — cancellable (instant-cut).
+        // Collect all chunks synchronously from the plugin — cancellable
+        // (instant-cut), and register-before-send so an immediate reply cannot be
+        // dropped by the reader (see `PluginHost::begin_call`).
         let mut chunks: Vec<Result<Chunk, ProvErr>> = Vec::new();
         let mut had_usage = false;
         let mut stream_err: Option<ProvErr> = None;
 
-        let done_result =
-            self.host
-                .wait_for_streaming_cancellable(id, cancel, STREAM_TIMEOUT, |body: Value| {
-                    if stream_err.is_some() {
-                        return;
+        let done_result = self.host.call_streaming_cancellable(
+            "provider_complete",
+            payload,
+            cancel,
+            STREAM_TIMEOUT,
+            |body: Value| {
+                if stream_err.is_some() {
+                    return;
+                }
+                match decode_chunk_body(&body) {
+                    Ok(Some(Chunk::Usage(_))) => {
+                        had_usage = true;
                     }
-                    match decode_chunk_body(&body) {
-                        Ok(Some(Chunk::Usage(_))) => {
-                            had_usage = true;
-                            // Defer until done so we have the complete usage.
-                        }
-                        Ok(Some(c)) => chunks.push(Ok(c)),
-                        Ok(None) => {} // unknown kind — ignored
-                        Err(e) => stream_err = Some(e),
-                    }
-                });
+                    Ok(Some(c)) => chunks.push(Ok(c)),
+                    Ok(None) => {} // unknown kind — ignored
+                    Err(e) => stream_err = Some(e),
+                }
+            },
+        );
 
         if let Some(e) = stream_err {
             return Err(e);

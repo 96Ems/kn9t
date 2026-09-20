@@ -1,14 +1,13 @@
-//! B4 — the ReAct turn loop must be bounded.
+//! The ReAct turn ceiling is an **opt-in spend guard**, not a default.
 //!
-//! `ReactLoop::run` is `loop { turn += 1; ... }` with no ceiling. The only way out when the
-//! model keeps emitting tool calls is `should_stop_after_turn`, whose default is `false`
-//! (`NoopHookHost`, R-RCT-100) and whose panic fallback is *also* `false` (R-RCT-110). So a
-//! model that re-issues the same tool call forever keeps the loop spending money forever,
-//! with no operator-visible limit and nothing to abort it but ESC.
+//! `ReactLoop::run` loops until the run goes idle (`should_stop_after_turn` / an empty followup
+//! queue) — a legitimate task may need many turns, so there is no ceiling unless an operator
+//! sets `[server] max_turns`. When set (`ReactConfig::max_turns = Some(n)`), a model that never
+//! goes idle — typically one re-issuing tool calls forever — is stopped after exactly `n`
+//! provider calls with `ReactError::TurnLimit`.
 //!
-//! `ReactConfig` already bounds truncation re-issues and compaction re-plans; the turn count
-//! was the one unbounded axis. These tests pin the bound and, just as importantly, pin that
-//! a normal short run is unaffected by it.
+//! These tests pin the opt-in bound, and pin that the default (`None`) does not stop a run
+//! that legitimately exceeds any small number of turns.
 
 #![allow(clippy::unwrap_used)]
 
@@ -23,16 +22,16 @@ use kn9t_test_support::{
     empty_read_map, test_model_spec, AllowAll, PlanScript, RecordingBus, StubStore,
 };
 
-/// How many provider calls the test tolerates before declaring the loop unbounded. Well above
-/// any `max_turns` used here, so a green run never approaches it — but low enough that the
-/// pre-fix behaviour fails in a second instead of burning the harness.
+/// How many provider calls a *bounded* test tolerates before declaring the loop unbounded. Well
+/// above any `max_turns` used here, so a green run never approaches it — but low enough that a
+/// regression to "the ceiling no longer fires" fails in a second instead of burning the harness.
 const RUNAWAY_GUARD: usize = 200;
 
 /// A provider that answers *every* call with the same tool call, so the loop always has a
 /// reason to take another turn. This is the shape of a model stuck in a retry rut.
 ///
 /// It counts calls and panics past `RUNAWAY_GUARD`: without the guard an unbounded loop would
-/// hang the test runner rather than fail it.
+/// hang the test runner rather than fail it. Only ever driven with a `Some(max_turns)` ceiling.
 struct AlwaysToolCall {
     calls: Arc<AtomicUsize>,
 }
@@ -62,7 +61,7 @@ impl Provider for AlwaysToolCall {
         let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         assert!(
             n <= RUNAWAY_GUARD,
-            "provider called {n} times: the ReAct loop is unbounded (B4)"
+            "provider called {n} times: the ReAct loop is unbounded"
         );
         // One tool call + a tool_use stop: exactly what makes `execute_turn` return
         // `Continue`. The tool name resolves to nothing, which is fine — an unknown tool
@@ -110,7 +109,65 @@ impl Provider for OneAndDone {
     }
 }
 
-fn params(max_turns: u32) -> RunParams {
+/// A model that asks for tools for its first `tool_turns` calls, then answers with plain text
+/// and stops. Represents a real multi-turn task: long, but not stuck. `None` must let it
+/// finish; a ceiling below `tool_turns` must cut it off.
+struct ToolCallsThenText {
+    calls: Arc<AtomicUsize>,
+    tool_turns: usize,
+}
+
+impl ToolCallsThenText {
+    fn new(tool_turns: usize) -> (Arc<Self>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        (
+            Arc::new(ToolCallsThenText {
+                calls: calls.clone(),
+                tool_turns,
+            }),
+            calls,
+        )
+    }
+}
+
+impl Provider for ToolCallsThenText {
+    fn name(&self) -> &str {
+        "tool-calls-then-text"
+    }
+
+    fn stream(
+        &self,
+        _req: &Request,
+        _cancel: &Cancel,
+    ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let chunks: Vec<Result<Chunk, ProvErr>> = if n <= self.tool_turns {
+            vec![
+                Ok(Chunk::ToolCall {
+                    idx: 0,
+                    id: kn9t_core::CallId(format!("call_{n}")),
+                    name: "loop_forever".into(),
+                }),
+                Ok(Chunk::ToolArgs {
+                    idx: 0,
+                    delta: "{}".into(),
+                }),
+                Ok(Chunk::Stop(StopReason::ToolUse)),
+            ]
+        } else {
+            vec![
+                Ok(Chunk::Text {
+                    idx: 0,
+                    delta: "done".into(),
+                }),
+                Ok(Chunk::Stop(StopReason::Stop)),
+            ]
+        };
+        Ok(Box::new(chunks.into_iter()))
+    }
+}
+
+fn params(max_turns: Option<u32>) -> RunParams {
     let config = ReactConfig {
         max_turns,
         ..ReactConfig::default()
@@ -130,7 +187,11 @@ fn params(max_turns: u32) -> RunParams {
     }
 }
 
-fn loop_with(provider: Arc<dyn Provider>, store: Arc<dyn Store>, bus: Arc<RecordingBus>) -> ReactLoop {
+fn loop_with(
+    provider: Arc<dyn Provider>,
+    store: Arc<dyn Store>,
+    bus: Arc<RecordingBus>,
+) -> ReactLoop {
     ReactLoop {
         provider,
         store,
@@ -142,18 +203,72 @@ fn loop_with(provider: Arc<dyn Provider>, store: Arc<dyn Store>, bus: Arc<Record
     }
 }
 
-/// The reproduction: a model that never stops asking for tools must not run forever.
+/// The default config imposes **no** ceiling: `max_turns = None` is what ships.
+#[test]
+fn the_default_config_is_unbounded() {
+    let c = ReactConfig::default();
+    assert!(
+        c.max_turns.is_none(),
+        "default max_turns={:?} must be None (no ceiling)",
+        c.max_turns
+    );
+}
+
+/// With no ceiling, a long-but-legitimate run finishes on its own terms — it is not cut off
+/// at some arbitrary turn count.
+#[test]
+fn no_ceiling_lets_a_long_run_finish_naturally() {
+    let (provider, calls) = ToolCallsThenText::new(5);
+    let store = Arc::new(StubStore::new(PlanScript::plain(vec![])));
+    let bus = Arc::new(RecordingBus::new());
+    let looop = loop_with(provider, store, bus);
+
+    let stop = looop
+        .run(params(None))
+        .expect("a run with no ceiling must complete");
+    assert!(stop == StopReason::Stop, "real stop reason preserved");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        6,
+        "five tool turns plus the final text turn, none refused"
+    );
+}
+
+/// An explicit ceiling cuts the same long run off, at exactly `max_turns` provider calls.
+#[test]
+fn an_explicit_ceiling_cuts_a_long_run_off() {
+    let (provider, calls) = ToolCallsThenText::new(5);
+    let store = Arc::new(StubStore::new(PlanScript::plain(vec![])));
+    let bus = Arc::new(RecordingBus::new());
+    let looop = loop_with(provider, store, bus);
+
+    let err = looop
+        .run(params(Some(3)))
+        .map(|_| ())
+        .expect_err("a ceiling of 3 must stop the run before turn 6");
+    assert!(
+        matches!(err, ReactError::TurnLimit),
+        "expected TurnLimit, got {err:?}"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "exactly max_turns provider calls, then refuse to continue"
+    );
+}
+
+/// A model that never stops asking for tools is stopped by an explicit ceiling.
 #[test]
 fn a_model_that_always_calls_a_tool_hits_the_turn_ceiling() {
     let (provider, calls) = AlwaysToolCall::new();
     let store = Arc::new(StubStore::new(PlanScript::plain(vec![])));
     let bus = Arc::new(RecordingBus::new());
-    let looop = loop_with(provider, store, bus.clone());
+    let looop = loop_with(provider, store, bus);
 
     let err = looop
-        .run(params(3))
+        .run(params(Some(3)))
         .map(|_| ())
-        .expect_err("an unbounded tool-call loop must terminate with an error");
+        .expect_err("a ceiling must terminate an endless tool-call loop");
 
     assert!(
         matches!(err, ReactError::TurnLimit),
@@ -175,7 +290,10 @@ fn the_ceiling_follows_the_configured_max_turns() {
         let bus = Arc::new(RecordingBus::new());
         let looop = loop_with(provider, store, bus);
 
-        let err = looop.run(params(max)).map(|_| ()).expect_err("must stop");
+        let err = looop
+            .run(params(Some(max)))
+            .map(|_| ())
+            .expect_err("must stop");
         assert!(matches!(err, ReactError::TurnLimit), "max={max}: {err:?}");
         assert_eq!(
             calls.load(Ordering::SeqCst) as u32,
@@ -195,7 +313,7 @@ fn hitting_the_ceiling_still_emits_the_end_of_turn_events() {
     let bus = Arc::new(RecordingBus::new());
     let looop = loop_with(provider, store, bus.clone());
 
-    let _ = looop.run(params(2));
+    let _ = looop.run(params(Some(2)));
 
     let kinds = bus.kinds();
     assert!(
@@ -212,7 +330,7 @@ fn hitting_the_ceiling_still_emits_the_end_of_turn_events() {
     );
 }
 
-/// The bound must not disturb a normal run. A single-turn conversation finishes on its own
+/// A ceiling must not disturb a normal run. A single-turn conversation finishes on its own
 /// terms, nowhere near the ceiling, and returns its real stop reason.
 #[test]
 fn a_normal_short_run_is_unaffected_by_the_ceiling() {
@@ -224,19 +342,9 @@ fn a_normal_short_run_is_unaffected_by_the_ceiling() {
     let bus = Arc::new(RecordingBus::new());
     let looop = loop_with(provider, store, bus);
 
-    let stop = looop.run(params(100)).expect("a clean run must succeed");
+    let stop = looop
+        .run(params(Some(100)))
+        .expect("a clean run must succeed");
     assert!(stop == StopReason::Stop, "real stop reason preserved");
     assert_eq!(calls.load(Ordering::SeqCst), 1, "one turn, one provider call");
-}
-
-/// The shipped default must be a real ceiling, not `u32::MAX` dressed up as one.
-#[test]
-fn the_default_config_has_a_finite_ceiling() {
-    let c = ReactConfig::default();
-    assert!(c.max_turns > 0, "a zero ceiling would refuse every turn");
-    assert!(
-        c.max_turns < 10_000,
-        "default max_turns={} is not a meaningful bound",
-        c.max_turns
-    );
 }

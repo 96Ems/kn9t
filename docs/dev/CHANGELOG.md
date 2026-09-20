@@ -8,6 +8,512 @@ Append under a dated session heading as you work. Keep the **Next session starts
 pointer current.
 
 ---
+---
+
+## Session — 2026-09-17k — the tools stop fighting PowerShell's encoding
+
+**Next session starts here:** the compactor's post-compaction wire shape (96E-50): render kept
+tool results as **text** in the summary instead of `tool_result` blocks, and give the summary a
+unique `MsgId`. Then P7-L2's `d` diff action / L3 / L4.
+
+### What the user reported
+
+Three things about `plugins/kn9t-tools`, all on Windows: agents use `bash` (PowerShell) for
+everything and it destroys UTF-8 files; `write` does not create a missing parent directory, so
+every new nested file costs an extra round-trip; and `edit` fails too easily "because of
+encoding". All three were real, and the first one was worse than reported — the tool's own
+description recommended the exact command that does the damage.
+
+### bash: prefer PowerShell 7, and stop recommending the corrupting command
+
+The Windows description said *"For file writes use `-Encoding UTF8` (e.g. `Set-Content -Encoding
+UTF8`)"*. On Windows PowerShell 5.1 that is the bug: `-Encoding UTF8` writes a **BOM**, and the
+read half decodes an existing UTF-8 file through the ANSI codepage, so the write re-encodes text
+that was already UTF-8 into mojibake. The tool was instructing the model to corrupt files.
+
+- `shell_exe()` now prefers `pwsh` (PowerShell 7) when it is on `PATH`, and falls back to
+  `powershell`. PS 7 reads and writes UTF-8 without a BOM by default, so the whole class of
+  corruption disappears where it is installed. Resolved once (a `OnceLock`): scanning `PATH` per
+  command would be a per-call cost.
+- Every Windows command is prefixed with `PS_UTF8_PREAMBLE`, which sets
+  `[Console]::OutputEncoding` and `$OutputEncoding` to UTF-8. That fixes the *read* half on 5.1
+  and, more subtly, our own reader: `BufRead::lines().flatten()` silently drops any line that is
+  not valid UTF-8, so a native command's accented output was vanishing.
+- The description now says the opposite of before: **do not** write files with `Set-Content`,
+  `Out-File`, `Add-Content` or `>`/`>>`; use `write`/`edit`, which preserve the file's encoding.
+
+This is documentation, per the user's choice: no runtime warning and no deny for those commands.
+Denying was rejected because redirecting output to a scratch file is legitimate; the encoding-safe
+path already exists in `write`/`edit`.
+
+### write: create the parent directory
+
+`std::fs::write` only creates the file. `Write::execute` now calls `create_dir_all` on the parent
+first, so `write src/new/mod.rs` works in one call.
+
+### edit: four bugs, three of them destructive
+
+A shared `encoding` module replaces the duplicated decode blocks in `read.rs`/`edit.rs`.
+
+1. **Fuzzy counting rejected unambiguous edits.** `count_occurrences` *always* normalized, so a
+   file containing both `"x"` and `“x”` reported two occurrences of `"x"` and refused an edit
+   that had an exact, unique match. Resolution is now exact-first: an exact count of one wins; an
+   exact count above one is a genuine duplicate; fuzzy is only consulted when exact finds nothing.
+2. **A fuzzy edit rewrote the whole file.** The replacement was done in normalized space and the
+   *normalized* text was written back — stripping trailing whitespace from every line and
+   ASCII-ifying every smart quote and dash in the file, not just the matched span.
+   `normalize_fuzzy_mapped` now returns, per output character, the source character's byte span,
+   so only the matched span is replaced. The rest of the file is byte-identical.
+3. **Windows-1252 was read as `U+FFFD`.** `from_utf8_lossy` turned a lone `0xE9` (`é` in the ANSI
+   encoding 5.1 writes by default) into `�`, which can never match the model's `é`. `decode` now
+   reads UTF-8/BOM/UTF-16/Windows-1252 faithfully and reports which, and `encode_checked` writes
+   it back — upgrading to UTF-8 only when the new text needs a character cp1252 cannot hold.
+4. **Mojibake was unrepairable.** When exact and fuzzy both fail, `edit` now repairs one round of
+   cp1252→UTF-8 double-encoding and retries; a match against the repaired text writes the repaired
+   file back as UTF-8. The transform is the same per-run, only-where-the-round-trip-succeeds
+   algorithm as `scripts/fix_mojibake.py`, so a correct `é` is provably untouched and a wrong
+   repair requires the model's `old_string` to match the damaged text — a strong signal.
+
+The message gained notes: `fuzzy match`, `encoding repaired`, `encoding upgraded to UTF-8`,
+`Windows-1252 preserved`.
+
+### Verification
+
+`plugins/kn9t-tools`: **51 tests pass** (was 23). New coverage: 15 encoding tests (round-trip of
+every cp1252 byte, the em-dash and `§` double-encodings, idempotence, "correct text is left
+alone"); resolver tests for the exact-first regression and the span mapping; end-to-end
+`execute()` tests for the fuzzy scope, CRLF, cp1252, mojibake repair, duplicate rejection and the
+read guard; `write` parent-directory creation; and the bash preamble/description. `cargo build`
+with `-D warnings` is clean. (Clippy on the plugin reports 19 pre-existing `&format!` lints in
+`write.rs`/`edit.rs` that `cargo test` CI does not gate; left alone to avoid unrelated churn.)
+
+**Test-isolation fix found while writing these:** `READ_MAP` is process-global, and the existing
+`tokens_that_are_not_files_are_ignored` asserted the map's *length* while holding its lock.
+Parallel tests inserting into the same map made that assert race, panic, and poison the mutex for
+the whole binary. The test now asserts on the specific non-file tokens instead.
+
+---
+
+## Session — 2026-09-17j — the sub-agent that never came back
+
+**Next session starts here:** the compactor's post-compaction wire shape (96E-50): render kept
+tool results as **text** in the summary instead of `tool_result` blocks, and give the summary a
+unique `MsgId`. Then P7-L2's `d` diff action / L3 / L4.
+
+### What the user reported
+
+Live, two things at once: every spawned sub-agent "always has the whole main agent's context",
+and "the parent hangs forever even after the sub-agent finished". Both were real, and they had
+different causes — one a plugin design error, one a host-level race.
+
+### The child inherited a tool call nobody would ever answer
+
+`ReactLoop::execute_turn` appends the assistant message carrying a `tool_call` **before**
+`run_tool_batch` runs it (`crates/kn9t-react/src/turn.rs:175`). The `subagent` tool executes
+inside that batch, so a `session_fork` with `copy_events: true` — which is what
+`kn9t-subagent` did by default — copied a transcript whose last message was the very `subagent`
+call being executed, with no `tool_result`. OpenAI and Anthropic both require a `tool_result`
+immediately after `tool_use`; the child's first request was therefore malformed. The child also
+inherited the parent's whole context, so it re-mimicked the parent's delegation instead of doing
+the task. This is the exact failure the plugin-creation skill warns about, and it was unrecorded
+in the code.
+
+The child is now **always a bare fork** (`copy_events: false`): it gets the parent's cwd, the
+budget snapshot and `fork_reason=subagent`, and nothing else. The tool's `task` is the whole
+brief, which is now stated in the description so the model knows what it is spawning.
+
+- `context: "isolated" | "parent"` replaces the `fresh: boolean` footgun. `"parent"` reads the
+  parent transcript with `session_read` and prepends a bounded **text** digest — context without
+  provider messages, so no dangling call can reach the wire. The tail is kept: recency is what a
+  worker needs.
+- `tools` / `model` remain, and are documented as "spawn the agent the task needs".
+- `KN9T_SUBAGENT_MAX_DEPTH` (default 4) refuses nesting past the cap instead of queueing it — a
+  model that delegates mimetically used to build an unbounded tree where every level blocked on
+  the one below. Recursion stays possible, just bounded.
+- Default child watchdog 600 s → **240 s**, strictly under the host's 300 s `tool_call` budget.
+  The old default let the host time out while the child was still running: the parent got a
+  failure and the child kept billing.
+- Progress chunks now use the flattened wire form (`{"t":"chunk","id":N,"text":…}`). The old
+  `body:{text}` wrapper nested the text, so the host's `chunk["text"]` was always `None` and every
+  progress line was silently dropped.
+
+### The hang was mostly in the host, not the plugin
+
+Chasing "the child finished but the parent never gets the answer" found two `kn9t-plugin` bugs
+that produce an unbounded hang with no plugin bug at all:
+
+- **`PluginHost` registered the reply channel *after* writing the hook** (`call_hook_raw`,
+  `call_raw_hook_str`, both streaming variants, and `RemoteProvider::stream`). The reader thread
+  drops a reply whose call id is not in `pending_calls` yet, so a plugin fast enough to answer in
+  that window lost its `done` and the caller waited out the entire timeout. The order is now
+  registration → write, in one `begin_call` helper; `RemoteProvider` uses the same entry point
+  instead of a second hand-rolled copy. The new test fails deterministically on the old order.
+- **A panicking host-API op vanished.** The op runs on a bare thread; an unwind wrote no
+  `ApiResult`, so the plugin blocked on its reply forever and the tool call hung on a plugin that
+  still looked alive. The panic is now caught and answered as `ok:false, error:"…panicked"`.
+
+### The compactor: verified, with one real defect found and recorded
+
+`npm test` is green and the uncommitted UI fixes from 2026-09-17f are intact. Reading it against
+the encoders, however, found a defect worth its own session: the compactor copies kept tool
+results **verbatim into the summary message** as `tool_result` content blocks, and the summary
+message's role is `assistant`. `kn9t-provider-openai`'s `encode_message` then emits
+`{"type":"tool_result",…}` *inside an `assistant` message* — not a valid chat-completions content
+part. A standalone `role:"tool"` message is not the answer either: after compaction there is no
+preceding `tool_call`, so the `tool_result` would be an orphan, equally rejected. The only safe
+shape is **text** in the summary. Left unfixed here (it changes the compactor's plan shape and
+needs its own acceptance test) and recorded as **96E-50** in `TRACKING.md`. Also recorded: the
+summary's `id` is the constant `"compacted-1"`, a duplicate `MsgId` across compactions in one
+session. This is why "E2E live compaction" was still an open item — nothing had ever exercised the
+turn *after* a compaction.
+
+### Verification
+
+| suite | result |
+|---|---|
+| `plugins/kn9t-subagent` `npm test` | 7/7 scenarios (round trip, bare fork, nested re-entrancy, depth cap, `context:parent`, description) |
+| `plugins/kn9t-compactor` `npm test` | green |
+| `cargo test -p kn9t-plugin` | 20 acceptance + 17 unit/integration, all green |
+| `cargo test -p kn9t-server --test acceptance` | 44 passed, 2 ignored, `srv::approve_session_caches` failed — the pre-existing flaky approval-cache test (user-confirmed flaky; it exercises the in-process policy hook, not `kn9t-plugin`) |
+
+**A sub-agent now has its own honest harness.** The `5069ba0` refactor deleted
+`plugins/kn9t-subagent/test/simulate.mjs` and left the plugin with no test at all — the reason the
+regression above could ship. `test/simulate.mjs` is back (wired as `npm test`) and drives the real
+subprocess: it asserts the fork is bare, services a nested hook while a `session_prompt` reply is
+pending, and proves the depth cap refuses instead of hanging.
+
+### The turn phase was on four lines of chrome at once
+
+The user reported `streaming`/`idle` written in four places. It was: the tab bar's
+`● streaming`, the breadcrumb's right-aligned phase, the right panel's `#sid   streaming`, and
+the status bar. The status bar is the one place that names it now.
+
+- `assets/tui/20_header.lua` — dropped both the tab-bar indicator and the breadcrumb phase;
+  row 2 is cwd ▸ title only.
+- `assets/tui/40_sidebar_right.lua` — the panel header keeps the session id and drops the phase
+  value beside it.
+- `assets/tui/00_theme.lua` — deleted the unused `TUI.phase_display` helper: a second
+  phase→(label, colour) mapping, dead but free to drift from the status bar's.
+- `assets/tui/50_status.lua` unchanged — `streaming`/`aborting`/`idle` lives here and only here.
+
+`cargo test -p kn9t-tui` green. `~/.kn9t/tui/` reseeded from the catalogue (it was byte-identical
+before the edit, so nothing user-authored was lost).
+
+---
+
+## Session — 2026-09-17i — the turn ceiling is opt-in, and config.toml gets a schema
+
+**Next session starts here:** P7-L2's `d` diff action / L3 / L4.
+
+### The 100-turn ceiling was a surprise, not a design
+
+`ReactConfig::max_turns` defaulted to `100`, so any run that did not go idle within 100 turns
+was killed with `ReactError::TurnLimit`. That was added as reliability fix B4 (2026-09-16), and
+it is a real spend guard for a model stuck re-issuing the same tool call — but 100 is not
+obviously enough for a long agentic task, and nothing told the user the ceiling was there until
+it fired. The requirement is now: **no ceiling by default, opt-in via config.**
+
+- `ReactConfig::max_turns` is now `Option<u32>`; `None` (the shipped default) means unbounded.
+  The loop only checks the bound when it is `Some`, and the error message names the config key
+  (`[server] max_turns`) that set it (`kn9t-react/src/turn.rs`).
+- `[server] max_turns` reaches the loop: `RawServer.max_turns` → `ServerTimeouts.max_turns` →
+  `ServerState::react_config()`. Absent or `0` means unbounded (consistent with the other
+  `[server]` knobs, where `0` disables); a positive value is a real ceiling.
+- Tests: `unit_max_turns` rewritten (7) — default is `None`; `None` lets a 6-turn run finish
+  naturally; `Some(3)` cuts the same run at exactly 3 provider calls; the ceiling still emits
+  `TurnFinishing`/`TurnEnded` so the session is not wedged. `unit_turn_lifecycle` +2
+  (`max_turns = 0` → unbounded, and the configured ceiling reaches `ReactConfig`).
+
+### `[server]` knobs are now declarative: `schema/config.json` → `docs/CONFIG.md`
+
+The config surface had no schema — `[server]` was parsed by hand and documented only in prose,
+which is how the `max_turns` default above drifted from anyone's expectation. Per ADR-0005 the
+new option ships the same way as the HTTP API:
+
+- `schema/config.json` is the source of truth for `~/.kn9t/config.toml` (all tables: top level,
+  `[[model]]`, quirks, `[provider.<name>]`, `[server]`, `[policy]`, `[policy.approvals]`,
+  `[[plugin]]`).
+- `xtask/src/gen_config.rs` renders `docs/CONFIG.md`; `xtask generate`/`--check` and therefore
+  `scripts/check-schema.sh` cover it, so the doc cannot drift from the schema.
+- `crates/kn9t-server/src/config.rs` remains authoritative for behaviour (R-TUI-012); the
+  schema describes what it accepts. A mismatch is a bug in one of the two, not the doc.
+
+The bootstrap template (`crates/kn9t/src/bootstrap.rs`) now shows the `max_turns` knob, and the
+2026-09-16 "Config note" in `TRACKING.md` is extended to name it.
+
+### Scope note
+
+This documents the existing keys; it does not (yet) generate the Rust parser structs from the
+schema. Generating `RawServer`/`RawConfig` from `schema/config.json` would make parser drift
+impossible, but that is a larger change than this session's goal and was deliberately deferred.
+
+### Discovered bugs
+
+| # | severity | bug |
+|---|---|---|
+| C1 | low | `RawModel.cache`'s doc comment says `(default: "none")` but `default_cache_mode_str()` returns `"automatic"`. The code is authoritative, so `schema/config.json` documents `automatic`; the comment should be corrected. |
+| C2 | low | The B4 turn ceiling (2026-09-16) was never in `spec/03-react-tools.md`; R-RCT-020 covers the turn sequence, not a bound. The default removal keeps the opt-in documented only in `schema/config.json` + `docs/CONFIG.md`. If the spec should own `[server] max_turns`, it needs a new requirement. |
+
+---
+
+## Session — 2026-09-17h — compactor: a viewer that rendered blank, and a keep-everything fail-safe
+
+**Next session starts here:** P7-L2's `d` diff action / L3 / L4.
+
+### The panel was a box of empty rows
+
+The viewer's `list` items were written `{ text = "..." }`, but `parse_spans` read only
+`content`/`spans` and returned an empty span for anything else — so every row rendered
+blank. The border and title were there and the content was not, which is exactly "je ne vois
+pas quels tools sont gardés". `parse_spans` now accepts `text` as a synonym for `content`
+and applies the item's own `fg` (the content branch used to take the node style and drop the
+item's colour), so a coloured list row actually renders.
+
+The viewer also now says *which* call each decision is about: the plugin sends a short
+`preview` (the `cmd`/`path`/first string argument) per decision, and rows read
+`✓ keep bash  git status` under a `keep N   summarize N   drop N` line. Its slot requests 18
+rows when focused instead of 12.
+
+### Fail-safe: an undecided tool call is kept, not dropped
+
+Triage could return without citing every tool-call id (the model omits one, or both attempts
+produce nothing). Those results then vanished from the plan — silent data loss on the
+"sometimes it fails" path. `withKeepFallback` now keeps any known id the model did not decide
+on: the transcript keeps something the model shrugged at rather than losing it.
+
+### Speed
+
+The summary pass was sent full result bodies even though this plugin re-attaches kept results
+**verbatim** itself, so the summarizer only needs enough to know what happened. Budgets cut:
+tool results 1000 → 250 chars, tool-call args 500 → 240, text blocks 2000 → 1500. The summary
+pass dominates compaction latency, so this is the lever that matters.
+
+### The live failure: one triage plan for 637 tool calls
+
+Dogfooding surfaced `provider(triage): provider assemble: Truncated`. The session held **637
+tool calls**; the compactor forced a single `submit_triage` carrying one decision per id, and
+that JSON is longer than the model's output budget. The stream was cut mid-arguments, and
+`assemble` refuses an incomplete tool call (`ProvErr::Truncated`, the R-PCORE-050 gate) rather
+than persisting unparseable bytes — correctly. The compactor then failed the whole compaction.
+
+Triage is now **batched** (`TRIAGE_BATCH_SIZE = 80`): one `provider_complete` per batch of ids,
+all launched in parallel with the summary pass and merged into one plan. A batch that fails or
+cites nothing usable is retried once, and whatever is still missing falls through to the keep
+fallback — a bad batch now degrades instead of failing the compaction.
+
+Batching put several requests in flight at once, which exposed the transport's own bug: a
+reader that discards replies it is not waiting for drops a sibling's reply.
+`hostRequest`/`awaitResults` now buffer unmatched replies in an inbox and take them by id.
+
+**Tests:** `extract_compactor_lua.py` + `compactor_ui` 4 (new): the shipped Lua loads, a kept
+row names the tool and its command, the counts line is present, and a sparse decision falls
+back to its id. `kn9t-compactor` `simulate.mjs` extended — `t3` is deliberately left out of
+the plan and must be kept, and a decision row must carry its command preview. `cargo test -p
+kn9t-tui` green.
+
+---
+
+## Session — 2026-09-17g — the explorer tree follows the workspace live
+
+**Next session starts here:** P7-L2's `d` diff action / L3 / L4 (unchanged from 2026-09-17f).
+
+### The bug: the tree was a snapshot of the first walk
+
+The left explorer column never changed after launch. The cause was structural, not a missed call:
+`FileIndex::refresh` walks only when the root changes (`app.rs::sync_index_views` calls it once
+per event-loop turn and it "no-ops unless the root changed", which was the documented design),
+and nothing watched the filesystem. So a file the agent wrote, an editor saved, or a delete was
+invisible until restart.
+
+Fixed with the mechanism already in the tree: `notify`, which the Lua config hot-reload has used
+all along. New `crates/kn9t-tui/src/workspace_watch.rs`:
+
+- watches the launch root **recursively** and raises an `AtomicBool` on any create/modify/remove;
+- `EventKind::Access` is ignored (reads are not changes) and any path under a jumped directory
+  (`target/`, `.git/`, `node_modules/`, …) is ignored too — `file_index::skip_names` now exposes
+  the walk's own skip list, so a `cargo build` cannot flag thousands of rebuilds the tree could
+  never show. One filter, not two that can drift;
+- no debounce: the event loop blocks on `recv()` and rebuilds at most once per turn, so a burst
+  collapses anyway, and an event that lands during a walk re-raises the flag for the next turn.
+
+Two supporting changes make the rebuild reach the screen:
+
+- **`FileIndex` gained a `generation`**, bumped by every `install`. The explorer caches a
+  flattened `rows`, and `sync` only rebuilt it on a root change — which is exactly the case the
+  watcher does *not* produce. It now rebuilds when the generation moves, so an in-place rebuild
+  is observable.
+- **`sync_index_views` returns whether it rebuilt**, and `App::run` ORs that into `needs_redraw`.
+  An idle `Tick` deliberately sets `needs_redraw = false`, so without this the tree state changed
+  but was not painted until the next keystroke.
+
+Degradation is explicit: if the platform watcher cannot be created (an inotify-limit refusal on
+a huge tree, a sandbox without watch support) `spawn` logs and returns `None`, the root is
+recorded so it is not retried every turn, and the index stays a snapshot — exactly the old
+behaviour, and the TUI still starts.
+
+### Tests
+
+`file_index::tests::generation_tracks_a_rebuild_in_place`,
+`explorer::tests::a_changed_index_refreshes_the_rows_without_a_root_change` (appear *and*
+disappear, same root), `workspace_watch::tests::{a_change_under_a_skipped_directory_is_ignored,
+reads_never_flag_a_rebuild, a_write_raises_the_changed_flag}`. The last one is end-to-end over
+the real OS watcher and is tolerant of sandboxed CI (as the existing Lua watcher test is); the
+deterministic coverage is the pure filter tests plus the explorer/generation pair.
+`cargo test -p kn9t-tui` green (lib 50, all suites).
+
+**No new dependency:** `notify` was already justified (Cargo.toml `# File watcher for
+hot-reload`); GI-1 counts workspace crates, not external ones, so it is unaffected.
+
+
+## Session — 2026-09-17f — the other plugin views follow ask_user's shape
+
+**Next session starts here:** P7-L2's `d` diff action / L3 / L4.
+
+### A review pass over every plugin that draws in the TUI
+
+With `ask_user` done, the rest were audited against the same rules (plugin-owned Lua, the
+layout owns the frame, declared placement, no leftover panel). `kn9t-git-integration` was
+left alone — it already follows them. Two did not:
+
+- **`kn9t-compactor` drew a box inside the layout's box.** `90_render.lua` wraps every
+  plugin view in a `box` carrying the title and the focus ring, so its own
+  `{type="box", title="📦 Compactor"}` nested two borders and printed two titles. It now
+  returns only the `list` of items, and declares its placement (`sidebar`, `rows = 12`)
+  instead of relying on the default.
+- **`kn9t-compactor` never cleared its view.** `uiClear` was defined and never called, so
+  the panel stayed in the sidebar for the rest of the session. The main loop now clears on
+  every exit (success, failure, empty span), and `uiClear` forgets the session so the next
+  compaction re-registers. This is the "an idle session keeps no panel" rule.
+- **`kn9t-policy` typed with a per-character `on_key` loop** over ASCII 32–126 — 95 closures
+  to express text entry, which `kn9t.on_text` exists to replace. Rewritten to a single
+  `on_text` handler; the single-letter shortcuts now decline while a grant is being typed so
+  the character falls through to it (exact `on_key` bindings are matched first).
+- **`kn9t-policy` carried dead code:** `handle_plugin_msg` was never called and duplicated
+  `handle_ui_event`, and the `adding`/`input_buf` fields it served were mirrored into
+  `ui_set_state` although the TUI's `V.adding`/`V.input` are the only live copies. Removed.
+
+### A hang the compactor's own test was hiding
+
+`simulate.mjs` went red while verifying. The cause was not the UI change: `uiSetState`
+(blocking `hostRequest`) was called from inside `awaitResults`' callback, and `hostRequest`
+discards every reply that is not its own — so it swallowed the sibling `provider_complete`
+reply and `awaitResults` waited forever. UI updates are fire-and-forget by design (the
+harness comment says so); they now use `hostRequestAsync`, and the main loop skips their
+late `api_result` acks instead of treating them as unknown hooks. `simulate.mjs` green,
+3/3 runs.
+
+**Tests:** `policy_ui` 6 (new) — the plugin's Lua is extracted verbatim by
+`scripts/extract_policy_lua.py` into `crates/kn9t-tui/tests/policy_ui.lua`; the tests drive
+`on_text`, the `a`/Enter/Esc flow, and `j` navigation. `kn9t-compactor` `simulate.mjs` green.
+`cargo test -p kn9t-tui --test policy_ui` green.
+
+**Rule recorded:** `AGENTS.md` §14.1 and `docs/PLUGIN_DEVELOPMENT.md` §6 now say a plugin
+view returns *content*; the border, title and focus ring belong to the layout, so a view
+that returns a `box` nests two frames.
+
+---
+
+## Session — 2026-09-17e — kn9t-mcp: identify as kn9t, not `Python-urllib`
+
+**Next session starts here:** P7-L2's `d` diff action / L3 / L4 (unchanged from 2026-09-17d).
+
+### The bug that looked like an auth failure
+
+A remote MCP server behind Cloudflare answered every request from `kn9t-mcp` with
+`HTTP 403 Access denied / browser_signature_banned`. The culprit was not a token: `urllib`
+identifies itself as `Python-urllib/3.12`, and that exact string is on the endpoint's ban
+list. The 403 names a "browser signature", so it reads as a credential problem and sends you
+hunting for a token bug that does not exist.
+
+- `plugins/kn9t-mcp/kn9t_mcp/mcp_http_client.py` — added `DEFAULT_USER_AGENT`
+  (`kn9t-mcp/<version> (+https://github.com/kn9t/kn9t)`), sent on both POST requests and
+  notifications. Per-server override stays available through `[mcp.headers]`; the comment at
+  the constant records why it must not be deleted as "redundant".
+- `plugins/kn9t-mcp/README.md` — documented remote (`type = "remote"`) servers and the
+  header, with the failure mode spelled out.
+- `plugins/kn9t-mcp/tests/test_http_client.py` — pins the default, the config override, and
+  the notification path, all offline against a mocked `urlopen`.
+
+### Hot reload only handled servers appearing and disappearing
+
+Chasing that header exposed a second bug. `kn9t-mcp` *does* watch `mcp.toml` (2 s mtime poll) and
+*does* send `declare`; the host rebuilds the registry and broadcasts `plugin_declared`
+(R-PLUG2-110), which the TUI consumes. But `_reload_config` skipped every server already in
+`self.mcp_clients` — `if cfg.name in old_server_names: continue` — so editing an **existing**
+entry (a new header, a rotated URL, a changed `cmd`) did nothing until a restart. Adding the
+`User-Agent` header to an already-connected server is exactly that case: the fix looked inert.
+
+- `plugins/kn9t-mcp/kn9t_mcp/plugin.py` — the plugin now remembers the `McpServerConfig` each
+  client was built from; on reload a server whose definition changed is torn down and rebuilt,
+  and the connect/discover path is shared (`_make_client`, `_connect_and_discover`,
+  `_disconnect`) instead of duplicated between startup and reload.
+- `plugins/kn9t-mcp/tests/test_hot_reload.py` — drives the real plugin subprocess with a fake
+  stdio MCP server and a real `mcp.toml` edit: add, remove, and edit-a-server all assert the
+  `declare` that reaches kn9t-server.
+- `plugins/kn9t-mcp/README.md` — a "Hot reload" section states what is and is not picked up.
+
+Still open (recorded, not fixed): the plugin does not poll each server's tool list, so a server
+that gains a tool while its config is unchanged is not rediscovered. MCP's
+`notifications/tools/list_changed` is the protocol-level answer if that becomes a real need.
+
+---
+
+## Session — 2026-09-17e — ask_user renders itself; the interaction gets a bottom slot
+
+**Next session starts here:** the rename pass for ticket-named test identifiers, then P7-L2's `d`
+diff action / L3 / L4.
+
+### The popup hid the thing the question was about
+
+`ask_user` went through the generic `interaction_request` path, which drew `Overlay::Interaction`
+as a centred 60-column dialog that dimmed the whole screen — so the model's proposal was
+unreadable while answering. The plugin's own Lua view was a redundant second copy in the sidebar
+that never went away: registered on the first question, never cleared, leaving an "N answered"
+counter for the rest of the session.
+
+The fix respects the constraint that no `ask_user`-specific code belongs in the TUI: the plugin's
+Lua **is** the question UI, built on generic primitives.
+
+- **`kn9t.respond(payload)`** — a view answers the interaction it renders. The host keeps
+  `POST /ui-respond` and the `Esc` cancel, so a Lua bug cannot fabricate or swallow it.
+- **`kn9t.on_text(fn)`** — printable input, which `on_key` cannot express without a binding per
+  glyph (what `kn9t-git-integration` still does in a 40-line loop). `false` falls through.
+- **Overlay suppression** — `App` does not open the generic overlay when the requesting plugin
+  has a registered Lua view; it keeps `active_interaction_id` and focuses that view. A plugin
+  without a Lua UI still gets the overlay as the fallback.
+- **`placement = "bottom"`** (new zone, `host_api.rs` + `90_render.lua`) — reserved rows between
+  the transcript and the input. Space is taken, not covered, so the transcript stays readable.
+
+`kn9t-ask-user`'s Lua is rewritten as the full UI (choice/multi/confirm/text), registered per
+question and `ui_clear`ed when it resolves, so an idle session keeps no panel. The old idle
+counter and its `answered`/`uiRegistered` state are gone.
+
+**Spec/design:** this amends `AGENTS.md` §11.1, which said interaction overlays stay entirely in
+Rust. Approval is unchanged (Rust-owned, `POST /approve`); interaction *rendering* moved to the
+plugin's Lua while transport and cancel stay host-owned. Recorded rather than worked around.
+
+**Tests:** `plugin_lua_ui` 14, `unit_lua_plugin_ui` 29 (+4 for `on_text`/`respond`, including
+handler cleanup on `ui_clear`). `cargo test -p kn9t-tui` green. `cargo test -p kn9t-server` has
+one pre-existing flaky failure — `srv::approve_session_caches`, a timing-based approval-cache test
+unrelated to this change; it reproduces on a clean re-run.
+
+### Dogfooding the first cut found three real bugs
+
+These came from actually answering a question, not from the tests:
+
+- **The question was invisible.** The plugin's requested row count did not include the question,
+  so the vertical split gave the flexed question row zero height and only the options showed.
+  Fixed by reserving the question explicitly (`size = { fixed = 2 }`) and counting it in the
+  request; the redundant "kind" header line was dropped for the rows it cost.
+- **`ui_clear` left the box on screen** showing `[kn9t-ask-user] no UI registered`. The render
+  cache fingerprint does not read plugin view specs, so the cached tree kept the cleared slot and
+  `render_plugin_views` rebuilt a view that no longer existed. `LuaRuntime::apply_plugin_lua_op`
+  now bumps the UI epoch (`bump_ui_epoch`), forcing a rebuild on register/clear.
+- **Confirm used ←/→ on a vertical list.** `move` ignored `confirm` (no options array), so
+  Up/Down did nothing and only Left/Right toggled. `move` now drives Yes/No, and the footer
+  advertises `Space toggle` for multi.
+
+---
 
 ## Session — 2026-09-17d — Release prep: repo hygiene, doc truth, and a contract guard
 

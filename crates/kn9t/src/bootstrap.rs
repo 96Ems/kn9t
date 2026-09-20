@@ -345,6 +345,7 @@ price_out = 0.40
 
 # [server]
 # idle_exit_secs  = 1800  # 30 min; set to 0 to disable auto-exit
+# max_turns       = 0     # 0 / absent = unbounded (default); >0 caps a runaway run
 
 # ── Policy ────────────────────────────────────────────────────────────────────
 # Global only (~/.kn9t/config.toml). Controls bash classification and

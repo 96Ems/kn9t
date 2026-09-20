@@ -34,8 +34,6 @@ class State:
     grants: list = field(default_factory=list)  # User-added always-allow patterns
     recent: list = field(default_factory=list)  # Last N decisions
     cursor: int = 0  # For grant list navigation
-    adding: bool = False  # True when typing new grant
-    input_buf: str = ""  # Input buffer for new grant
 
 MAX_RECENT = 10
 state = State()
@@ -166,139 +164,78 @@ function on_state(s)
     -- Don't override cursor/adding/input from state - those are local UI state
 end
 
--- Register key handlers using kn9t.on_key
--- Actions that persist (mode, grants) use kn9t.notify() to send to Python
--- Navigation (cursor) stays local in V
+-- Exact keys first: the host matches on_key before on_text, so a shortcut aimed
+-- at a printable character must decline while a grant is being typed. That
+-- leaves the single on_text handler below as the only writer of the input
+-- buffer. Actions that persist (mode, grants) go to Python via kn9t.notify;
+-- navigation stays local in V.
 
 kn9t.on_key("m", function()
     if V.adding then return false end
-    -- Notify Python to cycle mode (persists to config)
     kn9t.notify({ event = "cycle_mode" })
     return true
 end)
 
 kn9t.on_key("a", function()
-    if V.adding then
-        V.input = V.input .. "a"
-        return true
-    end
+    if V.adding then return false end
     V.adding = true
     V.input = ""
     return true
 end)
 
-kn9t.on_key("d", function()
-    if V.adding then
-        V.input = V.input .. "d"
-        return true
-    end
-    -- Notify Python to delete grant (persists to config)
+-- `d` and `x` are the same action.
+local function delete_grant()
     if V.cursor >= 0 and V.cursor < #V.grants then
         kn9t.notify({ event = "delete_grant", index = V.cursor })
     end
     return true
-end)
+end
 
-kn9t.on_key("x", function()
-    if V.adding then
-        V.input = V.input .. "x"
-        return true
-    end
-    -- Same as d
-    if V.cursor >= 0 and V.cursor < #V.grants then
-        kn9t.notify({ event = "delete_grant", index = V.cursor })
-    end
-    return true
-end)
+kn9t.on_key("d", function() if V.adding then return false end return delete_grant() end)
+kn9t.on_key("x", function() if V.adding then return false end return delete_grant() end)
 
-kn9t.on_key("j", function()
-    if V.adding then
-        V.input = V.input .. "j"
-        return true
-    end
-    if V.cursor < #V.grants - 1 then
-        V.cursor = V.cursor + 1
-    end
-    return true
-end)
+local function move(delta)
+    local n = #V.grants
+    if n == 0 then return end
+    V.cursor = math.max(0, math.min(n - 1, V.cursor + delta))
+end
 
-kn9t.on_key("k", function()
-    if V.adding then
-        V.input = V.input .. "k"
-        return true
-    end
-    if V.cursor > 0 then
-        V.cursor = V.cursor - 1
-    end
-    return true
-end)
-
-kn9t.on_key("Down", function()
-    if V.adding then return false end
-    if V.cursor < #V.grants - 1 then
-        V.cursor = V.cursor + 1
-    end
-    return true
-end)
-
-kn9t.on_key("Up", function()
-    if V.adding then return false end
-    if V.cursor > 0 then
-        V.cursor = V.cursor - 1
-    end
-    return true
-end)
+kn9t.on_key("j", function() if V.adding then return false end move(1) return true end)
+kn9t.on_key("k", function() if V.adding then return false end move(-1) return true end)
+kn9t.on_key("Down", function() if V.adding then return false end move(1) return true end)
+kn9t.on_key("Up", function() if V.adding then return false end move(-1) return true end)
 
 kn9t.on_key("Escape", function()
-    -- Always release focus, even when adding (use Backspace to cancel input)
+    -- Clear a half-typed grant, then let Esc release focus.
     if V.adding then
         V.adding = false
         V.input = ""
     end
-    return false  -- Let Esc release focus
+    return false
 end)
 
 kn9t.on_key("Enter", function()
-    if V.adding and V.input ~= "" then
-        -- Notify Python to add grant (persists to config)
-        kn9t.notify({ event = "add_grant", pattern = V.input })
-        V.adding = false
-        V.input = ""
-        return true
-    end
-    return false
+    if not V.adding or V.input == "" then return false end
+    kn9t.notify({ event = "add_grant", pattern = V.input })
+    V.adding = false
+    V.input = ""
+    return true
 end)
 
 kn9t.on_key("Backspace", function()
-    if V.adding then
-        V.input = string.sub(V.input, 1, -2)
-        return true
-    end
-    return false
+    if not V.adding then return false end
+    V.input = string.sub(V.input, 1, -2)
+    return true
 end)
 
-kn9t.on_key("Space", function()
-    if V.adding then
-        V.input = V.input .. " "
-        return true
-    end
-    return false
+-- One handler for every printable character, Space included. It owns the
+-- keystroke only while a grant is being typed; otherwise the character falls
+-- through to the shortcuts above or to the host.
+kn9t.on_text(function(ch)
+    if not V.adding then return false end
+    V.input = V.input .. ch
+    return true
 end)
-
--- Bind printable chars for input mode
-for i = 32, 126 do
-    local ch = string.char(i)
-    -- Skip already bound keys
-    if ch ~= "m" and ch ~= "a" and ch ~= "d" and ch ~= "x" and ch ~= "j" and ch ~= "k" and ch ~= " " then
-        kn9t.on_key(ch, function()
-            if V.adding then
-                V.input = V.input .. ch
-                return true
-            end
-            return false
-        end)
-    end
-end
 
 function render(s)
     on_state(s)
@@ -423,8 +360,6 @@ def send_ui_state():
                 "grants": state.grants,
                 "recent": [asdict(d) for d in state.recent[-MAX_RECENT:]],
                 "cursor": state.cursor,
-                "adding": state.adding,
-                "input_buf": state.input_buf,
             }
         }
     })
@@ -446,56 +381,6 @@ def register_ui():
             "title": "Policy",
         }
     })
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Message handling
-# ══════════════════════════════════════════════════════════════════════════════
-
-def handle_plugin_msg(msg: dict):
-    """Handle messages from TUI (user interactions)."""
-    t = msg.get("t", "")
-    
-    if t == "cycle_mode":
-        modes = ["normal", "yolo", "ask_all"]
-        idx = modes.index(state.mode) if state.mode in modes else 0
-        state.mode = modes[(idx + 1) % len(modes)]
-        save_grants()
-        
-    elif t == "start_add":
-        state.adding = True
-        state.input_buf = ""
-        
-    elif t == "cancel_add":
-        state.adding = False
-        state.input_buf = ""
-        
-    elif t == "confirm_add":
-        if state.input_buf.strip():
-            state.grants.append(state.input_buf.strip())
-            save_grants()
-        state.adding = False
-        state.input_buf = ""
-        state.cursor = len(state.grants) - 1
-        
-    elif t == "input_char":
-        state.input_buf += msg.get("ch", "")
-        
-    elif t == "input_backspace":
-        state.input_buf = state.input_buf[:-1]
-        
-    elif t == "delete_grant":
-        if state.grants and 0 <= state.cursor < len(state.grants):
-            del state.grants[state.cursor]
-            state.cursor = max(0, min(state.cursor, len(state.grants) - 1))
-            save_grants()
-            
-    elif t == "cursor_up":
-        state.cursor = max(0, state.cursor - 1)
-        
-    elif t == "cursor_down":
-        state.cursor = min(len(state.grants) - 1, state.cursor + 1) if state.grants else 0
-    
-    send_ui_state()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Protocol

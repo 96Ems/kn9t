@@ -65,16 +65,43 @@ interface ApiResult {
 let requestId = 1000;
 const reader = new LineReader();
 
+/**
+ * Replies read while a different request was being awaited. Without this, a
+ * blocking call issued from inside another request's callback reads — and
+ * discards — its sibling's reply, and the sibling waits forever. The compactor
+ * has several requests in flight (the summary plus one triage call per batch),
+ * so "not mine, drop it" is not an option.
+ */
+const inbox: ApiResult[] = [];
+
+function isReply(m: ApiResult): boolean {
+  return m.t === "api_result";
+}
+
+/** Read the next host message, or null when stdin closes. */
+function readHostLine(): ApiResult | null {
+  const line = reader.readLine();
+  if (line === null) return null;
+  return JSON.parse(line) as ApiResult;
+}
+
+/** Take `id`'s reply from the inbox, if it is already there. */
+function takeQueued(id: number): ApiResult | undefined {
+  const i = inbox.findIndex((m) => isReply(m) && m.id === id);
+  return i >= 0 ? inbox.splice(i, 1)[0] : undefined;
+}
+
 /** Send a plugin → host API request and await the api_result reply. */
 function hostRequest(op: string, payload: unknown): ApiResult {
   const id = requestId++;
   writeMsg({ t: "request", id, op, payload });
-  while (true) {
-    const line = reader.readLine();
-    if (line === null) throw new Error("host closed stdin");
-    const msg = JSON.parse(line) as ApiResult;
-    if (msg.t === "api_result" && msg.id === id) return msg;
-    // Unknown host messages in between: ignore (forward compatibility).
+  for (;;) {
+    const queued = takeQueued(id);
+    if (queued) return queued;
+    const msg = readHostLine();
+    if (msg === null) throw new Error("host closed stdin");
+    if (isReply(msg) && msg.id === id) return msg;
+    inbox.push(msg); // not ours: keep it for whoever is waiting
   }
 }
 
@@ -85,9 +112,10 @@ function hostRequestAsync(op: string, payload: unknown): number {
   return id;
 }
 
-/** 
- * Wait for multiple api_results by ID. Calls onResult for each as they arrive.
- * Returns a map of id → result when all are received.
+/**
+ * Wait for multiple api_results by ID. Calls onResult for each as it arrives.
+ * Returns a map of id → result when all are received. Replies for requests not
+ * in `ids` are buffered, not dropped.
  */
 function awaitResults(
   ids: number[],
@@ -95,19 +123,28 @@ function awaitResults(
 ): Map<number, ApiResult> {
   const pending = new Set(ids);
   const results = new Map<number, ApiResult>();
-  
-  while (pending.size > 0) {
-    const line = reader.readLine();
-    if (line === null) throw new Error("host closed stdin");
-    const msg = JSON.parse(line) as ApiResult;
-    if (msg.t === "api_result" && pending.has(msg.id)) {
+
+  const accept = (msg: ApiResult): boolean => {
+    if (isReply(msg) && pending.has(msg.id)) {
       pending.delete(msg.id);
       results.set(msg.id, msg);
       if (onResult) onResult(msg.id, msg);
+      return true;
     }
-    // Ignore other messages (forward compatibility)
+    return false;
+  };
+
+  while (pending.size > 0) {
+    const qi = inbox.findIndex((m) => isReply(m) && pending.has(m.id));
+    if (qi >= 0) {
+      accept(inbox.splice(qi, 1)[0]!);
+      continue;
+    }
+    const msg = readHostLine();
+    if (msg === null) throw new Error("host closed stdin");
+    if (!accept(msg)) inbox.push(msg);
   }
-  
+
   return results;
 }
 
@@ -118,7 +155,7 @@ interface CompactorState {
   session_id: string;
   messages_count: number;
   tool_calls_count: number;
-  decisions: Array<{ id: string; action: string; name?: string }>;
+  decisions: Array<{ id: string; action: string; name?: string; preview?: string }>;
   triage_done: boolean;
   summary_preview: string;
   error?: string;
@@ -185,10 +222,11 @@ function render(state)
     table.insert(items, { text = info, fg = "gray" })
   end
   
-  -- Triage section (always shown once we have decisions)
+  -- Tool-call decisions. Kept results are copied verbatim into the summary, so
+  -- "keep" is the one the user cares about: show each call by name and command.
   if #decisions > 0 or triage_done then
-    table.insert(items, { text = "─── Triage ───", fg = "gray" })
-    
+    table.insert(items, { text = "─── Tool calls (keep = verbatim) ───", fg = "gray" })
+
     local keep_count = 0
     local summarize_count = 0
     local drop_count = 0
@@ -198,30 +236,29 @@ function render(state)
       elseif d.action == "drop" then drop_count = drop_count + 1
       end
     end
-    
+
     if #decisions > 0 then
-      local counts = {}
-      if keep_count > 0 then table.insert(counts, "✓" .. keep_count) end
-      if summarize_count > 0 then table.insert(counts, "≈" .. summarize_count) end
-      if drop_count > 0 then table.insert(counts, "✕" .. drop_count) end
-      table.insert(items, { text = table.concat(counts, " "), fg = "white" })
-      
-      -- Show ALL decisions (scrollable list)
+      table.insert(items, {
+        text = string.format("keep %d   summarize %d   drop %d",
+          keep_count, summarize_count, drop_count),
+        fg = "white",
+      })
+
       for _, d in ipairs(decisions) do
-        local icon = "○"
-        local color = "gray"
+        local icon, color, verb = "○", "gray", "?"
         if d.action == "keep" then
-          icon = "✓"
-          color = "green"
+          icon, color, verb = "✓", "green", "keep"
         elseif d.action == "summarize" then
-          icon = "≈"
-          color = "yellow"
+          icon, color, verb = "≈", "yellow", "sum"
         elseif d.action == "drop" then
-          icon = "✕"
-          color = "red"
+          icon, color, verb = "✕", "red", "drop"
         end
-        local name = d.name or d.id:sub(1,12)
-        table.insert(items, { text = " " .. icon .. " " .. name, fg = color })
+        local name = d.name or d.id:sub(1, 12)
+        local line = string.format("%s %-4s %s", icon, verb, name)
+        if d.preview and d.preview ~= "" then
+          line = line .. "  " .. d.preview
+        end
+        table.insert(items, { text = line, fg = color })
       end
     end
   end
@@ -244,37 +281,50 @@ function render(state)
     table.insert(items, { text = "⚠ " .. state.error, fg = "red" })
   end
   
-  return {
-    type = "box",
-    border = "rounded",
-    title = "📦 Compactor",
-    border_fg = status_color,
-    padding = { 0, 1 },
-    child = {
-      type = "list",
-      items = items,
-    },
-  }
+  -- The layout owns the frame: it draws the border, the title and the focus
+  -- ring around every plugin view. A view returns only its content — wrapping it
+  -- in a box here nested two borders and printed two titles.
+  return { type = "list", items = items }
 end
 `;
 
-/** Register the Lua UI widget for this plugin (once per session). */
+/**
+ * Register the Lua UI widget for this plugin (once per session).
+ *
+ * The UI ops are fire-and-forget: none of their replies is needed, and a
+ * blocking request issued while other requests are in flight would read — and
+ * discard — a reply that belongs to one of them.
+ */
 const registeredSessions = new Set<string>();
 
 function ensureLuaRegistered(session: string): void {
   if (registeredSessions.has(session)) return;
-  hostRequest("ui_register_lua", { session, source: COMPACTOR_LUA });
+  // Declare the placement rather than relying on the default, so the intent is
+  // in the source: a passive progress viewer belongs in the sidebar, and it
+  // must say how many rows it wants when focused.
+  hostRequestAsync("ui_register_lua", {
+    session,
+    source: COMPACTOR_LUA,
+    placement: "sidebar",
+    title: "compactor",
+    rows: 18,
+  });
   registeredSessions.add(session);
 }
 
-/** Push UI state update to TUI. */
+/** Push UI state update to TUI (fire-and-forget, see `ensureLuaRegistered`). */
 function uiSetState(session: string, state: CompactorState): void {
-  hostRequest("ui_set_state", { session, state: state as unknown as Record<string, unknown> });
+  hostRequestAsync("ui_set_state", { session, state: state as unknown as Record<string, unknown> });
 }
 
-/** Clear the UI widget when done. */
+/**
+ * Drop the panel and forget the registration. Clearing is what makes the next
+ * compaction re-register: a session that compacts twice must get the viewer both
+ * times, and an idle session must keep no panel.
+ */
 function uiClear(session: string): void {
-  hostRequest("ui_clear", { session });
+  hostRequestAsync("ui_clear", { session });
+  registeredSessions.delete(session);
 }
 
 // ── Effect programs (the agent turn) ─────────────────────────────────────────
@@ -346,6 +396,14 @@ const SUMMARY_TOOL = {
   },
 };
 
+/**
+ * Tool calls classified per triage call. One plan for the whole span is a
+ * 637-element JSON array on a busy session — longer than the model's output
+ * budget, so the provider stream is cut mid-JSON and assembly reports
+ * `Truncated`. Small batches keep every plan finishable.
+ */
+const TRIAGE_BATCH_SIZE = 80;
+
 interface Decision {
   id: string;
   action: "keep" | "summarize" | "drop";
@@ -367,7 +425,34 @@ function textOf(content: Array<Record<string, unknown>>): string {
   return content.filter(isText).map((b) => b.text).join("\n");
 }
 
-/** Format messages as a readable transcript for the summary pass. */
+/**
+ * A short, human-identifying descriptor for a tool call, so the viewer shows
+ * *which* call a keep/summarize/drop applies to (`bash  git status`, not just
+ * `bash`). Prefers the common single-string argument fields.
+ */
+function callPreview(argsJson: unknown): string {
+  try {
+    const v = JSON.parse(String(argsJson ?? ""));
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const o = v as Record<string, unknown>;
+      for (const k of ["cmd", "command", "path", "file", "pattern", "query", "url", "name"]) {
+        if (typeof o[k] === "string") return String(o[k]).slice(0, 60);
+      }
+      const first = Object.values(o).find((x) => typeof x === "string");
+      if (typeof first === "string") return first.slice(0, 60);
+    }
+  } catch {
+    // Not JSON: the call has no preview.
+  }
+  return "";
+}
+
+/**
+ * The per-decision rows the viewer renders. Kept tool results are re-attached
+ * verbatim by this plugin, so the summarizer only needs enough of each result
+ * to know what happened — not the bytes. Budgeting the transcript hard is what
+ * keeps the summary pass from dominating compaction latency.
+ */
 function formatTranscript(messages: MessageWire[]): string {
   const lines: string[] = [];
   for (const m of messages) {
@@ -376,17 +461,16 @@ function formatTranscript(messages: MessageWire[]): string {
       const t = block["type"];
       if (t === "text") {
         const text = String(block["text"] ?? "");
-        // Truncate very long text blocks
-        const truncated = text.length > 2000 ? text.slice(0, 2000) + "..." : text;
+        const truncated = text.length > 1500 ? text.slice(0, 1500) + "..." : text;
         lines.push(`[${role}] ${truncated}`);
       } else if (t === "tool_call") {
         const name = String(block["name"] ?? "");
-        const args = String(block["args_json"] ?? "").slice(0, 500);
+        const args = String(block["args_json"] ?? "").slice(0, 240);
         lines.push(`[${role}] Tool call: ${name}(${args})`);
       } else if (t === "tool_result") {
         const id = String(block["id"] ?? "");
         const content = Array.isArray(block["content"]) ? block["content"] : [];
-        const preview = textOf(content as Array<Record<string, unknown>>).slice(0, 1000);
+        const preview = textOf(content as Array<Record<string, unknown>>).slice(0, 250);
         lines.push(`[TOOL RESULT ${id}] ${preview}`);
       }
     }
@@ -396,17 +480,19 @@ function formatTranscript(messages: MessageWire[]): string {
 
 /** Build the per-CallId inventory text + maps for the triage pass. */
 function inventory(messages: MessageWire[]): {
-  text: string;
-  byId: Map<string, { result: Record<string, unknown> | undefined; preview: string }>;
+  order: string[];
+  linesById: Map<string, string[]>;
 } {
-  const lines: string[] = [];
-  const byId = new Map<string, { result: Record<string, unknown> | undefined; preview: string }>();
-  const seen = (id: string, result?: Record<string, unknown>, preview = "") => {
-    if (!byId.has(id)) byId.set(id, { result, preview });
-    else {
-      const prev = byId.get(id)!;
-      if (result) prev.result = result;
-      if (preview) prev.preview = preview;
+  const order: string[] = [];
+  const linesById = new Map<string, string[]>();
+  const add = (id: string, line: string) => {
+    if (id === "") return;
+    const existing = linesById.get(id);
+    if (existing) {
+      existing.push(line);
+    } else {
+      linesById.set(id, [line]);
+      order.push(id);
     }
   };
   for (const m of messages) {
@@ -416,22 +502,37 @@ function inventory(messages: MessageWire[]): {
         const id = String(block["id"] ?? "");
         const name = String(block["name"] ?? "");
         const args = String(block["args_json"] ?? "").slice(0, 200);
-        lines.push(`tool_call ${id} ${name}(${args})`);
-        seen(id);
+        add(id, `tool_call ${id} ${name}(${args})`);
       } else if (t === "tool_result") {
         const id = String(block["id"] ?? "");
         const preview = textOf(
           (Array.isArray(block["content"]) ? block["content"] : []) as Array<Record<string, unknown>>,
         ).slice(0, 300);
-        lines.push(`tool_result ${id}: ${preview.length} chars: ${preview}`);
-        seen(id, block, preview);
-      } else if (t === "text") {
-        const text = String(block["text"] ?? "").slice(0, 400);
-        lines.push(`text: ${text}`);
+        add(id, `tool_result ${id}: ${preview.length} chars: ${preview}`);
       }
     }
   }
-  return { text: lines.join("\n"), byId };
+  return { order, linesById };
+}
+
+/** Split `items` into consecutive chunks of at most `size`. */
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/** The last few text turns, so a triage batch knows what the session is about. */
+function goalContext(messages: MessageWire[]): string {
+  const texts: string[] = [];
+  for (const m of messages) {
+    for (const block of m.content) {
+      if (block["type"] === "text" && typeof block["text"] === "string") {
+        texts.push(`[${m.role}] ${String(block["text"]).slice(0, 400)}`);
+      }
+    }
+  }
+  return texts.slice(-4).join("\n");
 }
 
 /**
@@ -498,6 +599,31 @@ function parseSummaryResult(content: Array<Record<string, unknown>>): string {
   return "(compaction summary unavailable — model did not call submit_summary)";
 }
 
+/** The decision rows the viewer renders: action, tool name, and call preview. */
+function decisionRows(
+  decisions: Decision[],
+  names: Map<string, string>,
+  previews: Map<string, string>,
+): Array<{ id: string; action: string; name?: string; preview?: string }> {
+  return decisions.map((d) => ({
+    id: d.id,
+    action: d.action,
+    name: names.get(d.id),
+    preview: previews.get(d.id),
+  }));
+}
+
+/**
+ * Any tool call the model did not decide on is KEPT, not dropped. A silent loss
+ * of a tool result is the one failure mode worth failing closed against: the
+ * transcript keeps something the model shrugged at, rather than losing it.
+ */
+function withKeepFallback(decisions: Decision[], knownIds: string[]): Decision[] {
+  const decided = new Set(decisions.map((d) => d.id));
+  const missing = knownIds.filter((id) => !decided.has(id));
+  return decisions.concat(missing.map((id) => ({ id, action: "keep" as const })));
+}
+
 // The real program: takes the hook payload, runs triage + summary in PARALLEL.
 function compactProgram(hookPayload: Record<string, unknown>) {
   return Effect.gen(function* (_) {
@@ -533,7 +659,7 @@ function compactProgram(hookPayload: Record<string, unknown>) {
     const messages = ((read.result as { messages?: MessageWire[] })["messages"] ?? []) as MessageWire[];
 
     const inv = inventory(messages);
-    const knownIds = [...inv.byId.keys()];
+    const knownIds = inv.order;
     
     // Update UI with message/tool counts
     state.messages_count = messages.length;
@@ -547,142 +673,133 @@ function compactProgram(hookPayload: Record<string, unknown>) {
       return yield* _(Effect.fail(new Error("span is empty — nothing to compact")));
     }
 
-    // Build a map of tool call id -> tool name for display
+    // Per tool-call display data: name and a short identifying preview, so the
+    // viewer can tell two `bash` calls apart.
     const toolNameById = new Map<string, string>();
+    const toolPreviewById = new Map<string, string>();
     for (const m of messages) {
       for (const block of m.content) {
         if (block["type"] === "tool_call") {
           const id = String(block["id"] ?? "");
           const name = String(block["name"] ?? "");
           if (id && name) toolNameById.set(id, name);
+          if (id) toolPreviewById.set(id, callPreview(block["args_json"]));
         }
       }
     }
 
-    // Prepare messages for both passes
-    const triageUser =
-      `Transcript inventory (ids you may cite):\n${inv.text}\n\n` +
-      `Cite ONLY ids from the list above. Call submit_triage with your plan.`;
-    const triageMsgs = [
-      { id: "sys-triage", role: "system", silent: true, content: [{ type: "text", text: TRIAGE_SYSTEM }] },
-      { id: "usr-triage", role: "user", silent: true, content: [{ type: "text", text: triageUser }] },
-    ];
-    
+    // 2. Launch the summary pass and one triage call per batch, in parallel.
+    //    A session can carry hundreds of tool calls (this one hit 637); one
+    //    forced `submit_triage` for all of them overflows the model's output
+    //    budget and the stream is cut mid-JSON (`provider assemble: Truncated`).
+    //    Batching keeps every plan small enough to finish.
+    state.status = "triage";
+    uiSetState(session, state);
+
     const transcript = formatTranscript(messages);
     const summaryMsgs = [
       { id: "sys-summary", role: "system", silent: true, content: [{ type: "text", text: SUMMARY_SYSTEM }] },
       { id: "usr-summary", role: "user", silent: true, content: [{ type: "text", text: `Summarize this conversation:\n\n${transcript}` }] },
     ];
-
-    // 2. Launch BOTH triage and summary in parallel!
-    state.status = "triage";
-    uiSetState(session, state);
-    
-    const triageReqId = hostRequestAsync("provider_complete", { session, messages: triageMsgs, tools: [TRIAGE_TOOL] });
     const summaryReqId = hostRequestAsync("provider_complete", { session, messages: summaryMsgs, tools: [SUMMARY_TOOL] });
-    
+
+    const batches = chunk(knownIds, TRIAGE_BATCH_SIZE);
+    const goal = goalContext(messages);
+    const triageRequest = (batch: string[], correction = ""): number => {
+      const body = batch.flatMap((id) => inv.linesById.get(id) ?? []).join("\n");
+      const text =
+        `Conversation goal:\n${goal}\n\n` +
+        `Tool calls to classify (cite ONLY these ids):\n${body}\n\n` +
+        `Call submit_triage with your plan.${correction}`;
+      return hostRequestAsync("provider_complete", {
+        session,
+        messages: [
+          { id: "sys-triage", role: "system", silent: true, content: [{ type: "text", text: TRIAGE_SYSTEM }] },
+          { id: "usr-triage", role: "user", silent: true, content: [{ type: "text", text }] },
+        ],
+        tools: [TRIAGE_TOOL],
+      });
+    };
+
     let decisions: Decision[] = [];
     let resumeActions: string[] = [];
     let summaryText = "";
-    let triageResult: ApiResult | null = null;
     let summaryResult: ApiResult | null = null;
-    
-    // Wait for both results, updating UI as each arrives
-    const results = awaitResults([triageReqId, summaryReqId], (id, result) => {
-      if (id === triageReqId) {
-        triageResult = result;
-        if (result.ok) {
-          const content = ((result.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
-          const parsed = parseTriageResult(content, knownIds);
-          decisions = parsed.decisions;
-          resumeActions = parsed.resumeActions;
-          
-          state.decisions = decisions.map(d => ({
-            id: d.id,
-            action: d.action,
-            name: toolNameById.get(d.id),
-          }));
-          state.triage_done = true;
-          
-          // If triage needs retry due to invalid IDs, we'll handle it after
-          if (parsed.needsRetry && parsed.invalidIds.length > 0) {
-            state.status = "triage_retry";
-          }
-        }
-        uiSetState(session, state);
-      }
-      
+    const batchOf = new Map<number, string[]>();
+    const refreshDecisions = () => {
+      state.decisions = decisionRows(withKeepFallback(decisions, knownIds), toolNameById, toolPreviewById);
+    };
+    /** Merge one batch's decisions; returns false when the batch must be retried. */
+    const absorbBatch = (batch: string[], result: ApiResult): boolean => {
+      if (!result.ok) return false;
+      const content = ((result.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
+      const parsed = parseTriageResult(content, batch);
+      decisions = decisions.concat(parsed.decisions);
+      resumeActions = resumeActions.concat(parsed.resumeActions);
+      return !parsed.needsRetry;
+    };
+
+    const firstIds = batches.map((batch) => {
+      const id = triageRequest(batch);
+      batchOf.set(id, batch);
+      return id;
+    });
+
+    const results = awaitResults([summaryReqId, ...firstIds], (id, result) => {
       if (id === summaryReqId) {
-        summaryResult = result;
         if (result.ok) {
           const content = ((result.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
           summaryText = parseSummaryResult(content);
           state.summary_preview = summaryText;
-          state.status = "summary"; // Show we got the summary
+          state.status = "summary";
         }
-        uiSetState(session, state);
+      } else if (absorbBatch(batchOf.get(id) ?? [], result)) {
+        state.triage_done = true;
       }
-    });
-    
-    // Check for errors
-    triageResult = results.get(triageReqId) ?? null;
-    summaryResult = results.get(summaryReqId) ?? null;
-    
-    if (!triageResult?.ok) {
-      state.status = "error";
-      state.error = `provider(triage): ${triageResult?.error ?? "unknown"}`;
+      refreshDecisions();
       uiSetState(session, state);
-      return yield* _(Effect.fail(new Error(state.error)));
+    });
+    summaryResult = results.get(summaryReqId) ?? null;
+
+    // One bounded retry for batches that failed or cited nothing usable. An
+    // unresolved batch is not fatal: its ids fall through to the keep fallback.
+    const failed = firstIds.filter((id) => {
+      const r = results.get(id);
+      if (!r || !r.ok) return true;
+      const content = ((r.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
+      return parseTriageResult(content, batchOf.get(id) ?? []).needsRetry;
+    });
+    if (failed.length > 0) {
+      state.status = "triage_retry";
+      uiSetState(session, state);
+      const retryIds = failed.map((id) => {
+        const batch = batchOf.get(id) ?? [];
+        const rid = triageRequest(
+          batch,
+          "\n\nYour previous submit_triage call was missing or cited unknown ids. Cite only the ids listed above, and call submit_triage exactly once.",
+        );
+        batchOf.set(rid, batch);
+        return rid;
+      });
+      awaitResults(retryIds, (id, result) => {
+        absorbBatch(batchOf.get(id) ?? [], result);
+        refreshDecisions();
+        uiSetState(session, state);
+      });
     }
-    
+
     if (!summaryResult?.ok) {
       state.status = "error";
       state.error = `provider(summary): ${summaryResult?.error ?? "unknown"}`;
       uiSetState(session, state);
       return yield* _(Effect.fail(new Error(state.error)));
     }
-    
-    // Re-parse triage to check if retry is needed
-    const triageContent = ((triageResult.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
-    const triageParsed = parseTriageResult(triageContent, knownIds);
-    
-    // If triage needs retry (no tool call or invalid IDs), do ONE sync retry
-    if (triageParsed.needsRetry) {
-      state.status = "triage_retry";
-      uiSetState(session, state);
-      
-      let correction = "";
-      if (triageParsed.invalidIds.length > 0) {
-        correction = "\n\nYour previous submit_triage call cited unknown ids. Cite only:\n" + knownIds.join(", ");
-      } else {
-        correction = "\n\nYou did not call submit_triage. Call submit_triage exactly once with the plan.";
-      }
-      
-      const retryMsgs = [
-        { id: "sys-triage", role: "system", silent: true, content: [{ type: "text", text: TRIAGE_SYSTEM }] },
-        { id: "usr-triage", role: "user", silent: true, content: [{ type: "text", text: triageUser + correction }] },
-      ];
-      
-      const retryResult = hostRequest("provider_complete", { session, messages: retryMsgs, tools: [TRIAGE_TOOL] });
-      if (retryResult.ok) {
-        const retryContent = ((retryResult.result as { content?: Array<Record<string, unknown>> })["content"] ?? []) as Array<Record<string, unknown>>;
-        const retryParsed = parseTriageResult(retryContent, knownIds);
-        decisions = retryParsed.decisions;
-        resumeActions = retryParsed.resumeActions;
-        
-        state.decisions = decisions.map(d => ({
-          id: d.id,
-          action: d.action,
-          name: toolNameById.get(d.id),
-        }));
-        state.triage_done = true;
-        uiSetState(session, state);
-      }
-      // If retry also fails, we keep whatever valid decisions we got
-    } else {
-      decisions = triageParsed.decisions;
-      resumeActions = triageParsed.resumeActions;
-    }
+
+    // Fail-safe: a tool call the model did not decide on is kept, never lost.
+    decisions = withKeepFallback(decisions, knownIds);
+    state.decisions = decisionRows(decisions, toolNameById, toolPreviewById);
+    state.triage_done = true;
+    uiSetState(session, state);
 
     // Ensure we have the summary text
     if (!summaryText) {
@@ -742,8 +859,12 @@ function main(): void {
     if (line === null) break;
     const msg = JSON.parse(line) as { t?: string; id?: number; hook?: string; payload?: Record<string, unknown> };
     if (msg.t === "shutdown") break;
+    // Acks for the fire-and-forget UI requests: consumed here when no blocking
+    // call is waiting, so they are not mistaken for an unknown hook.
+    if (msg.t === "api_result") continue;
     if (msg.t === "hook" && msg.hook === "compactor_compact") {
       const id = msg.id ?? 0;
+      const session = String((msg.payload ?? {})["session"] ?? "");
       const exit = Effect.runSync(Effect.either(compactProgram(msg.payload ?? {})));
       if (exit._tag === "Left") {
         console.error(`kn9t-compactor: compaction failed: ${(exit.left as Error).message}`);
@@ -751,6 +872,9 @@ function main(): void {
       } else {
         writeMsg({ t: "result", id, ...(exit.right as Record<string, unknown>) });
       }
+      // The panel is progress, not a dashboard: drop it on every exit — success,
+      // failure, or empty span — so nothing is left behind once compaction ends.
+      if (session) uiClear(session);
     } else {
       // Unknown hook: answer a benign error so the host never waits.
       writeMsg({ t: "result", id: msg.id ?? 0, error: `kn9t-compactor: unhandled hook ${msg.hook ?? "?"}` });

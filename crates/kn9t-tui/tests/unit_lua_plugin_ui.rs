@@ -454,6 +454,100 @@ fn notify_queues_a_notify_plugin_effect() {
     }
 }
 
+/// kn9t.on_text receives printable characters; a `false` return falls through,
+/// so a view can scope typing to one mode while `on_key` owns its commands.
+#[test]
+fn text_handler_receives_characters_and_can_fall_through() {
+    let lua = lua();
+    let mut reg = PluginUiRegistry::new();
+    reg.register_plain(
+        &lua,
+        "demo",
+        r#"
+            kn9t.on_text(function(ch)
+                if ch == "!" then return false end
+                kn9t.insert_input(ch)
+                return true
+            end)
+            function render(s) return { type = "text", content = "x" } end
+        "#,
+    );
+
+    assert!(reg.has_text(&lua, "demo"));
+    assert!(reg.dispatch_text(&lua, "demo", "a"));
+    assert_eq!(
+        drain_effects(&lua),
+        vec![PluginEffect::InsertInput {
+            plugin: "demo".to_string(),
+            text: "a".to_string(),
+        }]
+    );
+    // An explicit `false` falls through, unclaimed.
+    assert!(!reg.dispatch_text(&lua, "demo", "!"));
+    assert!(drain_effects(&lua).is_empty(), "nothing queued on fall-through");
+}
+
+/// A view that never called on_text must not claim characters.
+#[test]
+fn text_handler_is_absent_by_default() {
+    let lua = lua();
+    let mut reg = PluginUiRegistry::new();
+    reg.register_plain(&lua, "demo", SIMPLE);
+    assert!(!reg.has_text(&lua, "demo"));
+    assert!(!reg.dispatch_text(&lua, "demo", "a"));
+}
+
+/// kn9t.respond queues a Respond effect with the view's opaque answer.
+#[test]
+fn respond_queues_a_respond_effect() {
+    let lua = lua();
+    let mut reg = PluginUiRegistry::new();
+    reg.register_plain(
+        &lua,
+        "demo",
+        r#"
+            kn9t.on_key("Enter", function()
+                kn9t.respond({ value = "yes", n = 2 })
+                return true
+            end)
+            function render(s) return { type = "text", content = "x" } end
+        "#,
+    );
+
+    assert!(drain_effects(&lua).is_empty(), "nothing queued yet");
+    reg.dispatch_key(&lua, "demo", "Enter");
+
+    let effects = drain_effects(&lua);
+    assert_eq!(effects.len(), 1, "expected one effect, got {effects:?}");
+    match &effects[0] {
+        PluginEffect::Respond { plugin, payload } => {
+            assert_eq!(plugin, "demo");
+            assert_eq!(payload.get("value").and_then(|v| v.as_str()), Some("yes"));
+            assert_eq!(payload.get("n").and_then(|v| v.as_i64()), Some(2));
+        }
+        other => panic!("expected Respond, got {other:?}"),
+    }
+}
+
+/// Removing a view must drop its text handler too, or a stale closure fires for
+/// a view that is no longer on screen.
+#[test]
+fn removing_a_view_drops_its_text_handler() {
+    let lua = lua();
+    let mut reg = PluginUiRegistry::new();
+    reg.register_plain(
+        &lua,
+        "demo",
+        r#"
+            kn9t.on_text(function() return true end)
+            function render(s) return { type = "text", content = "x" } end
+        "#,
+    );
+    assert!(reg.has_text(&lua, "demo"));
+    reg.remove(&lua, "demo");
+    assert!(!reg.has_text(&lua, "demo"), "text handler is gone");
+}
+
 /// A plugin cannot forge another plugin's name on an effect: the owner is
 /// closed over at bind time, not passed in.
 #[test]

@@ -157,9 +157,13 @@ pub struct RawServer {
     /// Milliseconds a cancelled tool batch waits for a `parallel_safe` tool to notice `Cancel`
     /// (default 1500); raise for slow tools, lower to make ESC snappier.
     pub tool_cancel_grace_ms: Option<u64>,
+    /// Optional spend guard: max turns one run may take before it is stopped with a
+    /// "turn limit reached" error. **Absent (or `0`) means unbounded** — the loop runs until
+    /// it goes idle or the user aborts. Only set this to cap a runaway model.
+    pub max_turns: Option<u32>,
 }
 
-/// Server-side timing knobs resolved from `[server]`. `None` means "no deadline" (config `0`).
+/// Server-side knobs resolved from `[server]`. `None` means "no deadline" (config `0`).
 /// Grouped so a new knob is one field here, not one on `ResolvedConfig` plus every call site.
 #[derive(Debug, Clone, Copy)]
 pub struct ServerTimeouts {
@@ -167,6 +171,8 @@ pub struct ServerTimeouts {
     pub interaction: Option<std::time::Duration>,
     pub interaction_no_cancel: Option<std::time::Duration>,
     pub tool_cancel_grace: std::time::Duration,
+    /// `None` → unbounded run (the default). `Some(n)` → stop after `n` turns.
+    pub max_turns: Option<u32>,
 }
 
 impl Default for ServerTimeouts {
@@ -176,6 +182,7 @@ impl Default for ServerTimeouts {
             interaction: Some(std::time::Duration::from_secs(30 * 60)),
             interaction_no_cancel: Some(std::time::Duration::from_secs(2 * 60)),
             tool_cancel_grace: std::time::Duration::from_millis(1500),
+            max_turns: None,
         }
     }
 }
@@ -202,6 +209,11 @@ impl ServerTimeouts {
                 .tool_cancel_grace_ms
                 .map(std::time::Duration::from_millis)
                 .unwrap_or(d.tool_cancel_grace),
+            // Absent or `0` → unbounded (the default); a positive value is a real ceiling.
+            max_turns: match raw.max_turns {
+                Some(0) | None => None,
+                Some(n) => Some(n),
+            },
         }
     }
 }
@@ -359,8 +371,8 @@ pub struct ResolvedConfig {
     /// Idle-exit duration from `[server] idle_exit_secs`. `None` → use default (30 min).
     /// `Some(0)` → disable auto-exit.
     pub idle_exit: Option<std::time::Duration>,
-    /// Server-side timing knobs from `[server]` (approval/interaction deadlines, tool
-    /// cancellation grace), with defaults already applied.
+    /// Server-side knobs from `[server]` (approval/interaction deadlines, tool
+    /// cancellation grace, optional `max_turns`), with defaults already applied.
     pub timeouts: ServerTimeouts,
     /// Resolved policy mode.
     pub policy_mode: PolicyMode,

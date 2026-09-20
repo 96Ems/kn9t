@@ -145,95 +145,245 @@ function err(text: string): ToolResult {
 
 // ── TUI display (plugin-supplied Lua) ────────────────────────────────────────
 //
-// The TUI owns no ask-user-specific code. This plugin ships the Lua that draws
-// its own status, sends it once after the handshake, then pushes state as
-// questions come and go.
-//
-// `render(state)` returns a widget tree; the user's `tui.lua` decides where it
-// goes, so this cannot claim screen space or hide the transcript.
+// The Lua *is* the question UI: it renders and drives the selection, answers
+// through `kn9t.respond`, and is cleared when the question resolves.
+// `placement = "bottom"` reserves rows between transcript and prompt, so
+// answering never covers the model's message.
 
 const UI_LUA = `
-local function bar(done, total, width)
-    if total <= 0 then return "" end
-    local filled = math.floor((done / total) * width + 0.5)
-    return string.rep("#", filled) .. string.rep(".", width - filled)
+-- Local view state; reset whenever the question changes.
+local S = {}
+local seen = nil
+local cursor = 1
+local toggles = {}
+local text = ""
+local yes = true
+
+local function is_text() return (S.kind or "text") == "text" end
+
+local function option_at(i)
+    local o = (S.options or {})[i]
+    if type(o) == "table" then return o end
+    if o == nil then return nil end
+    return { label = o, value = o }
 end
 
-function render(s)
-    s = s or {}
+local function option_value(i)
+    local o = option_at(i)
+    return o and (o.value or o.label) or nil
+end
 
-    -- Idle: one dim line, so the panel does not draw attention when unused.
-    if not s.pending then
-        local n = s.answered or 0
-        return {
-            type = "text",
-            fg = "#585b70",
-            content = n > 0 and (n .. " answered") or "idle",
-        }
+local function option_label(i)
+    local o = option_at(i)
+    return o and (o.label or o.value) or ""
+end
+
+local function submit(payload)
+    kn9t.respond(payload)
+    return true
+end
+
+local function submit_current()
+    local kind = S.kind or "text"
+    if kind == "choice" then
+        local v = option_value(cursor)
+        if v == nil then return false end
+        return submit({ value = v })
+    elseif kind == "multi" then
+        local values = {}
+        for i = 1, #(S.options or {}) do
+            if toggles[i] then table.insert(values, option_value(i)) end
+        end
+        return submit({ value = values })
+    elseif kind == "confirm" then
+        return submit({ value = yes })
+    end
+    return submit({ value = text })
+end
+
+local function move(delta)
+    if (S.kind or "") == "confirm" then
+        -- Yes/No is a vertical list: Up selects Yes, Down selects No.
+        yes = delta < 0
+        return
+    end
+    local n = #(S.options or {})
+    if n == 0 then return end
+    cursor = ((cursor - 1 + delta) % n) + 1
+end
+
+-- Exact keys; a handler returns false to fall through to on_text or the host.
+kn9t.on_key("Up", function() if is_text() then return false end move(-1) return true end)
+kn9t.on_key("k", function() if is_text() then return false end move(-1) return true end)
+kn9t.on_key("Down", function() if is_text() then return false end move(1) return true end)
+kn9t.on_key("j", function() if is_text() then return false end move(1) return true end)
+kn9t.on_key("Tab", function() if is_text() then return false end move(1) return true end)
+
+kn9t.on_key("Space", function()
+    if is_text() then text = text .. " " return true end
+    if (S.kind or "") == "multi" then toggles[cursor] = not toggles[cursor] end
+    return true
+end)
+
+kn9t.on_key("Backspace", function()
+    if not is_text() then return false end
+    text = string.sub(text, 1, -2)
+    return true
+end)
+
+kn9t.on_key("Left", function()
+    if (S.kind or "") ~= "confirm" then return false end
+    yes = true
+    return true
+end)
+
+kn9t.on_key("Right", function()
+    if (S.kind or "") ~= "confirm" then return false end
+    yes = false
+    return true
+end)
+
+kn9t.on_key("y", function()
+    if (S.kind or "") ~= "confirm" then return false end
+    return submit({ value = true })
+end)
+
+kn9t.on_key("n", function()
+    if (S.kind or "") ~= "confirm" then return false end
+    return submit({ value = false })
+end)
+
+kn9t.on_key("Enter", function() return submit_current() end)
+
+-- Quick pick: a digit selects and submits the matching option.
+local function bind_digit(i)
+    kn9t.on_key(tostring(i), function()
+        if is_text() or i > #(S.options or {}) then return false end
+        cursor = i
+        return submit_current()
+    end)
+end
+for i = 1, 9 do bind_digit(i) end
+
+kn9t.on_text(function(ch)
+    if not is_text() then return false end
+    text = text .. ch
+    return true
+end)
+
+function render(state)
+    state = state or {}
+    S = state
+
+    -- Reset the local view when the question changes. The host re-renders every
+    -- frame, so this must key off the question, not the call.
+    local key = tostring(state.index or 0) .. "|" .. tostring(state.question or "")
+    if key ~= seen then
+        seen = key
+        cursor = 1
+        toggles = {}
+        text = (type(state.default) == "string") and state.default or ""
+        yes = state.default ~= false
     end
 
     local rows = {}
+    local kind = state.kind or "text"
 
-    -- The question itself, wrapped by the host renderer.
+    if state.total and state.total > 1 then
+        table.insert(rows, {
+            type = "text",
+            size = { fixed = 1 },
+            fg = "#89b4fa",
+            content = string.format("question %d/%d", state.index or 1, state.total),
+        })
+    end
+
+    -- Reserved height, so the question is never squeezed out of the slot.
     table.insert(rows, {
         type = "text",
         wrap = true,
+        size = { fixed = 2 },
         fg = "#cdd6f4",
-        content = s.question or "(waiting)",
-        size = { flex = 1 },
+        content = state.question or "(waiting)",
     })
 
-    -- Sequences show progress; a single question does not need it.
-    if s.total and s.total > 1 then
-        local done = (s.index or 1) - 1
-        table.insert(rows, {
-            type = "text",
-            fg = "#89b4fa",
-            size = { fixed = 1 },
-            content = string.format("%d/%d %s", s.index or 1, s.total,
-                                    bar(done, s.total, 10)),
-        })
-    end
-
-    -- Options as a list so the shape matches what the user is choosing from.
-    if s.options and #s.options > 0 then
+    local n = #(state.options or {})
+    local hint
+    if kind == "choice" or kind == "multi" then
         local items = {}
-        for _, o in ipairs(s.options) do table.insert(items, o) end
+        for i = 1, n do
+            local label = option_label(i)
+            if kind == "multi" then
+                label = (toggles[i] and "[x] " or "[ ] ") .. label
+            end
+            items[i] = label
+        end
         table.insert(rows, {
             type = "list",
             items = items,
-            size = { fixed = math.min(#items, 4) },
+            -- cursor is 1-based (indexes options); the list's selected is 0-based.
+            selected = cursor - 1,
+            size = { fixed = math.min(n, 8) },
         })
+        hint = (kind == "multi")
+            and "up/down move - Space toggle - Enter submit - Esc cancel"
+            or "up/down move - Enter submit - Esc cancel"
+    elseif kind == "confirm" then
+        table.insert(rows, {
+            type = "list",
+            items = { "Yes", "No" },
+            selected = yes and 0 or 1,
+            size = { fixed = 2 },
+        })
+        hint = "up/down move - Enter submit - Esc cancel"
+    else
+        table.insert(rows, {
+            type = "text",
+            size = { fixed = 1 },
+            fg = "#f9e2af",
+            content = "> " .. text .. "_",
+        })
+        hint = "type your answer - Enter submit - Esc cancel"
     end
 
     table.insert(rows, {
         type = "text",
-        fg = "#f9e2af",
         size = { fixed = 1 },
-        content = s.kind and ("[" .. s.kind .. "]") or "",
+        fg = "#585b70",
+        content = hint,
     })
 
     return { type = "split", direction = "vertical", children = rows }
 end
 `;
 
-/** Answered-question counter, shown when idle. */
-let answered = 0;
-
-/** Sessions whose UI Lua has already been sent. */
-const uiRegistered = new Set<string>();
+/**
+ * Rows the view needs, so the reserved slot matches its content: +2 border,
+ * +1 footer, +2 question, +1 progress for a sequence.
+ */
+function rowsFor(kind: string, options: QuestionOption[] | undefined, progress: boolean): number {
+  const base = 2 + 1 + 2 + (progress ? 1 : 0);
+  if (kind === "choice" || kind === "multi") {
+    return base + Math.min(options?.length ?? 0, 8);
+  }
+  if (kind === "confirm") return base + 2;
+  return base + 1;
+}
 
 /**
- * Send the Lua once per session.
- *
- * Lazy because the session id only arrives with the first tool call — there is
- * no session at handshake time.
+ * Register the view for one question. Re-sent per question (not per session)
+ * because `uiDone` drops it: an idle session keeps no panel.
  */
-function registerUi(session: string): void {
-  if (!session || uiRegistered.has(session)) return;
-  uiRegistered.add(session);
+function registerUi(session: string, rows: number): void {
+  if (!session) return;
   try {
-    hostRequest("ui_register_lua", { session, source: UI_LUA });
+    hostRequest("ui_register_lua", {
+      session,
+      source: UI_LUA,
+      placement: "bottom",
+      title: "question",
+      rows,
+    });
   } catch {
     // Ignore: display is not worth failing a question over.
   }
@@ -259,35 +409,47 @@ function uiAsking(
   options?: QuestionOption[],
   index?: number,
   total?: number,
+  def?: unknown,
 ): void {
-  registerUi(session);
+  registerUi(session, rowsFor(kind, options, (total ?? 1) > 1));
   setUiState(session, {
-    pending: true,
     kind,
     question,
-    options: options?.map((o) => o.label),
+    options: options?.map((o) => ({
+      label: o.label,
+      value: o.value ?? o.label,
+      description: o.description,
+    })),
     index,
     total,
-    answered,
+    default: def,
   });
 }
 
-/** Return the UI to idle after a question resolves. */
-function uiIdle(session: string): void {
-  answered += 1;
-  setUiState(session, { pending: false, answered });
+/** Drop the view once the question resolves, so nothing lingers when idle. */
+function uiDone(session: string): void {
+  try {
+    hostRequest("ui_clear", { session });
+  } catch {
+    // Ignore: display is not worth failing a question over.
+  }
 }
 
-function executeQuestion(spec: QuestionSpec, session: string): ToolResult {
+interface SeqCtx {
+  index?: number;
+  total?: number;
+}
+
+function executeQuestion(spec: QuestionSpec, session: string, ctx: SeqCtx = {}): ToolResult {
   switch (spec.type) {
     case "text":
-      return executeText(spec, session);
+      return executeText(spec, session, ctx);
     case "choice":
-      return executeChoice(spec, session);
+      return executeChoice(spec, session, ctx);
     case "multi":
-      return executeMulti(spec, session);
+      return executeMulti(spec, session, ctx);
     case "confirm":
-      return executeConfirm(spec, session);
+      return executeConfirm(spec, session, ctx);
     case "sequence":
       return executeSequence(spec, session);
     default:
@@ -295,7 +457,7 @@ function executeQuestion(spec: QuestionSpec, session: string): ToolResult {
   }
 }
 
-function executeText(q: TextQuestion, session: string): ToolResult {
+function executeText(q: TextQuestion, session: string, ctx: SeqCtx = {}): ToolResult {
   const payload: Record<string, unknown> = {
     type: "text",
     question: q.question,
@@ -304,9 +466,9 @@ function executeText(q: TextQuestion, session: string): ToolResult {
   if (q.placeholder) payload.placeholder = q.placeholder;
   if (q.default) payload.default = q.default;
 
-  uiAsking(session, "text", q.question);
+  uiAsking(session, "text", q.question, undefined, ctx.index, ctx.total, q.default);
   const r = hostRequest("interaction_request", { session, payload });
-  uiIdle(session);
+  uiDone(session);
   if (!r.ok) return err(`interaction_request: ${r.error}`);
 
   const answer = r.result?.payload as Record<string, unknown> | undefined;
@@ -316,7 +478,7 @@ function executeText(q: TextQuestion, session: string): ToolResult {
   return ok(`User answered: ${value}`);
 }
 
-function executeChoice(q: ChoiceQuestion, session: string): ToolResult {
+function executeChoice(q: ChoiceQuestion, session: string, ctx: SeqCtx = {}): ToolResult {
   const payload: Record<string, unknown> = {
     type: "choice",
     question: q.question,
@@ -325,9 +487,9 @@ function executeChoice(q: ChoiceQuestion, session: string): ToolResult {
   if (q.header) payload.header = q.header;
   if (q.allow_custom) payload.allow_custom = true;
 
-  uiAsking(session, "choice", q.question, q.options);
+  uiAsking(session, "choice", q.question, q.options, ctx.index, ctx.total);
   const r = hostRequest("interaction_request", { session, payload });
-  uiIdle(session);
+  uiDone(session);
   if (!r.ok) return err(`interaction_request: ${r.error}`);
 
   const answer = r.result?.payload as Record<string, unknown> | undefined;
@@ -340,7 +502,7 @@ function executeChoice(q: ChoiceQuestion, session: string): ToolResult {
   return ok(`User selected: ${JSON.stringify(selected)}`);
 }
 
-function executeMulti(q: MultiQuestion, session: string): ToolResult {
+function executeMulti(q: MultiQuestion, session: string, ctx: SeqCtx = {}): ToolResult {
   const payload: Record<string, unknown> = {
     type: "multi",
     question: q.question,
@@ -350,9 +512,9 @@ function executeMulti(q: MultiQuestion, session: string): ToolResult {
   if (q.min !== undefined) payload.min = q.min;
   if (q.max !== undefined) payload.max = q.max;
 
-  uiAsking(session, "multi", q.question, q.options);
+  uiAsking(session, "multi", q.question, q.options, ctx.index, ctx.total);
   const r = hostRequest("interaction_request", { session, payload });
-  uiIdle(session);
+  uiDone(session);
   if (!r.ok) return err(`interaction_request: ${r.error}`);
 
   const answer = r.result?.payload as Record<string, unknown> | undefined;
@@ -365,7 +527,7 @@ function executeMulti(q: MultiQuestion, session: string): ToolResult {
   return ok(`User selected: ${JSON.stringify(selected)}`);
 }
 
-function executeConfirm(q: ConfirmQuestion, session: string): ToolResult {
+function executeConfirm(q: ConfirmQuestion, session: string, ctx: SeqCtx = {}): ToolResult {
   const payload: Record<string, unknown> = {
     type: "confirm",
     question: q.question,
@@ -373,12 +535,9 @@ function executeConfirm(q: ConfirmQuestion, session: string): ToolResult {
   if (q.header) payload.header = q.header;
   if (q.default !== undefined) payload.default = q.default;
 
-  uiAsking(session, "confirm", q.question, [
-    { label: "Yes" },
-    { label: "No" },
-  ]);
+  uiAsking(session, "confirm", q.question, undefined, ctx.index, ctx.total, q.default);
   const r = hostRequest("interaction_request", { session, payload });
-  uiIdle(session);
+  uiDone(session);
   if (!r.ok) return err(`interaction_request: ${r.error}`);
 
   const answer = r.result?.payload as Record<string, unknown> | undefined;
@@ -394,17 +553,8 @@ function executeSequence(q: SequenceQuestion, session: string): ToolResult {
 
   for (let i = 0; i < total; i++) {
     const subQ = q.questions[i];
-    // Show sequence position before the sub-question overwrites the state, so
-    // the panel reports "3/5" rather than looking like five separate questions.
-    uiAsking(
-      session,
-      subQ.type ?? "text",
-      (subQ as { question?: string }).question ?? "",
-      (subQ as { options?: QuestionOption[] }).options,
-      i + 1,
-      total,
-    );
-    const result = executeQuestion(subQ, session);
+    // Renders itself; the context makes its header report "3/5".
+    const result = executeQuestion(subQ, session, { index: i + 1, total });
 
     if (result.is_error) {
       return result; // Propagate error

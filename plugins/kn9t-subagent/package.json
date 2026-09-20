@@ -5,7 +5,8 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc",
-    "watch": "tsc --watch"
+    "watch": "tsc --watch",
+    "test": "npm run build && node test/simulate.mjs"
   },
   "devDependencies": {
     "typescript": "^5.0.0",

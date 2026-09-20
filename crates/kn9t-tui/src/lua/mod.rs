@@ -753,6 +753,7 @@ impl LuaRuntime {
                 plugin_ui.remove(lua, plugin);
             }
         }
+        bump_ui_epoch(lua);
     }
 
     /// Names of plugins with a registered UI, in stable order.
@@ -810,6 +811,18 @@ impl LuaRuntime {
         state.plugin_ui.has_key(&state.lua, plugin, key)
     }
 
+    /// Whether `plugin` accepts printable-character input.
+    pub fn plugin_has_text(&self, plugin: &str) -> bool {
+        let state =safe_expect!(self.inner.read(), "poisoned");
+        state.plugin_ui.has_text(&state.lua, plugin)
+    }
+
+    /// Dispatch a printable character to `plugin`'s text handler.
+    pub fn dispatch_plugin_text(&self, plugin: &str, ch: &str) -> bool {
+        let state =safe_expect!(self.inner.read(), "poisoned");
+        state.plugin_ui.dispatch_text(&state.lua, plugin, ch)
+    }
+
     /// Force a UI rebuild next frame.
     ///
     /// The Rust-side equivalent of `kn9t.invalidate()`: bumps the same epoch the
@@ -818,11 +831,7 @@ impl LuaRuntime {
     /// after one of its handlers ran.
     pub fn invalidate_ui(&self) {
         let state =safe_expect!(self.inner.read(), "poisoned");
-        let Ok(kn9t) = state.lua.globals().get::<mlua::Table>("kn9t") else {
-            return;
-        };
-        let epoch: i64 = kn9t.get("_epoch").unwrap_or(0);
-        let _ = kn9t.set("_epoch", epoch + 1);
+        bump_ui_epoch(&state.lua);
     }
 
     /// Drain side effects queued by plugin view handlers.
@@ -938,6 +947,18 @@ impl Default for LuaRuntime {
     fn default() -> Self {
         Self::new().expect("Failed to create Lua runtime")
     }
+}
+
+/// Bump the epoch folded into the render fingerprint.
+///
+/// The fingerprint does not read plugin view specs, so a plugin view appearing
+/// or clearing must force a rebuild explicitly.
+fn bump_ui_epoch(lua: &Lua) {
+    let Ok(kn9t) = lua.globals().get::<mlua::Table>("kn9t") else {
+        return;
+    };
+    let epoch: i64 = kn9t.get("_epoch").unwrap_or(0);
+    let _ = kn9t.set("_epoch", epoch + 1);
 }
 
 /// Build the fingerprint `build_ui_outcome` uses to decide whether it can

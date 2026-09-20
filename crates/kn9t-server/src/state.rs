@@ -942,10 +942,12 @@ impl ServerState {
         self.timeouts = t;
         self
     }
-    /// The `ReactConfig` a turn runs under, carrying the configured tool-cancellation grace.
+    /// The `ReactConfig` a turn runs under, carrying the configured tool-cancellation grace
+    /// and the optional turn ceiling (`None` = unbounded).
     pub fn react_config(&self) -> kn9t_react::ReactConfig {
         kn9t_react::ReactConfig {
             tool_cancel_grace: self.timeouts.tool_cancel_grace,
+            max_turns: self.timeouts.max_turns,
             ..Default::default()
         }
     }

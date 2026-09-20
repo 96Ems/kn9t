@@ -279,10 +279,10 @@ bash scripts/check-ci.sh                   # all invariant gates
 cargo run -p xtask -- generate             # after editing schema/*.json
 ```
 
-`schema/http.json` and `schema/plugin.json` are the source of truth for the API. Five
-files are generated from them and committed: `api.rs`, `wire.rs`, `API.md`, and the Go and
-Python stubs. Run `generate` after any schema edit and commit the results together —
-`check-schema.sh` fails the build on drift.
+`schema/http.json` and `schema/plugin.json` are the source of truth for the API, and
+`schema/config.json` for `~/.kn9t/config.toml`. Generated from them and committed: `api.rs`,
+`wire.rs`, `API.md`, `docs/CONFIG.md`, and the Go and Python stubs. Run `generate` after any
+schema edit and commit the results together — `check-schema.sh` fails the build on drift.
 
 Two rules worth knowing before you send a patch:
 
@@ -302,6 +302,7 @@ Working on this repo with an AI agent? [`AGENTS.md`](AGENTS.md) is the operating
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How the system is built, and what is wrong with it |
 | [`DESIGN.md`](DESIGN.md) | The *why* — decisions, rejected alternatives, accepted costs |
 | [`API.md`](API.md) | HTTP + plugin protocol reference |
+| [`docs/CONFIG.md`](docs/CONFIG.md) | `~/.kn9t/config.toml` reference |
 | [`docs/adr/`](docs/adr) | Architecture decision records |
 | [`spec/`](spec) | Per-stage requirements and acceptance tests |
 | [`CONTEXT.md`](CONTEXT.md) | Glossary |

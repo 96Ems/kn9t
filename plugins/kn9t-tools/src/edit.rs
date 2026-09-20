@@ -12,216 +12,177 @@ use kn9t_plugin_sdk::{ctx::ToolCallCtx, traits::{PluginTool, ToolOutput}, wire::
 use serde_json::{json, Value};
 use std::time::SystemTime;
 
+use crate::encoding::{
+    self, detect_line_ending, normalize_to_lf, restore_line_endings, TextEncoding,
+};
 use crate::read::read_map;
-
-// ── Encoding detection ───────────────────────────────────────────────────────
-
-/// Decode bytes to text, returning (BOM bytes, decoded string).
-/// Handles UTF-8, UTF-16 LE/BE (with or without BOM).
-fn decode_with_bom(data: &[u8]) -> (Vec<u8>, String) {
-    // UTF-16 LE BOM
-    if data.starts_with(&[0xFF, 0xFE]) {
-        let text = decode_utf16_le(&data[2..]);
-        return (vec![0xFF, 0xFE], text);
-    }
-    // UTF-16 BE BOM
-    if data.starts_with(&[0xFE, 0xFF]) {
-        let text = decode_utf16_be(&data[2..]);
-        return (vec![0xFE, 0xFF], text);
-    }
-    // UTF-8 BOM
-    if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        let text = String::from_utf8_lossy(&data[3..]).into_owned();
-        return (vec![0xEF, 0xBB, 0xBF], text);
-    }
-    // Heuristic: if lots of null bytes interleaved, likely UTF-16 LE without BOM
-    if data.len() >= 4 && data[1] == 0 && data[3] == 0 {
-        let text = decode_utf16_le(data);
-        return (vec![], text);
-    }
-    // Default: UTF-8 without BOM
-    (vec![], String::from_utf8_lossy(data).into_owned())
-}
-
-fn decode_utf16_le(data: &[u8]) -> String {
-    let u16s: Vec<u16> = data
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    String::from_utf16_lossy(&u16s)
-}
-
-fn decode_utf16_be(data: &[u8]) -> String {
-    let u16s: Vec<u16> = data
-        .chunks_exact(2)
-        .map(|c| u16::from_be_bytes([c[0], c[1]]))
-        .collect();
-    String::from_utf16_lossy(&u16s)
-}
-
-/// Encode text back with the original BOM/encoding.
-fn encode_with_bom(bom: &[u8], text: &str) -> Vec<u8> {
-    match bom {
-        [0xFF, 0xFE] => {
-            // UTF-16 LE
-            let mut out = vec![0xFF, 0xFE];
-            for c in text.encode_utf16() {
-                out.extend_from_slice(&c.to_le_bytes());
-            }
-            out
-        }
-        [0xFE, 0xFF] => {
-            // UTF-16 BE
-            let mut out = vec![0xFE, 0xFF];
-            for c in text.encode_utf16() {
-                out.extend_from_slice(&c.to_be_bytes());
-            }
-            out
-        }
-        [0xEF, 0xBB, 0xBF] => {
-            // UTF-8 with BOM
-            let mut out = vec![0xEF, 0xBB, 0xBF];
-            out.extend_from_slice(text.as_bytes());
-            out
-        }
-        _ => {
-            // UTF-8 without BOM (or unknown)
-            text.as_bytes().to_vec()
-        }
-    }
-}
 
 // ── Line ending handling ─────────────────────────────────────────────────────
 
-/// Detect the dominant line ending in content.
-fn detect_line_ending(content: &str) -> &'static str {
-    let crlf_idx = content.find("\r\n");
-    let lf_idx = content.find('\n');
-    
-    match (lf_idx, crlf_idx) {
-        (None, _) => "\n",           // No newlines, default to LF
-        (_, None) => "\n",           // Only LF found
-        (Some(lf), Some(crlf)) => {
-            if crlf < lf { "\r\n" } else { "\n" }
-        }
-    }
-}
-
-/// Normalize all line endings to LF for matching.
-fn normalize_to_lf(text: &str) -> String {
-    text.replace("\r\n", "\n").replace('\r', "\n")
-}
-
-/// Restore line endings to the original style.
-fn restore_line_endings(text: &str, ending: &str) -> String {
-    if ending == "\r\n" {
-        text.replace('\n', "\r\n")
-    } else {
-        text.to_string()
-    }
-}
-
 // ── Fuzzy matching ───────────────────────────────────────────────────────────
 
-/// Normalize text for fuzzy matching:
-/// - Strip trailing whitespace per line
-/// - Smart quotes → ASCII quotes
-/// - Unicode dashes → ASCII hyphen
-/// - Special spaces → regular space
+/// Map one character to its fuzzy-matching equivalent: smart quotes to ASCII
+/// quotes, Unicode dashes to `-`, special spaces to a plain space. Every
+/// replacement is a single character, which is what lets the mapped normalizer
+/// below stay aligned with the input.
+fn fuzzy_char(c: char) -> char {
+    match c {
+        '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
+        '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
+        '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
+        | '\u{2212}' => '-',
+        '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}' | '\u{2006}'
+        | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}' | '\u{202F}' | '\u{205F}'
+        | '\u{3000}' => ' ',
+        other => other,
+    }
+}
+
+/// Normalize text for fuzzy matching: strip trailing whitespace per line, then
+/// apply [`fuzzy_char`].
 fn normalize_for_fuzzy_match(text: &str) -> String {
-    text
-        // Strip trailing whitespace per line
-        .lines()
+    text.lines()
         .map(|line| line.trim_end())
         .collect::<Vec<_>>()
         .join("\n")
-        // Smart single quotes → '
-        .replace('\u{2018}', "'")  // '
-        .replace('\u{2019}', "'")  // '
-        .replace('\u{201A}', "'")  // ‚
-        .replace('\u{201B}', "'")  // ‛
-        // Smart double quotes → "
-        .replace('\u{201C}', "\"") // "
-        .replace('\u{201D}', "\"") // "
-        .replace('\u{201E}', "\"") // „
-        .replace('\u{201F}', "\"") // ‟
-        // Various dashes → -
-        .replace('\u{2010}', "-")  // hyphen
-        .replace('\u{2011}', "-")  // non-breaking hyphen
-        .replace('\u{2012}', "-")  // figure dash
-        .replace('\u{2013}', "-")  // en-dash
-        .replace('\u{2014}', "-")  // em-dash
-        .replace('\u{2015}', "-")  // horizontal bar
-        .replace('\u{2212}', "-")  // minus sign
-        // Special spaces → regular space
-        .replace('\u{00A0}', " ")  // NBSP
-        .replace('\u{2002}', " ")  // en space
-        .replace('\u{2003}', " ")  // em space
-        .replace('\u{2004}', " ")  // three-per-em space
-        .replace('\u{2005}', " ")  // four-per-em space
-        .replace('\u{2006}', " ")  // six-per-em space
-        .replace('\u{2007}', " ")  // figure space
-        .replace('\u{2008}', " ")  // punctuation space
-        .replace('\u{2009}', " ")  // thin space
-        .replace('\u{200A}', " ")  // hair space
-        .replace('\u{202F}', " ")  // narrow NBSP
-        .replace('\u{205F}', " ")  // medium math space
-        .replace('\u{3000}', " ")  // ideographic space
+        .chars()
+        .map(fuzzy_char)
+        .collect()
 }
 
-/// Result of text matching.
-struct MatchResult {
-    found: bool,
-    index: usize,
-    match_length: usize,
-    used_fuzzy: bool,
+/// [`normalize_for_fuzzy_match`], plus a map from each output character to its
+/// byte offset in the input.
+///
+/// The map is the point: a fuzzy match is found in normalized space, but the
+/// file must be edited in its *original* space. Returning the offset lets the
+/// caller replace only the matched span, instead of writing the fully
+/// normalized content back and silently stripping trailing whitespace and
+/// smart punctuation from every other line of the file.
+fn normalize_fuzzy_mapped(text: &str) -> (String, Vec<(usize, usize)>) {
+    let mut out = String::with_capacity(text.len());
+    // (byte offset, byte length) of each output character's source character.
+    let mut map: Vec<(usize, usize)> = Vec::new();
+    let mut offset = 0usize;
+    let mut remaining = text;
+    loop {
+        let (line, rest) = match remaining.find('\n') {
+            Some(i) => (&remaining[..i], Some(&remaining[i + 1..])),
+            None => (remaining, None),
+        };
+        for (i, c) in line.trim_end().char_indices() {
+            out.push(fuzzy_char(c));
+            map.push((offset + i, c.len_utf8()));
+        }
+        match rest {
+            Some(r) => {
+                // `str::lines()` drops the empty final line a trailing '\n'
+                // produces; mirror that so the normalized text matches exactly.
+                if r.is_empty() {
+                    break;
+                }
+                out.push('\n');
+                map.push((offset + line.len(), 1));
+                offset += line.len() + 1;
+                remaining = r;
+            }
+            None => break,
+        }
+    }
+    (out, map)
 }
 
-/// Find old_text in content using two-phase matching:
-/// 1. Try exact match first
-/// 2. If exact fails, try fuzzy match with Unicode normalization
-fn find_text(content: &str, old_text: &str) -> MatchResult {
-    // Phase 1: Exact match
-    if let Some(idx) = content.find(old_text) {
-        return MatchResult {
-            found: true,
-            index: idx,
-            match_length: old_text.len(),
-            used_fuzzy: false,
+/// How `old_string` was located in the file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MatchKind {
+    /// Byte-for-byte.
+    Exact,
+    /// Equal after whitespace/Unicode normalization.
+    Fuzzy,
+    /// Only equal after undoing cp1252→UTF-8 double-encoding.
+    Repaired,
+}
+
+/// Outcome of locating `old_string`.
+enum Resolution {
+    Found {
+        /// Byte span in whichever content base matched.
+        start: usize,
+        end: usize,
+        kind: MatchKind,
+    },
+    /// Occurred `n > 1` times; the caller must supply more context.
+    Duplicate(usize),
+    NotFound,
+}
+
+/// Locate `old` in `content`: exact match first, fuzzy only if exact finds
+/// nothing.
+///
+/// Exact-first is not an optimization, it is a correctness fix. Counting fuzzy
+/// matches unconditionally made a file containing both `"x"` and `“x”` report
+/// two occurrences of `"x"`, so an unambiguous edit was rejected with
+/// "please provide more context" — for a match that was already exact.
+fn resolve(content: &str, old: &str) -> Resolution {
+    let exact = content.matches(old).count();
+    if exact == 1 {
+        let start = content.find(old).expect("count == 1 implies a match");
+        return Resolution::Found {
+            start,
+            end: start + old.len(),
+            kind: MatchKind::Exact,
         };
     }
-    
-    // Phase 2: Fuzzy match
-    let fuzzy_content = normalize_for_fuzzy_match(content);
-    let fuzzy_old = normalize_for_fuzzy_match(old_text);
-    
-    if let Some(idx) = fuzzy_content.find(&fuzzy_old) {
-        return MatchResult {
-            found: true,
-            index: idx,
-            match_length: fuzzy_old.len(),
-            used_fuzzy: true,
-        };
+    if exact > 1 {
+        return Resolution::Duplicate(exact);
     }
-    
-    MatchResult {
-        found: false,
-        index: 0,
-        match_length: 0,
-        used_fuzzy: false,
-    }
-}
 
-/// Count occurrences using fuzzy matching.
-fn count_occurrences(content: &str, old_text: &str) -> usize {
-    let fuzzy_content = normalize_for_fuzzy_match(content);
-    let fuzzy_old = normalize_for_fuzzy_match(old_text);
-    
+    let (fuzzy_content, map) = normalize_fuzzy_mapped(content);
+    let fuzzy_old = normalize_for_fuzzy_match(old);
     if fuzzy_old.is_empty() {
-        return 0;
+        // `old` was only whitespace, which normalization erased. `matches("")`
+        // would claim a match at every position, so refuse rather than guess.
+        return Resolution::NotFound;
     }
-    
-    fuzzy_content.matches(&fuzzy_old).count()
+    let fuzzy_count = fuzzy_content.matches(&fuzzy_old).count();
+    if fuzzy_count > 1 {
+        return Resolution::Duplicate(fuzzy_count);
+    }
+    if fuzzy_count == 0 {
+        return Resolution::NotFound;
+    }
+
+    let fstart = fuzzy_content
+        .find(&fuzzy_old)
+        .expect("count == 1 implies a match");
+    let (start, end) = map_span(&fuzzy_content, &map, fstart, fuzzy_old.len());
+    Resolution::Found {
+        start,
+        end,
+        kind: MatchKind::Fuzzy,
+    }
+}
+
+/// Translate a byte span in normalized space back to a byte span in the input.
+fn map_span(fuzzy: &str, map: &[(usize, usize)], fstart: usize, flen: usize) -> (usize, usize) {
+    let first = fuzzy[..fstart].chars().count();
+    let last = fuzzy[..fstart + flen].chars().count() - 1;
+    let (start, _) = map[first];
+    let (last_start, last_len) = map[last];
+    (start, last_start + last_len)
+}
+
+fn duplicate_error(n: usize) -> ToolOutput {
+    ToolOutput::error(format!(
+        "Found {n} occurrences of the text. The text must be unique. \
+         Please provide more context to make it unique."
+    ))
+}
+
+fn not_found_error() -> ToolOutput {
+    ToolOutput::error(
+        "old_string not found in file. The text must match exactly \
+         including whitespace and newlines.",
+    )
 }
 
 // ── Edit tool ────────────────────────────────────────────────────────────────
@@ -233,9 +194,12 @@ impl PluginTool for Edit {
         ToolSpec {
             name: "edit".into(),
             description: "Replace text in a file. Supports exact and fuzzy matching \
-                (handles smart quotes, dashes, special spaces). The file must have been \
-                observed first — via 'read', or a 'bash' command naming the file — and \
-                must not have been modified since. \
+                (handles smart quotes, dashes, special spaces); only the matched span is \
+                rewritten, so the rest of the file is untouched. The file's encoding is \
+                detected (UTF-8, UTF-8 BOM, UTF-16, Windows-1252) and preserved, and \
+                cp1252->UTF-8 mojibake left by a PowerShell write is repaired to UTF-8. \
+                The file must have been observed first — via 'read', or a 'bash' command \
+                naming the file — and must not have been modified since. \
                 Line endings (CRLF/LF) are preserved."
                 .into(),
             schema: json!({
@@ -304,14 +268,15 @@ impl PluginTool for Edit {
             }
         }
 
-        // Read the file as raw bytes first to detect BOM and line endings
+        // Read the raw bytes; the encoding module decides what they are.
         let raw_bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => return ToolOutput::error(format!("read error: {e}")),
         };
 
-        // Detect encoding and decode
-        let (bom, content) = decode_with_bom(&raw_bytes);
+        // Decode with the file's real encoding, so a PowerShell-written
+        // Windows-1252 file matches `é` instead of `�`.
+        let (encoding, content) = encoding::decode(&raw_bytes);
 
         // Detect original line ending style
         let original_ending = detect_line_ending(&content);
@@ -321,58 +286,56 @@ impl PluginTool for Edit {
         let normalized_old = normalize_to_lf(&old);
         let normalized_new = normalize_to_lf(&new);
 
-        // Check for duplicates using fuzzy matching
-        let occurrences = count_occurrences(&normalized_content, &normalized_old);
-        if occurrences == 0 {
-            return ToolOutput::error(
-                "old_string not found in file. The text must match exactly \
-                 including whitespace and newlines."
-            );
-        }
-        if occurrences > 1 {
-            return ToolOutput::error(format!(
-                "Found {} occurrences of the text. The text must be unique. \
-                 Please provide more context to make it unique.",
-                occurrences
-            ));
+        // Resolve exact first, then fuzzy. If neither matches, the file may be
+        // cp1252→UTF-8 mojibake from a PowerShell `Set-Content`: retry against
+        // the repaired text and, if that matches, write the repair back too.
+        let mut base = normalized_content;
+        let mut out_encoding = encoding;
+        let mut resolution = resolve(&base, &normalized_old);
+        if matches!(resolution, Resolution::NotFound) {
+            let repaired = encoding::repair_mojibake(&base);
+            if repaired != base {
+                match resolve(&repaired, &normalized_old) {
+                    Resolution::Found { start, end, .. } => {
+                        base = repaired;
+                        // The repaired text is real UTF-8; writing it back as
+                        // Windows-1252 would re-introduce the damage.
+                        out_encoding = TextEncoding::Utf8;
+                        resolution = Resolution::Found {
+                            start,
+                            end,
+                            kind: MatchKind::Repaired,
+                        };
+                    }
+                    other => resolution = other,
+                }
+            }
         }
 
-        // Find the match (exact or fuzzy)
-        let match_result = find_text(&normalized_content, &normalized_old);
-        if !match_result.found {
-            return ToolOutput::error("old_string not found in file");
-        }
-
-        // Apply the replacement
-        let updated_normalized = if match_result.used_fuzzy {
-            // When using fuzzy match, we need to work in normalized space
-            let fuzzy_content = normalize_for_fuzzy_match(&normalized_content);
-            let fuzzy_old = normalize_for_fuzzy_match(&normalized_old);
-            let fuzzy_new = normalize_for_fuzzy_match(&normalized_new);
-            
-            // Replace in fuzzy-normalized content
-            let fuzzy_updated = fuzzy_content.replacen(&fuzzy_old, &fuzzy_new, 1);
-            
-            // For fuzzy matches, we use the fuzzy-normalized result
-            // This may lose some original formatting, but ensures the edit works
-            fuzzy_updated
-        } else {
-            // Exact match: simple replace
-            normalized_content.replacen(&normalized_old, &normalized_new, 1)
+        let (start, end, kind) = match resolution {
+            Resolution::Found { start, end, kind } => (start, end, kind),
+            Resolution::Duplicate(n) => return duplicate_error(n),
+            Resolution::NotFound => return not_found_error(),
         };
 
+        // Replace only the matched span. Everything else in the file — line
+        // endings, trailing whitespace, smart punctuation — is left alone.
+        let updated_normalized = format!("{}{}{}", &base[..start], normalized_new, &base[end..]);
+
         // Check that something actually changed
-        if normalized_content == updated_normalized {
+        if base == updated_normalized {
             return ToolOutput::error(
-                "No changes made. The replacement produced identical content."
+                "No changes made. The replacement produced identical content.",
             );
         }
 
         // Restore original line endings
         let updated_with_endings = restore_line_endings(&updated_normalized, original_ending);
 
-        // Reconstruct with BOM and original encoding
-        let final_bytes = encode_with_bom(&bom, &updated_with_endings);
+        // Re-encode in the file's original encoding, unless the new text forced
+        // an upgrade to UTF-8.
+        let (final_bytes, encoding_upgraded) =
+            encoding::encode_checked(out_encoding, &updated_with_endings);
 
         if let Err(e) = std::fs::write(&path, &final_bytes) {
             return ToolOutput::error(format!("write error: {e}"));
@@ -391,14 +354,25 @@ impl PluginTool for Edit {
 
         // Emit unified diff via progress for TUI display
         let path_str = path.display().to_string();
-        emit_unified_diff(ctx, &path_str, &normalized_content, &updated_normalized);
+        emit_unified_diff(ctx, &path_str, &base, &updated_normalized);
 
-        let fuzzy_note = if match_result.used_fuzzy {
-            " (fuzzy match)"
+        let mut notes: Vec<&str> = Vec::new();
+        match kind {
+            MatchKind::Exact => {}
+            MatchKind::Fuzzy => notes.push("fuzzy match"),
+            MatchKind::Repaired => notes.push("encoding repaired: cp1252 mojibake -> UTF-8"),
+        }
+        if encoding_upgraded {
+            notes.push("encoding upgraded to UTF-8");
+        } else if out_encoding == TextEncoding::Windows1252 {
+            notes.push("Windows-1252 preserved");
+        }
+        let note = if notes.is_empty() {
+            String::new()
         } else {
-            ""
+            format!(" ({})", notes.join("; "))
         };
-        ToolOutput::text(format!("edit applied to {}{}", path.display(), fuzzy_note))
+        ToolOutput::text(format!("edit applied to {}{}", path.display(), note))
     }
 }
 
@@ -489,6 +463,14 @@ fn emit_unified_diff(ctx: &ToolCallCtx, path: &str, before: &str, after: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{ctx, scratch, text};
+    use serde_json::json;
+
+    /// Write a file and register it as observed, satisfying the stale guard.
+    fn write_track(path: &std::path::Path, bytes: &[u8]) {
+        std::fs::write(path, bytes).unwrap();
+        assert!(crate::read::track_as_read(path));
+    }
 
     #[test]
     fn test_detect_line_ending_lf() {
@@ -555,42 +537,149 @@ mod tests {
     }
 
     #[test]
-    fn test_find_text_exact() {
-        let result = find_text("hello world", "world");
-        assert!(result.found);
-        assert_eq!(result.index, 6);
-        assert!(!result.used_fuzzy);
+    fn mapped_normalizer_agrees_with_the_plain_one() {
+        for s in [
+            "foo   \nbar  \n",
+            "a\r\nb",
+            "",
+            "a",
+            "\n",
+            "a\n\nb",
+            "\u{201C}hi\u{201D}",
+        ] {
+            let (mapped, map) = normalize_fuzzy_mapped(s);
+            assert_eq!(mapped, normalize_for_fuzzy_match(s), "for {s:?}");
+            assert_eq!(mapped.chars().count(), map.len(), "map length for {s:?}");
+        }
     }
 
     #[test]
-    fn test_find_text_fuzzy_smart_quotes() {
-        let content = "say \"hello\"";
-        // U+201C " and U+201D " (smart quotes)
-        let old_text = "say \u{201C}hello\u{201D}";
-        let result = find_text(content, old_text);
-        assert!(result.found);
-        assert!(result.used_fuzzy);
+    fn fuzzy_span_maps_back_to_the_original_bytes() {
+        let content = "let x = \u{201C}hi\u{201D};   \nkeep\n";
+        let old = "let x = \"hi\";";
+        match resolve(content, old) {
+            Resolution::Found { start, end, kind } => {
+                assert_eq!(kind, MatchKind::Fuzzy);
+                // Only the matched span — not the trailing whitespace on the line.
+                assert_eq!(&content[start..end], "let x = \u{201C}hi\u{201D};");
+            }
+            _ => panic!("expected a fuzzy match"),
+        }
     }
 
     #[test]
-    fn test_find_text_not_found() {
-        let result = find_text("hello world", "xyz");
-        assert!(!result.found);
+    fn exact_match_wins_over_a_fuzzy_lookalike() {
+        // The regression: a file with both "x" and “x” used to report two
+        // matches for "x" and reject an edit that was unambiguous.
+        let content = "let a = \"x\";\nlet b = \u{201C}x\u{201D};\n";
+        match resolve(content, "\"x\"") {
+            Resolution::Found { kind, .. } => assert_eq!(kind, MatchKind::Exact),
+            _ => panic!("expected an exact match"),
+        }
     }
 
     #[test]
-    fn test_count_occurrences() {
-        assert_eq!(count_occurrences("foo bar foo baz foo", "foo"), 3);
-        assert_eq!(count_occurrences("hello world", "xyz"), 0);
-        assert_eq!(count_occurrences("hello world", "world"), 1);
+    fn genuinely_duplicated_text_is_rejected() {
+        assert!(matches!(resolve("x\nx\n", "x"), Resolution::Duplicate(2)));
     }
 
     #[test]
-    fn test_count_occurrences_fuzzy() {
-        // Smart quotes should match regular quotes
-        let content = "say \"hello\" and \"world\"";
-        // U+201C " and U+201D " (smart quotes)
-        let search = "say \u{201C}hello\u{201D}";
-        assert_eq!(count_occurrences(content, search), 1);
+    fn absent_text_is_not_found() {
+        assert!(matches!(resolve("hello", "xyz"), Resolution::NotFound));
+    }
+
+    #[test]
+    fn whitespace_only_old_string_is_not_found() {
+        assert!(matches!(resolve("a\nb\n", "   "), Resolution::NotFound));
+    }
+
+    #[test]
+    fn execute_only_rewrites_the_matched_span() {
+        let dir = scratch("edit_fuzzy_scope");
+        let file = dir.join("a.txt");
+        write_track(&file, "say \u{201C}hi\u{201D}\nkeep  \n".as_bytes());
+
+        let out = Edit.execute(
+            &json!({ "path": "a.txt", "old_string": "say \"hi\"", "new_string": "said hi" }),
+            &ctx(Some(dir.clone())),
+        );
+        assert!(!out.is_error, "{}", text(&out));
+        // The fuzzy match must not have stripped the trailing spaces elsewhere.
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "said hi\nkeep  \n");
+    }
+
+    #[test]
+    fn execute_preserves_crlf_line_endings() {
+        let dir = scratch("edit_crlf");
+        let file = dir.join("a.txt");
+        write_track(&file, b"line1\r\nold\r\nline3\r\n");
+
+        let out = Edit.execute(
+            &json!({ "path": "a.txt", "old_string": "old", "new_string": "new" }),
+            &ctx(Some(dir.clone())),
+        );
+        assert!(!out.is_error, "{}", text(&out));
+        assert_eq!(std::fs::read(&file).unwrap(), b"line1\r\nnew\r\nline3\r\n");
+    }
+
+    #[test]
+    fn execute_reads_and_preserves_windows_1252() {
+        let dir = scratch("edit_cp1252");
+        let file = dir.join("a.txt");
+        // PowerShell 5.1's ANSI output: é is a lone 0xE9 byte, not valid UTF-8.
+        write_track(&file, b"caf\xE9 value\n");
+
+        let out = Edit.execute(
+            &json!({ "path": "a.txt", "old_string": "café value", "new_string": "café total" }),
+            &ctx(Some(dir.clone())),
+        );
+        assert!(!out.is_error, "{}", text(&out));
+        assert_eq!(std::fs::read(&file).unwrap(), b"caf\xE9 total\n");
+    }
+
+    #[test]
+    fn execute_repairs_mojibake_and_writes_utf8() {
+        let dir = scratch("edit_mojibake");
+        let file = dir.join("a.txt");
+        // "café — ok" after Set-Content -Encoding UTF8 double-encoded it.
+        let damaged = "caf\u{00C3}\u{00A9} \u{00E2}\u{20AC}\u{201D} ok\n";
+        write_track(&file, damaged.as_bytes());
+
+        let out = Edit.execute(
+            &json!({ "path": "a.txt", "old_string": "café — ok", "new_string": "café — done" }),
+            &ctx(Some(dir.clone())),
+        );
+        assert!(!out.is_error, "{}", text(&out));
+        assert!(text(&out).contains("repaired"), "{}", text(&out));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "café — done\n");
+    }
+
+    #[test]
+    fn execute_rejects_a_duplicate() {
+        let dir = scratch("edit_duplicate");
+        let file = dir.join("a.txt");
+        write_track(&file, b"x\nx\n");
+
+        let out = Edit.execute(
+            &json!({ "path": "a.txt", "old_string": "x", "new_string": "y" }),
+            &ctx(Some(dir.clone())),
+        );
+        assert!(out.is_error);
+        assert!(text(&out).contains("2 occurrences"), "{}", text(&out));
+    }
+
+    #[test]
+    fn execute_requires_a_prior_read() {
+        let dir = scratch("edit_guard");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"hello\n").unwrap();
+        crate::read::read_map().lock().unwrap().remove(&file);
+
+        let out = Edit.execute(
+            &json!({ "path": "a.txt", "old_string": "hello", "new_string": "bye" }),
+            &ctx(Some(dir.clone())),
+        );
+        assert!(out.is_error);
+        assert!(text(&out).contains("has not been read"), "{}", text(&out));
     }
 }

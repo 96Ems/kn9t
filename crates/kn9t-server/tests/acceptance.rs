@@ -3785,9 +3785,102 @@ mod srv {
         );
     }
 
+    /// `copy_events: true` copies the transcript verbatim — including an
+    /// assistant `tool_call` whose `tool_result` does not exist yet, because the
+    /// parent appends the assistant message *before* it runs the tool batch.
+    ///
+    /// A `subagent` tool call executes inside that batch, so a child forked with
+    /// `copy_events: true` inherits exactly such a dangling call. Real providers
+    /// reject it (`tool_use` must be followed by `tool_result`), which is why
+    /// `kn9t-subagent` always forks bare and passes context as text. This test
+    /// pins the structural fact the design decision rests on.
     #[test]
-    fn session_fork_and_prompt_spawns_a_real_child() {
-        use kn9t_plugin::HostApi as _;
+    fn forking_mid_tool_call_inherits_a_dangling_call() {
+        let (store, _tmp) = temp_store();
+        let model_ref = ModelRef {
+            provider: "test".into(),
+            id: "m1".into(),
+        };
+        let parent = SessionId::new();
+        kn9t_store::create_session(&store, &parent, "/cwd", &model_ref).unwrap();
+        let parent_id = parent.0.as_str();
+
+        // The in-flight state: assistant asked for a tool, no result yet.
+        store
+            .append(
+                &parent,
+                Event::MessageAppended {
+                    seq: 0,
+                    msg: kn9t_core::Message {
+                        id: MsgId::new(),
+                        role: Role::User,
+                        content: vec![Content::Text {
+                            text: "delegate this".to_string(),
+                        }],
+                        silent: false,
+                    },
+                },
+            )
+            .unwrap();
+        store
+            .append(
+                &parent,
+                Event::MessageAppended {
+                    seq: 0,
+                    msg: kn9t_core::Message {
+                        id: MsgId::new(),
+                        role: Role::Assistant,
+                        content: vec![Content::ToolCall {
+                            id: kn9t_core::CallId("call-subagent".into()),
+                            name: "subagent".into(),
+                            args_json: "{\"task\":\"x\"}".into(),
+                        }],
+                        silent: false,
+                    },
+                },
+            )
+            .unwrap();
+
+        let child = SessionId::new();
+        let head: u64 = store
+            .query_one(
+                "SELECT head_seq FROM sessions WHERE id=?1",
+                &[&parent_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|h| h.max(0) as u64)
+            .unwrap();
+        kn9t_store::fork_session(
+            &store,
+            &parent,
+            &child,
+            head,
+            kn9t_core::ForkReason::Subagent,
+            None,
+            "/cwd",
+        )
+        .unwrap();
+
+        // The child copied the dangling tool call…
+        let calls: Vec<String> = store
+            .query_strings(
+                "SELECT content FROM messages WHERE session_id=?1 ORDER BY seq",
+                &[&child.0],
+            )
+            .unwrap();
+        assert!(
+            calls.iter().any(|c| c.contains("call-subagent")),
+            "copy_events:true copies the in-flight assistant tool_call"
+        );
+        // …and no tool result answers it.
+        assert!(
+            !calls.iter().any(|c| c.contains("tool_result")),
+            "the tool_result does not exist yet, so the copy ends in a dangling call"
+        );
+    }
+
+    #[test]
+    fn session_fork_and_prompt_spawns_a_real_child() {        use kn9t_plugin::HostApi as _;
         use kn9t_server::host_api::ServerHostApi;
 
         // A child session is just a forked session running a turn (R-PLUG-110).

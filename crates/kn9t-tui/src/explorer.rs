@@ -44,9 +44,13 @@ pub struct ExplorerState {
     /// First visible row, adjusted by the renderer to keep the selection on screen.
     pub offset: usize,
     rows: Vec<ExplorerRow>,
-    /// Set when `expanded` or the index root changed, so the next sync flattens once.
+    /// Set when `expanded`, the index root, or the index contents changed, so the next sync
+    /// flattens once.
     dirty: bool,
     root: Option<PathBuf>,
+    /// Index generation the `rows` were built from, so a rebuild in place (a file created or
+    /// removed under an unchanged root) is noticed.
+    generation: u64,
 }
 
 impl ExplorerState {
@@ -128,7 +132,7 @@ impl ExplorerState {
         self.expanded.contains(path)
     }
 
-    /// Re-flatten the tree if the index root changed or the expansion set did.
+    /// Re-flatten the tree if the index root, its contents, or the expansion set changed.
     ///
     /// Cheap enough to call from the key path: it does nothing unless something changed.
     pub fn sync(&mut self, index: &FileIndex) {
@@ -141,6 +145,11 @@ impl ExplorerState {
             self.offset = 0;
             self.dirty = true;
         }
+        // A rebuild in place keeps the root but replaces every path: the watcher-driven
+        // refresh must reach the rows, or the tree stays a snapshot of the first walk.
+        if self.generation != index.generation() {
+            self.dirty = true;
+        }
         if self.dirty {
             self.rebuild(index);
         }
@@ -150,6 +159,7 @@ impl ExplorerState {
         let mut rows = Vec::new();
         flatten(index, &self.expanded, "", 0, &mut rows);
         self.rows = rows;
+        self.generation = index.generation();
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
         self.dirty = false;
     }
@@ -378,6 +388,39 @@ mod tests {
         explorer.select(0);
         explorer.activate(&idx); // collapse it again
         assert!(explorer.selected < explorer.rows().len());
+    }
+
+    #[test]
+    fn a_changed_index_refreshes_the_rows_without_a_root_change() {
+        let root = std::env::temp_dir().join(format!("kn9t-explorer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("a.rs"), "a").expect("write");
+
+        let mut idx = FileIndex::new();
+        idx.rebuild(&root);
+
+        let mut explorer = ExplorerState::new();
+        explorer.sync(&idx);
+        assert_eq!(paths(&explorer), vec!["a.rs"]);
+
+        // A file appears under the same root, as the workspace watcher would report it.
+        std::fs::write(root.join("b.rs"), "b").expect("write");
+        idx.rebuild(&root);
+        explorer.sync(&idx);
+        assert_eq!(
+            paths(&explorer),
+            vec!["a.rs", "b.rs"],
+            "the tree must follow the index, not just its root"
+        );
+
+        // A file disappears: the rows shrink too.
+        std::fs::remove_file(root.join("a.rs")).expect("remove");
+        idx.rebuild(&root);
+        explorer.sync(&idx);
+        assert_eq!(paths(&explorer), vec!["b.rs"]);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

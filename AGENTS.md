@@ -464,9 +464,15 @@ parsing, syntax highlighting, scroll maths, diff parsing, the render cache) is R
   the layout. `input_height_for` used to subtract a hardcoded 24-column sidebar that no longer
   existed, so the row count published as `ctx.input_height` disagreed with the box Lua drew.
   Record what was actually rendered (`collect_natives`, `App::input_width`) and feed that back.
-* **Approval and interaction overlays stay in Rust.** They are the `POST /approve` /
-  `POST /ui-respond` contract paths; a Lua bug must not be able to swallow a denial or
-  fabricate an approval. Lua may style them; it may not own the decision or the transport.
+* **Approval stays in Rust; an interaction may be rendered by the plugin's own Lua.**
+  Approval is the `POST /approve` contract path: a Lua bug must not be able to swallow a
+  denial or fabricate an approval, so its overlay is Rust-owned. An *interaction*
+  (`POST /ui-respond`) is the plugin's own question: a plugin that ships a Lua UI **renders
+  that interaction itself** (its view declares a placement — the built-in layout honours
+  `"bottom"` as reserved rows between the transcript and the prompt — and answers through
+  the generic `kn9t.respond(payload)`/`kn9t.on_text` view API). The host keeps the transport
+  and the `Esc`-cancels fallback, and still shows the generic Rust overlay for plugins that
+  ship no UI. Nothing about the plugin's question shape lives in Rust.
 * **Publish state cheaply.** `StateSnapshot::collect` publishes bounded scalars eagerly and puts
   heavy data behind lazy accessors. Deep-copying the transcript into Lua every frame cost
   ~3.5 ms/frame; the snapshot is ~0.02 ms (178x). Never rebuild per-frame Lua tables from the
@@ -492,13 +498,16 @@ This is a **global invariant** — any mismatch between server and client casing
 
 ## 13. Schema-first generation — API contract is committed, not built
 
-`schema/http.json` + `schema/plugin.json` are the single source of truth (ADR-0005, DESIGN §15).
+`schema/http.json` + `schema/plugin.json` are the single source of truth (ADR-0005, DESIGN §15),
+and `schema/config.json` the same for `~/.kn9t/config.toml` (documentation only — the parser in
+`kn9t-server/src/config.rs` is still hand-written).
 
 Generated outputs are **committed**:
 
 * `crates/kn9t-server/src/api.rs` — typed request structs (`deny_unknown_fields`)
 * `crates/kn9t-tui/src/wire.rs` — GI-6-clean serde mirrors (no `kn9t-*` dep)
 * `API.md` — human-readable contract
+* `docs/CONFIG.md` — `~/.kn9t/config.toml` reference, from `schema/config.json`
 * `schema/generated/go_types.go` + `schema/generated/python_types.py` — polyglot plugin stubs
 
 Generation is **manual, not at `cargo build`**:
@@ -527,8 +536,9 @@ and `.githooks/pre-commit` + `.githooks/pre-push` must exist. A `core.hooksPath`
 directory without them runs **nothing** — which is how the guards silently stopped running on a
 checkout once already.
 
-**The schema is the only input to generated code.** Never hand-edit `api.rs`, `wire.rs`, `API.md`
-or the language stubs: edit `schema/*.json`, run `cargo run -p xtask -- generate`, commit both.
+**The schema is the only input to generated code.** Never hand-edit `api.rs`, `wire.rs`, `API.md`,
+`docs/CONFIG.md` or the language stubs: edit `schema/*.json`, run `cargo run -p xtask -- generate`,
+commit both.
 A new route with an object request also needs its Rust type name in `req_name_for_path`
 (`xtask/src/schema.rs`) — the generator refuses to guess rather than emit nothing.
 
@@ -601,6 +611,12 @@ Implementation: `crates/kn9t-tui/src/lua/plugin_ui.rs` (registry + isolation),
 Lua places a plugin with `{type="plugin", plugin="name"}`. The node carries *only* the name;
 the plugin's `render(state)` supplies the subtree, and the enclosing layout supplies the rect.
 
+A view returns **content**, never a frame: the layout draws the border, the title and the
+focus ring (`plugin_views_in` in `90_render.lua`). A view that returns `{type="box"}` nests
+two borders and prints two titles — `kn9t-compactor` did exactly that until 2026-09-17f. A
+view also owns its registration lifecycle: register when it has something to show, `ui_clear`
+when it does not, so an idle session keeps no panel.
+
 The list of available views comes from `kn9t.state.plugin_views` (stable, sorted order), so
 **nothing is hardcoded per plugin** — a newly registered plugin appears without editing
 `tui.lua`. Placement belongs in `render_ui`, not buried in a helper: putting it inside
@@ -615,9 +631,13 @@ Note "sidebar" is now only a **Lua** concept (`TUI.build_sidebar_right` in
 
 ### 14.2 Reference implementation: `kn9t-ask-user`
 
-`plugins/kn9t-ask-user` is the worked example. It registers its Lua lazily (the session id only
-arrives with the first tool call, not at handshake), then pushes state around each question.
-UI failures are swallowed — the answer matters more than its presentation.
+`plugins/kn9t-ask-user` is the worked example. Its Lua *is* the question UI: it registers
+the view for the duration of one question (`placement="bottom"`, so the built-in layout
+reserves rows between the transcript and the prompt), handles selection and typing with
+`kn9t.on_key` / `kn9t.on_text`, answers through `kn9t.respond`, then `ui_clear`s itself so
+an idle session keeps no panel. Registration is lazy because the session id only arrives
+with the first tool call, not at handshake. UI failures are swallowed — the answer matters
+more than its presentation.
 
 Its Lua is extracted verbatim into a test fixture so it cannot rot:
 
@@ -628,3 +648,7 @@ cargo test -p kn9t-tui --test plugin_lua_ui
 
 Re-run the extractor after editing `UI_LUA` in the plugin; the suite then exercises the same
 Lua the plugin actually ships, so a syntax error fails CI instead of a user's terminal.
+
+`kn9t-policy` follows the same extraction pattern (`scripts/extract_policy_lua.py` →
+`crates/kn9t-tui/tests/policy_ui.lua`, tests in `--test policy_ui`), so its `on_text` grant
+input cannot silently regress to the old per-character `on_key` loop.

@@ -1,0 +1,404 @@
+{
+  "$comment": "Source of truth for ~/.kn9t/config.toml. `cargo run -p xtask -- generate` renders docs/CONFIG.md from this file; scripts/check-schema.sh fails on drift. The parser in crates/kn9t-server/src/config.rs is authoritative for behaviour (R-TUI-012) — this file must describe what it actually accepts, and a mismatch is a bug in this schema or in the parser, not in the generated doc.",
+  "file": "~/.kn9t/config.toml",
+  "groups": [
+    {
+      "heading": "Top level",
+      "table": "",
+      "description": "Keys that sit at the root of the file, outside any table. Project-local config files may set these too; `[policy]` is global-only.",
+      "fields": [
+        {
+          "field": "default_model",
+          "type": "string",
+          "required": false,
+          "description": "Model id used for new sessions. `provider:id` or a bare `id` when unambiguous. Absent → the first declared `[[model]]`."
+        },
+        {
+          "field": "title_model",
+          "type": "string",
+          "required": false,
+          "description": "Model used to auto-title a session after its first assistant turn. Absent → the session's own model. A cheap model here saves money; titling is best-effort and never fails a turn."
+        }
+      ]
+    },
+    {
+      "heading": "Models — `[[model]]`",
+      "table": "[[model]]",
+      "description": "An array of tables: one entry per model the server may be asked to run. `provider` must match a declared `[provider.<name>]`.",
+      "fields": [
+        {
+          "field": "provider",
+          "type": "string",
+          "required": true,
+          "description": "Name of the `[provider.<name>]` table that serves this model."
+        },
+        {
+          "field": "id",
+          "type": "string",
+          "required": true,
+          "description": "Model id as kn9t refers to it (sessions store this)."
+        },
+        {
+          "field": "api_id",
+          "type": "string",
+          "required": false,
+          "description": "Wire model id actually sent to the provider. Absent → `id`."
+        },
+        {
+          "field": "ctx",
+          "type": "integer",
+          "required": true,
+          "description": "Context window in tokens. Drives the compaction / truncation ladder."
+        },
+        {
+          "field": "max_out",
+          "type": "integer",
+          "required": true,
+          "description": "Maximum output tokens requested per turn."
+        },
+        {
+          "field": "thinking",
+          "type": "enum",
+          "enum": ["off", "low", "medium", "high"],
+          "required": false,
+          "default": "medium",
+          "description": "Reasoning effort."
+        },
+        {
+          "field": "price_in",
+          "type": "float",
+          "required": false,
+          "default": "0",
+          "description": "USD per million input tokens, used for cost reports."
+        },
+        {
+          "field": "price_out",
+          "type": "float",
+          "required": false,
+          "default": "0",
+          "description": "USD per million output tokens."
+        },
+        {
+          "field": "price_cache_read",
+          "type": "float",
+          "required": false,
+          "default": "0",
+          "description": "USD per million cached input tokens read."
+        },
+        {
+          "field": "price_cache_write",
+          "type": "float",
+          "required": false,
+          "default": "0",
+          "description": "USD per million cached input tokens written."
+        },
+        {
+          "field": "cache",
+          "type": "enum",
+          "enum": ["explicit", "automatic", "none"],
+          "required": false,
+          "default": "automatic",
+          "description": "Prompt-cache strategy for this model."
+        },
+        {
+          "field": "cache_breakpoints",
+          "type": "integer",
+          "required": false,
+          "default": "4",
+          "description": "Number of cache breakpoints to place."
+        },
+        {
+          "field": "cache_min_tokens",
+          "type": "integer",
+          "required": false,
+          "default": "1024",
+          "description": "Minimum prefix size before a breakpoint is worth placing."
+        },
+        {
+          "field": "quirks",
+          "type": "table",
+          "required": false,
+          "see": "Provider quirks",
+          "description": "Per-model overrides of the provider's wire quirks."
+        }
+      ]
+    },
+    {
+      "heading": "Provider quirks",
+      "table": "[model.quirks] / [provider.<name>.quirks]",
+      "description": "Wire-format deviations from the OpenAI default (DESIGN §8.2). `RawQuirks` is shared: a model-level `quirks` overrides the provider-level one field by field. Absent fields fall back to the provider defaults.",
+      "fields": [
+        {
+          "field": "max_tokens_field",
+          "type": "string",
+          "required": false,
+          "description": "Request key that carries the output cap (`max_tokens`, `max_completion_tokens`, …)."
+        },
+        {
+          "field": "system_role",
+          "type": "string",
+          "required": false,
+          "description": "Role name for the system prompt."
+        },
+        {
+          "field": "usage_in_stream",
+          "type": "boolean",
+          "required": false,
+          "description": "Whether usage arrives on the SSE stream."
+        },
+        {
+          "field": "finish_reason",
+          "type": "boolean",
+          "required": false,
+          "description": "Whether a `finish_reason` is emitted."
+        },
+        {
+          "field": "reasoning",
+          "type": "string",
+          "required": false,
+          "description": "How reasoning content is carried on the wire."
+        },
+        {
+          "field": "tool_result_name",
+          "type": "boolean",
+          "required": false,
+          "description": "Whether a tool result carries the tool name alongside its id."
+        },
+        {
+          "field": "thinking_style",
+          "type": "string",
+          "required": false,
+          "description": "Provider thinking-block dialect."
+        },
+        {
+          "field": "thinking_replay",
+          "type": "string",
+          "required": false,
+          "description": "How prior thinking is replayed in later requests."
+        },
+        {
+          "field": "require_tools",
+          "type": "boolean",
+          "required": false,
+          "description": "Whether the tools array is mandatory on every request."
+        },
+        {
+          "field": "streaming",
+          "type": "boolean",
+          "required": false,
+          "description": "Whether the endpoint supports streaming."
+        },
+        {
+          "field": "trim_trailing_whitespace",
+          "type": "boolean",
+          "required": false,
+          "description": "Whether trailing whitespace is trimmed from messages."
+        },
+        {
+          "field": "session_header",
+          "type": "string",
+          "required": false,
+          "description": "Header used to carry a session id to the provider."
+        },
+        {
+          "field": "api",
+          "type": "enum",
+          "enum": ["chat", "responses"],
+          "required": false,
+          "description": "OpenAI surface to use (R-OAI-060)."
+        }
+      ]
+    },
+    {
+      "heading": "Providers — `[provider.<name>]`",
+      "table": "[provider.<name>]",
+      "description": "One table per provider, keyed by the name `[[model]]` entries refer to. `kind` selects the provider implementation.",
+      "fields": [
+        {
+          "field": "kind",
+          "type": "string",
+          "required": true,
+          "description": "`openai` for an HTTP endpoint, or `plugin` for a provider plugin subprocess."
+        },
+        {
+          "field": "base_url",
+          "type": "string",
+          "required": false,
+          "description": "Required for `kind = \"openai\"`. Base URL of the endpoint."
+        },
+        {
+          "field": "api_key",
+          "type": "string",
+          "required": false,
+          "description": "Bearer token for `kind = \"openai\"`, if the endpoint needs one."
+        },
+        {
+          "field": "binary",
+          "type": "string",
+          "required": false,
+          "description": "Required for `kind = \"plugin\"`: binary name or absolute path."
+        },
+        {
+          "field": "env",
+          "type": "map<string,string>",
+          "required": false,
+          "default": "{}",
+          "description": "Environment variables injected into the plugin subprocess. Values support `env:VAR` interpolation."
+        },
+        {
+          "field": "headers",
+          "type": "map<string,string>",
+          "required": false,
+          "default": "{}",
+          "description": "Extra request headers (R-SRV-CFG-010, `openai` only)."
+        },
+        {
+          "field": "discover",
+          "type": "boolean",
+          "required": false,
+          "default": "true",
+          "description": "Fetch `/models` and register discovered models. Set `false` to skip auto-discovery (R-SRV-CFG-030)."
+        },
+        {
+          "field": "tls_insecure",
+          "type": "boolean",
+          "required": false,
+          "default": "false",
+          "description": "Skip TLS certificate verification. Intended for local test endpoints only."
+        },
+        {
+          "field": "quirks",
+          "type": "table",
+          "required": false,
+          "see": "Provider quirks",
+          "description": "Provider-wide wire quirks, overridable per model."
+        }
+      ]
+    },
+    {
+      "heading": "Server — `[server]`",
+      "table": "[server]",
+      "description": "Optional runtime knobs. All fields are optional and take the defaults shown; `0` disables a deadline or, for `max_turns`, means unbounded. `[server]` is not hot-reloaded by `POST /config/reload`.",
+      "fields": [
+        {
+          "field": "idle_exit_secs",
+          "type": "integer",
+          "required": false,
+          "default": "1800",
+          "description": "Seconds of inactivity (no attached clients, no running turns) before the server exits. `0` disables auto-exit."
+        },
+        {
+          "field": "approval_timeout_secs",
+          "type": "integer",
+          "required": false,
+          "default": "1800",
+          "description": "Seconds a tool call waits for a human approval before denial. `0` waits forever. A backstop, so a client that disappears mid-prompt cannot pin the turn thread."
+        },
+        {
+          "field": "interaction_timeout_secs",
+          "type": "integer",
+          "required": false,
+          "default": "1800",
+          "description": "`interaction_request` wait with a live cancellable turn. `0` disables the deadline."
+        },
+        {
+          "field": "interaction_timeout_no_cancel_secs",
+          "type": "integer",
+          "required": false,
+          "default": "120",
+          "description": "`interaction_request` wait with NO cancellable turn. Nothing can interrupt such a wait, so this deadline is the only exit. `0` disables the deadline."
+        },
+        {
+          "field": "tool_cancel_grace_ms",
+          "type": "integer",
+          "required": false,
+          "default": "1500",
+          "description": "Milliseconds a cancelled tool batch waits for a `parallel_safe` tool to notice `Cancel` before the loop synthesises a result and ends the turn. Raise for slow tools, lower to make ESC snappier."
+        },
+        {
+          "field": "max_turns",
+          "type": "integer",
+          "required": false,
+          "default": "unbounded",
+          "description": "Optional spend guard: maximum turns one run may take before it stops with \"turn limit reached\". **Absent or `0` means unbounded** — the loop runs until it goes idle or the user aborts, which is the default. Set a positive value only to cap a model that never goes idle."
+        }
+      ]
+    },
+    {
+      "heading": "Policy — `[policy]`",
+      "table": "[policy]",
+      "description": "Global only (~/.kn9t/config.toml), never read from a project-local file. ADR-0008 moved risk decisions into the policy plugin; `mode` survives as a reporting value, and `[policy.approvals]` persists `scope=always` grants.",
+      "fields": [
+        {
+          "field": "mode",
+          "type": "enum",
+          "enum": ["ask_on_mutation", "allow_all", "deny_all", "readonly"],
+          "required": false,
+          "default": "ask_on_mutation",
+          "description": "Reporting value for the active policy posture."
+        },
+        {
+          "field": "approvals",
+          "type": "table",
+          "required": false,
+          "see": "Policy approvals",
+          "description": "Persistent approval grants."
+        }
+      ]
+    },
+    {
+      "heading": "Policy approvals — `[policy.approvals]`",
+      "table": "[policy.approvals]",
+      "description": "Written by the server when a user answers an approval with `scope=always`. Never hand-edit the `always` list; the `never` entries are managed separately.",
+      "fields": [
+        {
+          "field": "always",
+          "type": "array<string>",
+          "required": false,
+          "default": "[]",
+          "description": "Fingerprints of approvals the user chose to always allow."
+        }
+      ]
+    },
+    {
+      "heading": "Plugins — `[[plugin]]`",
+      "table": "[[plugin]]",
+      "description": "An array of tables overriding plugin discovery (ADR-0004, R-PLUG-100): `cmd` pins a path, `env` alone injects vars, `enabled = false` / `disabled = true` suppresses the discovered plugin of the same name. Global-only; a project-local file cannot honor a plugin entry.",
+      "fields": [
+        {
+          "field": "name",
+          "type": "string",
+          "required": true,
+          "description": "Matches the plugin's declared name (usually its binary file name); used for dedup."
+        },
+        {
+          "field": "cmd",
+          "type": "array<string>",
+          "required": false,
+          "description": "Command plus args to spawn. Omit (or set `enabled = false`) for an env-only override or a disable entry."
+        },
+        {
+          "field": "env",
+          "type": "map<string,string>",
+          "required": false,
+          "default": "{}",
+          "description": "Environment variables to inject. Values support `env:VAR` syntax."
+        },
+        {
+          "field": "enabled",
+          "type": "boolean",
+          "required": false,
+          "default": "true",
+          "description": "`false` disables the discovered plugin of the same name."
+        },
+        {
+          "field": "disabled",
+          "type": "boolean",
+          "required": false,
+          "default": "false",
+          "description": "Alias for `enabled = false`. If `true`, the plugin is disabled."
+        }
+      ]
+    }
+  ]
+}

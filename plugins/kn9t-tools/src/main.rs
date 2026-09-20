@@ -12,6 +12,9 @@ fn main() {
 
 mod bash;
 mod edit;
+mod encoding;
 mod path;
 mod read;
+#[cfg(test)]
+mod test_support;
 mod write;

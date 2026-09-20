@@ -138,6 +138,10 @@ fn timeout_defaults_match_the_previous_constants() {
     assert_eq!(t.interaction, Some(Duration::from_secs(30 * 60)));
     assert_eq!(t.interaction_no_cancel, Some(Duration::from_secs(2 * 60)));
     assert_eq!(t.tool_cancel_grace, Duration::from_millis(1500));
+    assert_eq!(
+        t.max_turns, None,
+        "the default run is unbounded; a ceiling is opt-in"
+    );
 }
 
 /// `[server]` values are honoured, and `0` means "no deadline" rather than "expire at once"
@@ -150,6 +154,7 @@ approval_timeout_secs = 90
 interaction_timeout_secs = 0
 interaction_timeout_no_cancel_secs = 15
 tool_cancel_grace_ms = 400
+max_turns = 25
 "#;
     let t = kn9t_server::config::parse_server_timeouts(toml).expect("parses");
 
@@ -160,6 +165,15 @@ tool_cancel_grace_ms = 400
     );
     assert_eq!(t.interaction_no_cancel, Some(Duration::from_secs(15)));
     assert_eq!(t.tool_cancel_grace, Duration::from_millis(400));
+    assert_eq!(t.max_turns, Some(25));
+}
+
+/// `max_turns = 0` means "unbounded", matching the other `[server]` knobs where `0` disables —
+/// a zero ceiling would otherwise refuse every turn.
+#[test]
+fn server_config_zero_max_turns_means_unbounded() {
+    let t = kn9t_server::config::parse_server_timeouts("[server]\nmax_turns = 0\n").expect("parses");
+    assert_eq!(t.max_turns, None);
 }
 
 /// An absent `[server]` block leaves every default in place.
@@ -171,6 +185,7 @@ fn absent_server_block_keeps_defaults() {
     assert_eq!(t.interaction, d.interaction);
     assert_eq!(t.interaction_no_cancel, d.interaction_no_cancel);
     assert_eq!(t.tool_cancel_grace, d.tool_cancel_grace);
+    assert_eq!(t.max_turns, d.max_turns);
 }
 
 /// The state hands the configured grace to the loop, so a turn actually runs under it.
@@ -195,5 +210,31 @@ fn react_config_carries_the_configured_tool_grace() {
         configured.react_config().tool_cancel_grace,
         Duration::from_millis(250),
         "the loop must run under the configured grace, not the compiled-in default"
+    );
+}
+
+/// The state hands the configured turn ceiling to the loop. Default is `None` (unbounded);
+/// a configured `[server] max_turns` reaches `ReactConfig`.
+#[test]
+fn react_config_carries_the_configured_max_turns() {
+    let (state, _tmp) = state();
+    assert_eq!(
+        state.react_config().max_turns,
+        None,
+        "an unconfigured server runs an unbounded loop"
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Arc::new(kn9t_store::SqliteStore::open(&tmp.path().join("k.db")).unwrap());
+    let configured = ServerState::new(store, "t".into(), Default::default(), Vec::new())
+        .with_timeouts(ServerTimeouts {
+            max_turns: Some(42),
+            ..ServerTimeouts::default()
+        });
+
+    assert_eq!(
+        configured.react_config().max_turns,
+        Some(42),
+        "the loop must run under the configured ceiling"
     );
 }

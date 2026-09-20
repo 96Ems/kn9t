@@ -7,10 +7,12 @@
 //! # Interaction
 //!
 //! A plugin view is not render-only: it declares `id="..."` on widgets and
-//! binds `kn9t.on_click(id, fn)` / `kn9t.on_key(key, fn)` inside its own
-//! environment. Both registries are keyed by `(plugin, id)` so two plugins can
-//! use the same `id` or the same key without colliding, and a plugin can never
-//! see or unbind another's handlers.
+//! binds `kn9t.on_click(id, fn)` / `kn9t.on_key(key, fn)` / `kn9t.on_text(fn)`
+//! inside its own environment. The registries are keyed by `(plugin, id)`, so
+//! plugins cannot collide with or reach each other's handlers.
+//!
+//! `kn9t.respond(payload)` answers a plugin's own interaction; the host keeps
+//! the transport and the cancel.
 //!
 //! Keys reach a plugin only while it holds focus (`focused_plugin` on the app),
 //! so a plugin cannot silently swallow global keys like `Ctrl+C`. This is the
@@ -59,6 +61,10 @@ const CLICKS_KEY: &str = "_kn9t_plugin_clicks";
 /// Host global holding per-plugin key handlers: `{ [plugin] = { [key] = fn } }`.
 const KEYS_KEY: &str = "_kn9t_plugin_keys";
 
+/// Host global holding per-plugin text handlers: `{ [plugin] = { fn = fn } }`.
+/// Separate from `KEYS_KEY`: text entry is every printable glyph, not one binding.
+const TEXT_KEY: &str = "_kn9t_plugin_text";
+
 /// Host global holding queued outbound effects from plugin views.
 const QUEUE_KEY: &str = "_kn9t_plugin_queue";
 
@@ -76,6 +82,11 @@ pub enum PluginEffect {
         plugin: String,
         event: String,
         data: serde_json::Value,
+    },
+    /// Answer the pending interaction this view renders.
+    Respond {
+        plugin: String,
+        payload: serde_json::Value,
     },
 }
 
@@ -138,6 +149,12 @@ pub fn drain_effects(lua: &Lua) -> Vec<PluginEffect> {
                 plugin,
                 event,
                 data: data_json,
+            });
+        } else if op == "respond" {
+            let payload: LuaValue = entry.get("payload").unwrap_or(LuaValue::Nil);
+            out.push(PluginEffect::Respond {
+                plugin,
+                payload: lua_to_json(&payload),
             });
         }
     }
@@ -311,8 +328,8 @@ impl PluginUiRegistry {
     /// Build the private environment a plugin's chunk runs in.
     ///
     /// It gets the standard library it needs for formatting, plus the
-    /// interaction API (`log`, `on_click`, `on_key`, `insert_input`), and
-    /// nothing that would let it reach the host UI's globals.
+    /// interaction API (`log`, `on_click`, `on_key`, `on_text`, `respond`,
+    /// `insert_input`), and nothing that would let it reach the host UI's globals.
     ///
     /// Every callback closes over `plugin`, so a plugin's own name is not a
     /// parameter it could forge to reach another plugin's registry.
@@ -400,6 +417,28 @@ impl PluginUiRegistry {
         })?;
         kn9t.set("notify", notify)?;
 
+        // kn9t.on_text(fn) — printable characters while this view holds focus.
+        // A handler returning `false` falls through to `on_key`/the host.
+        let owner = plugin.to_string();
+        let on_text = lua.create_function(move |lua, func: Function| {
+            plugin_scoped_table(lua, TEXT_KEY, &owner)?.set("fn", func)?;
+            Ok(())
+        })?;
+        kn9t.set("on_text", on_text)?;
+
+        // kn9t.respond(payload) — answer the pending interaction this view renders.
+        let owner = plugin.to_string();
+        let respond = lua.create_function(move |lua, payload: LuaValue| {
+            let queue = host_queue(lua)?;
+            let entry = lua.create_table()?;
+            entry.set("plugin", owner.as_str())?;
+            entry.set("op", "respond")?;
+            entry.set("payload", payload)?;
+            queue.push(entry)?;
+            Ok(())
+        })?;
+        kn9t.set("respond", respond)?;
+
         env.set("kn9t", kn9t)?;
 
         // Lua looks up globals through `_ENV`; point it at the env itself so
@@ -476,9 +515,9 @@ impl PluginUiRegistry {
             .collect()
     }
 
-    /// Drop every click/key handler owned by `plugin`.
+    /// Drop every click/key/text handler owned by `plugin`.
     fn forget_handlers(lua: &Lua, plugin: &str) {
-        for key in [CLICKS_KEY, KEYS_KEY] {
+        for key in [CLICKS_KEY, KEYS_KEY, TEXT_KEY] {
             if let Ok(Some(root)) = lua.globals().get::<Option<Table>>(key) {
                 let _ = root.set(plugin, LuaValue::Nil);
             }
@@ -542,6 +581,33 @@ impl PluginUiRegistry {
             .and_then(|t| t.get::<Option<Function>>(key))
             .map(|f| f.is_some())
             .unwrap_or(false)
+    }
+
+    /// Whether `plugin` installed a printable-character handler.
+    pub fn has_text(&self, lua: &Lua, plugin: &str) -> bool {
+        plugin_scoped_table(lua, TEXT_KEY, plugin)
+            .and_then(|t| t.get::<Option<Function>>("fn"))
+            .map(|f| f.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Dispatch one printable character to `plugin`'s text handler. Returns
+    /// `true` when consumed; an explicit `false` or an error falls through.
+    pub fn dispatch_text(&self, lua: &Lua, plugin: &str, ch: &str) -> bool {
+        let Ok(handlers) = plugin_scoped_table(lua, TEXT_KEY, plugin) else {
+            return false;
+        };
+        let Ok(Some(func)) = handlers.get::<Option<Function>>("fn") else {
+            return false;
+        };
+        match func.call::<LuaValue>(ch) {
+            Ok(LuaValue::Boolean(false)) => false,
+            Ok(_) => true,
+            Err(e) => {
+                crate::log!("plugin_ui {}: on_text error: {}", plugin, e);
+                false
+            }
+        }
     }
 
     /// Call a plugin's `render(state)` and parse the widget tree.

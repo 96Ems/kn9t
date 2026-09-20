@@ -89,8 +89,8 @@ local function plugin_views_in(zone)
                 end
                 local box_title
                 if is_focused then
-                    -- The plugin shows its own help bar; just say how to release.
-                    box_title = " " .. title .. " [Esc] release "
+                    -- A bottom view is an interaction: Esc cancels it, not releases focus.
+                    box_title = " " .. title .. (zone == "bottom" and " " or " [Esc] release ")
                 else
                     box_title = " [F10] " .. title .. " "
                 end
@@ -121,10 +121,21 @@ local function main_pane()
         direction = "vertical",
         children = {
             { type = "native", view = "transcript", size = { flex = 1 } },
-            { type = "native", view = "input", size = { fixed = (ctx.input_height or 1) + 2 } },
-            { type = "native", view = "status", size = { fixed = 1 } },
         },
     }
+
+    -- Bottom-docked plugin views (the interaction slot): reserved rows between
+    -- the transcript and the prompt, so answering never covers the transcript.
+    for _, p in ipairs(plugin_views_in("bottom")) do
+        table.insert(main.children, p)
+    end
+
+    table.insert(main.children, {
+        type = "native",
+        view = "input",
+        size = { fixed = (ctx.input_height or 1) + 2 },
+    })
+    table.insert(main.children, { type = "native", view = "status", size = { fixed = 1 } })
 
     local top = {}
     if st.viewer_open then

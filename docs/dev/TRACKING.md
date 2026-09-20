@@ -10,6 +10,67 @@ Legend: `☐` pending · `▣` in progress · `☑` done (acceptance test passin
 
 ## Current position
 
+**2026-09-17k (the built-in tools stop fighting PowerShell's encoding):** three complaints about
+`plugins/kn9t-tools` — PowerShell use corrupting UTF-8, `write` not creating parent directories,
+`edit` failing on encoding. All three fixed; the first was caused by the tool's own description
+recommending `Set-Content -Encoding UTF8`. No `R-<AREA>-<NNN>` ids: this is a tool-quality fix,
+not a spec stage or a `PLAN.md` epic. Narrative in `CHANGELOG.md` 2026-09-17k.
+
+| what | where | test |
+|---|---|---|
+| **Windows shells prefer `pwsh`** (PS 7 writes UTF-8 without a BOM), falling back to `powershell`; resolved once | `plugins/kn9t-tools/src/bash.rs` | (covered by preamble/description tests; PATH probe test) |
+| **every Windows command carries a UTF-8 preamble** (`[Console]::OutputEncoding`, `$OutputEncoding`) — fixes the 5.1 read half and stops our `lines().flatten()` from dropping invalid-UTF-8 lines | `bash.rs` | `bash::tests::windows_preamble_sets_utf8` |
+| **the description no longer recommends the corrupting write** — it now forbids `Set-Content`/`Out-File`/`Add-Content`/`>`/`>>` for file writes and names `write`/`edit` | `bash.rs` | `bash::tests::the_description_no_longer_recommends_a_lossy_write` |
+| **`write` creates missing parent directories** | `src/write.rs` | `write::tests::creates_missing_parent_directories` |
+| **`edit` resolves exact-first** — a file holding both `"x"` and `“x”` used to report two matches for `"x"` and reject an unambiguous edit | `src/edit.rs` | `edit::tests::exact_match_wins_over_a_fuzzy_lookalike` |
+| **a fuzzy edit rewrites only the matched span** — it used to write back the fully normalized text, stripping trailing whitespace and ASCII-ifying quotes/dashes file-wide | `src/edit.rs` | `edit::tests::fuzzy_span_maps_back_to_the_original_bytes`, `execute_only_rewrites_the_matched_span` |
+| **`read`/`edit` decode Windows-1252 instead of `U+FFFD`**, and round-trip it (UTF-8/UTF-8-BOM/UTF-16 also handled) | `src/encoding.rs` | `encoding::tests::cp1252_*` (4) |
+| **`edit` repairs cp1252→UTF-8 mojibake** when exact and fuzzy both fail, and writes the repair back as UTF-8 — same per-run, round-trip-gated algorithm as `scripts/fix_mojibake.py` | `src/encoding.rs`, `src/edit.rs` | `encoding::tests::repair_*` (6), `edit::tests::execute_repairs_mojibake_and_writes_utf8` |
+
+**Verification:** `plugins/kn9t-tools` `cargo test` — **51 passed, 0 failed** (was 23);
+`cargo build` with `RUSTFLAGS=-D warnings` clean. The plugin is outside the workspace
+(`CI: plugins-rust` runs bare `cargo test`), so no gate flips. Tool-isolation bug found and fixed
+along the way: `tokens_that_are_not_files_are_ignored` asserted `READ_MAP`'s global length under
+its lock, which races with parallel tests and poisoned the mutex.
+
+---
+
+**2026-09-17j (the sub-agent that never came back, and two host-level hangs):** the live
+complaint was "a sub-agent always inherits the whole parent context, and the parent hangs
+forever even after the child finishes". Both halves were real, and the second one was found
+in `kn9t-plugin`, not in the plugin.
+
+| what | where | test |
+|---|---|---|
+| **a sub-agent is always a *bare* fork** — the child no longer inherits the parent transcript. The parent appends its assistant message *before* running the tool batch, so `copy_events: true` handed the child a transcript ending in the very `subagent` tool call that was executing, with no `tool_result`; strict providers reject that, and the inherited transcript also made the child re-mimic the parent's delegation | `plugins/kn9t-subagent/src/main.ts` | `plugins/kn9t-subagent/test/simulate.mjs` (7 scenarios) |
+| **the model is told what it is spawning** — `context: "isolated" (default) \| "parent"`; `parent` prepends a bounded **text** digest (never provider messages, so no dangling call can reach the wire); `tools`/`model` pick the agent the task needs. Descriptions state that the child sees only `task` | `plugins/kn9t-subagent/src/main.ts` | `simulate.mjs` (`context:parent`, description) |
+| **an unbounded delegation tree can no longer hang** — `KN9T_SUBAGENT_MAX_DEPTH` (default 4) refuses nesting past the cap instead of queueing it; the child's watchdog default is 240 s, strictly under the host's 300 s `tool_call` budget, so the child is cancelled before the host gives up | `plugins/kn9t-subagent/src/main.ts` | `simulate.mjs` (depth cap) |
+| **progress chunks use the flat wire form** — `{"t":"chunk","id":N,"text":…}`; the old `body:{text}` wrapper nested the text so the host's `chunk["text"]` read was always `None` and every progress line was dropped | `plugins/kn9t-subagent/src/main.ts` | `simulate.mjs` |
+| **register-before-send in `PluginHost`** — the reply channel was registered *after* `write_host_msg`; a plugin fast enough to answer in that window had its `done` dropped by the reader (`pending.get(&id)` → `None`) and the caller waited out the whole timeout. This is an unbounded "the child finished but the parent hangs" failure, now impossible by ordering | `crates/kn9t-plugin/src/{host,remote_provider}.rs` | `plug::plugin_reply_landing_before_the_host_waits_is_not_lost` (fails on the old order) |
+| **a panicking host-API op answers instead of stranding the plugin** — the op worker is a bare thread; an unwind wrote no `ApiResult`, so the plugin blocked on its reply forever and the tool call hung on a plugin that looked alive | `crates/kn9t-plugin/src/host.rs` | `plug::host_api_op_panic_becomes_an_error_reply` |
+| **the dangling-call fact is pinned** — `copy_events: true` mid-batch copies an assistant `tool_call` with no `tool_result`; this is the structural reason the sub-agent forks bare | `crates/kn9t-server/tests/acceptance.rs` | `srv::forking_mid_tool_call_inherits_a_dangling_call` |
+
+**Verification:** `plugins/kn9t-subagent` `npm test` 7/7; `plugins/kn9t-compactor` `npm test`
+green; `cargo test -p kn9t-plugin` 37 green; `cargo test -p kn9t-server --test acceptance`
+47 tests → 44 passed, 2 ignored, `srv::approve_session_caches` **FAILED** — a pre-existing flaky
+approval-cache test the user confirmed is flaky, unrelated to this change (it exercises the
+in-process policy hook, not `kn9t-plugin`). Full CI guard bundle (`scripts/check-ci.sh`) green.
+
+**Open, not fixed (recorded, not worked around):** the compactor embeds kept tool results as
+`tool_result` **content blocks inside an assistant message**
+(`plugins/kn9t-compactor/src/main.ts`, `plan.summary.content`). `kn9t-provider-openai`'s
+`encode_message` emits those as `{"type":"tool_result",…}` inside an `assistant` message — not a
+valid chat-completions content part, and a standalone `role:"tool"` message would carry an orphan
+`tool_result` (no preceding `tool_call` after compaction). Neither shape survives a strict
+gateway, so the first turn *after* a compaction is the one to check. The fix is to render kept
+outputs as **text** in the summary, not as `tool_result` blocks; not done here because it changes
+the compactor's plan shape and needs its own acceptance test.
+
+**Also open:** the compactor's summary message id is the literal `"compacted-1"`, identical across
+every compaction in a session — a duplicate `MsgId` the TUI keys messages by.
+
+---
+
 **2026-09-16g (the chrome L1 left behind):** four redundancies and a dead click, found by reading
 the emitted frame rather than the source. No new feature.
 
@@ -172,6 +233,14 @@ constants: `approval_timeout_secs`, `interaction_timeout_secs`,
 `interaction_timeout_no_cancel_secs`, `tool_cancel_grace_ms`, behind `config::ServerTimeouts`.
 Defaults equal the previous hardcoded values, and `0` means *no deadline* rather than "expire
 immediately" (a literal reading would deny every approval instantly).
+
+**Turn-ceiling note (2026-09-17i).** B4's `max_turns` was a hardcoded default of 100, which
+killed any long run without warning. It is now `Option<u32>`, default `None` (unbounded), opt-in
+via `[server] max_turns` (absent or `0` = unbounded). The `[server]` surface — including this
+key — is now declared in `schema/config.json` and rendered to `docs/CONFIG.md` by
+`xtask generate`, checked by `scripts/check-schema.sh`; see `CHANGELOG.md` 2026-09-17i.
+Tests: `unit_max_turns` (7), `unit_turn_lifecycle::react_config_carries_the_configured_max_turns`,
+`unit_turn_lifecycle::server_config_zero_max_turns_means_unbounded`.
 
 **Known gap:** B8 abandons a hung tool thread rather than killing it (Rust cannot kill a thread from
 outside). The turn ends and the session stays usable, but a repeatedly-hanging plugin leaks threads.
@@ -382,6 +451,8 @@ The P1/96E batch and later live-breakage fixes are tracked here (they are not sp
 | 96E-18 | `40a3088` | **durable SSE echo via store after-append observer** — 96E-12 removed durable events from the live bus but the promised server-side echo never existed; TUI got no MessageAppended → no tool cards live, streamed text dropped at next TurnStarted | `srv::p1_96e18_durable_appends_echo_on_sse_bus` + live TUI |
 | 96E-19 | `1b97a90` | empty tool content wire form `"(no output)"` (400 fix), session picker substring filter + first-match select, autotitle uses session model | unit tests + live TUI |
 | 96E-17 | `b700895` + `36b651e` + `71aa63a` + `d63554b` + `b4dbf7f` | **compaction fail-closed** (built-in prompt fallback supprimé — pas de plugin = pas de compaction, session terminée), **plugin → host API RPC** (`request`/`api_result`; ops `provider_complete`/`session_read`/`tool_execute` + **`session_fork`/`session_prompt`**; usage `UsageKind::Subagent`), **RemoteCompactor** (hook `compactor_compact`), **sous-agent = session forkée** (fork_reason=subagent + budget ForkSnapshot + `run_session_turn` synchrone/watchdog; `ToolRegistry::filter_names`; `session` dans le payload tool_call; **built-in spawn_session retiré** (96E-17: zéro tool built-in — `kn9t-subagent` fournit le tool)), **plugins TS `kn9t-compactor`** (2 passes agent via host API) + **`kn9t-subagent`** (tool `spawn_session` pilote = la preuve des primitives) | `plug::p1_96e17_*` (4) + `srv::p1_96e17_*` (3 ops + fork/prompt) + `npm test` ×2 simulate + fail-closed react + smoke serveur (2 plugins handshake OK) |
+| 96E-49 | *(working tree)* | **sub-agent always bare + the parent no longer hangs**: `kn9t-subagent` forks `copy_events:false` (a `copy_events:true` child inherits the in-flight, unanswered `subagent` tool call — pinned by `srv::forking_mid_tool_call_inherits_a_dangling_call`), `context:isolated\|parent` with a text digest, `MAX_DEPTH` cap, 240 s child watchdog < host 300 s tool budget, flat progress chunks; `PluginHost` registers the reply channel **before** sending (a dropped early `done` stranded the caller until timeout) and turns a panicking host-API op into an error reply instead of a vanished `ApiResult` | `kn9t-subagent/test/simulate.mjs` 7/7, `plug::plugin_reply_landing_before_the_host_waits_is_not_lost`, `plug::host_api_op_panic_becomes_an_error_reply` |
+| 96E-50 | *(open, not fixed)* | **compactor embeds kept tool results as `tool_result` blocks in an `assistant` message** — `kn9t-provider-openai` encodes them as chat content parts strict gateways reject; no safe wire shape exists after compaction (an orphan `role:"tool"` message is equally invalid). Fix direction: render kept outputs as text in the summary. Also `summary.id` is the constant `"compacted-1"` | — (recorded in CHANGELOG 2026-09-17g) |
 
 ---
 
@@ -395,7 +466,7 @@ test row. A lot is `☑` only when its acceptance test and its before/after scre
 | lot | subject | status |
 |---|---|---|
 | L1 | chrome: palette (violet/amber/silver), transcript hierarchy, tool cards grouped per turn, bordered input, segmented status bar, two-row header + session tabs, right panel without `recent calls`, overlays, conditional auto-scroll (D22) | ▣ **code done + verified**, three deferrals below |
-| L2 | explorer + viewer + `@` finder (one Rust file index, three surfaces) | ▣ **all three surfaces done** (index, `@` finder, native explorer + viewer); live screenshot + the explorer's `d` diff action pending |
+| L2 | explorer + viewer + `@` finder (one Rust file index, three surfaces) | ▣ **all three surfaces done** (index, `@` finder, native explorer + viewer), now **live** via a workspace watcher; live screenshot + the explorer's `d` diff action pending |
 | L3 | terminal: persistent shell in `kn9t-tools`, server exec endpoint, private-by-default + promotable | ☐ |
 | L4 | animated pixel-art mascot (native view, Fuzzbit mechanism) | ☐ |
 
@@ -412,6 +483,16 @@ test row. A lot is `☑` only when its acceptance test and its before/after scre
 > resolved server-side to a path this machine cannot see, and the launch directory is the only
 > root the welcome screen has. `file_index.refresh` is a no-op unless the root changed, so this
 > is one `getcwd` per turn.
+>
+> **The index is live (2026-09-17g, `src/workspace_watch.rs`):** a `notify` watcher on the
+> launch root raises an `AtomicBool` on any create/modify/remove the walk would see (events under
+> `target/`, `.git/`, … are filtered by the same skip list `file_index::skip_names` gives the
+> walk); `sync_index_views` consumes it once per turn and rebuilds in place. `FileIndex` bumps a
+> `generation` on every `install` and `ExplorerState::sync` rebuilds its rows when it changes, so
+> a file created or deleted under an unchanged root reaches the tree — `refresh`'s root
+> comparison alone could not see it. A rebuild forces a redraw, because an idle `Tick` turn
+> deliberately skips the draw. Without the watcher (unavailable platform watcher, inotify
+> limit) the index is a snapshot exactly as before, and the TUI still starts.
 >
 > **The explorer and the viewer (2026-09-17a):** both are **native views** (`widgets::NATIVE_VIEWS`
 > gained `explorer` and `viewer`), placed by `90_render.lua`:
@@ -465,6 +546,47 @@ Whoever picks this up should ask rather than assume.
 | overlays themed (86 hardcoded `Color::Black` cells) + rounded frame | `src/ui/render.rs` | `chrome_layout::overlays_are_themed_and_framed` |
 | auto-scroll follows the tail only at the bottom (D22); a scrolled-up view is re-anchored to its content so a streaming turn cannot drag it away | `src/message_handler.rs`, `src/ui/render.rs` | `unit_message_handler` 4 |
 | render harness: built-in UI → `TestBackend` → text, no server needed | `tests/chrome_layout.rs` | 10 tests |
+
+**Plugin interaction slot (2026-09-17e):** a plugin that ships a Lua UI now renders its own
+`interaction_request` instead of getting the generic centred overlay. The view declares
+`placement="bottom"`, and the built-in layout reserves rows between the transcript and the
+prompt, so answering never covers the model's message. Added the generic view primitives
+`kn9t.respond(payload)` and `kn9t.on_text(fn)`; `kn9t-ask-user` is the reference (registered
+per question and cleared after, so no leftover sidebar counter). Tests: `plugin_lua_ui` 14,
+`unit_lua_plugin_ui` 29. Rule changed: `AGENTS.md` §11.1 — interaction *rendering* may be
+plugin-Lua; the transport (`POST /ui-respond`) and `Esc`-cancel stay host-owned.
+
+**The rest of the plugin views (2026-09-17f):** every other plugin that draws in the TUI was
+audited against those rules. `kn9t-git-integration` already complied and was untouched.
+`kn9t-compactor` returned a `box` inside the layout's box (double frame and title) and never
+called its own `uiClear` (panel left behind); it now returns content, declares
+`placement = "sidebar"` with a bounded `rows`, and clears on every exit. `kn9t-policy`'s grant
+input was a per-character `on_key` loop over ASCII 32–126; it is now a single
+`kn9t.on_text`, its dead `handle_plugin_msg` and the mirrored `adding`/`input_buf` fields are
+gone, and its Lua is extracted verbatim into `tests/policy_ui.lua` by
+`scripts/extract_policy_lua.py`. Also fixed a latent hang the compactor's own test surfaced:
+a blocking `uiSetState` inside `awaitResults` swallowed the sibling `provider_complete` reply;
+the UI ops are now `hostRequestAsync`. Tests: `policy_ui` 6, compactor `simulate.mjs` green
+(3/3).
+
+**Compactor viewer + fail-safe (2026-09-17h):** the viewer's list rows were written
+`{ text = "..." }`, but `parse_spans` read only `content`/`spans`, so every row rendered empty
+— the panel was a bordered box with no content. `parse_spans` now accepts `text` and applies
+the item's own `fg`. The viewer sends a `preview` (`cmd`/`path`/first string arg) per decision,
+so rows read `✓ keep bash  git status` under `keep N / summarize N / drop N`. Undecided
+tool-call ids are now **kept**, not dropped (`withKeepFallback`) — the silent-loss path the
+"sometimes it fails" report was hitting. The summary pass input was trimmed (tool results
+1000→250 chars, args 500→240, text 2000→1500) since kept results are re-attached verbatim, not
+re-summarized. Tests: `compactor_ui` 4 new, `simulate.mjs` extended (undecided id kept, preview
+present).
+
+The live dogfood run then hit `provider(triage): provider assemble: Truncated` on a 637-tool-call
+session: one forced `submit_triage` with a decision per id is longer than the model's output
+budget, so the stream was cut mid-JSON. Triage is now **batched** (`TRIAGE_BATCH_SIZE = 80`,
+parallel with the summary, merged), each batch retried once, and a still-missing id falls through
+to keep — a bad batch degrades instead of failing the compaction. The extra in-flight requests
+exposed a transport bug: a reader that discards replies it is not waiting for drops a sibling's.
+`hostRequest`/`awaitResults` now buffer unmatched replies in an inbox.
 
 **L1 deferrals, recorded rather than hidden:**
 

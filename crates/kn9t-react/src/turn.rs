@@ -28,25 +28,25 @@ impl ReactLoop {
     pub fn run(&self, mut params: RunParams) -> Result<StopReason, ReactError> {
         let mut turn: u32 = 0;
         loop {
-            // R-RCT-020: refuse an unbounded run. `should_stop_after_turn` defaults to
-            // "continue" (R-RCT-100) and its panic fallback does too (R-RCT-110), so a model
-            // that keeps emitting tool calls has no other stopping condition and would spend
-            // money indefinitely. Checked before the provider is contacted, so `max_turns` is
-            // the number of turns actually spent rather than one more.
-            if turn >= params.config.max_turns {
-                self.bus.emit(LiveEvent::TurnStatus {
-                    phase: "failed".into(),
-                    message: format!("turn limit reached ({} turns)", params.config.max_turns),
-                });
-                self.bus.emit(LiveEvent::Error {
-                    message: format!(
-                        "turn limit reached after {} turns without going idle; the run was \
-                         stopped to avoid an unbounded loop",
-                        params.config.max_turns
-                    ),
-                });
-                self.end_turn(turn, StopReason::Aborted);
-                return Err(ReactError::TurnLimit);
+            // Optional spend guard. `max_turns` is `None` by default: the loop runs until it
+            // goes idle, which is the intended behaviour. When an operator sets a ceiling,
+            // check it before the provider is contacted, so `max_turns` is the number of turns
+            // actually spent rather than one more.
+            if let Some(max_turns) = params.config.max_turns {
+                if turn >= max_turns {
+                    self.bus.emit(LiveEvent::TurnStatus {
+                        phase: "failed".into(),
+                        message: format!("turn limit reached ({max_turns} turns)"),
+                    });
+                    self.bus.emit(LiveEvent::Error {
+                        message: format!(
+                            "turn limit reached after {max_turns} turns without going idle; the \
+                             run was stopped because [server] max_turns is set"
+                        ),
+                    });
+                    self.end_turn(turn, StopReason::Aborted);
+                    return Err(ReactError::TurnLimit);
+                }
             }
             turn += 1;
             self.bus.emit(LiveEvent::TurnStarted { turn });

@@ -637,7 +637,7 @@ impl ServerHostApi {
         // Unknown placements are rejected here rather than silently defaulting:
         // a typo that quietly becomes "sidebar" is harder to notice than an
         // error at registration.
-        const PLACEMENTS: &[&str] = &["sidebar", "main", "status"];
+        const PLACEMENTS: &[&str] = &["sidebar", "main", "bottom", "status"];
         let placement = payload.get("placement").and_then(|v| v.as_str());
         if let Some(p) = placement {
             if !PLACEMENTS.contains(&p) {

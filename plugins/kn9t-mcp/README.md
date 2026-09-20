@@ -71,6 +71,27 @@ name = "db"
 cmd = ["uvx", "mcp-server-sqlite", "--db-path", "/path/to/data.db"]
 ```
 
+#### Remote (HTTP/SSE) servers
+
+Servers reachable over HTTP are configured with `type = "remote"`:
+
+```toml
+[[mcp]]
+name = "remote"
+type = "remote"
+url = "https://mcp.example.com/mcp"
+[mcp.headers]
+api-key = "env:MCP_API_KEY"
+```
+
+> **Do not remove the `User-Agent` header.** This plugin identifies itself as
+> `kn9t-mcp/<version> (+https://github.com/kn9t/kn9t)`. Python's `urllib` default,
+> `Python-urllib/3.x`, is banned by some MCP endpoints behind Cloudflare bot rules and
+> gets answered with `HTTP 403 Access denied / browser_signature_banned` — an error that
+> looks exactly like an auth failure, so it sends you chasing a token bug that isn't
+> there. The default lives in `kn9t_mcp/mcp_http_client.py` (`DEFAULT_USER_AGENT`) and can
+> be overridden per server with a `User-Agent` key under `[mcp.headers]`.
+
 ### Step 2: Register plugin with kn9t
 
 Add to `~/.kn9t/config.toml`:
@@ -88,6 +109,25 @@ Or if installed globally:
 name = "kn9t-mcp"
 cmd = ["kn9t-mcp"]
 ```
+
+### Hot reload
+
+The plugin watches `~/.kn9t/mcp.toml` and reloads it while kn9t is running — no
+restart needed. It polls the file every couple of seconds and, when it changes,
+sends a `declare` message to kn9t-server, which rebuilds its tool registry and
+tells the TUI (`plugin_declared`). What that means in practice:
+
+| Change to `mcp.toml` | Effect |
+|---|---|
+| Add a server | Spawned/connected; its tools become callable |
+| Remove a server | Disconnected; its tools disappear |
+| Edit a server (cmd, env, url, headers) | Reconnected with the new definition |
+| Rename a server | Treated as remove + add |
+
+Two things are **not** picked up: a server that starts exposing a *new* tool
+while its own config is unchanged (the plugin does not poll each server's tool
+list), and changes only to an env var the config already referenced (the file
+mtime must change).
 
 ## Usage
 

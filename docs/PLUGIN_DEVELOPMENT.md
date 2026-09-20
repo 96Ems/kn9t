@@ -653,13 +653,15 @@ Plugins can display interactive UIs in the TUI.
 
 1. **Register Lua source** via `ui_register_lua` — defines `render(state)`
 2. **Push state** via `ui_set_state` — arbitrary JSON from plugin to TUI
-3. **Handle keys** via `kn9t.on_key(key, fn)` in the Lua source
-4. **Modify local state directly** in key handlers — the Lua `V` table persists
+3. **Handle keys** via `kn9t.on_key(key, fn)`; printable text via `kn9t.on_text(fn)`
+4. **Modify local state directly** in handlers — the Lua `V` table persists
+5. **Answer an interaction** via `kn9t.respond(payload)` — the host owns the
+   transport (`POST /ui-respond`)
 
-> **IMPORTANT:** Key handlers run in the TUI process, not your plugin process.
-> You cannot send messages back to your plugin via `kn9t.action`. All UI logic
-> must be self-contained in the Lua source. Use `ui_set_state` to push data
-> FROM your plugin TO the TUI, but there is no reverse channel.
+> **IMPORTANT:** Handlers run in the TUI process, not your plugin process, and
+> there is no general reverse channel. The exceptions are `kn9t.notify()` (to
+> your backend) and `kn9t.respond()` (to the host, for the interaction you are
+> rendering). Everything else must be self-contained in the Lua source.
 
 ### Getting session_id
 
@@ -696,7 +698,8 @@ if msg.get("t") == "hook":
 }
 ```
 
-**Placements:** `main`, `sidebar`, `status`
+**Placements:** `main`, `sidebar`, `bottom`, `status`. `bottom` reserves rows between the
+transcript and the prompt — the slot for an interaction that must not cover the transcript.
 
 ### Push State
 
@@ -740,9 +743,16 @@ kn9t.on_key("k", function()
     return true  -- consumed
 end)
 
-kn9t.on_key("Escape", function()
-    return false  -- let Esc release focus
+-- Text entry: one handler for every printable character. Return false to let
+-- a character fall through to on_key or the host.
+kn9t.on_text(function(ch)
+    if not V.editing then return false end
+    V.buffer = V.buffer .. ch
+    return true
 end)
+
+-- Esc is intercepted by the host (it cancels a pending interaction), so a view
+-- cannot bind it; offer an explicit "cancel" item instead.
 
 -- Render function (required)
 function render(s)
@@ -790,6 +800,16 @@ receive key events or UI interactions. Design your UI to be self-contained:
 | `split` | `direction` (`vertical`/`horizontal`), `children` |
 | `spacer` | `size` |
 | `box` | `title`, `border`, `child` |
+
+**Return content, not a frame.** The layout wraps every plugin view in its own box — border,
+title and focus ring included — so a view whose top-level node is a `box` nests two frames.
+Return the `split`/`list`/`text` you want *inside* the frame; a `box` is still fine for a
+sub-panel within your content.
+
+**Register, then clear.** A view that is only useful for the duration of an operation (a
+progress panel, a question) should `ui_clear` when it is done, so an idle session keeps no
+panel and a second run re-registers it. Register lazily: the `session_id` arrives with the
+first hook, not at handshake.
 
 ### Communicating Back to Plugin via `kn9t.notify()`
 

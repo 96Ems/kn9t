@@ -134,7 +134,7 @@ impl PluginTool for Read {
             .unwrap_or(SystemTime::UNIX_EPOCH);
         read_map().lock().unwrap().insert(path.clone(), (sha, mtime));
 
-        let text = decode_text(&content);
+        let (_enc, text) = crate::encoding::decode(&content);
         let lines: Vec<&str> = text.lines().collect();
         let start = (offset - 1).min(lines.len());
         let end = limit.map(|l| (start + l).min(lines.len())).unwrap_or(lines.len());
@@ -192,44 +192,6 @@ fn read_image(path: &Path) -> ToolOutput {
 
 /// Public alias so edit.rs can reuse the same hash function.
 pub fn sha256_pub(data: &[u8]) -> [u8; 32] { sha256(data) }
-
-/// Decode bytes to text, handling UTF-8, UTF-16 LE/BE (with or without BOM).
-fn decode_text(data: &[u8]) -> String {
-    // UTF-16 LE BOM
-    if data.starts_with(&[0xFF, 0xFE]) {
-        return decode_utf16_le(&data[2..]);
-    }
-    // UTF-16 BE BOM
-    if data.starts_with(&[0xFE, 0xFF]) {
-        return decode_utf16_be(&data[2..]);
-    }
-    // UTF-8 BOM
-    if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        return String::from_utf8_lossy(&data[3..]).into_owned();
-    }
-    // Heuristic: if lots of null bytes interleaved, likely UTF-16 LE without BOM
-    if data.len() >= 4 && data[1] == 0 && data[3] == 0 {
-        return decode_utf16_le(data);
-    }
-    // Default: UTF-8
-    String::from_utf8_lossy(data).into_owned()
-}
-
-fn decode_utf16_le(data: &[u8]) -> String {
-    let u16s: Vec<u16> = data
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    String::from_utf16_lossy(&u16s)
-}
-
-fn decode_utf16_be(data: &[u8]) -> String {
-    let u16s: Vec<u16> = data
-        .chunks_exact(2)
-        .map(|c| u16::from_be_bytes([c[0], c[1]]))
-        .collect();
-    String::from_utf16_lossy(&u16s)
-}
 
 fn sha256(data: &[u8]) -> [u8; 32] {
     // Simple FNV-based 32-byte hash — good enough for stale detection.

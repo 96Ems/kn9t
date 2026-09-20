@@ -20,12 +20,17 @@ pub struct ReactConfig {
     pub truncation_ladder: Vec<u32>,
     /// Max compaction re-plans when context overflows (default 1).
     pub max_context_replans: u32,
-    /// Max turns in one run before loop gives up (default 100).
-    /// `should_stop_after_turn`, whose default is `false` (R-RCT-100) and whose panic
-    /// fallback is also `false` (R-RCT-110). A model stuck re-issuing the same call would
-    /// therefore spend money indefinitely. This is the backstop: high enough that no real
-    /// task reaches it, finite so a rut always ends.
-    pub max_turns: u32,
+    /// Optional cap on turns in one run, checked before each provider call.
+    ///
+    /// `None` (the default) means **unbounded**: the loop runs until it goes idle
+    /// (`should_stop_after_turn` / an empty followup queue) or the user aborts it. This is the
+    /// intended behaviour — a legitimate task may need many turns, and a silent turn ceiling
+    /// would cut it off mid-work.
+    ///
+    /// `Some(n)` restores the old backstop for operators who want a spend guard: a model that
+    /// never goes idle is stopped after `n` turns with `ReactError::TurnLimit`. It is opt-in
+    /// via `[server] max_turns`, never on by default.
+    pub max_turns: Option<u32>,
     /// R-RCT-130 -- how long a cancelled batch waits for a `parallel_safe` tool to notice
     /// `Cancel` before abandoning it (default 1.5s).
     ///
@@ -43,7 +48,7 @@ impl Default for ReactConfig {
             truncation_attempts: 4,
             truncation_ladder: vec![150, 100, 50, 25, 10],
             max_context_replans: 1,
-            max_turns: 100,
+            max_turns: None,
             tool_cancel_grace: std::time::Duration::from_millis(1500),
         }
     }
@@ -94,8 +99,9 @@ pub enum ReactError {
     CompactionUnavailable,
     /// Truncation ladder exhausted (R-RCT-070).
     TruncationGaveUp,
-    /// R-RCT-020 -- `ReactConfig::max_turns` reached. The model kept asking for another turn
-    /// (typically re-issuing tool calls) and nothing else was going to stop it.
+    /// `ReactConfig::max_turns` reached (only possible when it is `Some`). The model kept
+    /// asking for another turn (typically re-issuing tool calls) and nothing else was going
+    /// to stop it.
     TurnLimit,
 }
 

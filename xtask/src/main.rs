@@ -1,13 +1,14 @@
 //! xtask — schema-first code generation for kn9t (ADR-0005, Phase 2).
 //!
-//! `cargo run -p xtask -- generate` reads `schema/http.json` + `schema/plugin.json`
-//! and regenerates, from the schema as the single source of truth:
+//! `cargo run -p xtask -- generate` reads `schema/http.json` + `schema/plugin.json` +
+//! `schema/config.json` and regenerates, from the schema as the single source of truth:
 //!
 //! | output | notes |
 //! |---|---|
 //! | `crates/kn9t-server/src/api.rs` | typed request structs with `#[serde(deny_unknown_fields)]` — a mistyped field is a **400**, not a silent ignore |
 //! | `crates/kn9t-tui/src/write` | wire mirrors, GI-6-clean (serde only, no kn9t-* dep) |
 //! | `API.md` | human-readable contract docs — never hand-edited again |
+//! | `docs/CONFIG.md` | `~/.kn9t/config.toml` reference, rendered from `schema/config.json` |
 //! | `schema/generated/go_types.go` | Go client stubs (for `plugins/kn9t-agents-md`) |
 //! | `schema/generated/python_types.py` | Python client stubs (for `plugins/kn9t-mcp`) |
 //! | `.agents/skills/kn9t-plugin-creation/references/**` | plugin-authoring snapshots — `api.md` plus the SDK source, so the skill cannot restate the contract wrongly |
@@ -19,6 +20,7 @@
 //! This crate is a **dev/tool** dependency (DESIGN §15 budget intact: no new *runtime*
 //! deps anywhere). `preserve_order` on its serde_json is a generator-only convenience.
 
+mod gen_config;
 mod gen_markdown;
 mod gen_server;
 mod gen_skill;
@@ -34,7 +36,7 @@ fn main() -> ExitCode {
     match args.get(1).map(|s| s.as_str()) {
         Some("generate") => match generate() {
             Ok(()) => {
-                println!("xtask generate: schema -> api.rs, wire.rs, API.md, Go/Python stubs, skill references (idempotent)");
+                println!("xtask generate: schema -> api.rs, wire.rs, API.md, docs/CONFIG.md, Go/Python stubs, skill references (idempotent)");
                 ExitCode::SUCCESS
             }
             Err(e) => {
@@ -79,8 +81,8 @@ fn repo_root() -> PathBuf {
     PathBuf::from(".")
 }
 
-/// Load and structurally validate both schemas.
-fn load() -> Result<(serde_json::Value, serde_json::Value), String> {
+/// Load and structurally validate every schema.
+fn load() -> Result<(serde_json::Value, serde_json::Value, serde_json::Value), String> {
     let root = repo_root();
     let http: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(root.join("schema/http.json")).map_err(|e| e.to_string())?,
@@ -90,6 +92,10 @@ fn load() -> Result<(serde_json::Value, serde_json::Value), String> {
         &std::fs::read_to_string(root.join("schema/plugin.json")).map_err(|e| e.to_string())?,
     )
     .map_err(|e| format!("schema/plugin.json: {e}"))?;
+    let config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("schema/config.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("schema/config.json: {e}"))?;
 
     if http.get("routes").and_then(|r| r.as_array()).is_none() {
         return Err("schema/http.json: missing 'routes' array".into());
@@ -100,12 +106,15 @@ fn load() -> Result<(serde_json::Value, serde_json::Value), String> {
     if plugin.get("host_to_plugin").is_none() || plugin.get("plugin_to_host").is_none() {
         return Err("schema/plugin.json: missing 'host_to_plugin' / 'plugin_to_host'".into());
     }
-    Ok((http, plugin))
+    if config.get("groups").and_then(|g| g.as_array()).is_none() {
+        return Err("schema/config.json: missing 'groups' array".into());
+    }
+    Ok((http, plugin, config))
 }
 
 /// Entry for `generate`: load, validate, regenerate every output in place.
 fn generate() -> Result<(), String> {
-    let (http, plugin) = load()?;
+    let (http, plugin, config) = load()?;
     let root = repo_root();
 
     gen_server::write(&root, &http)?;
@@ -113,6 +122,7 @@ fn generate() -> Result<(), String> {
     gen_markdown::write(&root, &http, &plugin)?;
     gen_stubs::write(&root, &http, &plugin)?;
     gen_skill::write(&root, &http, &plugin)?;
+    gen_config::write(&root, &config)?;
 
     // Run rustfmt on generated Rust files so they match workspace style and
     // `cargo fmt -- --check` in CI does not flag them as drift.
@@ -135,7 +145,7 @@ fn generate() -> Result<(), String> {
 /// Entry for `--check`: verify every committed output is byte-identical to what the
 /// generator would produce right now (used by scripts/check-schema.sh in pre-commit).
 fn check() -> Result<(), String> {
-    let (http, plugin) = load()?;
+    let (http, plugin, config) = load()?;
     let root = repo_root();
     let mut failures = 0;
 
@@ -173,6 +183,7 @@ fn check() -> Result<(), String> {
         fmt_rust(gen_wire::generate(&http)?)?,
     ));
     expected.push((root.join("API.md"), gen_markdown::generate(&http, &plugin)?));
+    expected.push((root.join("docs/CONFIG.md"), gen_config::generate(&config)?));
     let (go, py) = gen_stubs::generate(&http, &plugin)?;
     expected.push((root.join("schema/generated/go_types.go"), go));
     expected.push((root.join("schema/generated/python_types.py"), py));

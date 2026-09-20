@@ -1424,6 +1424,108 @@ mod plug {
         );
     }
 
+    /// A host-API op that panics must still answer. The worker is a bare thread:
+    /// an unwind would leave no `ApiResult` behind and the plugin would block on
+    /// its reply forever, hanging the tool call that started it.
+    #[test]
+    fn host_api_op_panic_becomes_an_error_reply() {
+        use kn9t_plugin::host_api::HostApi;
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let script = std::thread::spawn(move || {
+            ready_rx.recv().unwrap();
+            let mut writer = p_write;
+            write_plugin_msg(
+                &mut writer,
+                &PluginMsg::Request {
+                    id: 9,
+                    op: "session_prompt".to_string(),
+                    payload: json!({"session": "s1"}),
+                },
+            )
+            .unwrap();
+            let mut reader = BufReader::new(p_read);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let reply: HostMsg = serde_json::from_str(line.trim_end()).unwrap();
+            let HostMsg::ApiResult {
+                id,
+                ok,
+                result,
+                error,
+            } = reply
+            else {
+                panic!("expected ApiResult, got {line}");
+            };
+            assert_eq!(id, 9);
+            assert!(!ok, "a panicking op must not report success");
+            assert!(result.is_none());
+            assert!(
+                error.unwrap().contains("panicked"),
+                "the error must name the panic"
+            );
+        });
+
+        struct PanicApi;
+        impl HostApi for PanicApi {
+            fn handle(
+                &self,
+                _plugin: &str,
+                _session: Option<&str>,
+                _op: &str,
+                _payload: &serde_json::Value,
+            ) -> Result<serde_json::Value, String> {
+                panic!("simulated op failure")
+            }
+        }
+
+        let host = PluginHost::from_io(h_read, h_write, decl("t", vec![]), Arc::new(NoOpPluginKv));
+        host.set_api_handler(Arc::new(PanicApi));
+        ready_tx.send(()).unwrap();
+        script.join().unwrap();
+        assert!(host.is_healthy(), "a panic must not poison the connection");
+    }
+
+    /// A writer that gives the plugin time to answer before the host resumes.
+    ///
+    /// This makes `begin_call`'s register-before-send ordering observable: with
+    /// the old write-then-register order the reply lands first, finds no pending
+    /// channel, and is dropped — the caller then times out even though the plugin
+    /// answered immediately.
+    struct PauseAfterWrite<W>(W);
+    impl<W: Write> Write for PauseAfterWrite<W> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let n = self.0.write(buf)?;
+            self.0.flush()?;
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            Ok(n)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.flush()
+        }
+    }
+
+    #[test]
+    fn plugin_reply_landing_before_the_host_waits_is_not_lost() {
+        let (h_read, h_write, p_read, p_write) = make_pipes();
+        let host = PluginHost::from_io(
+            h_read,
+            Box::new(PauseAfterWrite(h_write)),
+            decl("t", vec![HookName::GetApiKey]),
+            Arc::new(NoOpPluginKv),
+        );
+        // The plugin answers the instant it reads the hook — before the host has
+        // finished writing it, let alone started waiting.
+        spawn_plugin_responder(p_read, p_write, json!({"key": "k"}));
+        let key = host.get_api_key("openai");
+        assert_eq!(
+            key.as_deref(),
+            Some("k"),
+            "an immediate reply must be received, not dropped"
+        );
+    }
+
     // ── /17: RemoteCompactor delegation over the hook wire ────────────
 
     #[test]

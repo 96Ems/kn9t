@@ -34,6 +34,10 @@ const SPAN = [
   { seq: 3, role: "assistant", content: [{ type: "tool_result", id: "t1", is_error: false, content: [{ type: "text", text: "file1 file2" }] }] },
   { seq: 4, role: "assistant", content: [{ type: "tool_call", id: "t2", name: "bash", args_json: "{\"cmd\":\"ls /tmp\"}" }] },
   { seq: 5, role: "assistant", content: [{ type: "tool_result", id: "t2", is_error: false, content: [{ type: "text", text: "scratch noise (bbbb\ncccc)" }] }] },
+  // t3 is deliberately left out of the model's plan: the plugin must keep it,
+  // not drop it (fail-safe against losing a tool result).
+  { seq: 6, role: "assistant", content: [{ type: "tool_call", id: "t3", name: "read", args_json: "{\"path\":\"src/main.rs\"}" }] },
+  { seq: 7, role: "assistant", content: [{ type: "tool_result", id: "t3", is_error: false, content: [{ type: "text", text: "fn main() {}" }] }] },
 ];
 
 send({ t: "hello", proto: 1, kn9t: "0.1.0-test" });
@@ -49,6 +53,7 @@ send({ t: "hook", id: 42, hook: "compactor_compact", payload: { session: "sess-x
 // multiple provider_complete requests before responding to any.
 let triageCalls = 0;
 let summaryReqId = null;
+const uiStates = [];
 const deadline = Date.now() + 15000;
 
 while (Date.now() < deadline) {
@@ -64,6 +69,7 @@ while (Date.now() < deadline) {
       send({ t: "api_result", id: req.id, ok: true, result: { messages: SPAN } });
     } else if (req.op === "ui_register_lua" || req.op === "ui_set_state" || req.op === "ui_clear") {
       // UI updates are fire-and-forget, just ack them
+      if (req.op === "ui_set_state") uiStates.push(req.payload.state);
       send({ t: "api_result", id: req.id, ok: true, result: null });
     } else if (req.op === "provider_complete") {
       assert.equal(req.payload.session, "sess-x", "provider_complete carries session");
@@ -82,7 +88,7 @@ while (Date.now() < deadline) {
           reply = { content: [{ type: "text", text: "I think we should keep t1 and drop t2." }] };
         } else {
           // Retry carries the correction instruction, then a real tool call.
-          assert.ok(usr.includes("did not call submit_triage"), "correction shot instructs tool use");
+          assert.ok(usr.includes("call submit_triage exactly once"), "correction shot instructs tool use");
           reply = { content: [{ type: "tool_call", id: "c1", name: "submit_triage", args_json: JSON.stringify({ decisions: [{ id: "t1", action: "keep" }, { id: "t2", action: "drop" }], resume_actions: ["run the fix"] }) }] };
         }
         send({ t: "api_result", id: req.id, ok: true, result: reply });
@@ -108,9 +114,12 @@ while (Date.now() < deadline) {
     const kept = done.summary.content.find((b) => b.type === "tool_result" && b.id === "t1");
     assert.ok(kept, "kept tool result embedded verbatim");
     assert.equal(kept.content[0].text, "file1 file2", "byte-exact kept output");
-    assert.deepEqual(done.handoff.keep, ["t1"]);
+    assert.deepEqual(done.handoff.keep, ["t1", "t3"], "undecided t3 must be kept, not lost");
     assert.deepEqual(done.handoff.drop, ["t2"]);
     assert.deepEqual(done.handoff.resume_actions, ["run the fix"]);
+    // The viewer must be able to tell which call a decision is about.
+    const t1 = uiStates.flatMap((s) => s.decisions || []).find((d) => d.id === "t1");
+    assert.equal(t1 && t1.preview, "ls", "decision rows must carry the tool call's command");
     // With parallel execution, triage may retry once if first attempt fails
     assert.ok(triageCalls >= 1, "triage was called at least once");
     console.log("✓ compactor_compact round trip OK (parallel triage+summary)");

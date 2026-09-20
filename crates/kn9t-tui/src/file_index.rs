@@ -63,6 +63,9 @@ pub struct FileIndex {
     tick: u32,
     /// True when the walk stopped at `MAX_INDEXED`.
     truncated: bool,
+    /// Bumped by every `install`, so a consumer that caches a derived view (the explorer's
+    /// flattened rows) can tell that the *contents* changed even when the root did not.
+    generation: u64,
 }
 
 impl FileIndex {
@@ -84,6 +87,13 @@ impl FileIndex {
 
     pub fn truncated(&self) -> bool {
         self.truncated
+    }
+
+    /// Changes on every `install`: a cached derived view (the explorer's rows) must rebuild
+    /// when this differs from the value it last saw. Root alone is not enough — a rebuild in
+    /// place keeps the root and replaces every path beneath it.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The `i`-th path, in sorted order.
@@ -126,6 +136,8 @@ impl FileIndex {
         self.ranges.clear();
         self.hits.clear();
         self.last_used.clear();
+        // Every install replaces the file list, so derived views must rebuild.
+        self.generation = self.generation.wrapping_add(1);
 
         for path in sorted {
             let start = self.paths.len() as u32;
@@ -432,6 +444,13 @@ fn is_skipped(name: &str, rel: &str, skips: &[String]) -> bool {
     skips.iter().any(|s| s == name || s == rel)
 }
 
+/// The names the walk skips for `root`: [`DEFAULT_SKIPS`] plus the root `.gitignore`'s plain
+/// names. Exposed so the workspace watcher can ignore the same churn the walk ignores —
+/// otherwise a `cargo build` would flag a rebuild on every object file under `target/`.
+pub fn skip_names(root: &Path) -> Vec<String> {
+    load_skips(root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -660,6 +679,40 @@ mod tests {
         assert!(idx.refresh(&parent), "new root walks");
 
         let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn generation_tracks_a_rebuild_in_place() {
+        let root = std::env::temp_dir().join(format!("kn9t-generation-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("a.rs"), "a").expect("write");
+
+        let mut idx = FileIndex::new();
+        assert_eq!(
+            idx.generation(),
+            0,
+            "a fresh index has never been installed"
+        );
+        idx.rebuild(&root);
+        let first = idx.generation();
+        assert!(
+            first > 0,
+            "a walk installs a file list and bumps the generation"
+        );
+        assert_eq!(idx.search("", 5), vec!["a.rs"]);
+
+        // The point of the counter: a rebuild *in place* is observable even though the root
+        // did not change, which is what lets the explorer refresh a live-tree change.
+        std::fs::write(root.join("b.rs"), "b").expect("write");
+        idx.rebuild(&root);
+        assert!(
+            idx.generation() > first,
+            "a rebuild must bump the generation"
+        );
+        assert_eq!(idx.search("", 5), vec!["a.rs", "b.rs"]);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

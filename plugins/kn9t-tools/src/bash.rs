@@ -13,12 +13,74 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::OnceLock;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::read::track_as_read;
 
 pub struct Bash;
+
+/// Prepended to every Windows command.
+///
+/// PowerShell writes its own stdout in `[Console]::OutputEncoding`, which on
+/// Windows PowerShell 5.1 is the machine's ANSI codepage. That is why
+/// `Get-Content` of a UTF-8 file shows mojibake and why a native command's
+/// accented output is dropped by our reader (a line that is not valid UTF-8 is
+/// an `Err` that `lines().flatten()` silently discards). On PowerShell 7 it is
+/// already UTF-8, and setting it again is harmless.
+///
+/// `$OutputEncoding` is the other half: the encoding used when sending text to
+/// a native child's stdin. `[Console]::OutputEncoding` is wrapped in try/catch
+/// because assigning it throws when there is no console (output redirected).
+const PS_UTF8_PREAMBLE: &str =
+    "try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}; \
+     $OutputEncoding = [System.Text.Encoding]::UTF8; ";
+
+/// The shell executable to run commands through.
+///
+/// Windows prefers PowerShell 7 (`pwsh`) when it is installed: it reads and
+/// writes UTF-8 without a BOM by default, so `Set-Content`/`Out-File` no longer
+/// corrupt UTF-8 files. Windows PowerShell 5.1 is the fallback, and its ANSI
+/// default plus `-Encoding UTF8` BOM is the source of the mojibake the `write`
+/// and `edit` tools exist to avoid.
+///
+/// Resolved once: scanning `PATH` per command would be a per-call cost, and the
+/// answer cannot change while the plugin runs.
+fn shell_exe() -> &'static str {
+    static SHELL: OnceLock<&'static str> = OnceLock::new();
+    *SHELL.get_or_init(|| {
+        if cfg!(windows) {
+            if executable_on_path("pwsh") {
+                "pwsh"
+            } else {
+                "powershell"
+            }
+        } else {
+            "sh"
+        }
+    })
+}
+
+/// True if `exe` (or `exe.exe` on Windows) exists in a `PATH` directory.
+fn executable_on_path(exe: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| executable_in(&dir, exe))
+}
+
+/// True if `exe` exists directly inside `dir`.
+fn executable_in(dir: &Path, exe: &str) -> bool {
+    if dir.join(exe).is_file() {
+        return true;
+    }
+    #[cfg(windows)]
+    if dir.join(format!("{exe}.exe")).is_file() {
+        return true;
+    }
+    false
+}
 
 /// Split a command line into tokens, honouring single/double quotes so that
 /// `Get-Content "C:\path with spaces\a.rs"` yields one path token.
@@ -97,16 +159,20 @@ fn drain_with_timeout(rx: Receiver<String>, timeout: Duration) -> Vec<String> {
 impl PluginTool for Bash {
     fn spec(&self) -> ToolSpec {
         let description = if cfg!(windows) {
-            "Run a shell command (PowerShell on Windows). \
+            "Run a shell command (PowerShell on Windows; `pwsh` is used when installed). \
              Use PowerShell syntax: `Get-ChildItem` not `ls`, `Get-Content` not `cat`, \
-             `Remove-Item` not `rm`, `$env:TEMP` for temp folder, backslash `\\` in paths. \
-             For file writes use `-Encoding UTF8` (e.g. `Set-Content -Encoding UTF8`). \
+             `Remove-Item` not `rm`, `$env:TEMP` for the temp folder, backslashes in paths. \
+             Do NOT write files with PowerShell: `Set-Content`, `Out-File`, `Add-Content` \
+             and `>`/`>>` corrupt UTF-8 (Windows PowerShell 5.1 adds a BOM and re-encodes \
+             text through ANSI, producing mojibake) — use the `write` and `edit` tools, \
+             which preserve the file's encoding. \
              Streams stdout lines as progress. Cancelled calls kill the process. \
              Existing files named in the command are registered as observed, so a \
              following `edit`/`write` needs no separate `read`."
         } else {
             "Run a shell command (sh on Unix). \
              Use POSIX syntax. $TMPDIR or /tmp for temp files. \
+             For file writes prefer the `write` and `edit` tools, which preserve encoding. \
              Streams stdout lines as progress. Cancelled calls kill the process. \
              Existing files named in the command are registered as observed, so a \
              following `edit`/`write` needs no separate `read`."
@@ -187,17 +253,21 @@ impl PluginTool for Bash {
             return ToolOutput::error("cancelled before start");
         }
 
-        // Spawn the child process.
-        let (shell, flag) = if cfg!(windows) {
-            ("powershell", "-Command")
-        } else {
-            ("sh", "-c")
-        };
+        // Spawn the child process. On Windows `pwsh` (PowerShell 7) is
+        // preferred over `powershell` (5.1), and the command carries a UTF-8
+        // preamble — see `shell_exe` and `PS_UTF8_PREAMBLE`.
+        let shell = shell_exe();
 
         let mut cmd_builder = Command::new(shell);
+        let arg = if cfg!(windows) { "-Command" } else { "-c" };
+        let full_cmd = if cfg!(windows) {
+            format!("{PS_UTF8_PREAMBLE}{cmd}")
+        } else {
+            cmd.clone()
+        };
         cmd_builder
-            .arg(flag)
-            .arg(&cmd)
+            .arg(arg)
+            .arg(&full_cmd)
             .stdin(Stdio::null()) // Don't inherit stdin — prevents hangs on interactive prompts
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -350,8 +420,51 @@ mod tests {
 
     #[test]
     fn tokens_that_are_not_files_are_ignored() {
-        let before = crate::read::read_map().lock().unwrap().len();
         track_paths_in("Get-ChildItem -Recurse -Filter *.rs");
-        assert_eq!(crate::read::read_map().lock().unwrap().len(), before);
+        // The map is process-global and other tests write to it, so assert on
+        // these specific tokens rather than on the map's length.
+        let map = crate::read::read_map();
+        let map = map.lock().unwrap();
+        for token in ["Get-ChildItem", "-Recurse", "-Filter", "*.rs"] {
+            assert!(
+                !map.contains_key(Path::new(token)),
+                "non-file token {token:?} must not be tracked"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_preamble_sets_utf8() {
+        assert!(PS_UTF8_PREAMBLE.contains("[Console]::OutputEncoding"));
+        assert!(PS_UTF8_PREAMBLE.contains("$OutputEncoding"));
+        // It must be a single statement-safe line: no newline in the -Command arg.
+        assert!(!PS_UTF8_PREAMBLE.contains('\n'));
+    }
+
+    #[test]
+    fn the_description_no_longer_recommends_a_lossy_write() {
+        let spec = Bash.spec();
+        let desc = &spec.description;
+        // `Set-Content -Encoding UTF8` was the actual instruction that caused
+        // the PowerShell mojibake; it must not come back.
+        assert!(!desc.contains("-Encoding UTF8"), "{desc}");
+        assert!(desc.contains("write"), "{desc}");
+        assert!(desc.contains("edit"), "{desc}");
+    }
+
+    #[test]
+    fn executable_in_finds_a_file_and_rejects_a_missing_one() {
+        let dir = std::env::temp_dir().join("kn9t_bash_path_probe");
+        std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(windows)]
+        let name = "kn9t-fake-pwsh.exe";
+        #[cfg(not(windows))]
+        let name = "kn9t-fake-pwsh";
+        std::fs::write(dir.join(name), b"").unwrap();
+        let stem = "kn9t-fake-pwsh";
+
+        assert!(executable_in(&dir, stem));
+        assert!(!executable_in(&dir, "kn9t-definitely-absent"));
+        std::fs::remove_file(dir.join(name)).ok();
     }
 }
