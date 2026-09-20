@@ -128,7 +128,7 @@ no store** — only data types, trait definitions, the bus, and pure functions.
 >     pub max_out:    u32,
 >     pub price:      Price,
 >     pub cache:      CacheMode,  // carries min_tokens
->     pub streaming:  bool,       // false ⇒ synthesize chunks (NBED §8.7.4)
+>     pub streaming:  bool,       // false ⇒ synthesize chunks (non-streaming models)
 >     pub quirks:     Quirks,
 > }
 > ```

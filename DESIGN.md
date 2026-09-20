@@ -234,12 +234,12 @@ pub struct ModelRef  { pub provider: String, pub id: String }
 
 pub struct ModelSpec {
     pub r#ref:      ModelRef,
-    pub api_id:     String,        // may differ from ref.id, e.g. the ":1m" pair (§8.7.5)
+    pub api_id:     String,        // may differ from ref.id for aliased models
     pub ctx_window: u32,
     pub max_out:    u32,
     pub price:      Price,
     pub cache:      CacheMode,     // §8.4, carries min_tokens
-    pub streaming:  bool,          // false ⇒ synthesize chunks (§8.7.4)
+    pub streaming:  bool,          // false ⇒ synthesize chunks from sync response
     pub quirks:     Quirks,        // provider quirks with per-model overrides (§8.3)
 }
 
@@ -1163,9 +1163,8 @@ Three encoding hazards, each a 400 or a silent no-op rather than a clean failure
 - Native Bedrock's `cachePoint` is a **separate element appended to the content array**,
   not an attribute on an existing block. An encoder built around "attribute on the last
   block" cannot express it at all.
-- Under `CacheMode::Automatic`, cache fields must be **omitted entirely**. §8.7.4 records
-  the failure this avoids: an unrecognized body field reaching a strict gateway rejects the
-  whole request (`anthropicBeta: Extra inputs are not permitted`).
+- Under `CacheMode::Automatic`, cache fields must be **omitted entirely**. An unrecognized
+  body field reaching a strict gateway rejects the whole request.
 - Attaching to the wrong part of a custom plugin message is accepted and ignored, costing the
   breakpoint with no diagnostic.
 
@@ -1211,7 +1210,6 @@ Example `~/.kn9t/config.toml`:
 [provider.my-gateway]
 kind     = "openai"
 base_url = "https://llm-gateway.example.com/v1"
-# ... (§8.7)
 
 # custom plugin — not OpenAI-shaped, ships as an EXTERNAL plugin binary.
 # Built separately (plugins/kn9t-custom-provider), so `binary` must be an absolute path.
@@ -1615,7 +1613,7 @@ POST   /blob                           body: bytes -> {hash, mime}
 GET    /blob/{hash}                    bytes, ETag, immutable
 GET    /models                         resolved registry + auth status
 GET    /cost?since=&group_by=          analytics over the usage projection
-GET    /budget                         provider-reported spend, where available (§8.7.3)
+GET    /budget                         provider-reported spend, where available
 ```
 
 `tiny_http`: blocking, thread-per-connection, ~2 crates — maps exactly onto the threads
@@ -1950,12 +1948,11 @@ present:
 - `[policy]` — the approval cache and the inert `mode` knob (§10)
 - `[[plugin]]` — executes arbitrary binaries (§13)
 - any `api_key`, token path, or credential
-- `tls_insecure` (§8.7.5)
-- `wbiID` and any billing identity (§8.7.1, already decided)
+- `tls_insecure`
+- any billing identity field
 
-The reasoning in §8.7.1 — a repo-committed file must never bill another engineer — applies
-with more force to a key that runs a subprocess. `git clone` followed by `kn9t` must not be
-arbitrary code execution.
+A repo-committed file must never bill another engineer or run arbitrary code. `git clone`
+followed by `kn9t` must not be arbitrary code execution.
 
 **Accepted cost:** a genuinely per-project plugin needs an entry in the global file. That is
 the point: enabling it is a decision the user makes once, outside the repo.

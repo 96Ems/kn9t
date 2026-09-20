@@ -22,7 +22,7 @@ stage's acceptance gate depends on the previous stage existing.
 | `02-replay.md` | `kn9t-provider-replay` | §8.5, §16 | v1 |
 | `03-react-tools.md` | `kn9t-react`, `kn9t-tools` (integration harness) | §9, §9.1, §10, §10.1, §11, §11.1, §11.2 | v1 |
 | `04-store.md` | `kn9t-store` | §6, §6.1, §6.2, §7, §7.2–7.5, §12.3 | v1 |
-| `05-provider-core-openai.md` | `kn9t-provider-core`, `kn9t-provider-openai` | §2.1, §8.1–8.4, §8.7 | v1 |
+| `05-provider-core-openai.md` | `kn9t-provider-core`, `kn9t-provider-openai` | §2.1, §8.1–8.4 | v1 |
 | `06-server.md` | `kn9t-server` | §12 | v1 |
 | `07-tui.md` | `kn9t-tui` | §12.8 | v1 |
 | `08-plugin.md` | `kn9t-plugin` | §13, §18.2 | v1 |
@@ -157,7 +157,7 @@ collected here so they are not scattered.
 | truncation reminder ladder | 150/100/50/25/10 lines | §18.9 | 03 |
 | compaction threshold | 0.80 × ctx_window | §7.5 | 04 |
 | lease idle timeout | 5 min | §12.6 | 06 |
-| LDAP check TTL | 12 h (`check_ttl_secs`) | §8.7.2 | 05 |
+
 | connect timeout | 20 s (`connect_timeout_ms`) | §8.6 | 05 |
 | plugin failure-unsubscribe | 3 consecutive `on_event` failures | §13.3 | 08 |
 

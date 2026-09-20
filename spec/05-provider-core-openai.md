@@ -2,10 +2,10 @@
 
 **Crates:** `kn9t-provider-core`, `kn9t-provider-openai`
 **Depends on:** `kn9t-provider-core` → `kn9t-core` (GI-1) plus external `ureq`, `rustls`.
-`kn9t-provider-openai` → `kn9t-provider-core` (GI-1). The LiteLLM gateway is a
-configured instance of `kind = "openai"` (§8.7); all deployment-specific fields live in the
-config file only — `kn9t-provider-openai` is gateway-unaware.
-**DESIGN:** §2.1, §8, §8.1, §8.2, §8.3, §8.4, §8.4.4, §8.7.
+`kn9t-provider-openai` → `kn9t-provider-core` (GI-1). LiteLLM gateways are configured
+instances of `kind = "openai"`; all deployment-specific fields live in the config file only
+— `kn9t-provider-openai` is gateway-unaware.
+**DESIGN:** §2.1, §8, §8.1, §8.2, §8.3, §8.4, §8.4.4.
 **Build order:** stage 5 of 10. This is where real network I/O first appears.
 
 `kn9t-provider-core` owns four of the five things every provider needs (wire JSON mapping
@@ -35,17 +35,17 @@ retry. A concrete provider is expected to be ~250 lines (§2.1).
 > arrive the timer is cleared and the body streams unbounded (a long generation is never
 > cut off; §8.6.6). Default 20 s (`connect_timeout_ms`, **SPEC-OPEN** §8.6).
 
-> **R-PCORE-030 → DESIGN §8.6, §8.7**
+> **R-PCORE-030 → DESIGN §8.6**
 > Authorization MUST be data, never hardcoded. An `auth_scheme` selects the header form:
 > `"bearer"` → `Authorization: Bearer <k>`; `"token"` → `Authorization: token <k>` (custom plugin,
-> §8.6); `"omit"` → send no `Authorization` header (anonymous endpoints, §8.7).
+> §8.6); `"omit"` → send no `Authorization` header (anonymous endpoints).
 > **Accept:** `cargo test pcore::auth_scheme` — each scheme produces the exact header (or
 > none).
 
-> **R-PCORE-035 → DESIGN §8.7.5, GI (tls)**
+> **R-PCORE-035 → GI (tls)**
 > TLS certificate verification MUST default to **on**. A provider config `tls_insecure =
-> true` (§8.7.5) MAY disable it, but doing so MUST log a startup warning. The default when
-> the key is absent is `false` (verification on).
+> true` MAY disable it, but doing so MUST log a startup warning. The default when the key
+> is absent is `false` (verification on).
 > **Accept:** `cargo test pcore::tls_default_secure`.
 
 ## A.2 SSE and assembly
@@ -126,7 +126,7 @@ retry. A concrete provider is expected to be ~250 lines (§2.1).
 > tool_result_name : bool
 > thinking_style   : "reasoning_content" | "tags" | "none"
 > thinking_replay  : "verbatim" | "strip"   # from core
-> require_tools    : bool          # inject placeholder tool (NBED §8.7.4)
+> require_tools    : bool          # inject placeholder tool (non-streaming models)
 > extra_body       : table         # e.g. LiteLLM metadata passthrough
 > session_header   : string        # header carrying Request::session ("" = off)
 > api              : "chat" | "responses"   # which OpenAI-family schema (default "chat")
@@ -144,7 +144,7 @@ retry. A concrete provider is expected to be ~250 lines (§2.1).
 > Models MUST be hand-written config entries carrying `ctx`, `max_out`, and all four prices
 > (`price_in`, `price_out`, `price_cache_read`, `price_cache_write`). A generated
 > 400-model registry is rejected (§8.2). `/v1/models`-style discovery MAY list ids but never
-> supplies prices (§8.7.3), so prices are always local.
+> supplies prices , so prices are always local.
 > **Accept:** `cargo test pcore::model_prices_required` — a model entry missing a price
 > field fails config load.
 
@@ -159,7 +159,7 @@ retry. A concrete provider is expected to be ~250 lines (§2.1).
 
 Covers OpenAI, LiteLLM, Groq, Together, Fireworks, OpenRouter, DeepSeek, xAI, llama.cpp,
 Ollama — they differ only by base URL + quirks (§8.5). A LiteLLM gateway is included as a
-configured instance (§8.7).
+configured instance .
 
 ## B.1 Wire mapping
 
@@ -169,7 +169,7 @@ configured instance (§8.7).
 > `stream_options.include_usage` when `usage_in_stream`; reasoning field per `reasoning`
 > quirk; tool-result `name` when `tool_result_name`. It MUST send only fields named in the
 > quirk table — **no passthrough of unknown options** (an unrecognized field 400s a strict
-> gateway, §8.7.4).
+> gateway.4).
 > Assistant messages containing tool calls MUST encode them as a top-level `tool_calls`
 > array (not content parts), with `content: null` when no text accompanies them — this is
 > the OpenAI wire contract for the turn-2 position of a tool-call round-trip.
@@ -203,65 +203,16 @@ configured instance (§8.7).
 
 ## B.3 Extra-headers hook
 
-> **R-OAI-050 → DESIGN §8.2, §8.7**
+> **R-OAI-050 → DESIGN §8.2**
 > `OpenAiConfig` MUST expose an `extra_headers: Vec<(String, String)>` field. Every entry
 > is appended verbatim to each outgoing request, after `Content-Type` and `Authorization`.
 > The provider MUST NOT contain any deployment-specific logic (no URL sniffing, no
-> hard-coded header names). Deployment-specific headers (e.g. `X-User-Id`,
-> `source_identifier`) are the responsibility of the **config layer** (stage 06), not the
-> provider.
+> hard-coded header names). Deployment-specific headers are the responsibility of the
+> **config layer** (stage 06), not the provider.
 > **Accept:** `cargo test oai::extra_headers` — a config with two extra headers sends both
 > on the wire, in order, without duplicating built-in headers.
 
-## B.4 LiteLLM gateway
-
-> **R-NBED-010 → DESIGN §8.7**
-> A LiteLLM gateway MUST be configured as `kind = "openai"` pointing at the gateway's `/v1`
-> base URL. The Converse endpoint MUST NOT be used — `/v1` exposes prompt-cache counters
-> (`cached_tokens`, `cache_creation_input_tokens`) that cost/context tracking need (§8.7).
-> Deployment-specific headers (`X-User-Id`, `source_identifier`) are supplied via the config-file
-> `[provider.X.headers]` table (R-SRV-CFG-020) and injected through R-OAI-050; the provider
-> itself is gateway-unaware.
-> **Accept:** `cargo test nbed::config_headers` — a gateway config block with a
-> `[provider.my-gateway.headers]` table produces the expected headers on the wire.
-
-> **R-NBED-040 → DESIGN §8.7.3**
-> `POST /user/usage {}` returns authoritative server-side spend (`max_budget`, `spend`,
-> durations, resets). This is ground truth for `GET /budget` (SRV) and reconciliation
-> against local estimates (§8.7.3). `/v1/models` lists ids but no prices (R-PCORE-090).
-
-> **R-NBED-050 → DESIGN §8.7.4 (three rewrites)**
-> The provider MUST apply exactly these rewrites, gated by quirk/model:
-> 1. **Adaptive thinking** (`reasoning = "adaptive"`, per-model §8.3): send
->    `thinking: { type: "adaptive" }` + `output_config: { effort }` with effort
->    `low|medium|high`; NOT the legacy `thinking: { type: "enabled", budget_tokens }`.
->    Sibling models on the same endpoint may still use `reasoning_effort`.
-> 2. **Placeholder tool** (`require_tools = true`): adaptive thinking demands a non-empty
->    `tools` array, so a tool-less call (title, compaction) MUST inject a single never-called
->    placeholder tool with `tool_choice: "auto"`, else 400.
-> 3. **Non-streaming models** (`streaming = false`): issue a synchronous request and
->    synthesize the `Chunk` sequence from the complete response, so the `Iterator` contract
->    (R-CORE-190) is unchanged downstream.
-> **Accept:** `cargo test nbed::rewrites` — one case per rewrite against a golden body /
-> replay fixture.
-
-> **R-NBED-060 → DESIGN §8.7.4**
-> The provider MUST read cache counters from whichever field is present
-> (`cache_creation_input_tokens` at root or under `prompt_tokens_details`), populating
-> `Tokens.cache_write`/`cache_read`. It MUST NOT require the AI-SDK-shaped terminal-usage
-> chunk or field-stripping workarounds (§8.7.4: `Chunk::Usage` is content-independent).
-> **Accept:** `cargo test nbed::usage_fields` — both field placements decode to the same
-> `Tokens`.
-
-> **R-NBED-070 → DESIGN §8.7.5 (1M pair)**
-> A 1M-context model MUST be registered **twice**, both pointing at the same `api_id`: a
-> 200K guardrail entry (compacts early/cheaply) and a `:1m` entry with the full window and
-> its own (higher) prices. The 200K figure is an intentional cost guardrail, not a bug.
-> Which entry was used MUST be reflected in the write-time price snapshot (STOR R-STOR-070).
-> **Accept:** `cargo test nbed::onem_pair` — two registry entries, same `api_id`, different
-> `ctx` and prices.
-
-## B.5 Responses API — `api = "responses"`
+## B.4 Responses API — `api = "responses"`
 
 > One gateway fronts both OpenAI-family schemas from one base URL and one key, and a given
 > model answers on exactly one of them (OpenCode Go: `grok-4.6` rejects chat-completions
@@ -307,7 +258,7 @@ configured instance (§8.7).
 
 ## Stage gate
 
-> **R-PCORE-900 / R-OAI-900 / R-NBED-900 → DESIGN §8, §8.7**
+> **R-PCORE-900 / R-OAI-900 / R-NBED-900 → DESIGN §8**
 > Stage 5 is **done** when: `sse_lines`/`assemble`/retry pass their boundary and pre-stream
 > tests; the OpenAI provider decodes text/tool-call/reasoning streams from replay fixtures;
 > cache encoding omits under Automatic and places under Explicit; the extra-headers hook

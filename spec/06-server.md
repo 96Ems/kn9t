@@ -37,7 +37,7 @@ wiring path only (§12). `kn9t -p` is a client exactly like the TUI.
 > GET    /blob/{hash}                    bytes, ETag, immutable
 > GET    /models                         resolved registry + auth status
 > GET    /cost?since=&group_by=          analytics over the usage projection
-> GET    /budget                         provider-reported spend (§8.7.3)
+> GET    /budget                         provider-reported spend 
 > ```
 > **Accept:** `cargo test srv::routes` — each route exists with the specified method and
 > lease requirement; unknown routes 404.
@@ -159,7 +159,7 @@ wiring path only (§12). `kn9t -p` is a client exactly like the TUI.
 > totals by model/kind/session and the three §7.3 figures (marginal / effective / family).
 > **Accept:** `cargo test srv::cost_query`.
 
-> **R-SRV-120 → DESIGN §12.1, §8.7.3, §18.8**
+> **R-SRV-120 → DESIGN §12.1.3, §18.8**
 > `GET /budget` MUST report provider-reported spend where available (gateway
 > `/user/usage`, R-NBED-040) alongside the locally computed estimate. Drift between the two
 > is **not** warned in v1 (**SPEC-OPEN** §18.8); both figures are simply returned.
@@ -199,10 +199,10 @@ wiring path only (§12). `kn9t -p` is a client exactly like the TUI.
 > **Accept:** covered by `srv::config_headers` — a missing env var produces a log warning and
 > the header is absent from the request.
 
-> **R-SRV-CFG-030 → DESIGN §8.2, §8.7.3**
+> **R-SRV-CFG-030 → DESIGN §8.2.3**
 > A provider block MUST accept `discover = false` (default `true`) and, when set, register
 > **no** auto-discovered models for that provider: neither the `/models` fetch
-> (`kind = "openai"`, §8.7.3) nor the model declaration a plugin ships
+> (`kind = "openai"`.3) nor the model declaration a plugin ships
 > (`kind = "plugin"`). Both paths register models with no local price and a default context
 > window, and a plugin's declared catalog belongs to the endpoint it was written for —
 > pointing it at another gateway imports a wrong one. With `discover = false` the config's
