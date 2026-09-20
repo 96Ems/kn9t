@@ -2,7 +2,7 @@
 
 A minimal, modular coding agent in Rust.
 
-Status: design locked, implementation not started. Every decision records the rejected
+Status: v1 complete (stages 01–09). Design locked. Every decision records the rejected
 alternative and the accepted cost, so future changes are made with the same
 information.
 

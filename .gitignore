@@ -24,25 +24,15 @@ Thumbs.db
 kn9t-tui.log
 custom-provider.log
 
-# python bytecode (plugins/kn9t-mcp)
+# python bytecode
 __pycache__/
 *.py[cod]
 
-# node_modules is never committed, at any depth. The old rule only covered
-# plugins/*/, which let a root node_modules/ from agent tooling go untracked
-# but unignored (caught by a stray `git add -A`).
+# node_modules
 node_modules/
 
-# typescript plugin build (plugins/kn9t-compactor)
+# plugin build artifacts
 plugins/*/dist/
-
-# go plugin build output - 5 MB of binaries were committed.
-# Build with, from plugins/kn9t-agents-md:
-#   go build -o kn9t-agents-md .        (unix)
-#   go build -o kn9t-agents-md.exe .    (windows)
-plugins/kn9t-agents-md/kn9t-agents-md
-plugins/kn9t-agents-md/kn9t-agents-md.exe
-plugins/kn9t-agents-md/kn9t-agents-md-linux
 
 # scratch
 out.txt

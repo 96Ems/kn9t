@@ -133,19 +133,17 @@ kn9t chat --json "list files" | jq -r 'select(.kind=="text_delta") | .delta'
 
 ## Plugins
 
-Nothing user-facing is built in. `bash`, `read`, `edit`, `write` are a plugin. So is the
-safety policy, compaction, subagents, and the MCP bridge.
+Nothing user-facing is built in. `bash`, `read`, `edit`, `write` are a plugin.
+
+This repository ships with:
 
 | Plugin | Language | Role |
 |---|---|---|
 | `kn9t-tools` | Rust | default toolset — `bash` / `read` / `edit` / `write` |
-| `kn9t-policy` | Python | approves, denies, or escalates every tool call |
-| `kn9t-anthropic` | Rust | Anthropic provider |
-| `kn9t-compactor` | TypeScript | context compaction |
-| `kn9t-subagent` | TypeScript | nested agent loops |
-| `kn9t-mcp` | Python | bridges MCP servers, lazy tool discovery |
-| `kn9t-agents-md` | Go | discovers and injects `AGENTS.md` |
-| `kn9t-ask-user` | TypeScript | interactive prompts |
+
+Additional plugins (providers, policy, compaction, MCP bridge, etc.) are available in a
+separate repository. See [`docs/PLUGIN_DEVELOPMENT.md`](docs/PLUGIN_DEVELOPMENT.md) for
+how to write your own.
 
 **Protocol:** newline-delimited JSON on stdin/stdout. One object per line, debuggable with
 `cat`. Capabilities are negotiated at handshake, so a plugin that declares neither
@@ -307,15 +305,13 @@ Working on this repo with an AI agent? [`AGENTS.md`](AGENTS.md) is the operating
 | [`spec/`](spec) | Per-stage requirements and acceptance tests |
 | [`CONTEXT.md`](CONTEXT.md) | Glossary |
 | [`AGENTS.md`](AGENTS.md) | Operating guide for working on this repo with an AI agent |
-| [`docs/dev/`](docs/dev) | Development record — changelog, plan, live status, archived notes |
 
 ---
 
 ## Status
 
 Stages 01–09 implemented; v1 end-to-end verified. Stage 10 (native Bedrock, Gemini) is v2.
-Live status in [`TRACKING.md`](docs/dev/TRACKING.md), narrative in [`CHANGELOG.md`](docs/dev/CHANGELOG.md),
-known issues in [`docs/ARCHITECTURE.md §14`](docs/ARCHITECTURE.md).
+Known issues in [`docs/ARCHITECTURE.md §14`](docs/ARCHITECTURE.md).
 
 Not yet stable: expect breaking changes to the config format and the plugin protocol
 before 1.0.
