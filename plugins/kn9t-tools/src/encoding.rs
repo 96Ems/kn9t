@@ -369,15 +369,19 @@ mod tests {
 
     #[test]
     fn repair_undoes_the_em_dash_double_encoding() {
-        // U+2014 is E2 80 94; read as cp1252 that is "â€"" and re-encoded as
-        // UTF-8 it is â€" — the exact damage Set-Content -Encoding UTF8 does.
+        // U+2014 is E2 80 94; read as cp1252 that is U+00E2 U+20AC U+201D,
+        // re-encoded as UTF-8 it is the same three chars — the exact damage
+        // Set-Content -Encoding UTF8 does. (Spelled as escapes so this file
+        // does not itself contain the mojibake bytes check-mojibake.sh flags.)
         let damaged = "\u{00E2}\u{20AC}\u{201D}";
         assert_eq!(repair_mojibake(damaged), "—");
     }
 
     #[test]
     fn repair_undoes_the_section_sign_double_encoding() {
-        let damaged = "\u{00C2}\u{00A7}"; // Â§
+        // U+00C2 U+00A7 — the two chars cp1252 produces for U+00A7's bytes.
+        // Escaped, so this file carries no mojibake bytes of its own.
+        let damaged = "\u{00C2}\u{00A7}";
         assert_eq!(repair_mojibake(damaged), "§");
     }
 
@@ -390,12 +394,18 @@ mod tests {
 
     #[test]
     fn repair_keeps_mixed_correct_and_damaged_text() {
-        assert_eq!(repair_mojibake("ok Â§ fin"), "ok § fin");
+        assert_eq!(
+            repair_mojibake("ok \u{00C2}\u{00A7} fin"),
+            "ok § fin",
+            "damage next to clean text is still repaired"
+        );
     }
 
     #[test]
     fn repair_is_idempotent() {
-        let once = repair_mojibake("caf\u{00C3}\u{00A9} Â§");
+        // "caf" + the U+00C3 U+00A9 pair that cp1252 renders for "é", then the
+        // U+00C2 U+00A7 pair for "§" — all as escapes, no literal mojibake bytes.
+        let once = repair_mojibake("caf\u{00C3}\u{00A9} \u{00C2}\u{00A7}");
         assert_eq!(repair_mojibake(&once), once);
         assert_eq!(once, "café §");
     }

@@ -44,6 +44,12 @@ cargo init --name my-plugin
 
 ### 2. Add SDK dependency
 
+The SDK is **not published to crates.io** yet. Two options, both leaving you with a
+standalone crate (`[workspace]` empty is required — a plugin must not join your app's
+workspace):
+
+**A. Point at the bundled snapshot** (works with nothing but this skill directory):
+
 ```toml
 # Cargo.toml
 [package]
@@ -58,10 +64,21 @@ name = "my-plugin"
 path = "src/main.rs"
 
 [dependencies]
-kn9t-plugin-sdk = { path = "../../crates/kn9t-plugin-sdk" }
+# `references/sdk/` is self-contained: it bundles `kn9t-macros` and inlines the
+# workspace values, so it builds with no checkout of the kn9t repo.
+kn9t-plugin-sdk = { path = "path/to/.agents/skills/kn9t-plugin-creation/references/sdk" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
+
+**B. Clone the kn9t repo** and point at the real crate:
+
+```toml
+kn9t-plugin-sdk = { path = "../kn9t/crates/kn9t-plugin-sdk" }
+```
+
+> Do **not** copy `references/sdk/` without the `kn9t-macros/` directory next to it — the
+> SDK path-depends on it.
 
 ### 3. Implement a tool
 

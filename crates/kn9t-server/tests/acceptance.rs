@@ -26,6 +26,9 @@ struct Harness {
     handle: ServerHandle,
     token: String,
     port: u16,
+    /// The server's state, so a test can assert on the bus/registry directly instead of
+    /// inferring them from HTTP responses.
+    state: Arc<ServerState>,
     _tmp: tempfile::TempDir,
 }
 
@@ -60,14 +63,14 @@ fn model_spec() -> ModelSpec {
 
 fn start(state: Arc<ServerState>) -> Harness {
     let token = state.token.clone();
-    let (store_tmp, tmp) = (state.clone(), tempfile::tempdir().unwrap());
-    let _ = store_tmp;
-    let handle = ServerHandle::spawn(state).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let handle = ServerHandle::spawn(state.clone()).unwrap();
     let port = handle.port;
     Harness {
         handle,
         token,
         port,
+        state,
         _tmp: tmp,
     }
 }
@@ -3826,6 +3829,228 @@ mod srv {
         assert_eq!(
             again.status, 409,
             "loading the same command twice is a conflict"
+        );
+        h.handle.shutdown();
+    }
+
+    /// A dummy plugin that declares the full surface at handshake — one tool *and* a
+    /// `host_api` capability — then runs a scripted list of raw `PluginMsg` lines.
+    ///
+    /// This is what lets the end-to-end tests drive the protocol directly: the plugin
+    /// sends a real `ui_register_lua` request (so the host's `api_handler` must be
+    /// wired), and can send a `declare` at a chosen moment to exercise hot
+    /// re-declaration.
+    #[cfg(unix)]
+    fn write_scripted_plugin(path: &std::path::Path, name: &str, tool: &str, script: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let body = format!(
+            "#!/bin/sh\n\
+             IFS= read -r _host_hello\n\
+             printf '%s\\n' '{{\"t\":\"hello\",\"name\":\"{name}\",\"capabilities\":[\"host_api\"],\"tools\":[{{\"name\":\"{tool}\",\"description\":\"dummy\",\"schema\":{{\"type\":\"object\"}},\"parallel_safe\":false}}]}}'\n\
+             {script}\n\
+             while IFS= read -r _line; do :; done\n"
+        );
+        std::fs::write(path, body).expect("write scripted plugin");
+        let mode = std::fs::metadata(path).unwrap().permissions().mode();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o111)).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn write_scripted_plugin(_path: &std::path::Path, _name: &str, _tool: &str, _script: &str) {
+        unreachable!("the dummy plugin is a POSIX shell script")
+    }
+
+    /// Spawn a scripted plugin through the real `POST /plugin/load` route — a plugin that
+    /// did not exist at startup — and return the harness plus a temp dir to keep alive.
+    #[cfg(unix)]
+    fn load_scripted_plugin(name: &str, tool: &str, script: &str) -> (Harness, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join(name);
+        write_scripted_plugin(&bin, name, tool, script);
+
+        let (h, store_tmp) = harness();
+        std::mem::forget(store_tmp);
+        let r = req_auth(
+            &h,
+            "POST",
+            "/plugin/load",
+            &[],
+            serde_json::json!({ "cmd": [bin.to_string_lossy()] }),
+        );
+        assert_eq!(
+            r.status,
+            200,
+            "hot-load {name}: {}",
+            String::from_utf8_lossy(&r.body)
+        );
+        assert_eq!(r.json()["loaded"].as_str(), Some(name));
+        (h, tmp)
+    }
+
+    #[cfg(windows)]
+    fn load_scripted_plugin(
+        _name: &str,
+        _tool: &str,
+        _script: &str,
+    ) -> (Harness, tempfile::TempDir) {
+        unreachable!("the dummy plugin is a POSIX shell script")
+    }
+
+    /// The point of `host_api`: a plugin loaded *at runtime* registers Lua for the TUI on
+    /// its own, and the directive reaches the session bus with no restart.
+    ///
+    /// This is the loading path a fresh plugin takes — `POST /plugin/load` spawns the
+    /// subprocess and wires the host-API handler; the plugin's first request is the
+    /// `ui_register_lua`. If the handler were installed too late (or not at all), the
+    /// plugin would get `host API not enabled` and the TUI would never learn the view.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs a POSIX shell script as the dummy plugin binary"
+    )]
+    fn hot_loaded_plugin_registers_lua_for_the_tui() {
+        let lua = "function render(s) return { type = \\\"text\\\", content = s.msg } end";
+        let script = format!(
+            "sleep 1\n\
+             printf '%s\\n' '{{\"t\":\"request\",\"id\":1,\"op\":\"ui_register_lua\",\"payload\":{{\"session\":\"SESSION_ID\",\"source\":\"{lua}\",\"placement\":\"sidebar\",\"title\":\"Demo\"}}}}'\n\
+             sleep 3"
+        );
+        let (h, _tmp) = {
+            // Create the session first so its id can be baked into the plugin's script;
+            // the plugin then has to wait until the test is listening.
+            let (h, tmp) = harness();
+            std::mem::forget(tmp);
+            let sid = make_session(&h);
+            let tmp = tempfile::tempdir().unwrap();
+            let bin = tmp.path().join("lua-tools");
+            write_scripted_plugin(
+                &bin,
+                "lua-tools",
+                "lua_tool",
+                &script.replace("SESSION_ID", &sid),
+            );
+            let r = req_auth(
+                &h,
+                "POST",
+                "/plugin/load",
+                &[],
+                serde_json::json!({ "cmd": [bin.to_string_lossy()] }),
+            );
+            assert_eq!(
+                r.status,
+                200,
+                "hot-load: {}",
+                String::from_utf8_lossy(&r.body)
+            );
+            (h, tmp)
+        };
+
+        let sid = req_auth(&h, "GET", "/session", &[], serde_json::Value::Null).json()["sessions"]
+            [0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let sub = h.state.buses.subscribe(&sid, 64);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut found = false;
+        while std::time::Instant::now() < deadline && !found {
+            if let Some(Event::UiDirective {
+                plugin,
+                op,
+                payload,
+                ..
+            }) = sub.recv_timeout(Duration::from_millis(200))
+            {
+                if plugin == "lua-tools" && op == "register_lua" {
+                    assert!(
+                        payload
+                            .get("source")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|s| s.contains("function render")),
+                        "the plugin's Lua must arrive intact: {payload}"
+                    );
+                    assert_eq!(payload["placement"], serde_json::json!("sidebar"));
+                    found = true;
+                }
+            }
+        }
+        assert!(
+            found,
+            "a hot-loaded plugin's ui_register_lua must reach the session bus"
+        );
+        h.handle.shutdown();
+    }
+
+    /// A plugin loaded at runtime exposes its tool to the agent immediately — no restart,
+    /// and the registry is rebuilt from what the new process declared.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs a POSIX shell script as the dummy plugin binary"
+    )]
+    fn hot_loaded_plugin_tool_is_registered() {
+        let (h, _tmp) = load_scripted_plugin("tool-tools", "hot_tool", "sleep 2");
+        let state = h.state.clone();
+
+        assert!(
+            state.tools_snapshot().get("hot_tool").is_some(),
+            "the hot-loaded tool must be in the registry"
+        );
+        let list = req_auth(&h, "GET", "/plugin", &[], serde_json::Value::Null);
+        let plugins = list.json()["plugins"].as_array().unwrap().clone();
+        let entry = plugins
+            .iter()
+            .find(|p| p["name"] == "tool-tools")
+            .expect("hot-loaded plugin is in the inventory");
+        assert_eq!(entry["state"], "running");
+        assert_eq!(entry["tools"], serde_json::json!(["hot_tool"]));
+        h.handle.shutdown();
+    }
+
+    /// A runtime `declare` — the plugin announcing a *new* tool after startup — is picked
+    /// up via the `on_declare` callback. This is the callback `reload_plugin` used to
+    /// forget, silently disabling hot re-declaration after a reload.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs a POSIX shell script as the dummy plugin binary"
+    )]
+    fn hot_declare_adds_a_tool_at_runtime() {
+        // The plugin waits so the test can observe the *original* one-tool registry, then
+        // re-declares with a second tool. That `declare` must reach `on_declare` — the
+        // callback `reload_plugin` used to forget.
+        let script = "sleep 1\n\
+             printf '%s\\n' '{\"t\":\"declare\",\"tools\":[{\"name\":\"hot_tool\",\"description\":\"dummy\",\"schema\":{\"type\":\"object\"},\"parallel_safe\":false},{\"name\":\"added_tool\",\"description\":\"dummy\",\"schema\":{\"type\":\"object\"},\"parallel_safe\":false}]}'\n\
+             sleep 3";
+        let (h, _tmp) = load_scripted_plugin("declare-tools", "hot_tool", script);
+        let state = h.state.clone();
+
+        assert!(
+            state.tools_snapshot().get("hot_tool").is_some(),
+            "the handshake tool is registered before the re-declare"
+        );
+        assert!(
+            state.tools_snapshot().get("added_tool").is_none(),
+            "the second tool only exists after the declare"
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut added = false;
+        while std::time::Instant::now() < deadline && !added {
+            if state.tools_snapshot().get("added_tool").is_some() {
+                added = true;
+            } else {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        assert!(
+            added,
+            "a runtime declare must register the newly declared tool"
+        );
+        assert!(
+            state.tools_snapshot().get("hot_tool").is_some(),
+            "the original tool survives a partial declare"
         );
         h.handle.shutdown();
     }

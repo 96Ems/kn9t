@@ -350,36 +350,44 @@ impl PluginHost {
                         tools,
                         events,
                     } => {
-                        let mut decl = safe_expect!(declaration_for_reader.lock(), "poisoned");
-                        let old_tools: std::collections::HashSet<String> =
-                            decl.tools.iter().map(|t| t.name.clone()).collect();
+                        // Update the declaration under the lock, snapshot it, then RELEASE
+                        // the guard before calling out. The callback (`on_plugin_declare`)
+                        // rebuilds the registry, which reads every host's declaration —
+                        // including this one. Holding the guard across the call would
+                        // deadlock a `std::sync::Mutex` on the first re-declare.
+                        let (decl_snapshot, decl_name, added, removed) = {
+                            let mut decl = safe_expect!(declaration_for_reader.lock(), "poisoned");
+                            let old_tools: std::collections::HashSet<String> =
+                                decl.tools.iter().map(|t| t.name.clone()).collect();
 
-                        // Update only present fields (partial merge)
-                        if let Some(caps) = capabilities {
-                            decl.capabilities = caps;
-                        }
-                        if let Some(h) = hooks {
-                            decl.hooks = h.iter().filter_map(|s| parse_hook_name(s)).collect();
-                        }
-                        if let Some(t) = tools {
-                            decl.tools = t;
-                        }
-                        if let Some(e) = events {
-                            decl.subscribed_events = e;
-                        }
+                            // Update only present fields (partial merge)
+                            if let Some(caps) = capabilities {
+                                decl.capabilities = caps;
+                            }
+                            if let Some(h) = hooks {
+                                decl.hooks = h.iter().filter_map(|s| parse_hook_name(s)).collect();
+                            }
+                            if let Some(t) = tools {
+                                decl.tools = t;
+                            }
+                            if let Some(e) = events {
+                                decl.subscribed_events = e;
+                            }
 
-                        let new_tools: std::collections::HashSet<String> =
-                            decl.tools.iter().map(|t| t.name.clone()).collect();
-                        let added: Vec<String> =
-                            new_tools.difference(&old_tools).cloned().collect();
-                        let removed: Vec<String> =
-                            old_tools.difference(&new_tools).cloned().collect();
+                            let new_tools: std::collections::HashSet<String> =
+                                decl.tools.iter().map(|t| t.name.clone()).collect();
+                            let added: Vec<String> =
+                                new_tools.difference(&old_tools).cloned().collect();
+                            let removed: Vec<String> =
+                                old_tools.difference(&new_tools).cloned().collect();
+                            (decl.clone(), decl.name.clone(), added, removed)
+                        };
 
-                        // Call the callback if registered
+                        // Call the callback if registered, with the declaration guard released.
                         if let Some(cb) =
                             safe_expect!(on_declare_for_reader.lock(), "poisoned").as_ref()
                         {
-                            cb(&decl.name, &decl, added, removed);
+                            cb(&decl_name, &decl_snapshot, added, removed);
                         }
                     }
                 }

@@ -47,6 +47,14 @@ jobs:
         run: cargo build --workspace --all-targets
         env:
           RUSTFLAGS: -D warnings
+      # `kn9t-react`'s acceptance tests spawn the real `kn9t-tools` subprocess, and
+      # `kn9t-test-support` looks for its binary at
+      # `plugins/kn9t-tools/target/{debug,release}/`. That crate is a standalone
+      # workspace (ADR-0004), so `cargo build --workspace` does not produce it — without
+      # this step the three spawn-dependent tests fail with "binary not found".
+      - name: Build the kn9t-tools plugin (needed by kn9t-react tests)
+        run: cargo build
+        working-directory: plugins/kn9t-tools
       - name: Test
         run: cargo test --workspace --no-fail-fast
 

@@ -613,10 +613,9 @@ impl ServerState {
             crate::log!("hot-reload: warning: plugin declared name '{}' differs from requested '{}' — using declared name for registry", new_decl_name, name);
         }
         let new_host = Arc::new(new_host);
-        // the respawned host gets the plugin ? host API handler too.
-        new_host.set_api_handler(Arc::new(crate::host_api::ServerHostApi {
-            state: self.clone(),
-        }));
+        // the respawned host gets the same host-API handler and declare callback as a
+        // freshly loaded one — `wire_new_host` is the single path, so they cannot drift.
+        self.wire_new_host(&new_host);
         let new_tools = crate::tools::extract_tools_public(&new_host);
 
         // 5. swap host and rebuild registry (dedup, first wins, same as startup).
@@ -733,18 +732,8 @@ impl ServerState {
 
         let new_host = Arc::new(new_host);
 
-        // Install API handler.
-        new_host.set_api_handler(Arc::new(crate::host_api::ServerHostApi {
-            state: self.clone(),
-        }));
-
-        // Install declare callback.
-        {
-            let state_for_cb = self.clone();
-            new_host.set_on_declare(Box::new(move |plugin_name, _decl, added, removed| {
-                state_for_cb.on_plugin_declare(plugin_name, added, removed);
-            }));
-        }
+        // Same wiring as a reloaded host — single path, see `wire_new_host`.
+        self.wire_new_host(&new_host);
 
         let new_tools = crate::tools::extract_tools_public(&new_host);
         let tools_count = new_tools.len();
@@ -943,6 +932,30 @@ impl ServerState {
         }
     }
 
+    /// Wire a freshly spawned host to this state: the host-API handler (`ui_register_lua`,
+    /// `session_read`, …) and the `on_declare` callback that keeps the registry in step
+    /// with a runtime `declare`.
+    ///
+    /// Both are installed *after* `PluginHost::spawn` because each holds an
+    /// `Arc<ServerState>`, which cannot exist before the state does. A plugin that
+    /// registers Lua during its handshake is not lost: the reader thread reads the
+    /// host hello and the plugin hello before `spawn` returns, so declarations are
+    /// complete, and the stdout reader only starts afterwards — the first `declare`
+    /// or `request` is consumed once the handler is in place.
+    ///
+    /// This is the single path for hosts created outside startup (`reload_plugin`,
+    /// `load_plugin`), so the two cannot drift: omitting `on_declare` here silently
+    /// disabled hot re-declaration after a reload.
+    fn wire_new_host(self: &Arc<Self>, host: &Arc<kn9t_plugin::PluginHost>) {
+        host.set_api_handler(Arc::new(crate::host_api::ServerHostApi {
+            state: self.clone(),
+        }));
+        let state_for_cb = self.clone();
+        host.set_on_declare(Box::new(move |plugin_name, _decl, added, removed| {
+            state_for_cb.on_plugin_declare(plugin_name, added, removed);
+        }));
+    }
+
     pub fn with_idle_exit(mut self, d: Duration) -> Self {
         self.idle = IdleTracker::new(d);
         self
@@ -1125,6 +1138,8 @@ impl ServerState {
                 n
             );
         }
+        // ^ The `plugin_hosts` guard must be dropped before the announce below:
+        //   `notify_plugins` re-locks it, and a `std::sync::Mutex` is not reentrant.
 
         // Broadcast event to ALL SSE clients so TUI can refresh.
         let event = kn9t_core::Event::PluginDeclared {

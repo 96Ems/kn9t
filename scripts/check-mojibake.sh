@@ -35,6 +35,11 @@ list_files() {
 # ── 1 + 2. Byte-level corruption ──────────────────────────────────────────────
 # Matched on bytes, via grep -P, so a mis-set locale cannot change the result.
 #
+# NOTE: this block needs GNU grep. A `grep` that is really ripgrep (common on dev
+# machines) has no PCRE2 by default, so `-P` fails — and with `2>/dev/null` that
+# failure looks exactly like "clean". CI has GNU grep; a local run may not. If a
+# genuine mojibake slips past locally but fails in CI, suspect this, not the file.
+#
 # Care is needed: `\xc3\xa2` alone is a legitimate 'â' (French "tâche"), and
 # `\xc3\xa9` is 'é'. Flagging those produced false positives on CHANGELOG.md,
 # which is partly French. Genuine double-encoding is a mojibake *lead* byte

@@ -1,0 +1,8 @@
+[package]
+name = "kn9t-macros"
+version = "0.1.0"
+edition = "2021"
+description = "Clippy-safe unwrap/expect macros for kn9t"
+
+# Zero dependencies — safe to use anywhere (GI-1/GI-6 compliant)
+[dependencies]
