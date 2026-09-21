@@ -1,7 +1,8 @@
 //! The plugin-supplied Lua UI mechanism, exercised with a real plugin's Lua.
 //!
-//! `ask_user_ui.lua` is extracted verbatim from `plugins/kn9t-ask-user`
-//! (`scripts/extract_ask_user_lua.py`), so this is not a hand-written
+//! `ask_user_ui.lua` is extracted verbatim from `kn9t-ask-user`
+//! (kn9t-plugins repo, https://github.com/96Ems/kn9t-plugins,
+//! via `scripts/extract_ask_user_lua.py`), so this is not a hand-written
 //! approximation: if the shipped plugin's Lua breaks, these tests fail.
 //!
 //! This is the proof that the mechanism works end to end — a plugin ships Lua,
@@ -219,7 +220,10 @@ fn confirm_moves_with_up_and_down() {
     };
 
     assert_eq!(selected(&rt), Some(0), "starts on Yes");
-    assert!(rt.dispatch_plugin_key("kn9t-ask-user", "Down"), "Down handled");
+    assert!(
+        rt.dispatch_plugin_key("kn9t-ask-user", "Down"),
+        "Down handled"
+    );
     assert_eq!(selected(&rt), Some(1), "Down selects No");
     assert!(rt.dispatch_plugin_key("kn9t-ask-user", "Up"), "Up handled");
     assert_eq!(selected(&rt), Some(0), "Up selects Yes");

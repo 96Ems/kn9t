@@ -283,7 +283,7 @@ price_out = 0.40
 # price_out = 10.00
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Anthropic direct — bundled plugin
+# Anthropic direct — plugin binary (kn9t-plugins repo)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # [provider.anthropic]

@@ -76,8 +76,6 @@ macro_rules! safe_expect {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn safe_unwrap_option() {
         let opt = Some(42);

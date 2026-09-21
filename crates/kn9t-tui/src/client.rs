@@ -231,7 +231,8 @@ impl Client {
                 Some(images)
             },
         };
-        match self.request("POST", &format!("/session/{}/prompt", session_id))
+        match self
+            .request("POST", &format!("/session/{}/prompt", session_id))
             .set("X-Lease", holder)
             .send_json(&req)
         {

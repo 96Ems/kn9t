@@ -145,4 +145,3 @@ fn reload(state: &Arc<ServerState>) {
 fn mtime(path: &std::path::Path) -> Option<SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
 }
-

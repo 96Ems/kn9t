@@ -1,11 +1,11 @@
 //! PluginHost: subprocess management, message protocol, and call routing.
 //! Reader thread forwards chunks and results; host can cancel in-flight calls.
 
-use kn9t_core::safe_expect;
 use crate::codec::{
     hook_name_str, parse_hook_name, write_host_msg, HostMsg, PluginDeclaration, PluginMsg,
 };
 use crate::host_api::HostApi;
+use kn9t_core::safe_expect;
 
 /// Internal channel message — what the reader thread delivers per-call.
 #[derive(Debug)]
@@ -169,7 +169,7 @@ impl PluginHost {
                         let reason = format!("protocol violation: malformed message: {e}");
                         *safe_expect!(poison_for_reader.lock(), "poisoned") = Some(reason.clone());
                         unhealthy_for_reader.store(true, Ordering::SeqCst);
-                        let pending =safe_expect!(pending_for_reader.lock(), "poisoned");
+                        let pending = safe_expect!(pending_for_reader.lock(), "poisoned");
                         for tx in pending.values() {
                             let _ = tx.send(ReaderMsg::Err {
                                 reason: reason.clone(),
@@ -180,13 +180,13 @@ impl PluginHost {
                 };
                 match msg {
                     PluginMsg::Result { id, body } | PluginMsg::Done { id, body } => {
-                        let pending =safe_expect!(pending_for_reader.lock(), "poisoned");
+                        let pending = safe_expect!(pending_for_reader.lock(), "poisoned");
                         if let Some(tx) = pending.get(&id) {
                             let _ = tx.send(ReaderMsg::Final { body });
                         }
                     }
                     PluginMsg::Chunk { id, body } => {
-                        let pending =safe_expect!(pending_for_reader.lock(), "poisoned");
+                        let pending = safe_expect!(pending_for_reader.lock(), "poisoned");
                         if let Some(tx) = pending.get(&id) {
                             let _ = tx.send(ReaderMsg::Chunk { body });
                         }
@@ -286,7 +286,7 @@ impl PluginHost {
                     // must never block the reader. The session id travels
                     // INSIDE the payload (TLS session is turn-thread-local).
                     PluginMsg::Request { id, op, payload } => {
-                        let handler =safe_expect!(api_for_reader.lock(), "poisoned").clone();
+                        let handler = safe_expect!(api_for_reader.lock(), "poisoned").clone();
                         let writer = Arc::clone(&writer_clone);
                         let name = name_for_reader.clone();
                         let payload = payload.clone();
@@ -315,14 +315,13 @@ impl PluginHost {
                                     // and the plugin blocks on its reply forever — the caller
                                     // (a tool call, a compactor) then hangs on a plugin that
                                     // looks alive. Convert the panic into an error reply.
-                                    let outcome = std::panic::catch_unwind(
-                                        std::panic::AssertUnwindSafe(|| {
-                                            h.handle(&name, session.as_deref(), &op, &payload)
-                                        }),
-                                    )
-                                    .unwrap_or_else(|_| {
-                                        Err(format!("host API op '{op}' panicked"))
-                                    });
+                                    let outcome =
+                                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                            || h.handle(&name, session.as_deref(), &op, &payload),
+                                        ))
+                                        .unwrap_or_else(
+                                            |_| Err(format!("host API op '{op}' panicked")),
+                                        );
                                     let reply = match outcome {
                                         Ok(result) => HostMsg::ApiResult {
                                             id,
@@ -351,7 +350,7 @@ impl PluginHost {
                         tools,
                         events,
                     } => {
-                        let mut decl =safe_expect!(declaration_for_reader.lock(), "poisoned");
+                        let mut decl = safe_expect!(declaration_for_reader.lock(), "poisoned");
                         let old_tools: std::collections::HashSet<String> =
                             decl.tools.iter().map(|t| t.name.clone()).collect();
 
@@ -377,7 +376,9 @@ impl PluginHost {
                             old_tools.difference(&new_tools).cloned().collect();
 
                         // Call the callback if registered
-                        if let Some(cb) =safe_expect!(on_declare_for_reader.lock(), "poisoned").as_ref() {
+                        if let Some(cb) =
+                            safe_expect!(on_declare_for_reader.lock(), "poisoned").as_ref()
+                        {
                             cb(&decl.name, &decl, added, removed);
                         }
                     }
@@ -407,7 +408,9 @@ impl PluginHost {
                             .map(|s| s.to_string())
                     });
                 if let Some(sid) = sid_opt {
-                    if let Some(bus) =safe_expect!(session_buses_for_thread.lock(), "poisoned").get(&sid) {
+                    if let Some(bus) =
+                        safe_expect!(session_buses_for_thread.lock(), "poisoned").get(&sid)
+                    {
                         bus.emit(LiveEvent::PluginNotification { payload: event });
                     }
                     // unknown sid -> drop (no broadcast)
@@ -466,7 +469,9 @@ impl PluginHost {
 
     /// Get the plugin name (shorthand for declaration().name).
     pub fn name(&self) -> String {
-        safe_expect!(self.declaration.lock(), "poisoned").name.clone()
+        safe_expect!(self.declaration.lock(), "poisoned")
+            .name
+            .clone()
     }
 
     /// Set the callback invoked when the plugin sends a `declare` message.
@@ -615,7 +620,9 @@ impl PluginHost {
 
     /// Whether this plugin subscribes to a given hook.
     pub fn has_hook(&self, hook: HookName) -> bool {
-        safe_expect!(self.declaration.lock(), "poisoned").hooks.contains(&hook)
+        safe_expect!(self.declaration.lock(), "poisoned")
+            .hooks
+            .contains(&hook)
     }
 
     /// whether the plugin declared a given capability in its hello.
@@ -673,7 +680,7 @@ impl PluginHost {
             payload,
         };
         let written = {
-            let mut w =safe_expect!(self.writer.lock(), "poisoned");
+            let mut w = safe_expect!(self.writer.lock(), "poisoned");
             write_host_msg(&mut **w, &msg)
         };
         if let Err(e) = written {
@@ -850,7 +857,7 @@ impl PluginHost {
         if !safe_expect!(self.declaration.lock(), "poisoned").is_cancelable() {
             return;
         }
-        let mut w =safe_expect!(self.writer.lock(), "poisoned");
+        let mut w = safe_expect!(self.writer.lock(), "poisoned");
         let _ = write_host_msg(&mut **w, &HostMsg::Cancel { id });
     }
 
@@ -1041,7 +1048,7 @@ impl PluginHost {
     /// Returns false if unsubscribed (3 consecutive failures).
     pub fn send_event(&self, event: &Event) -> bool {
         {
-            let state =safe_expect!(self.event_state.lock(), "poisoned");
+            let state = safe_expect!(self.event_state.lock(), "poisoned");
             if state.unsubscribed {
                 return false;
             }
@@ -1056,11 +1063,11 @@ impl PluginHost {
         };
 
         let msg = HostMsg::Event { payload };
-        let mut w =safe_expect!(self.writer.lock(), "poisoned");
+        let mut w = safe_expect!(self.writer.lock(), "poisoned");
         match write_host_msg(&mut **w, &msg) {
             Ok(_) => {
                 drop(w);
-                let mut state =safe_expect!(self.event_state.lock(), "poisoned");
+                let mut state = safe_expect!(self.event_state.lock(), "poisoned");
                 state.consecutive_failures = 0;
                 true
             }
@@ -1073,7 +1080,7 @@ impl PluginHost {
     }
 
     fn record_event_failure(&self) {
-        let mut state =safe_expect!(self.event_state.lock(), "poisoned");
+        let mut state = safe_expect!(self.event_state.lock(), "poisoned");
         state.consecutive_failures += 1;
         if state.consecutive_failures >= 3 {
             state.unsubscribed = true;
@@ -1082,7 +1089,7 @@ impl PluginHost {
 
     /// Send shutdown message.
     pub fn shutdown(&self) {
-        let mut w =safe_expect!(self.writer.lock(), "poisoned");
+        let mut w = safe_expect!(self.writer.lock(), "poisoned");
         let _ = write_host_msg(&mut **w, &HostMsg::Shutdown);
     }
 
@@ -1093,7 +1100,10 @@ impl PluginHost {
 
     /// Snapshot of in-flight call ids, for cancel during reload (R-PLUG2-100 step 1).
     pub fn pending_ids(&self) -> Vec<u64> {
-        safe_expect!(self.pending_calls.lock(), "poisoned").keys().cloned().collect()
+        safe_expect!(self.pending_calls.lock(), "poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 }
 

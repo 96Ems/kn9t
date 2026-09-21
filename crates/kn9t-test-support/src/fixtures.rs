@@ -4,8 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use kn9t_core::{
-    CacheMode, ModelRef, ModelSpec, Price, ProvErr, Quirks,
-    Cancel, Chunk, Provider, Request,
+    CacheMode, Cancel, Chunk, ModelRef, ModelSpec, Price, ProvErr, Provider, Quirks, Request,
 };
 use kn9t_provider_replay::fixture::Fixture;
 use kn9t_provider_replay::ReplayProvider;

@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use mlua::{Lua, Table};
 
+use kn9t_tui::lua::state::state_number;
 use kn9t_tui::lua::state::{
     install_environment, install_lazy_accessors, update_state, LazyData, LazyMessage, LazyStore,
     LazyTool, RecentTool, SessionSummary, StateSnapshot, RECENT_TOOL_LIMIT,
 };
-use kn9t_tui::lua::state::state_number;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

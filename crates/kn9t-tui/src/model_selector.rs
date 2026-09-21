@@ -201,4 +201,3 @@ impl Default for ModelSelector {
         Self::new()
     }
 }
-

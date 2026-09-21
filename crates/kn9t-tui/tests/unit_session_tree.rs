@@ -156,11 +156,7 @@ fn self_parent_is_treated_as_a_root() {
 
 #[test]
 fn picker_order_covers_every_entry_and_indexes_the_full_list() {
-    let entries = vec![
-        e("root", None),
-        e("a", Some("root")),
-        e("other", None),
-    ];
+    let entries = vec![e("root", None), e("a", Some("root")), e("other", None)];
     let order = picker_order(&entries, "");
     assert_eq!(order.len(), entries.len());
     // Indices address the ORIGINAL slice, since the key handler resolves them against
@@ -238,9 +234,15 @@ fn undo_past_the_beginning_is_refused() {
 
 #[test]
 fn undo_rejects_zero_and_garbage() {
-    assert!(plan_fork("undo", "0", 5).is_err(), "zero is not a step back");
+    assert!(
+        plan_fork("undo", "0", 5).is_err(),
+        "zero is not a step back"
+    );
     assert!(plan_fork("undo", "abc", 5).is_err());
-    assert!(plan_fork("undo", "-2", 5).is_err(), "negative is not a count");
+    assert!(
+        plan_fork("undo", "-2", 5).is_err(),
+        "negative is not a count"
+    );
 }
 
 /// `/fork` with no argument checkpoints at the current head: same history, new branch.

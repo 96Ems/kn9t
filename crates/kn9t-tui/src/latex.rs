@@ -495,4 +495,3 @@ pub fn process_math(text: &str) -> String {
 
     result
 }
-

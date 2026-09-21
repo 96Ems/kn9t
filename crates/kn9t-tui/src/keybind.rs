@@ -275,10 +275,7 @@ impl Keybinds {
             kp(KeyCode::F(1), false, false, false),
             Action::ToggleExplorer,
         );
-        bindings.insert(
-            kp(KeyCode::F(3), false, false, false),
-            Action::CloseViewer,
-        );
+        bindings.insert(kp(KeyCode::F(3), false, false, false), Action::CloseViewer);
 
         Self { bindings }
     }
@@ -480,4 +477,3 @@ pub fn key_event_to_string(key: KeyEvent) -> Option<String> {
 
     Some(s)
 }
-

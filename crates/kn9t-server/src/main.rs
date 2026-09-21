@@ -5,8 +5,8 @@
 //! (503) until all plugins are ready. This prevents client timeouts when plugins are
 //! slow to load (e.g., WSL with files on /mnt/c/).
 
-use kn9t_macros::safe_expect;
 use kn9t_core::ToolRegistry;
+use kn9t_macros::safe_expect;
 use kn9t_server::{auth, config, log, spawn, ServerHandle, ServerState};
 use std::sync::Arc;
 

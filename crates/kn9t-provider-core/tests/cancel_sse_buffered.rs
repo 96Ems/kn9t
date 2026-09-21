@@ -12,7 +12,6 @@ use kn9t_provider_core::sse::sse_lines;
 use std::io::{Cursor, Read};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// A reader that tracks how many times read() is called.
 struct CountingReader<R> {

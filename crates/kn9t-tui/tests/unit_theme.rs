@@ -1,10 +1,10 @@
 //! Unit tests for theme — extracted from src/theme.rs
 #![allow(clippy::unwrap_used)]
 
-use std::collections::HashMap;
 use kn9t_tui::config::ThemeSection;
 use kn9t_tui::theme::{color_to_string, parse_color, Theme};
 use ratatui::style::Color;
+use std::collections::HashMap;
 
 #[test]
 fn test_parse_color_hex() {

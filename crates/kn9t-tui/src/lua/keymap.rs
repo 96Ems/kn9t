@@ -232,4 +232,3 @@ pub fn drain_pending_maps(lua: &Lua, registry: &mut KeymapRegistry) -> LuaResult
 
     Ok(applied)
 }
-

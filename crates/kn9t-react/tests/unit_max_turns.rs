@@ -346,5 +346,9 @@ fn a_normal_short_run_is_unaffected_by_the_ceiling() {
         .run(params(Some(100)))
         .expect("a clean run must succeed");
     assert!(stop == StopReason::Stop, "real stop reason preserved");
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "one turn, one provider call");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "one turn, one provider call"
+    );
 }

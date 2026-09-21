@@ -1,8 +1,8 @@
 //! Test approver implementations: AllowAll and DenyAll.
 
-use std::path::Path;
 use kn9t_core::{Approver, Decision, ToolCall};
 use kn9t_provider_core::ApprovalCtx;
+use std::path::Path;
 
 /// Approver that approves all requests.
 pub struct AllowAll;

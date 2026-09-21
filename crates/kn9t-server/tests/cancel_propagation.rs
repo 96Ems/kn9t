@@ -43,10 +43,7 @@ fn interaction_wait_respects_cancel() {
     // The waiter should return quickly with None
     let (elapsed, result) = waiter.join().unwrap();
 
-    assert!(
-        result.is_none(),
-        "Cancelled wait should return None"
-    );
+    assert!(result.is_none(), "Cancelled wait should return None");
     assert!(
         elapsed < Duration::from_millis(500),
         "Cancel should unblock quickly, took {:?}",

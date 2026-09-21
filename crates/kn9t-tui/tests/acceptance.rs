@@ -9,26 +9,26 @@
 fn tui_no_kn9t_deps() {
     let manifest = include_str!("../Cargo.toml");
     let mut in_dev_deps = false;
-    
+
     for line in manifest.lines() {
         let trimmed = line.trim();
-        
+
         // Track section headers
         if trimmed.starts_with('[') {
             in_dev_deps = trimmed.contains("dev-dependencies");
             continue;
         }
-        
+
         // Skip comments
         if trimmed.starts_with('#') {
             continue;
         }
-        
+
         // Skip dev-dependencies — they're exempt from GI-6
         if in_dev_deps {
             continue;
         }
-        
+
         // A dependency on a kn9t-* crate would start with `kn9t-` as a key.
         assert!(
             !trimmed.starts_with("kn9t-"),

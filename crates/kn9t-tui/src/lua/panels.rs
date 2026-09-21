@@ -447,4 +447,3 @@ pub fn process_panel_commands(lua: &Lua, registry: &mut PanelRegistry) -> LuaRes
 
     Ok(())
 }
-

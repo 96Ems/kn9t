@@ -6,8 +6,8 @@
 # Modeled on scripts/check-gi1.sh (see its awk range bug comment); this file must
 # never pass vacuously.
 #
-# Lesson (docs/dev/TRACKING.md:31-35): "the invariant claim was untrue for an unknown period
-# because nothing checked it. Prefer a script over an assertion."
+# Lesson: "the invariant claim was untrue for an unknown period because nothing
+# checked it. Prefer a script over an assertion."
 
 set -e
 cd "$(dirname "$0")/.."

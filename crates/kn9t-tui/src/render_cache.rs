@@ -209,4 +209,3 @@ impl RenderCache {
         self.dirty = true;
     }
 }
-

@@ -8,13 +8,13 @@
 #   2. Windows-1252 misreads of box-drawing characters. `Set-Content -Encoding
 #      UTF8` in PowerShell 5.1 turns U+2500 into U+0393 U+00F6 U+00C7, which the
 #      original C2/C3-only pattern did not match - that is exactly the corruption
-#      found in plugins/kn9t-policy.py (fixed in 068a3b0).
+#      found in the policy plugin (kn9t-plugins/kn9t-policy; fixed in 068a3b0).
 #   3. UTF-16 and UTF-8-BOM files. git treats UTF-16 as binary, so grep never
 #      sees inside them: kn9t-policy.py was UTF-16LE for an unknown period and
 #      no guard could read it. A BOM also breaks shebangs and `#[cfg]` parsing.
 #
 # Scope is the whole tree, not just crates/ docs/ spec/. The previous version
-# excluded root-level .md, so CHANGELOG.md, TRACKING.md and AGENTS.md were never
+# excluded root-level .md, so CHANGELOG.md and AGENTS.md were never
 # checked.
 
 set -e

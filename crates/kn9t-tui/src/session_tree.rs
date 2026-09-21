@@ -97,9 +97,7 @@ pub fn build_forest(entries: &[SessionEntry]) -> Forest {
     let mut placed: HashSet<usize> = HashSet::new();
     let mut forest = Forest::default();
     for r in roots {
-        forest
-            .roots
-            .push(grow(r, 0, &children, &mut placed));
+        forest.roots.push(grow(r, 0, &children, &mut placed));
     }
 
     // Anything unreachable from a root (only possible via a cycle) becomes a root, so
@@ -230,11 +228,7 @@ pub fn plan_fork(cmd: &str, args: &str, head: u64) -> Result<ForkPlan, String> {
     } else {
         match arg.parse::<u64>() {
             Ok(s) if s <= head => s,
-            Ok(s) => {
-                return Err(format!(
-                    "/fork: seq {s} is past the current head ({head})."
-                ))
-            }
+            Ok(s) => return Err(format!("/fork: seq {s} is past the current head ({head}).")),
             Err(_) => return Err(format!("/fork takes a sequence number, got {arg:?}")),
         }
     };

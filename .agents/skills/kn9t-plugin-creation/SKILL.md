@@ -719,10 +719,13 @@ send({ t: "hello", proto: 1, kn9t: "test" });   // host → plugin, then a hook
 
 **In this repo:**
 - SDK source: `crates/kn9t-plugin-sdk/src/` — `traits.rs`, `wire.rs`, `plugin.rs`, `ctx.rs`
-- Worked examples: `plugins/kn9t-tools` (Rust tools), `plugins/kn9t-policy` (Python hooks),
-  `plugins/kn9t-compactor` (TypeScript), `plugins/kn9t-agents-md` (Go), `plugins/kn9t-anthropic`
-  (Rust provider)
+- Worked example: `plugins/kn9t-tools` (Rust tools)
+- Test fixture: `plugins/kn9t-test-plugin`
 - Protocol rationale: `spec/08b-plugin-redesign.md`
+
+**Worked examples in the [kn9t-plugins](https://github.com/96Ems/kn9t-plugins) repo:**
+`kn9t-policy` (Python hooks), `kn9t-compactor` (TypeScript), `kn9t-agents-md` (Go),
+`kn9t-anthropic` (Rust provider), plus `kn9t-mcp`, `kn9t-subagent`, `kn9t-ask-user`.
 
 **After changing the SDK or a schema:** `cargo run -p xtask -- generate`
 

@@ -1,8 +1,8 @@
 //! CancellableReader — wraps a `Read` stream; returns `Interrupted` when `Cancel` fires.
 //! See `docs/dev/job/instant-cut.md` — instant cut <1ms on next `read()`.
 
-use kn9t_core::Cancel;
 use kn9t_core::safe_unwrap;
+use kn9t_core::Cancel;
 use std::io::{self, Read};
 
 pub struct CancellableReader<R> {
@@ -62,4 +62,3 @@ impl<R: Read + Send + 'static> Read for CancellableReader<R> {
         }
     }
 }
-

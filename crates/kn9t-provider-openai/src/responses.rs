@@ -281,7 +281,10 @@ pub fn decode_event(
                         .get("call_id")
                         .and_then(|c| c.as_str())
                         .unwrap_or_default();
-                    let name = item.get("name").and_then(|n| n.as_str()).unwrap_or_default();
+                    let name = item
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or_default();
                     chunks.push(Chunk::ToolCall {
                         idx: output_index(&v),
                         id: CallId(call_id.to_owned()),
@@ -317,10 +320,7 @@ pub fn decode_event(
             }));
         }
         "response.incomplete" => {
-            if let Some(usage) = v
-                .get("response")
-                .and_then(|r| r.get("usage"))
-            {
+            if let Some(usage) = v.get("response").and_then(|r| r.get("usage")) {
                 chunks.push(Chunk::Usage(Usage {
                     tokens: decode_usage(usage),
                     model: model_ref.clone(),
@@ -356,17 +356,12 @@ pub fn decode_event(
 }
 
 fn output_index(v: &Value) -> u32 {
-    v.get("output_index")
-        .and_then(|i| i.as_u64())
-        .unwrap_or(0) as u32
+    v.get("output_index").and_then(|i| i.as_u64()).unwrap_or(0) as u32
 }
 
 pub fn decode_usage(u: &Value) -> Tokens {
     let input_total = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    let output = u
-        .get("output_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+    let output = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     let cache_read = u
         .pointer("/input_tokens_details/cached_tokens")
         .and_then(|v| v.as_u64())

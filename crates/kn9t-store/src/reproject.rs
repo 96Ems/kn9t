@@ -206,7 +206,8 @@ fn write_rows_temp(conn: &Connection, rows: Vec<project::Row>) -> Result<(), Sto
                     "INSERT OR REPLACE INTO temp.chk_messages(session_id,seq,role,content,silent)\
                      VALUES(?1,?2,?3,?4,?5)",
                     params![session_id, seq as i64, role, content_json, silent as i64],
-                ).map_err(|e| StoreErr(format!("insert temp msg: {e}")))?;
+                )
+                .map_err(|e| StoreErr(format!("insert temp msg: {e}")))?;
             }
             project::Row::Usage {
                 session_id,
@@ -266,7 +267,8 @@ fn write_rows_temp(conn: &Connection, rows: Vec<project::Row>) -> Result<(), Sto
                     "INSERT OR REPLACE INTO temp.chk_messages(session_id,seq,role,content,silent)\
                      VALUES(?1,?2,?3,?4,0)",
                     params![session_id, seq as i64, role, content_json],
-                ).map_err(|e| StoreErr(format!("insert temp compact: {e}")))?;
+                )
+                .map_err(|e| StoreErr(format!("insert temp compact: {e}")))?;
             }
         }
     }

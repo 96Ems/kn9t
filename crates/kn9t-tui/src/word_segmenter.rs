@@ -87,4 +87,3 @@ pub fn char_to_byte_offset(text: &str, char_pos: usize) -> usize {
         .map(|(i, _)| i)
         .unwrap_or(text.len())
 }
-

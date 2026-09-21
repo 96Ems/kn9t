@@ -4,10 +4,10 @@
 //! and external `sqlite3` readers, not in-process concurrency. `read_attach_snapshot` holds the
 //! mutex across payloads+head_seq; separate connections only if benchmarks justify it.
 
+use kn9t_core::safe_unwrap;
 use kn9t_core::{
     Event, ModelRef, ModelSpec, PluginKv, RequestPlan, SessionId, SessionSnapshot, Store, StoreErr,
 };
-use kn9t_core::safe_unwrap;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use kn9t_core::{Approver, ApprovalCtx, CallId, Cancel, Decision, EventSink, LiveEvent, ToolCall};
+use kn9t_core::{ApprovalCtx, Approver, CallId, Cancel, Decision, EventSink, LiveEvent, ToolCall};
 use kn9t_server::policy::{
     fingerprint, ApprovalCache, ApprovalRegistry, InteractiveApprover, NonInteractiveApprover,
 };
@@ -185,7 +185,7 @@ fn non_interactive_approver_denies_ask() {
     let ctx = ApprovalCtx {
         session: "test-session",
         sink: sink.as_ref(),
-            cancel: &Cancel::new(),
+        cancel: &Cancel::new(),
     };
     match a.request(&bash_call("rm x"), Path::new("/"), "mutation", &ctx) {
         Decision::Deny { reason } => assert!(reason.contains("mutation")),

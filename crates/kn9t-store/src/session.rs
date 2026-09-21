@@ -262,4 +262,3 @@ pub fn event_kind_name(event: &Event) -> &'static str {
         Event::PluginState { .. } => "PluginState",
     }
 }
-

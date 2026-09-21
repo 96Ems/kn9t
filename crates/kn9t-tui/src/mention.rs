@@ -244,16 +244,16 @@ mod tests {
         state.sync(&index, &input, cursor);
         assert!(state.active, "the dropdown must be live");
 
-        let path = state
-            .selected_path()
-            .expect("a match")
-            .to_string();
+        let path = state.selected_path().expect("a match").to_string();
         let new_cursor = state.apply(&mut input, &path);
 
         assert!(input.starts_with("look at @"), "got {input:?}");
         assert!(input.ends_with(" now"), "the tail must survive: {input:?}");
         assert!(!state.active, "applying closes the dropdown");
-        assert_eq!(new_cursor, "look at @".chars().count() + path.chars().count());
+        assert_eq!(
+            new_cursor,
+            "look at @".chars().count() + path.chars().count()
+        );
     }
 
     #[test]

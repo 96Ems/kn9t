@@ -22,7 +22,7 @@ members = [
 [workspace.package]
 edition = "2021"
 license = "MIT"
-rust-version = "1.94"
+rust-version = "1.98"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

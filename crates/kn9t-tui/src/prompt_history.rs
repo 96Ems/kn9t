@@ -148,7 +148,9 @@ impl PromptHistory {
                 return None;
             }
             // Start at most recent match — safe: matches not empty checked above
-            let idx = *matches.last().expect("matches non-empty after is_empty check");
+            let idx = *matches
+                .last()
+                .expect("matches non-empty after is_empty check");
             self.position = Some(idx);
             return Some(&self.history[idx]);
         }
@@ -253,4 +255,3 @@ impl Drop for PromptHistory {
         self.save();
     }
 }
-

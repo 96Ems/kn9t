@@ -99,7 +99,11 @@ fn tool_result_with_image_splits_into_user_message() {
     let mut out = Vec::new();
     encode_messages(&msg, &quirks, false, &mut out);
 
-    assert_eq!(out.len(), 2, "tool message + synthetic user message with image");
+    assert_eq!(
+        out.len(),
+        2,
+        "tool message + synthetic user message with image"
+    );
 
     assert_eq!(out[0]["role"], "tool");
     assert_eq!(out[0]["tool_call_id"], "call_3");
@@ -158,7 +162,9 @@ fn tool_result_without_image_has_no_extra_message() {
         role: Role::Tool,
         content: vec![Content::ToolResult {
             id: CallId("call_4".into()),
-            content: vec![Content::Text { text: "plain text".into() }],
+            content: vec![Content::Text {
+                text: "plain text".into(),
+            }],
             is_error: false,
         }],
         silent: false,

@@ -223,4 +223,3 @@ pub fn decode_tokens(u: &Value) -> Tokens {
         reasoning: get(&["reasoning_tokens"]),
     }
 }
-

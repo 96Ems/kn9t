@@ -55,4 +55,3 @@ pub fn breakpoints(messages: &[Message], mode: &CacheMode) -> Vec<Cache> {
     }
     out
 }
-

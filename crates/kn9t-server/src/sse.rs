@@ -243,4 +243,3 @@ pub fn heartbeat_interval() -> Duration {
 }
 
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
-

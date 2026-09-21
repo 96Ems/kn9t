@@ -237,4 +237,3 @@ pub fn drain_pending_commands(lua: &Lua, registry: &mut LuaCommandRegistry) -> L
 
     Ok(applied)
 }
-

@@ -239,7 +239,11 @@ mod tests {
         assert_eq!(v.reference(), "@ref.rs:3");
         v.toggle_selection();
         v.move_cursor(-1);
-        assert_eq!(v.reference(), "@ref.rs:2-3", "the range spans anchor..cursor");
+        assert_eq!(
+            v.reference(),
+            "@ref.rs:2-3",
+            "the range spans anchor..cursor"
+        );
         v.toggle_selection();
         assert_eq!(v.reference(), "@ref.rs:2", "clearing drops the range");
     }

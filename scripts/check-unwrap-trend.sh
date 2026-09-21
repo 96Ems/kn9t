@@ -20,7 +20,7 @@ cd "$(dirname "$0")/.."
 count_file() {
   local file="$1"
   local c
-  c=$(awk 'BEGIN{p=1} /#\[cfg\(test\)/{p=0} p' "$file" 2>/dev/null | grep -c "\.unwrap()" 2>/dev/null || true)
+  c=$(awk 'BEGIN{p=1} /#\[cfg\(test\)/{p=0} p' "$file" 2>/dev/null | grep -cF ".unwrap()" 2>/dev/null || true)
   # grep -c outputs even with no matches; ensure numeric
   if ! echo "$c" | grep -qE '^[0-9]+$'; then c=0; fi
   echo "$c"
@@ -51,7 +51,7 @@ for f in $CRITICAL; do
 done
 
 # Overall src count (informational, not failing)
-OVERALL=$(grep -rn "\.unwrap()" --include="*.rs" crates/ 2>/dev/null | grep -v "/tests/" | wc -l | tr -d ' ' || true)
+OVERALL=$(grep -rnF ".unwrap()" --include="*.rs" crates/ 2>/dev/null | grep -v "/tests/" | wc -l | tr -d ' ' || true)
 echo "  overall crates/ (excl. tests/): $OVERALL .unwrap() occurrences"
 echo "  critical total (policy.rs + host.rs non-test): $TOTAL"
 
@@ -60,7 +60,7 @@ if git rev-parse --verify main >/dev/null 2>&1; then
   BASELINE=0
   for f in $CRITICAL; do
     if git show main:"$f" >/tmp/unwrap-baseline 2>/dev/null; then
-      c=$(awk 'BEGIN{p=1} /#\[cfg\(test\)/{p=0} p' /tmp/unwrap-baseline 2>/dev/null | grep -c "\.unwrap()" || true)
+      c=$(awk 'BEGIN{p=1} /#\[cfg\(test\)/{p=0} p' /tmp/unwrap-baseline 2>/dev/null | grep -cF ".unwrap()" || true)
       BASELINE=$((BASELINE + c))
     fi
   done

@@ -9,8 +9,8 @@
 //! | `crates/kn9t-tui/src/write` | wire mirrors, GI-6-clean (serde only, no kn9t-* dep) |
 //! | `API.md` | human-readable contract docs — never hand-edited again |
 //! | `docs/CONFIG.md` | `~/.kn9t/config.toml` reference, rendered from `schema/config.json` |
-//! | `schema/generated/go_types.go` | Go client stubs (for `plugins/kn9t-agents-md`) |
-//! | `schema/generated/python_types.py` | Python client stubs (for `plugins/kn9t-mcp`) |
+//! | `schema/generated/go_types.go` | Go client stubs (for `kn9t-agents-md`, in the [kn9t-plugins](https://github.com/96Ems/kn9t-plugins) repo) |
+//! | `schema/generated/python_types.py` | Python client stubs (for `kn9t-mcp`, in the [kn9t-plugins](https://github.com/96Ems/kn9t-plugins) repo) |
 //! | `.agents/skills/kn9t-plugin-creation/references/**` | plugin-authoring snapshots — `api.md` plus the SDK source, so the skill cannot restate the contract wrongly |
 //!
 //! The generator is **idempotent**: consecutive runs produce byte-identical output.

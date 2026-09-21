@@ -5,9 +5,8 @@
 #![allow(clippy::unwrap_used)]
 
 use kn9t_tui::lua::widgets::{
-    Align, SplitDirection, SplitSize, TextSpan, Widget, WidgetStyle,
     collect_clickable_areas, collect_natives, compute_split_rects, join_spans, parse_widget,
-    render_widget,
+    render_widget, Align, SplitDirection, SplitSize, TextSpan, Widget, WidgetStyle,
 };
 use kn9t_tui::theme::Theme;
 use mlua::{Lua, Table};
@@ -276,7 +275,7 @@ fn text_widget_opts_into_markdown_and_syntax() {
 
 #[test]
 fn markdown_flag_actually_changes_rendering() {
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{backend::TestBackend, Terminal};
 
     // A heading must not render its '#' marker once markdown is enabled.
     fn draw(markdown: bool) -> String {

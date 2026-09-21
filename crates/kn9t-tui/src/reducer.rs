@@ -315,9 +315,11 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                 }
             }
             if !final_content.is_empty() || !tools.is_empty() || !thinking.is_empty() {
-                state
-                    .transcript
-                    .push(Message::new(&msg.role, final_content).with_tools(tools).with_thinking(thinking));
+                state.transcript.push(
+                    Message::new(&msg.role, final_content)
+                        .with_tools(tools)
+                        .with_thinking(thinking),
+                );
             }
         }
         SseFrame::UsageRecorded {
@@ -415,7 +417,9 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
             // "Compaction started..." was already shown when the user triggered it.
             let extracted = extract_message_content(&summary.content);
             if !extracted.text.is_empty() {
-                state.transcript.push(Message::new(&summary.role, extracted.text));
+                state
+                    .transcript
+                    .push(Message::new(&summary.role, extracted.text));
             }
         }
         SseFrame::Error { message } => {
@@ -451,18 +455,19 @@ pub fn reduce(state: &mut State, frame: SseFrame) {
                     "error",
                     format!("turn {}: {}", phase, message),
                 ));
-            } else if phase == "retrying" && !message.is_empty()
+            } else if phase == "retrying"
+                && !message.is_empty()
                 && !state
                     .transcript
                     .messages()
                     .last()
                     .map(|m| m.content.contains(&message))
                     .unwrap_or(false)
-                {
-                    state
-                        .transcript
-                        .push(Message::new("system", message.clone()));
-                }
+            {
+                state
+                    .transcript
+                    .push(Message::new("system", message.clone()));
+            }
             match phase.as_str() {
                 "idle" | "failed" | "aborted" => state.streaming = false,
                 "thinking" | "streaming" | "tool" | "retrying" => state.streaming = true,
@@ -605,4 +610,3 @@ fn extract_message_content(content: &[crate::wire::WireContent]) -> ExtractedCon
         thinking,
     }
 }
-

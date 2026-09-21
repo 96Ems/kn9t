@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use kn9t_core::{Tool, ToolRegistry, ToolSpec};
-use kn9t_plugin::{PluginHost, RemoteTool, NoOpPluginKv};
+use kn9t_plugin::{NoOpPluginKv, PluginHost, RemoteTool};
 
 /// Locates the built kn9t-tools plugin binary from cargo artifacts (not runtime discovery).
 ///      standalone crate build. `kn9t-tools` is no longer a workspace member;

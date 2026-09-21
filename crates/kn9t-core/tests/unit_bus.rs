@@ -1,6 +1,6 @@
 //! Unit tests for Bus and EventSink: broadcast and subscription.
 
-use kn9t_core::{Bus, EventSink, Event, LiveEvent, Message, MsgId, Role};
+use kn9t_core::{Bus, Event, EventSink, LiveEvent, Message, MsgId, Role};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;

@@ -125,4 +125,3 @@ macro_rules! store_err {
         kn9t_core::StoreErr(format!($fmt, $($arg)*))
     };
 }
-

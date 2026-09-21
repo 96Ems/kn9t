@@ -395,7 +395,10 @@ impl TranscriptParser {
             let content_text = text_parts.join("\n");
 
             // Only add message if there's content, tools, or reasoning.
-            if !content_text.is_empty() || !tools.is_empty() || !thinking.is_empty() || image_count > 0
+            if !content_text.is_empty()
+                || !tools.is_empty()
+                || !thinking.is_empty()
+                || image_count > 0
             {
                 messages.push(Message {
                     role: role.to_string(),
@@ -537,4 +540,3 @@ impl TranscriptParser {
         }
     }
 }
-

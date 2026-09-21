@@ -3,8 +3,8 @@
 # Runs the two mechanical invariant checks before every commit:
 #   scripts/check-gi1.sh     — dependency budget (GI-1)
 #   scripts/check-schema.sh  — schema-first contract (ADR-0005, GI-6)
-# A red check refuses the commit. Both scripts are the "script over assertion"
-# precedent from docs/dev/TRACKING.md:31-35.
+# A red check refuses the commit. Both scripts follow the project rule: prefer a
+# script over an assertion — an invariant that nothing checks is untrue by default.
 
 set -e
 # Resolve the repo root independently of where this hook is installed: .git/hooks/

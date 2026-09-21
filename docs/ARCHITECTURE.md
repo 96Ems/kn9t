@@ -6,8 +6,9 @@ they are enforced. This is a map, not a rulebook (`AGENTS.md`) and not a rationa
 (`DESIGN.md`). Where the shipped code diverges from the docs, this file says so and
 `§14 Findings` records it.
 
-Measured 2026-09-17: 14 workspace crates (~49.2 KLOC Rust), 1 xtask, 13 out-of-workspace
-plugins in 4 languages, 923 workspace tests + 71 external.
+Measured 2026-09-17: 14 workspace crates (~49.2 KLOC Rust), 1 xtask, 13 plugins in 4
+languages — 2 in this repo (`kn9t-tools`, `kn9t-test-plugin`), 11 in the
+[kn9t-plugins](https://github.com/96Ems/kn9t-plugins) repo — and 923 workspace tests.
 
 ---
 
@@ -45,6 +46,10 @@ plugins in 4 languages, 923 workspace tests + 71 external.
  │                                       └─ kn9t-ask-user  (TS)     │
  └──────────────────────────────────────────────────────────────────┘
 ```
+
+> Only `kn9t-tools` ships in this repository. The other plugin binaries drawn above live in
+> [96Ems/kn9t-plugins](https://github.com/96Ems/kn9t-plugins) and are installed into
+> `~/.kn9t/plugins/`.
 
 Three hard facts shape everything below:
 
@@ -474,7 +479,7 @@ of them, making dead-client detection untestable.
 The original design put a **shell command classifier in the server** (ADR-0001):
 cross-platform pwsh + POSIX grammars, deciding whether `rm -rf /` behind `sh -c` was
 dangerous. ADR-0008 deleted it — 333 lines of `classify.rs` plus its tests — and moved
-judgement into a **user-installed plugin** (`plugins/kn9t-policy.py`).
+judgement into a **user-installed plugin** (`kn9t-plugins/kn9t-policy`).
 
 What is left in the server is only the part a subprocess cannot own:
 
@@ -618,6 +623,10 @@ The `HostApi` trait lives in `kn9t-plugin` so that crate stays GI-1 clean (it on
 | `kn9t-subagent` | TypeScript | subagents, re-entrant |
 | `kn9t-ask-user` | TypeScript | user interaction via `interaction_request` |
 
+> The table records the plugins that exercised the protocol in four languages. Only
+> `kn9t-tools` and `kn9t-test-plugin` live in this repository; the rest are in
+> [96Ems/kn9t-plugins](https://github.com/96Ems/kn9t-plugins).
+
 Go and Python type stubs are generated from `schema/plugin.json` into
 `schema/generated/`. Four languages is a genuine protocol test — an internal-only
 convention would have drifted long ago.
@@ -694,7 +703,7 @@ frame or hiding the cause.
 **Placement is the user's decision, not the plugin's.** A view may *request*
 `placement`/`title`/`rows`/`cols` on `ui_register_lua`, and `kn9t.state.plugin_view_specs`
 surfaces the request so `tui.lua` can route by zone; but the config decides whether and where
-to draw it, so a plugin cannot seize screen space. `plugins/kn9t-ask-user` is the reference
+to draw it, so a plugin cannot seize screen space. `kn9t-plugins/kn9t-ask-user` is the reference
 implementation — its Lua is extracted verbatim into a test fixture
 (`scripts/extract_ask_user_lua.py`) so a syntax error fails CI instead of a user's terminal.
 
@@ -757,6 +766,9 @@ gap, not a regression.
 ## 14. Findings
 
 Ordered by consequence. Nothing here blocks; several are cheap.
+
+> The `AGENTS.md §n` references below date from before that file was rewritten for the
+> open-source release; treat them as pointing at the *previous* revision's sections.
 
 ### F1 — Spec is stale where ADR-0008 deleted code (highest) — **FIXED**
 

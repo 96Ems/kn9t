@@ -306,12 +306,7 @@ mod tests {
         assert_eq!(explorer.activate(&idx), Activate::Toggled);
         assert_eq!(
             paths(&explorer),
-            vec![
-                "crates",
-                "crates/kn9t-tui",
-                "docs",
-                "README.md"
-            ],
+            vec!["crates", "crates/kn9t-tui", "docs", "README.md"],
             "the children are inserted directly under their directory"
         );
         assert_eq!(explorer.selected_row().unwrap().path, "crates");

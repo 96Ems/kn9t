@@ -24,7 +24,10 @@ fn temp_state() -> Arc<ServerState> {
 #[test]
 fn plugins_ready_default_true() {
     let state = temp_state();
-    assert!(state.plugins_ready(), "default state should have plugins ready");
+    assert!(
+        state.plugins_ready(),
+        "default state should have plugins ready"
+    );
 }
 
 #[test]
@@ -35,7 +38,10 @@ fn plugins_loading_flag_works() {
     assert!(!state.plugins_ready(), "should not be ready while loading");
 
     state.set_plugins_loading(false);
-    assert!(state.plugins_ready(), "should be ready after loading complete");
+    assert!(
+        state.plugins_ready(),
+        "should be ready after loading complete"
+    );
 }
 
 #[test]

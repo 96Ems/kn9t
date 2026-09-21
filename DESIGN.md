@@ -101,7 +101,7 @@ corrected here rather than left as an aspiration):
 | provider | lines | notes |
 |---|---|---|
 | `kn9t-provider-openai` | 725 | in-process; encode + decode + cache |
-| `kn9t-anthropic` (bundled plugin) | 547 | subprocess; own HTTP via `ureq` |
+| `kn9t-anthropic` (external plugin, kn9t-plugins) | 547 | subprocess; own HTTP via `ureq` |
 | `kn9t-custom-provider` (external plugin) | 1059 | subprocess, `plugins/kn9t-custom-provider`; six documented protocol hazards (spec 09) |
 
 Two structural reasons the floor is ~550 rather than ~250:
@@ -2009,7 +2009,7 @@ flowchart LR
     S7["7. kn9t-tui<br/>ratatui + images"]
     S8["8. kn9t-plugin + kn9t-plugin-sdk<br/>protocol v2: chunk/done/cancel<br/>tool/provider/hook/event traits"]
     S8b["8b. plugins/kn9t-tools (external, auto-discovered)<br/>bash+read+write+edit as subprocess plugin<br/>build source plugins/ → install target ~/.kn9t/plugins/"]
-    S9["9. plugins/kn9t-custom-provider + plugins/kn9t-anthropic (both external)"]
+    S9["9. kn9t-custom-provider + kn9t-plugins/kn9t-anthropic (both external)"]
     S10["10. bedrock native (v2)"]
 
     S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S8b --> S9 --> S10

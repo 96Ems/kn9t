@@ -14,7 +14,12 @@ use crate::theme::Theme;
 ///
 /// A live card shows a spinner instead of a disclosure arrow and states no line count:
 /// it is still growing, and the answer has not started, so it is the only thing to watch.
-pub fn render_header(collapsed: bool, line_count: usize, live: bool, theme: &Theme) -> Line<'static> {
+pub fn render_header(
+    collapsed: bool,
+    line_count: usize,
+    live: bool,
+    theme: &Theme,
+) -> Line<'static> {
     let style = Style::default()
         .fg(theme.muted)
         .add_modifier(Modifier::ITALIC);

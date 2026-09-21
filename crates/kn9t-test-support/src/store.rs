@@ -1,13 +1,13 @@
 //! Stub store for testing.
 
-use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
-use kn9t_core::{
-    Cache, CompactSpan, Event, Message, ModelRef,
-    RequestPlan, SessionId, SessionSnapshot, StoreErr, ToolSpec,
-};
 use crate::tags::event_tag;
+use kn9t_core::{
+    Cache, CompactSpan, Event, Message, ModelRef, RequestPlan, SessionId, SessionSnapshot,
+    StoreErr, ToolSpec,
+};
 
 /// What one `plan_request` returns.
 #[derive(Clone)]

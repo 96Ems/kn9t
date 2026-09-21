@@ -133,7 +133,6 @@ pub enum ThinkingReplay {
     Strip,
 }
 
-
 /// R-CORE-095 — wire divergences that are config data (§8.2), never URL-sniffed.
 /// The full field set is enumerated in PCORE/OAI (05); core defines at least
 /// `thinking_replay`, the one quirk core behavior depends on. Field ordering when

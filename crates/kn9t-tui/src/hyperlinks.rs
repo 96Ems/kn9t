@@ -187,4 +187,3 @@ pub fn linkify_urls(text: &str) -> String {
     result.push_str(&text[last_end..]);
     result
 }
-

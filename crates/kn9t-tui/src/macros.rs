@@ -1,15 +1,6 @@
-//! Clippy-safe unwrap/expect macros (local copy for GI-6 compliance).
+//! Clippy-safe expect macro (local copy for GI-6 compliance).
 //!
-//! kn9t-tui cannot depend on kn9t-* crates, so we define these locally.
-
-/// Unwrap with clippy lint suppressed.
-macro_rules! safe_unwrap {
-    ($expr:expr) => {{
-        #[allow(clippy::unwrap_used)]
-        let __v = $expr.unwrap();
-        __v
-    }};
-}
+//! kn9t-tui cannot depend on kn9t-* crates, so we define it locally.
 
 /// Expect with clippy lint suppressed.
 macro_rules! safe_expect {
@@ -19,6 +10,3 @@ macro_rules! safe_expect {
         __v
     }};
 }
-
-pub(crate) use safe_expect;
-pub(crate) use safe_unwrap;

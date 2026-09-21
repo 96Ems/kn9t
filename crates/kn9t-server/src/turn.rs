@@ -1056,7 +1056,3 @@ pub fn spawn_compact(
         // `_slot` drops here: registration and idle count released together.
     });
 }
-
-
-
-

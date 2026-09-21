@@ -51,4 +51,3 @@ impl PromptStash {
         self.cursor = None;
     }
 }
-

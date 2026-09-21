@@ -191,4 +191,3 @@ fn sandbox_collectgarbage(lua: &Lua) -> LuaResult<()> {
 
     Ok(())
 }
-

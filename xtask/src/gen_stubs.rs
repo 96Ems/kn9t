@@ -2,8 +2,9 @@
 //!
 //! Purpose (ADR-0005, F11): a `pub` field whose type has no `pub` constructor is a
 //! **compile-time-invisible contract break** — only consumers in another language
-//! would notice. The Go stub is consumed by `plugins/kn9t-agents-md` and the Python
-//! stub by `plugins/kn9t-mcp`; when the schema changes, these files change, and a
+//! would notice. The Go stub is consumed by `kn9t-agents-md` and the Python stub by
+//! `kn9t-mcp` (both in the kn9t-plugins repo, https://github.com/96Ems/kn9t-plugins);
+//! when the schema changes, these files change, and a
 //! plugin that re-derives the wire contract cannot silently disagree with the server.
 
 use std::path::Path;

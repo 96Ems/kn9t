@@ -42,7 +42,11 @@ caught by `xtask --check` (pre-commit + CI) and overwritten by the next `generat
 ";
 
 /// Every file this generator produces, as (absolute path, exact content).
-pub fn outputs(root: &Path, http: &Value, plugin: &Value) -> Result<Vec<(PathBuf, String)>, String> {
+pub fn outputs(
+    root: &Path,
+    http: &Value,
+    plugin: &Value,
+) -> Result<Vec<(PathBuf, String)>, String> {
     let base = root.join(SKILL_DIR).join("references");
     let mut out: Vec<(PathBuf, String)> = Vec::new();
 
@@ -62,7 +66,8 @@ pub fn outputs(root: &Path, http: &Value, plugin: &Value) -> Result<Vec<(PathBuf
 pub fn write(root: &Path, http: &Value, plugin: &Value) -> Result<(), String> {
     for (path, content) in outputs(root, http, plugin)? {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
         }
         std::fs::write(&path, content.as_bytes())
             .map_err(|e| format!("write {}: {e}", path.display()))?;

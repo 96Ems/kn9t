@@ -110,9 +110,7 @@ pub fn check(url: &str) -> Verdict {
 
 fn classify(mime: &str, b64: &str) -> Verdict {
     let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
-        return Verdict::Unusable(
-            "[image dropped: payload is not valid base64]".to_string(),
-        );
+        return Verdict::Unusable("[image dropped: payload is not valid base64]".to_string());
     };
 
     if decodes(&bytes) {
@@ -318,4 +316,3 @@ mod tests {
         assert_eq!(first, check(&truncated), "cache must be stable");
     }
 }
-

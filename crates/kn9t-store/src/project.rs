@@ -187,7 +187,8 @@ pub fn write_rows(conn: &Connection, rows: Vec<Row>) -> Result<(), StoreErr> {
                     "INSERT OR REPLACE INTO messages(session_id,seq,role,content,silent)\
                      VALUES(?1,?2,?3,?4,?5)",
                     params![session_id, seq as i64, role, content_json, silent as i64],
-                ).map_err(|e| StoreErr(format!("insert message: {e}")))?;
+                )
+                .map_err(|e| StoreErr(format!("insert message: {e}")))?;
             }
             Row::Usage {
                 session_id,
@@ -247,7 +248,8 @@ pub fn write_rows(conn: &Connection, rows: Vec<Row>) -> Result<(), StoreErr> {
                     "INSERT OR REPLACE INTO messages(session_id,seq,role,content,silent)\
                      VALUES(?1,?2,?3,?4,0)",
                     params![session_id, seq as i64, role, content_json],
-                ).map_err(|e| StoreErr(format!("insert compact summary: {e}")))?;
+                )
+                .map_err(|e| StoreErr(format!("insert compact summary: {e}")))?;
             }
         }
     }

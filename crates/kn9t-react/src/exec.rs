@@ -108,7 +108,11 @@ impl ReactLoop {
                 return Err(ReactError::CompactionLoop);
             }
             // Safe: checked is_some() above at line 43
-            match self.run_compaction(params, cancel, plan.compact.take().expect("checked is_some"))? {
+            match self.run_compaction(
+                params,
+                cancel,
+                plan.compact.take().expect("checked is_some"),
+            )? {
                 Attempt::Completed(_) => {
                     // compaction committed; re-plan once
                 }
@@ -465,13 +469,7 @@ impl ReactLoop {
                             // send then fails and the thread simply exits.
                             let _ = tx.send((inner, is_error));
                         });
-                        handles.push((
-                            i,
-                            call.name.clone(),
-                            args.clone(),
-                            call.id.clone(),
-                            rx,
-                        ));
+                        handles.push((i, call.name.clone(), args.clone(), call.id.clone(), rx));
                     }
                 }
             }
@@ -767,4 +765,3 @@ pub fn estimated_assembled(model: &ModelRef) -> Assembled {
         usage_reported: false,
     }
 }
-

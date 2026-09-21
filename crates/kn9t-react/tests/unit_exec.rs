@@ -12,16 +12,15 @@ use std::sync::{
 };
 
 use kn9t_core::{
-    Cancel, Content, Event, HookHost, HookVeto, LiveEvent, Message,
-    ModelRef, NextTurnPatch, Provider, ProvErr, RequestPlan, SessionId, SessionSnapshot,
-    StopReason, Store, StoreErr, Tool, ToolCall, ToolCtx, ToolOutput, ToolRegistry, ToolSpec,
-    Usage,
+    Cancel, Content, Event, HookHost, HookVeto, LiveEvent, Message, ModelRef, NextTurnPatch,
+    ProvErr, Provider, RequestPlan, SessionId, SessionSnapshot, StopReason, Store, StoreErr, Tool,
+    ToolCall, ToolCtx, ToolOutput, ToolRegistry, ToolSpec, Usage,
 };
 use kn9t_react::{
     ensure_nonempty_content, estimated_assembled, synth_error, CallPlan, ReactConfig, ReactLoop,
     RunParams,
 };
-use kn9t_test_support::{AllowAll, RecordingBus, empty_read_map, test_model_spec};
+use kn9t_test_support::{empty_read_map, test_model_spec, AllowAll, RecordingBus};
 
 // ── Local stubs ───────────────────────────────────────────────────────────────
 
@@ -47,10 +46,7 @@ impl Provider for DummyProvider {
         &self,
         _r: &kn9t_core::Request,
         _c: &Cancel,
-    ) -> Result<
-        Box<dyn Iterator<Item = Result<kn9t_core::Chunk, ProvErr>> + Send>,
-        ProvErr,
-    > {
+    ) -> Result<Box<dyn Iterator<Item = Result<kn9t_core::Chunk, ProvErr>> + Send>, ProvErr> {
         unreachable!()
     }
 }
@@ -84,12 +80,7 @@ impl Tool for CountingTool {
 
 struct CountingHook(Arc<AtomicUsize>);
 impl HookHost for CountingHook {
-    fn before_tool_call(
-        &self,
-        _t: &str,
-        _a: &serde_json::Value,
-        _c: &std::path::Path,
-    ) -> HookVeto {
+    fn before_tool_call(&self, _t: &str, _a: &serde_json::Value, _c: &std::path::Path) -> HookVeto {
         self.0.fetch_add(1, Ordering::SeqCst);
         HookVeto::Allow
     }
@@ -102,20 +93,10 @@ impl HookHost for CountingHook {
     ) -> Vec<Content> {
         r
     }
-    fn before_request(
-        &self,
-        m: Vec<Message>,
-        _model: &ModelRef,
-        _s: Option<&str>,
-    ) -> Vec<Message> {
+    fn before_request(&self, m: Vec<Message>, _model: &ModelRef, _s: Option<&str>) -> Vec<Message> {
         m
     }
-    fn should_stop_after_turn(
-        &self,
-        _s: StopReason,
-        _u: &Usage,
-        _t: u32,
-    ) -> bool {
+    fn should_stop_after_turn(&self, _s: StopReason, _u: &Usage, _t: u32) -> bool {
         false
     }
     fn prepare_next_turn(&self, _s: StopReason, _u: &Usage) -> NextTurnPatch {
@@ -205,7 +186,11 @@ fn authorize_malformed_json_is_deny() {
     let batch = looop.run_tool_batch(&params, &[call_bad.clone()], &Cancel::new());
     assert_eq!(batch.len(), 1);
     match &batch[0] {
-        Content::ToolResult { id, is_error, content } => {
+        Content::ToolResult {
+            id,
+            is_error,
+            content,
+        } => {
             assert_eq!(id.0, "c1");
             assert!(is_error, "must be is_error");
             let txt = content
@@ -245,7 +230,11 @@ fn authorize_malformed_json_is_deny() {
         Content::ToolResult { is_error, .. } => assert!(is_error),
         _ => panic!("expected ToolResult"),
     }
-    assert_eq!(tool_calls.load(Ordering::SeqCst), 0, "null must not reach tool");
+    assert_eq!(
+        tool_calls.load(Ordering::SeqCst),
+        0,
+        "null must not reach tool"
+    );
 
     // Bus must have Error events
     let evs = bus.snapshot();
@@ -263,7 +252,11 @@ fn test_synth_error_creates_tool_result() {
     let result = synth_error(&call_id, "something failed");
 
     match result {
-        Content::ToolResult { id, content, is_error } => {
+        Content::ToolResult {
+            id,
+            content,
+            is_error,
+        } => {
             assert_eq!(id.0, "call-123");
             assert!(is_error);
             assert_eq!(content.len(), 1);
@@ -325,7 +318,9 @@ fn test_ensure_nonempty_content_empty_vec() {
 
 #[test]
 fn test_ensure_nonempty_content_empty_text() {
-    let input = vec![Content::Text { text: String::new() }];
+    let input = vec![Content::Text {
+        text: String::new(),
+    }];
     let result = ensure_nonempty_content(input);
     assert_eq!(result.len(), 1);
     match &result[0] {
@@ -337,8 +332,12 @@ fn test_ensure_nonempty_content_empty_text() {
 #[test]
 fn test_ensure_nonempty_content_multiple_empty_texts() {
     let input = vec![
-        Content::Text { text: String::new() },
-        Content::Text { text: String::new() },
+        Content::Text {
+            text: String::new(),
+        },
+        Content::Text {
+            text: String::new(),
+        },
     ];
     let result = ensure_nonempty_content(input);
     assert_eq!(result.len(), 1);
@@ -350,7 +349,9 @@ fn test_ensure_nonempty_content_multiple_empty_texts() {
 
 #[test]
 fn test_ensure_nonempty_content_preserves_nonempty() {
-    let input = vec![Content::Text { text: "hello".into() }];
+    let input = vec![Content::Text {
+        text: "hello".into(),
+    }];
     let result = ensure_nonempty_content(input);
     assert_eq!(result.len(), 1);
     match &result[0] {
@@ -363,8 +364,12 @@ fn test_ensure_nonempty_content_preserves_nonempty() {
 fn test_ensure_nonempty_content_mixed_keeps_all() {
     // If at least one Text is non-empty, keep the original vec as-is
     let input = vec![
-        Content::Text { text: String::new() },
-        Content::Text { text: "data".into() },
+        Content::Text {
+            text: String::new(),
+        },
+        Content::Text {
+            text: "data".into(),
+        },
     ];
     let result = ensure_nonempty_content(input);
     assert_eq!(result.len(), 2);
@@ -373,4 +378,3 @@ fn test_ensure_nonempty_content_mixed_keeps_all() {
         _ => panic!("expected Text"),
     }
 }
-

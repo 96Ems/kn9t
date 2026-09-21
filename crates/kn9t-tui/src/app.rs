@@ -821,14 +821,19 @@ impl App {
         // Send all steering messages fused into one prompt.
         if !self.steering.is_empty() {
             let steering = std::mem::take(&mut self.steering);
-            let fused_text: String = steering.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join("\n\n");
+            let fused_text: String = steering
+                .iter()
+                .map(|p| p.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
             let fused_images: Vec<String> = steering.into_iter().flat_map(|p| p.images).collect();
 
             let session_id = self.session.state.session_id.clone();
             let lease = self.session.state.lease.clone();
             if let (Some(client), Some(holder)) = (&self.client, lease) {
                 let image_count = fused_images.len();
-                self.transcript.push(Message::with_images("user", &fused_text, image_count));
+                self.transcript
+                    .push(Message::with_images("user", &fused_text, image_count));
                 match client.prompt(&session_id, &holder, &fused_text, fused_images) {
                     Ok(_) => {
                         crate::log!("PENDING: sent {} steering messages", image_count);
@@ -837,7 +842,8 @@ impl App {
                     }
                     Err(e) => {
                         crate::log!("PENDING: failed to send steering: {:?}", e);
-                        self.transcript.push(Message::new("error", format!("Failed to send: {}", e)));
+                        self.transcript
+                            .push(Message::new("error", format!("Failed to send: {}", e)));
                     }
                 }
             }
@@ -1240,14 +1246,13 @@ impl App {
             .unwrap_or(0)
             .max(self.session.state.last_seq);
 
-        let (reason, origin_seq, note) =
-            match crate::session_tree::plan_fork(cmd, args, head) {
-                Ok(plan) => (plan.reason, plan.origin_seq, plan.note),
-                Err(msg) => {
-                    self.transcript.push(Message::new("system", msg));
-                    return;
-                }
-            };
+        let (reason, origin_seq, note) = match crate::session_tree::plan_fork(cmd, args, head) {
+            Ok(plan) => (plan.reason, plan.origin_seq, plan.note),
+            Err(msg) => {
+                self.transcript.push(Message::new("system", msg));
+                return;
+            }
+        };
 
         let Some(client) = self.client.as_ref() else {
             self.transcript
@@ -1270,7 +1275,8 @@ impl App {
         self.transcript.push(Message::new("system", note));
     }
 
-    pub fn create_new_session(&mut self, tx: Sender<Event>) -> Result<(), ClientError> {        if !self.plugins_ready {
+    pub fn create_new_session(&mut self, tx: Sender<Event>) -> Result<(), ClientError> {
+        if !self.plugins_ready {
             return Err(ClientError::ServerLoading);
         }
 
@@ -1367,8 +1373,8 @@ impl App {
                     // Process Lua panel commands (show/hide/toggle/register)
                     self.process_lua_panels();
                     // Redraw while streaming, Lua panels are visible, or plugin-ready changed.
-                    needs_redraw = self.streaming 
-                        || !self.lua_panels.is_empty() 
+                    needs_redraw = self.streaming
+                        || !self.lua_panels.is_empty()
                         || !self.plugins_ready
                         || plugins_just_ready;
                 }
@@ -1547,8 +1553,7 @@ impl App {
                 {
                     if let KeyCode::Char(ch) = key.code {
                         if runtime.plugin_has_text(&plugin) {
-                            let consumed =
-                                runtime.dispatch_plugin_text(&plugin, &ch.to_string());
+                            let consumed = runtime.dispatch_plugin_text(&plugin, &ch.to_string());
                             self.apply_plugin_effects(&runtime, tx);
                             if consumed {
                                 crate::log!("  -> plugin '{}' consumed text '{}'", plugin, ch);
@@ -2526,7 +2531,7 @@ impl App {
             }
             KeyCode::Enter => {
                 // Handle Enter on welcome screen.
-                
+
                 // First: check for slash commands (they work even during plugin loading).
                 if self.input.starts_with('/') {
                     if let Some(handled) = self.try_execute_slash_input(tx) {
@@ -2537,7 +2542,7 @@ impl App {
                         }
                     }
                 }
-                
+
                 if self.input.is_empty() && self.staged_images.is_empty() {
                     // Empty input — create empty session if plugins ready.
                     if self.plugins_ready {
@@ -2565,11 +2570,12 @@ impl App {
                     self.cursor_col = 0;
                     self.prompt_history.add(msg.clone());
                     crate::log!("WELCOME ENTER: creating session and sending: {}", &msg);
-                    
+
                     match self.create_new_session(tx.clone()) {
                         Ok(()) => {
                             let image_count = images.len();
-                            self.transcript.push(Message::with_images("user", &msg, image_count));
+                            self.transcript
+                                .push(Message::with_images("user", &msg, image_count));
                             let session_id = self.session.state.session_id.clone();
                             let lease = self.session.state.lease.clone().unwrap_or_default();
                             if let Some(client) = &self.client {
@@ -3387,7 +3393,9 @@ impl App {
         if let SseFrame::MessageAppended { ref msg, .. } = frame {
             if msg.role == "user" && !self.steering.is_empty() {
                 // Extract text from content blocks.
-                let text: String = msg.content.iter()
+                let text: String = msg
+                    .content
+                    .iter()
                     .filter_map(|c| match c {
                         crate::wire::WireContent::Text { text } => Some(text.as_str()),
                         _ => None,
@@ -3395,11 +3403,22 @@ impl App {
                     .collect::<Vec<_>>()
                     .join("");
                 // Remove the first steering item whose text matches (FIFO order).
-                if let Some(idx) = self.steering.iter().position(|p| text.contains(&p.text) || p.text.contains(&text)) {
+                if let Some(idx) = self
+                    .steering
+                    .iter()
+                    .position(|p| text.contains(&p.text) || p.text.contains(&text))
+                {
                     let prompt = self.steering.remove(idx);
-                    crate::log!("STEER CONFIRMED: removed '{}' from steering buffer", &prompt.text[..prompt.text.len().min(30)]);
+                    crate::log!(
+                        "STEER CONFIRMED: removed '{}' from steering buffer",
+                        &prompt.text[..prompt.text.len().min(30)]
+                    );
                     // Now add to transcript since reducer won't
-                    self.transcript.push(Message::with_images("user", &prompt.text, prompt.images.len()));
+                    self.transcript.push(Message::with_images(
+                        "user",
+                        &prompt.text,
+                        prompt.images.len(),
+                    ));
                 }
             }
         }
@@ -3530,7 +3549,8 @@ impl App {
         };
 
         self.explorer.sync(&self.file_index);
-        self.mention.sync(&self.file_index, &self.input, self.cursor_col);
+        self.mention
+            .sync(&self.file_index, &self.input, self.cursor_col);
         changed
     }
 
@@ -3648,7 +3668,11 @@ impl App {
         }
         match key.code {
             KeyCode::Char('c') => {
-                let reference = self.viewer.as_ref().map(|v| v.reference()).unwrap_or_default();
+                let reference = self
+                    .viewer
+                    .as_ref()
+                    .map(|v| v.reference())
+                    .unwrap_or_default();
                 if !reference.is_empty() {
                     self.insert_into_input(&reference);
                 }
@@ -3761,9 +3785,9 @@ impl App {
                     let expects_args = !cmd.args.is_empty();
                     let is_lua = cmd.is_lua;
                     let lua_id = cmd.lua_id.clone();
-                    
+
                     self.slash.deactivate();
-                    
+
                     if expects_args {
                         // Prefill input with `/command ` and let user type args.
                         self.input = format!("/{} ", cmd_name);
@@ -3882,7 +3906,8 @@ impl App {
         // Normal case: agent is idle, send prompt directly.
         if let (Some(client), Some(holder)) = (&self.client, lease) {
             let image_count = images.len();
-            self.transcript.push(Message::with_images("user", &text, image_count));
+            self.transcript
+                .push(Message::with_images("user", &text, image_count));
             match client.prompt(&session_id, &holder, &text, images) {
                 Ok(_) => {
                     // Mark as streaming immediately so queue doesn't try to send.
@@ -3891,12 +3916,13 @@ impl App {
                 }
                 Err(e) => {
                     crate::log!("PROMPT: failed {:?}", e);
-                    self.transcript.push(Message::new("error", format!("Failed to send: {}", e)));
+                    self.transcript
+                        .push(Message::new("error", format!("Failed to send: {}", e)));
                 }
             }
         }
     }
-    
+
     /// Try to execute input as a slash command. Returns Some(true) if handled,
     /// Some(false) if it looks like a command but wasn't found, None if not a command.
     fn try_execute_slash_input(&mut self, tx: &Sender<Event>) -> Option<bool> {
@@ -3904,54 +3930,71 @@ impl App {
         if !input.starts_with('/') {
             return None;
         }
-        
+
         // Parse: `/command args` or `/command`
         let without_slash = &input[1..];
         let (cmd_name, args) = match without_slash.find(' ') {
-            Some(idx) => (&without_slash[..idx], without_slash[idx+1..].trim()),
+            Some(idx) => (&without_slash[..idx], without_slash[idx + 1..].trim()),
             None => (without_slash, ""),
         };
         let cmd_name = cmd_name.to_string();
         let args = args.to_string();
-        
-        crate::log!("SLASH: parsing '{}' -> cmd='{}' args='{}'", input, cmd_name, args);
-        
+
+        crate::log!(
+            "SLASH: parsing '{}' -> cmd='{}' args='{}'",
+            input,
+            cmd_name,
+            args
+        );
+
         // Check built-in commands
         let is_builtin = crate::slash::COMMANDS.iter().any(|c| c.name == cmd_name);
-        
+
         // Check Lua commands
-        let lua_cmd_id = self.lua_commands.iter().find(|c| {
-            c.slash.as_ref().map(|s| s.trim_start_matches('/')).unwrap_or("") == cmd_name
-        }).map(|c| c.id.clone());
-        
+        let lua_cmd_id = self
+            .lua_commands
+            .iter()
+            .find(|c| {
+                c.slash
+                    .as_ref()
+                    .map(|s| s.trim_start_matches('/'))
+                    .unwrap_or("")
+                    == cmd_name
+            })
+            .map(|c| c.id.clone());
+
         if is_builtin {
             // Execute built-in command with args
             self.execute_slash_command_with_args(&cmd_name, &args, tx);
             return Some(true);
         }
-        
+
         if let Some(cmd_id) = lua_cmd_id {
             self.run_lua_command(&cmd_id, &args, tx);
             return Some(true);
         }
-        
+
         // Not a recognized command — let it be sent as a normal message
         None
     }
-    
+
     /// Execute a built-in slash command with parsed args.
     fn execute_slash_command_with_args(&mut self, cmd: &str, args: &str, tx: &Sender<Event>) {
         crate::log!("SLASH EXEC: cmd='{}' args='{}'", cmd, args);
         match cmd {
             "queue" | "q" => {
                 if args.is_empty() {
-                    self.transcript.push(Message::new("system", "Usage: /queue <message>"));
+                    self.transcript
+                        .push(Message::new("system", "Usage: /queue <message>"));
                 } else {
                     self.queue.push_back(QueuedPrompt {
                         text: args.to_string(),
                         images: Vec::new(),
                     });
-                    crate::log!("QUEUE: message queued via /queue ({} total)", self.queue.len());
+                    crate::log!(
+                        "QUEUE: message queued via /queue ({} total)",
+                        self.queue.len()
+                    );
                 }
             }
             "session" => {
@@ -4011,18 +4054,24 @@ impl App {
                 let sid = self.session.state.session_id.clone();
                 let lease = self.session.state.lease.clone();
                 if sid.is_empty() {
-                    self.transcript.push(Message::new("system", "No active session to compact."));
+                    self.transcript
+                        .push(Message::new("system", "No active session to compact."));
                 } else if let (Some(client), Some(holder)) = (&self.client, lease) {
                     match client.compact_session(&sid, &holder) {
-                        Ok(()) => self.transcript.push(Message::new("system", "Compaction started...")),
-                        Err(e) => self.transcript.push(Message::new("system", format!("Compact failed: {}", e))),
+                        Ok(()) => self
+                            .transcript
+                            .push(Message::new("system", "Compaction started...")),
+                        Err(e) => self
+                            .transcript
+                            .push(Message::new("system", format!("Compact failed: {}", e))),
                     }
                 }
             }
             "export" => {
                 let sid = self.session.state.session_id.clone();
                 if sid.is_empty() {
-                    self.transcript.push(Message::new("system", "No active session to export."));
+                    self.transcript
+                        .push(Message::new("system", "No active session to export."));
                 } else if let Some(client) = &self.client {
                     match client.export_session(&sid) {
                         Ok(val) => {
@@ -4031,13 +4080,22 @@ impl App {
                             } else {
                                 args.to_string()
                             };
-                            if let Err(e) = std::fs::write(&out_path, serde_json::to_string_pretty(&val).unwrap_or_default()) {
-                                self.transcript.push(Message::new("system", format!("Write failed: {}", e)));
+                            if let Err(e) = std::fs::write(
+                                &out_path,
+                                serde_json::to_string_pretty(&val).unwrap_or_default(),
+                            ) {
+                                self.transcript
+                                    .push(Message::new("system", format!("Write failed: {}", e)));
                             } else {
-                                self.transcript.push(Message::new("system", format!("Exported to {}", out_path)));
+                                self.transcript.push(Message::new(
+                                    "system",
+                                    format!("Exported to {}", out_path),
+                                ));
                             }
                         }
-                        Err(e) => self.transcript.push(Message::new("system", format!("Export failed: {}", e))),
+                        Err(e) => self
+                            .transcript
+                            .push(Message::new("system", format!("Export failed: {}", e))),
                     }
                 }
             }
@@ -4061,25 +4119,32 @@ impl App {
             "rename" => {
                 let sid = self.session.state.session_id.clone();
                 if sid.is_empty() {
-                    self.transcript.push(Message::new("system", "No active session to rename."));
+                    self.transcript
+                        .push(Message::new("system", "No active session to rename."));
                 } else if args.is_empty() {
-                    self.transcript.push(Message::new("system", "Usage: /rename <new title>"));
+                    self.transcript
+                        .push(Message::new("system", "Usage: /rename <new title>"));
                 } else if let Some(client) = &self.client {
                     match client.rename_session(&sid, args) {
                         Ok(_) => {
                             self.session.set_session_title(Some(args.to_string()));
-                            if let Some(s) = self.session.sessions.iter_mut().find(|s| s.id == sid) {
+                            if let Some(s) = self.session.sessions.iter_mut().find(|s| s.id == sid)
+                            {
                                 s.name = args.to_string();
                             }
-                            self.transcript.push(Message::new("system", format!("Renamed to '{}'", args)));
+                            self.transcript
+                                .push(Message::new("system", format!("Renamed to '{}'", args)));
                         }
-                        Err(e) => self.transcript.push(Message::new("system", format!("Rename failed: {}", e))),
+                        Err(e) => self
+                            .transcript
+                            .push(Message::new("system", format!("Rename failed: {}", e))),
                     }
                 }
             }
             _ => {
                 // Unknown command — show error
-                self.transcript.push(Message::new("system", format!("Unknown command: /{}", cmd)));
+                self.transcript
+                    .push(Message::new("system", format!("Unknown command: /{}", cmd)));
             }
         }
     }
@@ -4115,7 +4180,7 @@ impl App {
             crate::log!("QUEUE: skipping, still streaming");
             return;
         }
-        
+
         // Pop the next queued message.
         let Some(prompt) = self.queue.pop_front() else {
             return;
@@ -4126,13 +4191,17 @@ impl App {
 
         if let (Some(client), Some(holder)) = (&self.client, lease) {
             let image_count = prompt.images.len();
-            crate::log!("QUEUE: sending queued message ({} remaining)", self.queue.len());
+            crate::log!(
+                "QUEUE: sending queued message ({} remaining)",
+                self.queue.len()
+            );
 
             // Send to server first, only add to transcript on success
             match client.prompt(&session_id, &holder, &prompt.text, prompt.images.clone()) {
                 Ok(_) => {
                     crate::log!("QUEUE: prompt sent successfully");
-                    self.transcript.push(Message::with_images("user", &prompt.text, image_count));
+                    self.transcript
+                        .push(Message::with_images("user", &prompt.text, image_count));
                     self.streaming = true;
                     self.tick_ctl.set_streaming(true);
                 }

@@ -98,7 +98,7 @@ impl ServerHostApi {
     /// `"model"` and `"cwd"` (defaults to the caller's); reply `{"session":"<new-id>"}`.
     fn session_create(&self, session: Option<&str>, payload: &Value) -> Result<Value, String> {
         let new_id = SessionId::new();
-        
+
         // Use specified model, or inherit from calling session, or use default
         let model_ref = if let Some(id) = payload.get("model").and_then(|v| v.as_str()) {
             self.state
@@ -302,7 +302,9 @@ impl ServerHostApi {
             })
             .unwrap_or_default();
         if cmd.is_empty() {
-            return Err("plugin_load requires \"cmd\" (array) or \"from_config\": true".to_string());
+            return Err(
+                "plugin_load requires \"cmd\" (array) or \"from_config\": true".to_string(),
+            );
         }
         let env: Vec<(String, String)> = payload
             .get("env")
@@ -365,11 +367,12 @@ impl ServerHostApi {
             .and_then(|v| v.as_bool())
             .ok_or_else(|| "tool_visibility requires \"hidden\": true|false".to_string())?;
 
-        let subset: Option<Vec<String>> = payload.get("tools").and_then(|v| v.as_array()).map(|a| {
-            a.iter()
-                .filter_map(|t| t.as_str().map(str::to_string))
-                .collect()
-        });
+        let subset: Option<Vec<String>> =
+            payload.get("tools").and_then(|v| v.as_array()).map(|a| {
+                a.iter()
+                    .filter_map(|t| t.as_str().map(str::to_string))
+                    .collect()
+            });
 
         // Resolve the caller's tools first, then intersect: a name the caller does not own
         // must not become a way to reach another plugin's registry entry.
@@ -422,11 +425,10 @@ impl ServerHostApi {
             .get("payload")
             .cloned()
             .unwrap_or_else(|| payload.clone());
-        let (id, handle) = self.state.interaction_registry.create(
-            session,
-            plugin,
-            &prompt_payload,
-        );
+        let (id, handle) = self
+            .state
+            .interaction_registry
+            .create(session, plugin, &prompt_payload);
         let sink: Arc<dyn kn9t_core::EventSink> = Arc::new(self.sink(session));
         sink.emit(kn9t_core::LiveEvent::InteractionRequest {
             id,

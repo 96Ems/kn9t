@@ -83,10 +83,7 @@ fn state_with(tools: Vec<Arc<dyn Tool>>) -> Arc<ServerState> {
 fn start_on_unknown_plugin_is_not_found() {
     let state = state_with(vec![]);
     let err = state.start_plugin("never-loaded").unwrap_err();
-    assert!(
-        err.contains("not found"),
-        "must map to 404, got: {err}"
-    );
+    assert!(err.contains("not found"), "must map to 404, got: {err}");
 }
 
 #[test]
@@ -125,7 +122,10 @@ fn stopped_plugin_tools_stay_advertised_but_become_blocked() {
         FakeTool::boxed("alpha", "p1", false),
         FakeTool::boxed("beta", "p2", false),
     ]);
-    assert!(state.blocked_tools().is_empty(), "nothing blocked initially");
+    assert!(
+        state.blocked_tools().is_empty(),
+        "nothing blocked initially"
+    );
 
     // Reach the stopped set the way a stop does, without needing a live subprocess.
     state.set_plugin_hidden("p1", false); // no-op on visibility; keeps p1 resolvable

@@ -2,7 +2,7 @@
 
 **A minimal, modular coding agent in Rust. OS threads, no async. Events are the wire, the log, and the truth.**
 
-[![Rust](https://img.shields.io/badge/rust-1.94%2B-orange)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.98%2B-orange)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![No async](https://img.shields.io/badge/tokio-free-brightgreen)](#design-principles)
 
@@ -46,7 +46,7 @@ Full rationale in [`DESIGN.md`](DESIGN.md). Structure and known issues in
 
 ## Install
 
-Requires Rust 1.94+.
+Requires Rust 1.98+.
 
 ```bash
 git clone https://github.com/96Ems/kn9t
@@ -56,8 +56,8 @@ cargo build --release
 # default tools ship as a separate plugin crate
 cd plugins/kn9t-tools && cargo build --release && cd ../..
 
-# optional: the Go plugin builds independently (add .exe on Windows)
-cd plugins/kn9t-agents-md && go build -o kn9t-agents-md . && cd ../..
+# optional plugins (agents-md, anthropic, mcp, policy, …) live in
+# https://github.com/96Ems/kn9t-plugins — build them there
 ```
 
 First run bootstraps `~/.kn9t/` — `config.toml` from a commented template, a `token`, and

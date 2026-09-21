@@ -5,7 +5,7 @@
 #![allow(clippy::unwrap_used)]
 
 use kn9t_tui::app::{InteractionState, Overlay};
-use kn9t_tui::reducer::{PluginLuaOp, PluginPlacement, State, reduce};
+use kn9t_tui::reducer::{reduce, PluginLuaOp, PluginPlacement, State};
 use kn9t_tui::wire::{SseFrame, WireContent, WireMessage, WireSeqRange, WireTokens};
 use kn9t_tui_test_support::*;
 
@@ -808,7 +808,8 @@ fn ui_directive_is_recorded_and_plugin_notification_unaffected() {
 #[test]
 fn ui_directive_payload_opaque_not_interpreted() {
     let mut s = State::default();
-    let complex = serde_json::json!({"fields":[{"name":"age","type":"number"}],"title":"hi","arr":[1,2,3]});
+    let complex =
+        serde_json::json!({"fields":[{"name":"age","type":"number"}],"title":"hi","arr":[1,2,3]});
     reduce(
         &mut s,
         SseFrame::UiDirective {
@@ -1078,4 +1079,3 @@ fn subagent_multiple_concurrent_independent() {
     s.attach_subagent("c2", vec![]);
     assert_eq!(s.attached_subagent.as_ref().unwrap().0, "c2");
 }
-

@@ -31,14 +31,20 @@ fn test_transcript_scroll() {
 #[test]
 fn test_scrolling_up_stops_auto_scroll() {
     let mut transcript = Transcript::new();
-    assert!(transcript.is_following(), "a fresh transcript follows the tail");
+    assert!(
+        transcript.is_following(),
+        "a fresh transcript follows the tail"
+    );
 
     // Render a transcript that overflows the viewport: 100 lines, 20 visible.
     transcript.on_render(100, 80);
     assert!(transcript.is_following());
 
     transcript.scroll_up(10);
-    assert!(!transcript.is_following(), "scrolling up must stop the follow");
+    assert!(
+        !transcript.is_following(),
+        "scrolling up must stop the follow"
+    );
     assert_eq!(transcript.scroll(), 10);
 
     // Reaching the bottom by scrolling down restores it.
@@ -64,8 +70,14 @@ fn test_a_scrolled_up_view_does_not_drift_as_content_grows() {
     // The offset from the bottom grew by exactly the growth, so the same absolute line is
     // still at the top instead of the view having slid down by 30 lines.
     let top_after = 110 - transcript.scroll();
-    assert_eq!(top_after, top_before, "the view must stay anchored to its content");
-    assert!(!transcript.is_following(), "growing content must not re-enable follow");
+    assert_eq!(
+        top_after, top_before,
+        "the view must stay anchored to its content"
+    );
+    assert!(
+        !transcript.is_following(),
+        "growing content must not re-enable follow"
+    );
 }
 
 #[test]
@@ -75,7 +87,11 @@ fn test_following_pins_to_the_bottom_as_content_grows() {
     assert!(transcript.is_following());
 
     transcript.on_render(130, 110);
-    assert_eq!(transcript.scroll(), 0, "following keeps the newest line in view");
+    assert_eq!(
+        transcript.scroll(),
+        0,
+        "following keeps the newest line in view"
+    );
     assert!(transcript.is_following());
 }
 
@@ -87,7 +103,10 @@ fn test_content_that_fits_the_screen_is_always_following() {
     transcript.on_render(10, 0);
 
     assert_eq!(transcript.scroll(), 0);
-    assert!(transcript.is_following(), "no overflow means the view is at the bottom");
+    assert!(
+        transcript.is_following(),
+        "no overflow means the view is at the bottom"
+    );
 }
 
 #[test]

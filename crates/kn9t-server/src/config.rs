@@ -97,8 +97,7 @@ pub struct RawApprovals {
 }
 
 /// Resolved policy mode — DESIGN §10. ADR-0008: reporting only, no verdict derives from it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PolicyMode {
     #[default]
     AskOnMutation,
@@ -749,8 +748,9 @@ pub fn resolve(raw: RawConfig) -> Result<ResolvedConfig, String> {
     // Explicit default kept apart from the "first model" fallback, so `title_model_id` can tell
     // "the user configured this" from "we picked something".
     let explicit_default = raw.default_model.clone();
-    let default_model_id =
-        explicit_default.clone().or_else(|| models.first().map(|m| m.r#ref.id.clone()));
+    let default_model_id = explicit_default
+        .clone()
+        .or_else(|| models.first().map(|m| m.r#ref.id.clone()));
     let title_model_id = raw.title_model.clone().or(explicit_default);
 
     let idle_exit = raw
@@ -1279,4 +1279,3 @@ fn dirs_home() -> Option<PathBuf> {
 fn dirs_home() -> Option<PathBuf> {
     None
 }
-

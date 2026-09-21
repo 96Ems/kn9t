@@ -10,11 +10,7 @@ use std::time::{Duration, Instant};
 fn registry_blocks_and_resolves_opaque_payload() {
     let reg = Arc::new(InteractionRegistry::new());
     let cancel = Cancel::new();
-    let (id, handle) = reg.create(
-        "sess-1",
-        "my-plugin",
-        &json!({"question":"hello"}),
-    );
+    let (id, handle) = reg.create("sess-1", "my-plugin", &json!({"question":"hello"}));
     let reg_c = reg.clone();
     let cancel_c = cancel.clone();
     let h = std::thread::spawn(move || reg_c.wait(&handle, &cancel_c));

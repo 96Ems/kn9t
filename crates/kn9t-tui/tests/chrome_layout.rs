@@ -191,7 +191,10 @@ fn status_bar_is_segmented() {
     println!("status: {status:?}");
 
     for expected in ["ctx", "$0.0842", "commands"] {
-        assert!(status.contains(expected), "status bar missing {expected:?}: {status:?}");
+        assert!(
+            status.contains(expected),
+            "status bar missing {expected:?}: {status:?}"
+        );
     }
     // The model lives on the prompt frame, not here (see `input_is_a_boxed_prompt`).
     assert!(
@@ -218,7 +221,10 @@ fn status_bar_is_segmented() {
 fn right_panel_drops_recent_calls() {
     let (frame, _) = chat_frame(190, 44, |_| {});
     assert!(frame.contains("usage"), "the usage panel is still wanted");
-    assert!(!frame.contains("recent calls"), "`recent calls` was dropped by D7");
+    assert!(
+        !frame.contains("recent calls"),
+        "`recent calls` was dropped by D7"
+    );
 }
 
 /// D3: sessions live in the tab bar, so there is no session column to duplicate them.
@@ -246,7 +252,10 @@ fn there_is_no_session_column() {
 #[test]
 fn input_is_a_boxed_prompt() {
     let (frame, buf) = chat_frame(190, 44, |_| {});
-    assert!(frame.contains("› "), "the prompt marker moved but must still exist");
+    assert!(
+        frame.contains("› "),
+        "the prompt marker moved but must still exist"
+    );
 
     // Find the frame's top border by its corner glyph *and* its title: the sidebars are boxes
     // too now, so "the first row with a ╭" is not the prompt.
@@ -269,7 +278,10 @@ fn input_is_a_boxed_prompt() {
     // Content sits inside the frame, not under it.
     let inside = row_text(&buf, top + 1);
     assert!(inside.starts_with('│'), "the frame's left edge: {inside:?}");
-    assert!(inside.contains('›'), "the prompt lives inside the frame: {inside:?}");
+    assert!(
+        inside.contains('›'),
+        "the prompt lives inside the frame: {inside:?}"
+    );
 }
 
 /// A turn's tool calls read as one group, and the group header is a real click target.
@@ -391,7 +403,10 @@ fn overlays_are_themed_and_framed() {
 fn tiny_input_falls_back_to_a_bare_prompt() {
     let (frame, _) = chat_frame(6, 8, |_| {});
     println!("\n=== 6x8 ===\n{frame}");
-    assert!(!frame.contains('╭'), "no frame when there is no room for one");
+    assert!(
+        !frame.contains('╭'),
+        "no frame when there is no room for one"
+    );
 }
 
 /// A narrow terminal must give up the panels rather than squeeze the centre.
@@ -399,7 +414,10 @@ fn tiny_input_falls_back_to_a_bare_prompt() {
 fn narrow_frame_hides_sidebars() {
     let (frame, buf) = chat_frame(80, 24, |_| {});
     println!("\n=== 80x24 ===\n{frame}");
-    assert!(!frame.contains("usage"), "the sidebar must yield below the min width");
+    assert!(
+        !frame.contains("usage"),
+        "the sidebar must yield below the min width"
+    );
     assert!(
         frame.contains("deepseek-v4.1-flash"),
         "the prompt frame must still name the model at 80 columns"
@@ -474,7 +492,8 @@ fn the_mention_dropdown_opens_on_the_welcome_screen() {
         );
         app.input = "@".into();
         app.cursor_col = 1;
-        app.mention.sync(&app.file_index, &app.input, app.cursor_col);
+        app.mention
+            .sync(&app.file_index, &app.input, app.cursor_col);
     });
 
     let (frame, _) = draw(&mut app, 120, 40);
@@ -537,8 +556,14 @@ fn the_viewer_stacks_above_the_transcript() {
     let (frame, _) = draw(&mut app, 160, 44);
     println!("\n=== viewer ===\n{frame}");
 
-    assert!(frame.contains("Cargo.toml"), "the header must name the file");
-    assert!(frame.contains("lines"), "the header must state the line count");
+    assert!(
+        frame.contains("Cargo.toml"),
+        "the header must name the file"
+    );
+    assert!(
+        frame.contains("lines"),
+        "the header must state the line count"
+    );
     assert!(
         frame.contains("[package]"),
         "the file body must be drawn, got:\n{frame}"

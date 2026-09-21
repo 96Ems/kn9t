@@ -507,4 +507,3 @@ impl Default for SearchState {
         Self::new()
     }
 }
-

@@ -134,7 +134,10 @@ fn a_complete_prelude_reports_no_gap() {
 
     let prelude = build_attach_prelude(&store, &sid.0, 0, &sub);
 
-    assert!(!prelude.gap_detected, "nothing was dropped; no gap expected");
+    assert!(
+        !prelude.gap_detected,
+        "nothing was dropped; no gap expected"
+    );
     assert_eq!(
         prelude.contiguous_through,
         s2 + 2,

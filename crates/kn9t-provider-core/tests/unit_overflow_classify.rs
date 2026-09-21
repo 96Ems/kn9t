@@ -46,10 +46,7 @@ fn real_overflow_bodies_classify_as_context_overflow() {
             r#"{"type":"error","error":{"type":"invalid_request_error","message":"input length and `max_tokens` exceed context limit: 199000 + 8000 > 200000"}}"#,
         ),
         // "too many tokens" phrasing.
-        (
-            400,
-            r#"{"error":{"message":"too many tokens in request"}}"#,
-        ),
+        (400, r#"{"error":{"message":"too many tokens in request"}}"#),
         // Payload-too-large gateways.
         (
             413,

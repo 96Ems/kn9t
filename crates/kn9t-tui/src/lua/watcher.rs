@@ -83,8 +83,7 @@ pub fn spawn_watcher(
             }
 
             // Only reload on modify/create events
-            let should_reload =
-                matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_));
+            let should_reload = matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_));
 
             if !should_reload {
                 continue;

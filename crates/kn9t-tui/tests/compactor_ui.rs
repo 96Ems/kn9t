@@ -1,5 +1,6 @@
 //! The `kn9t-compactor` plugin's Lua viewer, extracted verbatim from its
-//! TypeScript source (`scripts/extract_compactor_lua.py`).
+//! TypeScript source (`scripts/extract_compactor_lua.py`). The plugin lives in the
+//! kn9t-plugins repo — https://github.com/96Ems/kn9t-plugins/tree/main/kn9t-compactor.
 //!
 //! The plugin runs two LLM passes; this only covers what the user sees while it
 //! does: which tool calls were kept, summarized or dropped, and by what command.
@@ -107,7 +108,8 @@ fn counts_are_shown_per_action() {
     let rt = runtime_with_compactor(state_with_decisions());
     let t = texts(&rt);
     assert!(
-        t.iter().any(|s| s.contains("keep 1") && s.contains("drop 1")),
+        t.iter()
+            .any(|s| s.contains("keep 1") && s.contains("drop 1")),
         "expected a per-action count line, got {t:?}"
     );
 }

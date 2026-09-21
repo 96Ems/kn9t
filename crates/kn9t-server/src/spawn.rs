@@ -130,7 +130,9 @@ pub fn read_port(path: &Path) -> Option<u16> {
 pub fn is_listening(port: u16) -> bool {
     TcpStream::connect_timeout(
         // Safe: format is valid IPv4:port
-        &format!("127.0.0.1:{port}").parse().expect("valid IPv4:port"),
+        &format!("127.0.0.1:{port}")
+            .parse()
+            .expect("valid IPv4:port"),
         Duration::from_millis(200),
     )
     .is_ok()

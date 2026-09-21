@@ -1224,7 +1224,11 @@ fn collect_slots(
 }
 
 /// Compute rects for split children.
-pub fn compute_split_rects(area: Rect, direction: SplitDirection, sizes: &[SplitSize]) -> Vec<Rect> {
+pub fn compute_split_rects(
+    area: Rect,
+    direction: SplitDirection,
+    sizes: &[SplitSize],
+) -> Vec<Rect> {
     if sizes.is_empty() {
         return Vec::new();
     }
@@ -1285,4 +1289,3 @@ pub fn compute_split_rects(area: Rect, direction: SplitDirection, sizes: &[Split
 
     rects
 }
-

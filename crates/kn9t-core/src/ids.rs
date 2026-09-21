@@ -205,6 +205,8 @@ fn ulid() -> String {
         *slot = CROCKFORD[((value >> shift) & 0x1f) as usize];
     }
     // Safe: every byte is from the ASCII CROCKFORD table.
-    safe_expect!(String::from_utf8(out.to_vec()), "crockford bytes are valid ascii")
+    safe_expect!(
+        String::from_utf8(out.to_vec()),
+        "crockford bytes are valid ascii"
+    )
 }
-

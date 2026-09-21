@@ -107,7 +107,7 @@ pub fn budget(state: &Arc<ServerState>) -> JsonResp {
         })
         .unwrap_or(0.0);
 
-    let provider_reported =*safe_expect!(state.provider_reported_budget.lock(), "poisoned");
+    let provider_reported = *safe_expect!(state.provider_reported_budget.lock(), "poisoned");
 
     let mut obj = serde_json::json!({ "local_estimate": local });
     if let Some(p) = provider_reported {

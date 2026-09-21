@@ -98,7 +98,10 @@ impl KillRing {
 
         let text = &self.ring[new_idx];
         // Safe: checked via ? above that last_yank_pos is Some
-        self.last_yank_pos = Some((self.last_yank_pos.expect("checked Some above").0, text.len()));
+        self.last_yank_pos = Some((
+            self.last_yank_pos.expect("checked Some above").0,
+            text.len(),
+        ));
 
         Some((len, text.as_str()))
     }
@@ -129,4 +132,3 @@ impl KillRing {
         self.ring.is_empty()
     }
 }
-

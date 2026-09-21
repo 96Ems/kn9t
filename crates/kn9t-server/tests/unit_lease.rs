@@ -118,10 +118,16 @@ fn holder_tokens_are_unique_across_maps() {
     let t3 = granted(b.acquire("s1", false));
 
     assert_ne!(t1, t2, "two sessions minted the same token");
-    assert_ne!(t1, t3, "a restarted server re-minted a token it had issued before");
+    assert_ne!(
+        t1, t3,
+        "a restarted server re-minted a token it had issued before"
+    );
 
     // The old token must not authorize writes against the new map.
-    assert!(!b.holds("s1", &t1), "a token from a previous server was honoured");
+    assert!(
+        !b.holds("s1", &t1),
+        "a token from a previous server was honoured"
+    );
 }
 
 /// A takeover must invalidate the previous holder (the documented purpose of the token).
@@ -132,6 +138,9 @@ fn takeover_invalidates_the_previous_holder() {
     let second = granted(leases.acquire("s1", true));
 
     assert_ne!(first, second);
-    assert!(!leases.holds("s1", &first), "the ousted holder still writes");
+    assert!(
+        !leases.holds("s1", &first),
+        "the ousted holder still writes"
+    );
     assert!(leases.holds("s1", &second));
 }

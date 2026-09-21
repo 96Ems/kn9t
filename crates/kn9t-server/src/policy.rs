@@ -534,4 +534,3 @@ impl Approver for NonInteractiveApprover {
         }
     }
 }
-

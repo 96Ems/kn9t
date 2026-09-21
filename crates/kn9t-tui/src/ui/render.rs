@@ -479,7 +479,10 @@ fn render_viewer(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             " · F3 close "
         };
         let label = format!("{}{hint}", title.trim_end());
-        let label: String = label.chars().take(area.width.saturating_sub(4) as usize).collect();
+        let label: String = label
+            .chars()
+            .take(area.width.saturating_sub(4) as usize)
+            .collect();
         let fg = if focused { theme.primary } else { theme.muted };
         buf.set_string(
             area.x + 2,
@@ -554,7 +557,11 @@ fn render_viewer(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         );
 
         let num = format!("{:>width$} ", i + 1, width = num_w);
-        let num_fg = if i == cursor { theme.primary } else { theme.muted };
+        let num_fg = if i == cursor {
+            theme.primary
+        } else {
+            theme.muted
+        };
         buf.set_string(inner.x + 2, y, &num, Style::default().fg(num_fg).bg(row_bg));
 
         let clipped: String = line.chars().take(text_w).collect();
@@ -584,7 +591,12 @@ fn render_viewer(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
         for x in inner.x..inner.x + inner.width {
             buf[(x, y)].set_style(Style::default().bg(theme.primary));
         }
-        buf.set_string(inner.x, y, &text, Style::default().fg(theme.ink).bg(theme.primary));
+        buf.set_string(
+            inner.x,
+            y,
+            &text,
+            Style::default().fg(theme.ink).bg(theme.primary),
+        );
     }
 }
 
@@ -672,9 +684,7 @@ fn render_welcome(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             for (i, ch) in loading_text.chars().enumerate() {
                 let x = loading_x + i as u16;
                 if x < area.x + area.width && loading_y < area.y + area.height {
-                    buf[(x, loading_y)]
-                        .set_char(ch)
-                        .set_fg(theme.warning);
+                    buf[(x, loading_y)].set_char(ch).set_fg(theme.warning);
                 }
             }
         }
@@ -960,7 +970,7 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     // Track tool positions for click detection.
     // We'll calculate actual screen Y after scroll adjustment.
     let mut tool_line_info: Vec<(String, usize, usize)> = Vec::new(); // (call_id, header_line_idx, content_end_line_idx)
-    // Reasoning headers, for click-to-toggle: (message index, card index, header_line_idx).
+                                                                      // Reasoning headers, for click-to-toggle: (message index, card index, header_line_idx).
     let mut thinking_line_info: Vec<(usize, usize, usize)> = Vec::new();
     // Turn group headers, same idea: (header_line_idx, call_ids it toggles).
     let mut group_line_info: Vec<(usize, Vec<String>)> = Vec::new();
@@ -990,9 +1000,9 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
         // Try cache first
         if can_use_cache {
-            if let Some((cached_lines, cached_tools, cached_groups, cached_thinking)) =
-                app.render_cache
-                    .get_message(msg_idx, &msg.content, tool_info_hash)
+            if let Some((cached_lines, cached_tools, cached_groups, cached_thinking)) = app
+                .render_cache
+                .get_message(msg_idx, &msg.content, tool_info_hash)
             {
                 let base_line_idx = lines.len();
                 lines.extend(cached_lines.iter().cloned());
@@ -1006,13 +1016,14 @@ fn render_transcript(f: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                     ));
                 }
                 for group in cached_groups {
-                    group_line_info.push((
-                        base_line_idx + group.line_offset,
-                        group.calls.clone(),
-                    ));
+                    group_line_info.push((base_line_idx + group.line_offset, group.calls.clone()));
                 }
                 for t in cached_thinking {
-                    thinking_line_info.push((msg_idx, t.index, base_line_idx + t.header_line_offset));
+                    thinking_line_info.push((
+                        msg_idx,
+                        t.index,
+                        base_line_idx + t.header_line_offset,
+                    ));
                 }
                 continue;
             }
@@ -1963,7 +1974,11 @@ fn render_overlay(f: &mut Frame, overlay: &Overlay, area: Rect, theme: &Theme) {
             // Full screen, so its frame goes on the rect's own edge (`draw_overlay_border`
             // would bail: a rect flush with the screen has no outside to ring). Content is
             // kept one cell inside that frame.
-            draw_panel_border(buf, Rect::new(overlay_x, overlay_y, overlay_w, overlay_h), theme);
+            draw_panel_border(
+                buf,
+                Rect::new(overlay_x, overlay_y, overlay_w, overlay_h),
+                theme,
+            );
 
             let mut y = overlay_y + 1;
 
@@ -2107,7 +2122,10 @@ fn render_completion_dropdown(
             let sec_fg = if is_sel { theme.ink } else { theme.muted };
             let sx = x + w - 2 - sec_len;
             for (j, ch) in row.secondary.chars().enumerate() {
-                buf[(sx + j as u16, yy)].set_char(ch).set_fg(sec_fg).set_bg(bg);
+                buf[(sx + j as u16, yy)]
+                    .set_char(ch)
+                    .set_fg(sec_fg)
+                    .set_bg(bg);
             }
         }
     }
@@ -3347,10 +3365,7 @@ fn render_tool_compact_line(
             card.name.clone(),
             Style::default().fg(theme.tool).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!("  {summary}"),
-            Style::default().fg(theme.muted),
-        ),
+        Span::styled(format!("  {summary}"), Style::default().fg(theme.muted)),
         Span::styled(badge, Style::default().fg(accent)),
         Span::raw(" ".repeat(pad)),
     ]));
@@ -3424,7 +3439,10 @@ fn render_tool_group_header(
 
     lines.push(Line::from(vec![
         Span::styled("  ", Style::default()),
-        Span::styled(label.clone(), Style::default().fg(rollup.1).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            label.clone(),
+            Style::default().fg(rollup.1).add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" ".repeat(inner_w.saturating_sub(label.chars().count() + 2))),
     ]));
 }
@@ -4807,52 +4825,51 @@ fn render_interaction_overlay(
                 }
             }
             // "Other..." option if allow_custom
-            if *allow_custom
-                && y < overlay_y + overlay_h - 2 {
-                    let is_sel = *selected == options.len() || *in_custom_mode;
-                    let marker = if is_sel && !*in_custom_mode {
-                        "● "
-                    } else {
-                        "○ "
-                    };
-                    let style = if is_sel && !*in_custom_mode {
-                        Style::default().fg(theme.ink).bg(theme.primary)
-                    } else {
-                        Style::default().fg(theme.fg).bg(theme.panel_bg)
-                    };
-                    let line_text = format!("{}Other...", marker);
-                    for (j, ch) in line_text.chars().take(inner_w).enumerate() {
-                        buf[(inner_x + j as u16, y)].set_char(ch).set_style(style);
+            if *allow_custom && y < overlay_y + overlay_h - 2 {
+                let is_sel = *selected == options.len() || *in_custom_mode;
+                let marker = if is_sel && !*in_custom_mode {
+                    "● "
+                } else {
+                    "○ "
+                };
+                let style = if is_sel && !*in_custom_mode {
+                    Style::default().fg(theme.ink).bg(theme.primary)
+                } else {
+                    Style::default().fg(theme.fg).bg(theme.panel_bg)
+                };
+                let line_text = format!("{}Other...", marker);
+                for (j, ch) in line_text.chars().take(inner_w).enumerate() {
+                    buf[(inner_x + j as u16, y)].set_char(ch).set_style(style);
+                }
+                y += 1;
+                // Custom input if in custom mode
+                if *in_custom_mode && y < overlay_y + overlay_h - 2 {
+                    let prompt = "  › ";
+                    for (j, ch) in prompt.chars().enumerate() {
+                        buf[(inner_x + j as u16, y)]
+                            .set_char(ch)
+                            .set_fg(theme.muted)
+                            .set_bg(theme.panel_bg);
                     }
-                    y += 1;
-                    // Custom input if in custom mode
-                    if *in_custom_mode && y < overlay_y + overlay_h - 2 {
-                        let prompt = "  › ";
-                        for (j, ch) in prompt.chars().enumerate() {
-                            buf[(inner_x + j as u16, y)]
-                                .set_char(ch)
-                                .set_fg(theme.muted)
-                                .set_bg(theme.panel_bg);
+                    let input_x = inner_x + prompt.len() as u16;
+                    for (j, ch) in custom_input.chars().enumerate() {
+                        if input_x + j as u16 >= overlay_x + overlay_w - 2 {
+                            break;
                         }
-                        let input_x = inner_x + prompt.len() as u16;
-                        for (j, ch) in custom_input.chars().enumerate() {
-                            if input_x + j as u16 >= overlay_x + overlay_w - 2 {
-                                break;
-                            }
-                            buf[(input_x + j as u16, y)]
-                                .set_char(ch)
-                                .set_fg(theme.fg)
-                                .set_bg(theme.panel_bg);
-                        }
-                        let cx = input_x + custom_input.chars().count() as u16;
-                        if cx < overlay_x + overlay_w - 1 {
-                            buf[(cx, y)]
-                                .set_char('▏')
-                                .set_fg(theme.primary)
-                                .set_bg(theme.panel_bg);
-                        }
+                        buf[(input_x + j as u16, y)]
+                            .set_char(ch)
+                            .set_fg(theme.fg)
+                            .set_bg(theme.panel_bg);
+                    }
+                    let cx = input_x + custom_input.chars().count() as u16;
+                    if cx < overlay_x + overlay_w - 1 {
+                        buf[(cx, y)]
+                            .set_char('▏')
+                            .set_fg(theme.primary)
+                            .set_bg(theme.panel_bg);
                     }
                 }
+            }
             // Footer
             let footer = if *in_custom_mode {
                 "Enter send · Esc back"

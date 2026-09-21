@@ -117,4 +117,3 @@ impl<R: Read> Iterator for SseReader<R> {
         }
     }
 }
-

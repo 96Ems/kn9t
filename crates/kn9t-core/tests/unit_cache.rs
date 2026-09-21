@@ -1,8 +1,6 @@
 //! Unit tests for cache placement and breakpoint selection.
 
-use kn9t_core::{
-    breakpoints, Cache, CacheMode, Content, Message, MsgId, Role,
-};
+use kn9t_core::{breakpoints, Cache, CacheMode, Content, Message, MsgId, Role};
 
 fn msg(role: Role) -> Message {
     Message {

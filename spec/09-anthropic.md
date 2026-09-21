@@ -16,11 +16,12 @@ dep bloat, and the full provider-plugin code path is exercised in production.
 Anthropic is **not** OpenAI-shaped. Every requirement below is a **silent failure** if
 wrong — that is the reason to specify it.
 
-> **Vendor-specific providers live in their own repositories.** Only `kn9t-anthropic` is
-> bundled here, to keep one worked example of a non-OpenAI provider plugin in-tree. Any
-> other provider — including partner or gateway-specific ones — is an *external* plugin: a
-> standalone crate outside this workspace, registered through `~/.kn9t/config.toml` with an
-> absolute `binary` path. See `plugins/README.md` and R-CP-005-style externality rules (external plugin pattern).
+> **Vendor-specific providers live in their own repositories.** `kn9t-anthropic` ships in the
+> [kn9t-plugins](https://github.com/96Ems/kn9t-plugins) repo (`kn9t-plugins/kn9t-anthropic`) as a
+> worked example of a non-OpenAI provider plugin. Any other provider — including partner or
+> gateway-specific ones — is likewise an *external* plugin: a standalone crate outside this
+> workspace, registered through `~/.kn9t/config.toml` with an absolute `binary` path. See the
+> kn9t-plugins repo and R-CP-005-style externality rules (external plugin pattern).
 
 ---
 

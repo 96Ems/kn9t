@@ -141,7 +141,11 @@ pub fn load(state: &Arc<ServerState>, body: LoadPluginReq) -> Reply {
 
 /// POST /plugin/{name}/ui_event — forward a UI interaction to a plugin.
 /// The plugin receives this via HostMsg::Event if it subscribed to "ui_interaction".
-pub fn ui_event(state: &Arc<ServerState>, plugin_name: &str, body: crate::api::UiEventReq) -> Reply {
+pub fn ui_event(
+    state: &Arc<ServerState>,
+    plugin_name: &str,
+    body: crate::api::UiEventReq,
+) -> Reply {
     let payload = serde_json::json!({
         "kind": "ui_interaction",
         "plugin": plugin_name,

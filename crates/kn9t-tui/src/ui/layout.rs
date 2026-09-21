@@ -58,4 +58,3 @@ pub fn calculate_input_height(input: &str, available_width: u16, max_lines: u16)
 pub fn input_height_for(input_width: u16, input: &str, max_input_lines: u16) -> u16 {
     calculate_input_height(input, input_width, max_input_lines)
 }
-

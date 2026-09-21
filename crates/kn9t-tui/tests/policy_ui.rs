@@ -1,5 +1,7 @@
 //! The `kn9t-policy` plugin's Lua UI, extracted verbatim from its Python source
 //! (`scripts/extract_policy_lua.py`), so this is not a hand-written approximation.
+//! The plugin lives in the kn9t-plugins repo —
+//! https://github.com/96Ems/kn9t-plugins/tree/main/kn9t-policy.
 //!
 //! These tests lock the migration to the generic primitives: the grant input is
 //! driven by `kn9t.on_text`, not by a per-character `on_key` loop, and the
@@ -67,9 +69,7 @@ fn all_text(w: &Widget, out: &mut Vec<String>) {
 }
 
 fn texts(rt: &LuaRuntime) -> Vec<String> {
-    let w = rt
-        .build_plugin_view(PLUGIN)
-        .expect("policy Lua must build");
+    let w = rt.build_plugin_view(PLUGIN).expect("policy Lua must build");
     let mut out = Vec::new();
     all_text(&w, &mut out);
     out
@@ -90,12 +90,15 @@ fn shipped_lua_loads_and_renders() {
 #[test]
 fn typed_characters_land_in_the_grant_input() {
     let rt = runtime_with_policy(state(json!([])));
+    assert!(rt.dispatch_plugin_key(PLUGIN, "a"), "`a` must start adding");
     assert!(
-        rt.dispatch_plugin_key(PLUGIN, "a"),
-        "`a` must start adding"
+        rt.dispatch_plugin_text(PLUGIN, "h"),
+        "on_text consumes while adding"
     );
-    assert!(rt.dispatch_plugin_text(PLUGIN, "h"), "on_text consumes while adding");
-    assert!(rt.dispatch_plugin_text(PLUGIN, "i"), "on_text consumes while adding");
+    assert!(
+        rt.dispatch_plugin_text(PLUGIN, "i"),
+        "on_text consumes while adding"
+    );
 
     let t = texts(&rt);
     assert!(
@@ -122,9 +125,15 @@ fn enter_notifies_with_the_typed_grant() {
     let rt = runtime_with_policy(state(json!([])));
     assert!(rt.dispatch_plugin_key(PLUGIN, "a"));
     for ch in ["c", "u", "r", "l", " ", "*"] {
-        assert!(rt.dispatch_plugin_text(PLUGIN, ch), "`{ch}` must be consumed");
+        assert!(
+            rt.dispatch_plugin_text(PLUGIN, ch),
+            "`{ch}` must be consumed"
+        );
     }
-    assert!(rt.dispatch_plugin_key(PLUGIN, "Enter"), "Enter must consume");
+    assert!(
+        rt.dispatch_plugin_key(PLUGIN, "Enter"),
+        "Enter must consume"
+    );
 
     let effects = rt.drain_plugin_effects();
     assert_eq!(effects.len(), 1, "expected one effect, got {effects:?}");

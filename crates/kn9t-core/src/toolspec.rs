@@ -145,4 +145,3 @@ pub fn value_to_pattern(value: &str, is_path: bool) -> String {
     }
     "*".to_string()
 }
-

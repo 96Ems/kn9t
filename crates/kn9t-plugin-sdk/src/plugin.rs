@@ -20,11 +20,11 @@
 use crate::ctx::{
     CancelToken, ChunkSender, KvClient, KvReply, ProgressSender, ProviderCallCtx, ToolCallCtx,
 };
-use kn9t_macros::safe_unwrap;
 use crate::traits::{
     PluginEventSink, PluginHook, PluginProvider, PluginTool, ProviderResult, ToolOutput,
 };
 use crate::wire::{read_host, write_plugin, HostMsg, PluginMsg, ProviderDecl, ToolSpec};
+use kn9t_macros::safe_unwrap;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{self, BufReader, Write};
@@ -245,7 +245,8 @@ impl Runner {
 
                 HostMsg::Cancel { id } => {
                     // Deliver cancellation to the matching in-flight call.
-                    if let Some(tok) = safe_unwrap!(runner.cancels.lock()).get(&id) { // poisoned mutex = fatal
+                    if let Some(tok) = safe_unwrap!(runner.cancels.lock()).get(&id) {
+                        // poisoned mutex = fatal
                         tok.cancel();
                     }
                 }
@@ -276,7 +277,8 @@ impl Runner {
                     error,
                 } => {
                     let reply = KvReply { value, ok, error };
-                    if let Some(tx) = safe_unwrap!(runner.kv_pending.lock()).remove(&id) { // poisoned mutex = fatal
+                    if let Some(tx) = safe_unwrap!(runner.kv_pending.lock()).remove(&id) {
+                        // poisoned mutex = fatal
                         let _ = tx.send(reply);
                     }
                 }
@@ -288,7 +290,8 @@ impl Runner {
                     error,
                 } => {
                     let reply = crate::ctx::ApiReply { ok, result, error };
-                    if let Some(tx) = safe_unwrap!(runner.api_pending.lock()).remove(&id) { // poisoned mutex = fatal
+                    if let Some(tx) = safe_unwrap!(runner.api_pending.lock()).remove(&id) {
+                        // poisoned mutex = fatal
                         let _ = tx.send(reply);
                     }
                 }

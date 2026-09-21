@@ -161,4 +161,3 @@ impl InputHistory {
         self.redo_stack.len()
     }
 }
-

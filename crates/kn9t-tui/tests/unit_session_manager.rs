@@ -90,4 +90,3 @@ fn test_mark_active() {
     assert!(!manager.sessions[2].running);
     assert_eq!(manager.selected, 1);
 }
-

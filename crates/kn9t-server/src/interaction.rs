@@ -209,4 +209,3 @@ impl Default for InteractionRegistry {
         Self::new()
     }
 }
-

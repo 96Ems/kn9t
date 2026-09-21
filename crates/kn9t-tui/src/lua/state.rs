@@ -597,4 +597,3 @@ pub fn state_number(lua: &Lua, path: &[&str]) -> Option<f64> {
     }
     None
 }
-

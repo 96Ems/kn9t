@@ -1,4 +1,4 @@
-use kn9t_core::{wildcard_match, value_to_pattern, DefaultPolicy, ToolPolicy};
+use kn9t_core::{value_to_pattern, wildcard_match, DefaultPolicy, ToolPolicy};
 
 #[test]
 fn test_wildcard_match() {

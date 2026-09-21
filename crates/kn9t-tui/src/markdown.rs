@@ -346,7 +346,9 @@ impl<'t> MarkdownRenderer<'t> {
         // Word-wrap inline code the same way as regular text: flush first if
         // it doesn't fit, so a `code span` mid-sentence can't push the line
         // past the available width undetected.
-        if self.width > 0 && self.current_line_len + text_len > self.width && self.current_line_len > 0
+        if self.width > 0
+            && self.current_line_len + text_len > self.width
+            && self.current_line_len > 0
         {
             self.flush_line();
             self.add_continuation_prefix();

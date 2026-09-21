@@ -246,7 +246,10 @@ fn a_cancelled_batch_returns_even_if_a_parallel_tool_hangs() {
          land (the turn is inside join), no TurnFinishing is emitted, and the session's turn \
          slot stays claimed — every later prompt 409s.",
     );
-    assert!(entered.load(Ordering::SeqCst), "the tool should have started");
+    assert!(
+        entered.load(Ordering::SeqCst),
+        "the tool should have started"
+    );
 
     // DESIGN §7.5 / R-RCT-060: every ToolCall gets a ToolResult, even an abandoned one.
     assert_eq!(
@@ -294,7 +297,10 @@ fn a_hung_tool_does_not_swallow_its_siblings_results() {
     .expect("run_tool_batch never returned with a hung tool in the batch");
 
     // R-RCT-130: results come back in the model's call order, one per call.
-    assert_eq!(result_ids(&results), vec!["c1".to_string(), "c2".to_string()]);
+    assert_eq!(
+        result_ids(&results),
+        vec!["c1".to_string(), "c2".to_string()]
+    );
 }
 
 /// Non-regression: with no cancellation and well-behaved tools, nothing changes — both run
@@ -316,11 +322,14 @@ fn a_healthy_parallel_batch_is_unaffected() {
     )
     .expect("a healthy batch must return promptly");
 
-    assert_eq!(result_ids(&results), vec!["c1".to_string(), "c2".to_string()]);
+    assert_eq!(
+        result_ids(&results),
+        vec!["c1".to_string(), "c2".to_string()]
+    );
     assert_eq!(hits.load(Ordering::SeqCst), 2, "both tools should have run");
-    let errored = results.iter().any(|c| {
-        matches!(c, Content::ToolResult { is_error, .. } if *is_error)
-    });
+    let errored = results
+        .iter()
+        .any(|c| matches!(c, Content::ToolResult { is_error, .. } if *is_error));
     assert!(!errored, "a healthy batch must not synthesize errors");
 }
 

@@ -98,7 +98,9 @@ impl FileIndex {
 
     /// The `i`-th path, in sorted order.
     pub fn path_at(&self, i: usize) -> Option<&str> {
-        self.ranges.get(i).map(|&(s, e)| &self.paths[s as usize..e as usize])
+        self.ranges
+            .get(i)
+            .map(|&(s, e)| &self.paths[s as usize..e as usize])
     }
 
     /// Every path, in sorted order. Allocates a `Vec` of borrowed slices, cheap but not
@@ -254,7 +256,9 @@ impl FileIndex {
 
         let mut seen: Vec<TreeEntry> = Vec::new();
         for i in 0..self.ranges.len() {
-            let Some(file) = self.path_at(i) else { continue };
+            let Some(file) = self.path_at(i) else {
+                continue;
+            };
             let Some(rest) = file.strip_prefix(&prefix) else {
                 continue;
             };
@@ -595,14 +599,21 @@ mod tests {
 
     #[test]
     fn frecency_never_beats_match_quality() {
-        let mut idx = index_of(&["src/theme.rs", "vendor/other/long/path/theme_helper_name.rs"]);
+        let mut idx = index_of(&[
+            "src/theme.rs",
+            "vendor/other/long/path/theme_helper_name.rs",
+        ]);
         for _ in 0..30 {
             idx.record_open("vendor/other/long/path/theme_helper_name.rs");
         }
         // The exact basename match must still win: a file you open often is not a file you
         // meant when you typed its exact name elsewhere.
         let hits = idx.search("theme.rs", 5);
-        assert_eq!(hits.first().map(String::as_str), Some("src/theme.rs"), "got {hits:?}");
+        assert_eq!(
+            hits.first().map(String::as_str),
+            Some("src/theme.rs"),
+            "got {hits:?}"
+        );
     }
 
     #[test]
@@ -617,7 +628,10 @@ mod tests {
         // `module1999` is also a legitimate *subsequence* of `module1993`, so a fuzzy
         // search returning only one hit would mean the matcher had been restricted to
         // substrings — which is the fzf behaviour this is not.
-        assert!(hits.len() > 1, "subsequence matches must survive, got {hits:?}");
+        assert!(
+            hits.len() > 1,
+            "subsequence matches must survive, got {hits:?}"
+        );
 
         let hits = idx.search("impl", 10);
         assert_eq!(hits.len(), 10, "the limit is honoured");
@@ -672,7 +686,10 @@ mod tests {
         // Frecency survives a rebuild.
         idx.record_open("src/main.rs");
         idx.rebuild(&root);
-        assert_eq!(idx.search("", 1).first().map(String::as_str), Some("src/main.rs"));
+        assert_eq!(
+            idx.search("", 1).first().map(String::as_str),
+            Some("src/main.rs")
+        );
 
         // Re-indexing the same root is a no-op.
         assert!(!idx.refresh(&root), "same root must not walk again");
@@ -725,8 +742,7 @@ mod tests {
         std::fs::write(root.join("keep/b.txt"), "x").expect("write");
         // A negation and a glob: neither is in the supported subset, and both must be
         // ignored rather than half-applied.
-        std::fs::write(root.join(".gitignore"), "# comment\nlogs/\n!keep\n*.tmp\n")
-            .expect("write");
+        std::fs::write(root.join(".gitignore"), "# comment\nlogs/\n!keep\n*.tmp\n").expect("write");
 
         let mut idx = FileIndex::new();
         idx.rebuild(&root);

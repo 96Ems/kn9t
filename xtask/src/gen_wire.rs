@@ -178,8 +178,8 @@ pub struct WireModelRef {
 /// This used to be a hardcoded `PINNED_MODEL_TYPES` string that listed only
 /// `provider`/`id`/`api_id`/`is_default`. The schema has always also defined
 /// `ctx_window`, `max_out` and `price`, so every `xtask generate` run *deleted*
-/// those fields from `wire.rs` and broke `model_selector.rs`, which reads them
-/// (see `docs/dev/TRACKING.md`, item B3). Reading the schema here is what stops that from recurring.
+/// those fields from `wire.rs` and broke `model_selector.rs`, which reads them.
+/// Reading the schema here is what stops that from recurring.
 ///
 /// `#[serde(default)]` on every optional field so a server that omits one still
 /// deserializes — the TUI must tolerate an older server.
@@ -407,7 +407,7 @@ mod tests {
     /// Every field the schema defines for a model must appear in the generated
     /// `ModelInfo`.
     ///
-    /// This is the `docs/dev/TRACKING.md` B3 regression guard: `ModelInfo` used to be a
+    /// This is the regression guard for that bug: `ModelInfo` used to be a
     /// hardcoded string listing four fields, so each `xtask generate` silently
     /// deleted `ctx_window`/`max_out`/`price` from `wire.rs` and broke
     /// `model_selector.rs`, which reads the first two.

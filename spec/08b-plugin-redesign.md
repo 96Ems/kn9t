@@ -56,8 +56,10 @@ crates/
 
 plugins/                        # EXTERNAL standalone crates (outside workspace)
   kn9t-tools/                   # bash + read + write + edit as a plugin binary (auto-discovered)
+  kn9t-test-plugin/             # real-subprocess test fixture (P4-A)
   kn9t-custom-provider/         # example external provider plugin
-  kn9t-anthropic/               # anthropic provider plugin
+                                # other plugins (anthropic, mcp, policy, …) live in
+                                # https://github.com/96Ems/kn9t-plugins
 ```
 
 All plugins are **external** standalone crates with an empty `[workspace]` and a

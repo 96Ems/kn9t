@@ -85,8 +85,6 @@ fn oai_request_shape_completion_tokens_quirk() {
     assert_eq!(body["messages"][0]["role"], json!("developer"));
 }
 
-
-
 // ── oai::decode (R-OAI-020) ──────────────────────────────────────────────────
 
 #[test]
@@ -494,9 +492,7 @@ fn oai_responses_request_shape() {
         Message {
             id: MsgId::new(),
             role: Role::User,
-            content: vec![Content::Text {
-                text: "hi".into(),
-            }],
+            content: vec![Content::Text { text: "hi".into() }],
             silent: false,
         },
         Message {
@@ -519,9 +515,7 @@ fn oai_responses_request_shape() {
             role: Role::Tool,
             content: vec![Content::ToolResult {
                 id: kn9t_core::CallId("call_1".into()),
-                content: vec![Content::Text {
-                    text: "22C".into(),
-                }],
+                content: vec![Content::Text { text: "22C".into() }],
                 is_error: false,
             }],
             silent: false,
@@ -615,7 +609,9 @@ fn oai_responses_decode_text_then_usage() {
 
     // Reasoning summary, then text, then the terminal completed event.
     let c = decode_event(
-        &ev(&json!({"type":"response.reasoning_summary_text.delta","delta":"thinking"}).to_string()),
+        &ev(
+            &json!({"type":"response.reasoning_summary_text.delta","delta":"thinking"}).to_string(),
+        ),
         &mut st,
         &q,
         &model_ref,
@@ -753,7 +749,13 @@ fn oai_responses_incomplete_is_length() {
             "usage": { "input_tokens": 5, "output_tokens": 32 }
         }
     });
-    let c = decode_event(&ev.to_string().into_bytes(), &mut st, &resp_quirks(), &model_ref).unwrap();
+    let c = decode_event(
+        &ev.to_string().into_bytes(),
+        &mut st,
+        &resp_quirks(),
+        &model_ref,
+    )
+    .unwrap();
     assert!(c
         .iter()
         .any(|ch| matches!(ch, Chunk::Stop(StopReason::Length))));

@@ -102,7 +102,7 @@ impl IdleTracker {
         if self.running_turns() > 0 {
             return false;
         }
-        let last =*safe_expect!(self.last_activity.lock(), "idle poisoned");
+        let last = *safe_expect!(self.last_activity.lock(), "idle poisoned");
         last.elapsed() >= self.idle_exit
     }
 
@@ -464,7 +464,11 @@ impl ServerState {
             stopped.remove(name);
             stopped.remove(&declared);
         }
-        crate::log!("start: plugin '{}' started, {} tools total", declared, tools);
+        crate::log!(
+            "start: plugin '{}' started, {} tools total",
+            declared,
+            tools
+        );
         self.announce_plugin_state(&declared, "started", String::new());
         Ok((declared, tools))
     }
@@ -552,13 +556,13 @@ impl ServerState {
     pub fn reload_plugin(self: &Arc<Self>, name: &str) -> Result<(String, usize), String> {
         // 0. Lookup host and spawn recipe (hold lock briefly).
         let (old_host, cmd, env) = {
-            let hosts =safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
+            let hosts = safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
             let idx = hosts
                 .iter()
                 .position(|h| h.name() == name)
                 .ok_or_else(|| format!("plugin {name:?} not found"))?;
             let host = hosts[idx].clone();
-            let spawn =safe_expect!(self.plugin_spawn.lock(), "spawn poisoned");
+            let spawn = safe_expect!(self.plugin_spawn.lock(), "spawn poisoned");
             let (cmd, env) = spawn.get(name)
                 .cloned()
                 .ok_or_else(|| format!("plugin {name:?} has no spawn recipe (was it a provider plugin? not reloadable via this route)"))?;
@@ -616,8 +620,8 @@ impl ServerState {
         let new_tools = crate::tools::extract_tools_public(&new_host);
 
         // 5. swap host and rebuild registry (dedup, first wins, same as startup).
-        {
-            let mut hosts =safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
+        let (new_decl_name, n) = {
+            let mut hosts = safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
             if let Some(pos) = hosts.iter().position(|h| h.name() == name) {
                 hosts[pos] = new_host.clone();
             } else {
@@ -665,9 +669,15 @@ impl ServerState {
                 announced.remove(name);
                 announced.remove(new_decl_name.as_str());
             }
-            self.announce_plugin_state(new_decl_name.as_str(), "reloaded", String::new());
-            Ok((new_decl_name, n))
-        }
+            (new_decl_name, n)
+        };
+
+        // Announce only after the `plugin_hosts` guard is dropped: `announce_plugin_state`
+        // fans out through `notify_plugins`, which re-locks `plugin_hosts`. A `std::sync::Mutex`
+        // is not reentrant, so announcing while holding the guard deadlocks the caller and
+        // hangs the HTTP request.
+        self.announce_plugin_state(new_decl_name.as_str(), "reloaded", String::new());
+        Ok((new_decl_name, n))
     }
 
     /// Hot-load a NEW plugin (unlike `reload_plugin`, which replaces one), specified inline
@@ -683,7 +693,7 @@ impl ServerState {
 
         // Check if this plugin is already loaded (by comparing cmd[0]).
         {
-            let spawn =safe_expect!(self.plugin_spawn.lock(), "spawn poisoned");
+            let spawn = safe_expect!(self.plugin_spawn.lock(), "spawn poisoned");
             for (name, (existing_cmd, _)) in spawn.iter() {
                 if !existing_cmd.is_empty() && existing_cmd[0] == cmd[0] {
                     return Err(format!(
@@ -710,7 +720,7 @@ impl ServerState {
 
         // Check if a plugin with this declared name already exists.
         {
-            let hosts =safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
+            let hosts = safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
             if hosts.iter().any(|h| h.name() == declared_name) {
                 // Shutdown the just-spawned host before returning error.
                 new_host.shutdown();
@@ -747,7 +757,7 @@ impl ServerState {
 
         // Add host and rebuild registry.
         {
-            let mut hosts =safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
+            let mut hosts = safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
             hosts.push(new_host.clone());
 
             // Rebuild tool registry (dedup first wins).
@@ -816,7 +826,7 @@ impl ServerState {
 
             // Check if already loaded (by full cmd, not just interpreter).
             {
-                let spawn =safe_expect!(self.plugin_spawn.lock(), "spawn poisoned");
+                let spawn = safe_expect!(self.plugin_spawn.lock(), "spawn poisoned");
                 let already_loaded = spawn.values().any(|(existing_cmd, _)| *existing_cmd == cmd);
                 if already_loaded {
                     continue;
@@ -854,7 +864,7 @@ impl ServerState {
         }
 
         let old_hosts: Vec<(String, Arc<PluginHost>)> = {
-            let hosts =safe_expect!(self.provider_hosts.lock(), "provider_hosts poisoned");
+            let hosts = safe_expect!(self.provider_hosts.lock(), "provider_hosts poisoned");
             hosts.clone()
         };
 
@@ -903,7 +913,8 @@ impl ServerState {
 
         self.set_models(resolved.models);
 
-        *safe_expect!(self.provider_hosts.lock(), "provider_hosts poisoned") = resolved.provider_hosts;
+        *safe_expect!(self.provider_hosts.lock(), "provider_hosts poisoned") =
+            resolved.provider_hosts;
 
         // Reap the previous generation of provider-plugin subprocesses. Done last so
         // no window exists where a turn could resolve a provider whose host is dead.
@@ -1091,7 +1102,7 @@ impl ServerState {
 
         // Rebuild tool registry from all current hosts (dedup first wins, same as startup/reload).
         {
-            let hosts =safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
+            let hosts = safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             let mut all_tools: Vec<Arc<dyn kn9t_core::Tool>> = Vec::new();
             for h in hosts.iter() {
@@ -1132,7 +1143,7 @@ impl ServerState {
         plugin_name: &str,
         payload: serde_json::Value,
     ) -> Result<(), String> {
-        let hosts =safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
+        let hosts = safe_expect!(self.plugin_hosts.lock(), "hosts poisoned");
         for host in hosts.iter() {
             if host.name() == plugin_name {
                 let event = kn9t_core::Event::PluginNotification { payload };

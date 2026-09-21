@@ -77,7 +77,7 @@ fn fresh_state() -> (Arc<ServerState>, tempfile::TempDir) {
     let (store, tmp) = temp_store();
     let token = kn9t_server::auth::generate_token();
     let spec = model_spec();
-    let mut state = ServerState::new(store, token, Default::default(), Vec::new())
+    let state = ServerState::new(store, token, Default::default(), Vec::new())
         .with_default_model(spec.clone());
     state.set_models(vec![spec]);
     let state = Arc::new(state);
@@ -444,10 +444,9 @@ mod srv {
         let kv: Arc<dyn kn9t_core::PluginKv> = store.clone() as Arc<dyn kn9t_core::PluginKv>;
         let host = kn9t_plugin::PluginHost::spawn(&bin, &[], kv).expect("spawn dummy plugin");
         let host = Arc::new(host);
-        let tools = kn9t_core::ToolRegistry::from_tools(kn9t_server::tools::extract_tools_public(
-            &host,
-        ));
-        let mut state = ServerState::new(store.clone(), token.clone(), tools, vec![host.clone()]);
+        let tools =
+            kn9t_core::ToolRegistry::from_tools(kn9t_server::tools::extract_tools_public(&host));
+        let state = ServerState::new(store.clone(), token.clone(), tools, vec![host.clone()]);
         state.set_plugin_spawn(
             "cycle-tools".to_string(),
             vec![bin.to_string_lossy().into_owned()],
@@ -462,18 +461,10 @@ mod srv {
         // Inventory reports it running before anything happens.
         let list = req_auth(&h, "GET", "/plugin", &[], serde_json::Value::Null);
         assert_eq!(list.status, 200);
-        assert_eq!(
-            list.json()["plugins"][0]["state"].as_str(),
-            Some("running")
-        );
+        assert_eq!(list.json()["plugins"][0]["state"].as_str(), Some("running"));
 
         let r = post("/plugin/cycle-tools/stop");
-        assert_eq!(
-            r.status,
-            200,
-            "stop: {}",
-            String::from_utf8_lossy(&r.body)
-        );
+        assert_eq!(r.status, 200, "stop: {}", String::from_utf8_lossy(&r.body));
         assert_eq!(r.json()["stopped"].as_str(), Some("cycle-tools"));
 
         // The tool is still registered — removing it would rewrite the `tools` array and
@@ -499,18 +490,17 @@ mod srv {
         assert_eq!(post("/plugin/cycle-tools/stop").status, 409);
 
         let r = post("/plugin/cycle-tools/start");
-        assert_eq!(
-            r.status,
-            200,
-            "start: {}",
-            String::from_utf8_lossy(&r.body)
-        );
+        assert_eq!(r.status, 200, "start: {}", String::from_utf8_lossy(&r.body));
         assert_eq!(r.json()["started"].as_str(), Some("cycle-tools"));
         assert!(
             state.blocked_tools().is_empty(),
             "restarting must unblock the tools"
         );
-        assert_eq!(post("/plugin/cycle-tools/start").status, 409, "already running");
+        assert_eq!(
+            post("/plugin/cycle-tools/start").status,
+            409,
+            "already running"
+        );
 
         // A name the server never loaded is 404 on both — starting an unknown plugin must
         // not be a way to spawn something (that is `POST /plugin/load`).
@@ -605,7 +595,8 @@ mod srv {
     /// next turn start). The prompt route previously published manually; now the
     /// observer is the single publisher — this test fails if either side regresses
     /// (missing echo, or duplicate echo).
-    #[test]    fn durable_appends_echo_on_sse_bus() {
+    #[test]
+    fn durable_appends_echo_on_sse_bus() {
         let (state, _tmp) = fresh_state();
         let h = start(state.clone());
         let id = make_session(&h);
@@ -683,7 +674,7 @@ mod srv {
         let (store, tmp) = temp_store();
         let token = kn9t_server::auth::generate_token();
         let spec = model_spec();
-        let mut state = ServerState::new(store, token, Default::default(), Vec::new())
+        let state = ServerState::new(store, token, Default::default(), Vec::new())
             .with_default_model(spec.clone())
             .with_lease_idle(Duration::from_millis(150));
         state.set_models(vec![spec]);
@@ -1197,7 +1188,7 @@ mod srv {
         let token = kn9t_server::auth::generate_token();
         let spec = model_spec();
         // Very short idle window: exits quickly after last client detaches.
-        let mut state = ServerState::new(store, token, Default::default(), Vec::new())
+        let state = ServerState::new(store, token, Default::default(), Vec::new())
             .with_default_model(spec.clone())
             .with_idle_exit(Duration::from_millis(300));
         state.set_models(vec![spec]);
@@ -2481,7 +2472,7 @@ mod srv {
         });
         let tools = dummy_bash_registry();
         // ADR-0008: the Ask comes from the policy plugin, so inject one in-process.
-        let mut state = kn9t_server::state::ServerState::new(store, token, tools, Vec::new())
+        let state = kn9t_server::state::ServerState::new(store, token, tools, Vec::new())
             .with_hooks_override(Arc::new(AskingHooks {
                 tool: "bash".into(),
             }))
@@ -2607,7 +2598,7 @@ mod srv {
         });
         let tools = dummy_bash_registry();
         // ADR-0008: an outright refusal now comes from the plugin, not a server-side classifier.
-        let mut state = kn9t_server::state::ServerState::new(store, token, tools, Vec::new())
+        let state = kn9t_server::state::ServerState::new(store, token, tools, Vec::new())
             .with_hooks_override(Arc::new(DenyingHooks {
                 tool: "bash".into(),
             }))
@@ -2766,8 +2757,8 @@ mod srv {
                 Box<dyn Iterator<Item = Result<kn9t_core::Chunk, kn9t_core::ProvErr>> + Send>,
                 kn9t_core::ProvErr,
             > {
-                // Title request (autotitle) has max_tokens 16 — return plain text, not a tool call
-                if req.max_tokens == Some(16) {
+                // A title request (autotitle) carries no tools — return plain text, not a tool call.
+                if req.tools.is_empty() {
                     return Ok(Box::new(
                         vec![
                             Ok(kn9t_core::Chunk::Text {
@@ -3076,7 +3067,8 @@ mod srv {
                 Box<dyn Iterator<Item = Result<kn9t_core::Chunk, kn9t_core::ProvErr>> + Send>,
                 kn9t_core::ProvErr,
             > {
-                if req.max_tokens == Some(16) {
+                // A title request (autotitle) carries no tools — return plain text, not a tool call.
+                if req.tools.is_empty() {
                     return Ok(Box::new(
                         vec![
                             Ok(kn9t_core::Chunk::Text {
@@ -3473,7 +3465,7 @@ mod srv {
             let t = kn9t_server::tools::extract_tools_public(&host);
             kn9t_core::ToolRegistry::from_tools(t)
         };
-        let mut state = ServerState::new(store.clone(), token.clone(), tools, vec![host.clone()]);
+        let state = ServerState::new(store.clone(), token.clone(), tools, vec![host.clone()]);
         state.set_plugin_spawn(
             "reload-tools".to_string(),
             vec![bin.to_string_lossy().into_owned()],
@@ -3546,6 +3538,296 @@ mod srv {
     #[cfg(windows)]
     fn write_dummy_plugin(_path: &std::path::Path, _name: &str, _tool: &str) {
         unreachable!("plugin_reload is #[ignore]d on Windows");
+    }
+
+    // ── hot-reload end to end (R-PLUG2-100) ─────────────────────────────
+    //
+    // These drive the real HTTP routes against a *real* plugin subprocess, so they cover
+    // the whole path — route → `reload_plugin` → shutdown/respawn → re-handshake →
+    // registry rebuild → bus fan-out — not just the state machine.
+    // `plugin_lifecycle.rs` covers the subprocess-free half.
+
+    /// Spawn one dummy plugin and wire it into a fresh harness the way `plugin_reload`
+    /// does. The script declares exactly one tool and stays alive reading stdin, so the
+    /// host can cancel/shutdown and respawn it. Returns the harness, the live state, the
+    /// script path (rewritable, to change what the *next* process declares) and a temp
+    /// dir the caller must keep bound for the test's duration.
+    #[cfg(unix)]
+    fn hot_reload_fixture(
+        name: &str,
+        tool: &str,
+    ) -> (
+        Harness,
+        Arc<ServerState>,
+        std::path::PathBuf,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join(name);
+        write_dummy_plugin(&bin, name, tool);
+
+        let (store, store_tmp) = temp_store();
+        // The sqlite file must outlive the test body; dropping the TempDir unlinks it.
+        std::mem::forget(store_tmp);
+        let token = kn9t_server::auth::generate_token();
+        let kv: Arc<dyn kn9t_core::PluginKv> = store.clone() as Arc<dyn kn9t_core::PluginKv>;
+        let host = kn9t_plugin::PluginHost::spawn(&bin, &[], kv).expect("spawn dummy plugin");
+        let host = Arc::new(host);
+        let tools =
+            kn9t_core::ToolRegistry::from_tools(kn9t_server::tools::extract_tools_public(&host));
+        let spec = model_spec();
+        let state = ServerState::new(store.clone(), token.clone(), tools, vec![host.clone()])
+            .with_default_model(spec.clone());
+        state.set_plugin_spawn(
+            name.to_string(),
+            vec![bin.to_string_lossy().into_owned()],
+            vec![],
+        );
+        state.set_models(vec![spec]);
+        let state = Arc::new(state);
+        let h = start(state.clone());
+        (h, state, bin, tmp)
+    }
+
+    #[cfg(windows)]
+    fn hot_reload_fixture(
+        _name: &str,
+        _tool: &str,
+    ) -> (
+        Harness,
+        Arc<ServerState>,
+        std::path::PathBuf,
+        tempfile::TempDir,
+    ) {
+        unreachable!("the dummy plugin is a POSIX shell script")
+    }
+
+    /// Reloading repeatedly must keep working. `reload_plugin` used to announce the new
+    /// state *while holding the `plugin_hosts` guard*; `notify_plugins` re-locks it, and
+    /// `std::sync::Mutex` is not reentrant — so the announce deadlocked the request
+    /// thread, which only surfaced as a client read timeout. Three rounds fail loudly if
+    /// that ever comes back.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs a POSIX shell script as the dummy plugin binary"
+    )]
+    fn plugin_reload_repeats_without_hanging() {
+        let (h, state, _bin, _keep) = hot_reload_fixture("reload-tools", "reload_tool");
+
+        for round in 1..=3 {
+            let r = req_auth(
+                &h,
+                "POST",
+                "/plugin/reload-tools/reload",
+                &[],
+                serde_json::Value::Null,
+            );
+            assert_eq!(
+                r.status,
+                200,
+                "reload #{round} must return, got {}: {}",
+                r.status,
+                String::from_utf8_lossy(&r.body)
+            );
+            assert_eq!(r.json()["reloaded"].as_str(), Some("reload-tools"));
+            assert_eq!(
+                r.json()["tools"].as_u64(),
+                Some(1),
+                "round {round} keeps exactly one tool"
+            );
+        }
+
+        // The churn leaves the registry consistent: the tool is still advertised and the
+        // plugin still reports running.
+        assert!(state.tools_snapshot().get("reload_tool").is_some());
+        let list = req_auth(&h, "GET", "/plugin", &[], serde_json::Value::Null);
+        assert_eq!(list.json()["plugins"][0]["state"].as_str(), Some("running"));
+        h.handle.shutdown();
+    }
+
+    /// `POST /plugin/{n}/reload` on a *stopped* plugin must revive it: reload owns the
+    /// respawn sequence, so it clears the stopped flag and unblocks the tools.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs a POSIX shell script as the dummy plugin binary"
+    )]
+    fn plugin_reload_revives_a_stopped_plugin() {
+        let (h, state, _bin, _keep) = hot_reload_fixture("revive-tools", "revive_tool");
+
+        let stop = req_auth(
+            &h,
+            "POST",
+            "/plugin/revive-tools/stop",
+            &[],
+            serde_json::Value::Null,
+        );
+        assert_eq!(
+            stop.status,
+            200,
+            "stop: {}",
+            String::from_utf8_lossy(&stop.body)
+        );
+        assert!(
+            state.blocked_tools().contains("revive_tool"),
+            "a stopped plugin's tool is refused"
+        );
+
+        let reload = req_auth(
+            &h,
+            "POST",
+            "/plugin/revive-tools/reload",
+            &[],
+            serde_json::Value::Null,
+        );
+        assert_eq!(
+            reload.status,
+            200,
+            "reload of a stopped plugin: {}",
+            String::from_utf8_lossy(&reload.body)
+        );
+        assert!(
+            !state.is_plugin_stopped("revive-tools"),
+            "reload must clear the stopped flag"
+        );
+        assert!(
+            state.blocked_tools().is_empty(),
+            "and unblock the tools again"
+        );
+        h.handle.shutdown();
+    }
+
+    /// A reload must rebuild the registry from what the *new* subprocess declares, not
+    /// carry the old tool list forward. Rewriting the recipe's script between reloads
+    /// proves the process was really replaced: the declared tool name changes, so a
+    /// registry that kept the old entry would advertise a tool no live process serves.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs a POSIX shell script as the dummy plugin binary"
+    )]
+    fn plugin_reload_rebuilds_tools_from_the_new_process() {
+        let (h, state, bin, _keep) = hot_reload_fixture("swap-tools", "old_tool");
+        assert!(state.tools_snapshot().get("old_tool").is_some());
+
+        write_dummy_plugin(&bin, "swap-tools", "new_tool");
+
+        let r = req_auth(
+            &h,
+            "POST",
+            "/plugin/swap-tools/reload",
+            &[],
+            serde_json::Value::Null,
+        );
+        assert_eq!(
+            r.status,
+            200,
+            "reload: {}",
+            String::from_utf8_lossy(&r.body)
+        );
+
+        assert!(
+            state.tools_snapshot().get("new_tool").is_some(),
+            "the respawned process's tool is registered"
+        );
+        assert!(
+            state.tools_snapshot().get("old_tool").is_none(),
+            "the dead process's tool is gone"
+        );
+        h.handle.shutdown();
+    }
+
+    /// The observable contract of a reload: a session subscriber sees
+    /// `plugin_state`/`reloaded`. `announce_plugin_state` fans out onto the same bus the
+    /// SSE route reads, so this is what an attached client receives.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs a POSIX shell script as the dummy plugin binary"
+    )]
+    fn plugin_reload_announces_plugin_state() {
+        let (h, state, _bin, _keep) = hot_reload_fixture("sse-tools", "sse_tool");
+        let sid = make_session(&h);
+        let sub = state.buses.subscribe(&sid, 64);
+
+        let r = req_auth(
+            &h,
+            "POST",
+            "/plugin/sse-tools/reload",
+            &[],
+            serde_json::Value::Null,
+        );
+        assert_eq!(r.status, 200);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut seen = false;
+        let mut kinds: Vec<&'static str> = Vec::new();
+        while std::time::Instant::now() < deadline && !seen {
+            if let Some(ev) = sub.recv_timeout(Duration::from_millis(200)) {
+                if matches!(
+                    &ev,
+                    Event::PluginState { plugin, state, .. }
+                        if plugin == "sse-tools" && state == "reloaded"
+                ) {
+                    seen = true;
+                } else {
+                    kinds.push(kn9t_server::sse::event_kind(&ev));
+                }
+            }
+        }
+        assert!(
+            seen,
+            "a reload must announce plugin_state=reloaded to subscribers; saw {kinds:?}"
+        );
+        h.handle.shutdown();
+    }
+
+    /// Hot-load (`POST /plugin/load`) is the other half of hot-reload: a brand new
+    /// subprocess joins the registry with no restart. Loading the same command twice is a
+    /// conflict, never a second copy.
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs a POSIX shell script as the dummy plugin binary"
+    )]
+    fn plugin_load_registers_a_new_plugin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("loaded-tools");
+        write_dummy_plugin(&bin, "loaded-tools", "loaded_tool");
+        let cmd = vec![bin.to_string_lossy().into_owned()];
+
+        let (h, _store_tmp) = harness();
+        let r = req_auth(
+            &h,
+            "POST",
+            "/plugin/load",
+            &[],
+            serde_json::json!({ "cmd": cmd }),
+        );
+        assert_eq!(r.status, 200, "load: {}", String::from_utf8_lossy(&r.body));
+        assert_eq!(r.json()["loaded"].as_str(), Some("loaded-tools"));
+        assert_eq!(r.json()["tools"].as_u64(), Some(1));
+
+        let list = req_auth(&h, "GET", "/plugin", &[], serde_json::Value::Null);
+        assert_eq!(
+            list.json()["plugins"][0]["name"].as_str(),
+            Some("loaded-tools"),
+            "the hot-loaded plugin appears in the inventory"
+        );
+
+        let again = req_auth(
+            &h,
+            "POST",
+            "/plugin/load",
+            &[],
+            serde_json::json!({ "cmd": cmd }),
+        );
+        assert_eq!(
+            again.status, 409,
+            "loading the same command twice is a conflict"
+        );
+        h.handle.shutdown();
     }
 
     // ── plugin → host API ops (host_api capability) ─────────────────────
@@ -3636,7 +3918,7 @@ mod srv {
 
         let (store, _tmp) = temp_store();
         let spec = model_spec();
-        let mut state = ServerState::new(
+        let state = ServerState::new(
             store.clone(),
             "test-token".into(),
             Default::default(),
@@ -3880,13 +4162,14 @@ mod srv {
     }
 
     #[test]
-    fn session_fork_and_prompt_spawns_a_real_child() {        use kn9t_plugin::HostApi as _;
+    fn session_fork_and_prompt_spawns_a_real_child() {
+        use kn9t_plugin::HostApi as _;
         use kn9t_server::host_api::ServerHostApi;
 
         // A child session is just a forked session running a turn (R-PLUG-110).
         let (store, _tmp) = temp_store();
         let spec = model_spec();
-        let mut state = ServerState::new(
+        let state = ServerState::new(
             store.clone(),
             "test-token".into(),
             Default::default(),
@@ -4013,8 +4296,8 @@ mod srv {
             req: &Request,
             _cancel: &Cancel,
         ) -> Result<Box<dyn Iterator<Item = Result<Chunk, ProvErr>> + Send>, ProvErr> {
-            // Title request (autotitle) - return plain text
-            if req.max_tokens == Some(16) {
+            // A title request (autotitle) carries no tools — return plain text.
+            if req.tools.is_empty() {
                 return Ok(Box::new(
                     vec![
                         Ok(Chunk::Text {
@@ -4165,7 +4448,7 @@ mod srv {
 
         let (store, _tmp) = temp_store();
         let token = kn9t_server::auth::generate_token();
-        let mut state = ServerState::new(store.clone(), token.clone(), tools, Vec::new())
+        let state = ServerState::new(store.clone(), token.clone(), tools, Vec::new())
             .with_default_model(model_spec())
             .with_provider(provider);
         state.set_models(vec![model_spec()]);

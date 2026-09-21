@@ -1,9 +1,9 @@
 //! Per-turn cancellation: atomic flag with waiter support for graceful shutdown.
 
+use kn9t_macros::safe_expect;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
-use kn9t_macros::safe_expect;
 
 struct CancelInner {
     flag: AtomicBool,
@@ -67,4 +67,3 @@ impl Default for Cancel {
         Self::new()
     }
 }
-

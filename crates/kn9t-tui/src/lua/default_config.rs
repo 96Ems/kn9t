@@ -83,7 +83,9 @@ pub fn builtin_source() -> String {
     for (name, _) in DEFAULT_TUI_FILES {
         out.push_str(&format!("--   {name}\n"));
     }
-    out.push_str("--\n-- To customise it, edit ~/.kn9t/tui/*.lua and re-run; changes hot-reload.\n\n");
+    out.push_str(
+        "--\n-- To customise it, edit ~/.kn9t/tui/*.lua and re-run; changes hot-reload.\n\n",
+    );
     for (name, content) in DEFAULT_TUI_FILES {
         out.push_str(&format!(
             "\n-- ═══════════════════════════════════════════════════════════════\n\
@@ -170,4 +172,3 @@ pub fn export_config(path: &Path, force: bool) -> ExportOutcome {
         Err(e) => ExportOutcome::Failed(format!("could not write {}: {e}", path.display())),
     }
 }
-

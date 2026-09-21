@@ -58,9 +58,8 @@ impl Ring {
             if st.closed {
                 return None;
             }
-            let (new_st, timed_out) = safe_expect!(self
-                .cv
-                .wait_timeout(st, timeout), "bus ring poisoned");
+            let (new_st, timed_out) =
+                safe_expect!(self.cv.wait_timeout(st, timeout), "bus ring poisoned");
             st = new_st;
             if timed_out.timed_out() {
                 return None;
@@ -119,8 +118,7 @@ impl Bus {
             cv: Condvar::new(),
             capacity,
         });
-        safe_expect!(self.subs.lock(), "bus mutex poisoned")
-            .push(Arc::downgrade(&ring));
+        safe_expect!(self.subs.lock(), "bus mutex poisoned").push(Arc::downgrade(&ring));
         Subscription { ring }
     }
 
@@ -185,4 +183,3 @@ impl Subscription {
         self.ring.recv_timeout(timeout)
     }
 }
-

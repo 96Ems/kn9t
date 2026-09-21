@@ -224,7 +224,10 @@ pub fn encode_messages(msg: &Message, quirks: &Quirks, needs_cache: bool, out: &
             }
             // R-OAI-IMG: tool-result images ride as a synthetic user message (see above).
             if !images.is_empty() {
-                let parts: Vec<Value> = images.into_iter().map(|c| encode_content(c, quirks)).collect();
+                let parts: Vec<Value> = images
+                    .into_iter()
+                    .map(|c| encode_content(c, quirks))
+                    .collect();
                 out.push(json!({ "role": "user", "content": parts }));
             }
         }
@@ -375,10 +378,7 @@ fn encode_message(
     }
 
     // Multi-part content.
-    let mut parts: Vec<Value> = content
-        .iter()
-        .map(|c| encode_content(c, quirks))
-        .collect();
+    let mut parts: Vec<Value> = content.iter().map(|c| encode_content(c, quirks)).collect();
 
     // Apply cache_control to the last content part if needed.
     if needs_cache && !parts.is_empty() {
@@ -449,4 +449,3 @@ fn encode_content(c: &Content, _quirks: &Quirks) -> Value {
         Content::Thinking { text, .. } => json!({ "type": "thinking", "thinking": text }),
     }
 }
-

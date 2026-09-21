@@ -41,7 +41,11 @@ type SpawnedPlugin = (Arc<PluginHost>, Vec<Arc<dyn Tool>>);
 pub type SpawnRecipe = (Vec<String>, Vec<(String, String)>);
 
 /// Result of spawning all plugins: hosts, registry, and spawn recipes keyed by plugin name.
-pub type AllPluginsResult = (Vec<Arc<PluginHost>>, ToolRegistry, HashMap<String, SpawnRecipe>);
+pub type AllPluginsResult = (
+    Vec<Arc<PluginHost>>,
+    ToolRegistry,
+    HashMap<String, SpawnRecipe>,
+);
 
 /// a tool wrapper that reports a different `hidden` flag than the plugin declared.
 ///

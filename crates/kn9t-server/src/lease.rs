@@ -69,7 +69,7 @@ impl LeaseMap {
     /// gone idle past the timeout) grant it; if held and `takeover`, steal it;
     /// otherwise `Busy`.
     pub fn acquire(&self, session: &str, takeover: bool) -> AcquireResult {
-        let mut m =safe_expect!(self.leases.lock(), "lease map poisoned");
+        let mut m = safe_expect!(self.leases.lock(), "lease map poisoned");
         let now = Instant::now();
         let occupied = match m.get(session) {
             Some(l) => now.duration_since(l.last_active) < self.idle_timeout,
@@ -92,7 +92,7 @@ impl LeaseMap {
     /// True if `holder` currently holds `session`'s lease (and it is not idle-expired).
     /// Refreshes `last_active` on success (writing keeps the lease warm).
     pub fn holds(&self, session: &str, holder: &str) -> bool {
-        let mut m =safe_expect!(self.leases.lock(), "lease map poisoned");
+        let mut m = safe_expect!(self.leases.lock(), "lease map poisoned");
         let now = Instant::now();
         match m.get_mut(session) {
             Some(l) if l.holder == holder => {
@@ -123,7 +123,7 @@ impl LeaseMap {
     /// idle threshold: the live connection is authoritative proof the holder is
     /// present. Returns true if the holder still owns the lease (and was refreshed).
     pub fn touch(&self, session: &str, holder: &str) -> bool {
-        let mut m =safe_expect!(self.leases.lock(), "lease map poisoned");
+        let mut m = safe_expect!(self.leases.lock(), "lease map poisoned");
         match m.get_mut(session) {
             Some(l) if l.holder == holder => {
                 l.last_active = Instant::now();
@@ -136,7 +136,7 @@ impl LeaseMap {
     /// Release `session`'s lease only if `holder` currently holds it.
     /// Returns true if a release occurred.
     pub fn release(&self, session: &str, holder: &str) -> bool {
-        let mut m =safe_expect!(self.leases.lock(), "lease map poisoned");
+        let mut m = safe_expect!(self.leases.lock(), "lease map poisoned");
         match m.get(session) {
             Some(l) if l.holder == holder => {
                 m.remove(session);
@@ -148,7 +148,7 @@ impl LeaseMap {
 
     /// Force-release regardless of holder (client disconnect owning the lease).
     pub fn force_release(&self, session: &str, holder: &str) {
-        let mut m =safe_expect!(self.leases.lock(), "lease map poisoned");
+        let mut m = safe_expect!(self.leases.lock(), "lease map poisoned");
         if let Some(l) = m.get(session) {
             if l.holder == holder {
                 m.remove(session);
@@ -159,10 +159,9 @@ impl LeaseMap {
     /// True if any (non-idle) lease is currently held (used by idle-exit accounting
     /// indirectly; leases alone do not keep the server alive, attached clients do).
     pub fn any_active(&self) -> bool {
-        let m =safe_expect!(self.leases.lock(), "lease map poisoned");
+        let m = safe_expect!(self.leases.lock(), "lease map poisoned");
         let now = Instant::now();
         m.values()
             .any(|l| now.duration_since(l.last_active) < self.idle_timeout)
     }
 }
-

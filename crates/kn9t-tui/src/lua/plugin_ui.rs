@@ -669,4 +669,3 @@ fn json_to_lua(lua: &Lua, v: &Json) -> LuaResult<LuaValue> {
         }
     })
 }
-

@@ -28,7 +28,7 @@ impl SessionBuses {
 
     /// The bus for `session`, creating it if absent.
     pub fn bus_for(&self, session: &str) -> Arc<Bus> {
-        let mut m =safe_expect!(self.map.lock(), "session buses poisoned");
+        let mut m = safe_expect!(self.map.lock(), "session buses poisoned");
         m.entry(session.to_owned())
             .or_insert_with(|| Arc::new(Bus::new()))
             .clone()
@@ -56,7 +56,7 @@ impl SessionBuses {
     /// Broadcast an event to ALL active sessions (for global events like `PluginDeclared`).
     /// Non-blocking; may drop for slow subscribers.
     pub fn broadcast_all(&self, event: Event) {
-        let m =safe_expect!(self.map.lock(), "session buses poisoned");
+        let m = safe_expect!(self.map.lock(), "session buses poisoned");
         for bus in m.values() {
             bus.publish(event.clone());
         }

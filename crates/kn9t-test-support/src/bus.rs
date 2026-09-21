@@ -1,8 +1,8 @@
 //! Recording bus for test assertions.
 
-use std::sync::{Arc, Mutex};
-use kn9t_core::{EventSink, LiveEvent};
 use crate::tags::live_event_tag;
+use kn9t_core::{EventSink, LiveEvent};
+use std::sync::{Arc, Mutex};
 
 /// Recording bus: captures all emitted LiveEvents for test assertions.
 #[derive(Clone, Default)]

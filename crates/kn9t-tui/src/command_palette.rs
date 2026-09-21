@@ -394,4 +394,3 @@ impl CommandPalette {
             .collect();
     }
 }
-

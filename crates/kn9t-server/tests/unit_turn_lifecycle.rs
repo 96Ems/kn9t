@@ -36,7 +36,11 @@ fn the_guard_owns_the_idle_count() {
     assert_eq!(state.idle.running_turns(), 0);
 
     let slot = TurnSlot::register(&state, "s1");
-    assert_eq!(state.idle.running_turns(), 1, "register must count the turn");
+    assert_eq!(
+        state.idle.running_turns(),
+        1,
+        "register must count the turn"
+    );
     assert!(turn::is_turn_running(&state, "s1"));
 
     drop(slot);
@@ -172,7 +176,8 @@ max_turns = 25
 /// a zero ceiling would otherwise refuse every turn.
 #[test]
 fn server_config_zero_max_turns_means_unbounded() {
-    let t = kn9t_server::config::parse_server_timeouts("[server]\nmax_turns = 0\n").expect("parses");
+    let t =
+        kn9t_server::config::parse_server_timeouts("[server]\nmax_turns = 0\n").expect("parses");
     assert_eq!(t.max_turns, None);
 }
 

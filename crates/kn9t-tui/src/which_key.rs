@@ -435,4 +435,3 @@ pub fn get_keybindings(tool_mode: bool) -> Vec<KeyGroup> {
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
-

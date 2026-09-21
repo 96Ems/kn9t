@@ -91,11 +91,17 @@ fn a_late_abort_does_not_cancel_the_next_turn() {
         !b_cancel.cancelled(),
         "an abort aimed at the previous turn cancelled the current one"
     );
-    assert!(!a_cancel.cancelled(), "A was already gone; nothing to cancel");
+    assert!(
+        !a_cancel.cancelled(),
+        "A was already gone; nothing to cancel"
+    );
 
     // An abort with no id still means "whatever is running now" (the /abort route).
     turn::abort_turn(&state, session, None);
-    assert!(b_cancel.cancelled(), "an unqualified abort must hit the running turn");
+    assert!(
+        b_cancel.cancelled(),
+        "an unqualified abort must hit the running turn"
+    );
 }
 
 /// `abort` on the currently-running turn works, by id and unqualified.
@@ -173,4 +179,3 @@ fn a_panicking_turn_still_releases_the_slot() {
         "a panicking turn left its registration behind — every later /prompt would 409"
     );
 }
-

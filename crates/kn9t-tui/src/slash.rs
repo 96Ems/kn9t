@@ -283,4 +283,3 @@ pub fn fuzzy_match(target: &str, query: &str) -> bool {
 
     query_chars.peek().is_none()
 }
-

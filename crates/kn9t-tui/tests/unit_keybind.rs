@@ -26,8 +26,7 @@ fn key_string_round_trips_through_parse_key() {
     ];
 
     for (expected, event) in cases {
-        let s =
-            key_event_to_string(event).unwrap_or_else(|| panic!("no string for {expected}"));
+        let s = key_event_to_string(event).unwrap_or_else(|| panic!("no string for {expected}"));
         assert_eq!(s, expected, "event -> string");
         assert!(
             is_valid_key_string(&s),
@@ -125,7 +124,10 @@ fn parse_action_known_names() {
         "switch_session",
         "focus_plugin",
     ] {
-        assert!(parse_action(name).is_some(), "parse_action({name:?}) returned None");
+        assert!(
+            parse_action(name).is_some(),
+            "parse_action({name:?}) returned None"
+        );
     }
 }
 

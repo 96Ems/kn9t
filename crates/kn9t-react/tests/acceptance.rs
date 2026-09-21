@@ -1277,7 +1277,10 @@ fn parallel_safe_after_tool_call_must_run() {
 
     assert!(!tool_result.is_empty(), "tool result content empty");
     match &tool_result[0] {
-        Content::Text { text } => assert_eq!(text, "hooked", "parallel tool result must be mutated by after_tool_call"),
+        Content::Text { text } => assert_eq!(
+            text, "hooked",
+            "parallel tool result must be mutated by after_tool_call"
+        ),
         _ => panic!("expected Text"),
     }
 }
@@ -2311,4 +2314,3 @@ fn handoff_validation_rejects_hallucinated_id() {
         bus.kinds()
     );
 }
-

@@ -151,4 +151,3 @@ pub fn drain_pending_clicks(lua: &Lua, registry: &mut ClickRegistry) -> LuaResul
 
     Ok(applied)
 }
-

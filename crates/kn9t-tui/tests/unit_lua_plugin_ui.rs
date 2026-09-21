@@ -484,7 +484,10 @@ fn text_handler_receives_characters_and_can_fall_through() {
     );
     // An explicit `false` falls through, unclaimed.
     assert!(!reg.dispatch_text(&lua, "demo", "!"));
-    assert!(drain_effects(&lua).is_empty(), "nothing queued on fall-through");
+    assert!(
+        drain_effects(&lua).is_empty(),
+        "nothing queued on fall-through"
+    );
 }
 
 /// A view that never called on_text must not claim characters.

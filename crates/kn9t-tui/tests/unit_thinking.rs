@@ -12,7 +12,10 @@ fn text_of(line: &Line<'_>) -> String {
 #[test]
 fn live_header_spins_and_states_no_size() {
     let text = text_of(&render_header(false, 42, true, &Theme::default()));
-    assert!(text.contains('✻'), "a live card needs a spinner, got {text:?}");
+    assert!(
+        text.contains('✻'),
+        "a live card needs a spinner, got {text:?}"
+    );
     assert!(text.contains("thinking"), "got {text:?}");
     assert!(
         !text.contains("lines"),

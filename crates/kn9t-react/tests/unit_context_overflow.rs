@@ -184,9 +184,8 @@ fn store_demanded_compaction_still_replans_once_and_succeeds() {
         fixture_from_body(body),
     )]));
     // First `plan_request` demands compaction; the default (plain) answers the re-plan.
-    let store = Arc::new(StubStore::new(PlanScript::plain(vec![])).script(vec![
-        PlanScript::compacting(),
-    ]));
+    let store =
+        Arc::new(StubStore::new(PlanScript::plain(vec![])).script(vec![PlanScript::compacting()]));
     let compactions = Arc::new(AtomicUsize::new(0));
     let bus = Arc::new(RecordingBus::new());
 
