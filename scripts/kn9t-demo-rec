@@ -108,7 +108,10 @@ done
 
 # ── sandbox home + config + wrapper ───────────────────────────────────────────
 say "sandbox: $DEMO_HOME (real ~/.kn9t untouched)"
-rm -f "$WORK"/*.txt "$WORK"/*.py "$WORK"/*.json "$WORK/kn9t-tui.log" 2>/dev/null
+# full take hygiene: every artifact from a previous take dies (md included) so
+# the agent really creates everything on camera
+rm -f "$WORK"/*.txt "$WORK"/*.py "$WORK"/*.json "$WORK"/*.md "$WORK/kn9t-tui.log" 2>/dev/null
+rm -rf "$WORK/__pycache__" "$WORK/.agents" 2>/dev/null
 rm -f "$DEMO_HOME/.kn9t/tui/89_brand.lua" 2>/dev/null   # theme demo resets between takes
 # plugins are processes spawned at SERVER start — never reuse a stale server
 # holding stale plugin binaries: stop it so ensure_server starts fresh below
@@ -272,19 +275,29 @@ run_action() {
     say)   type_it "$arg"; sleep 0.2; key_it Return ;;
     sh)    ( cd "$WORK" && export KN9T_HOME="$DEMO_HOME" WORK && eval "$arg" ) >>"$TL" 2>&1 ;;
     wait-file)
-      local p="${arg%% *}" t="${arg#* }"; [ "$p" = "$t" ] && t=20
+      local p="${arg%% *}" t="${arg#* }"; [ "$p" = "$t" ] && t=600
       p="${p//\$KN9T_HOME/$DEMO_HOME}"; p="${p//\$WORK/$WORK}"
       local k=0; while [ ! -e "$p" ] && [ $k -lt $((t * 4)) ]; do sleep 0.25; k=$((k + 1)); done
-      [ -e "$p" ] || die "wait-file: $p not created within ${t}s" ;;
+      [ -e "$p" ] && say "   ...$p est la" || say "   ...$p absent apres ${t}s — on continue (non-fatal)" ;;
     wait-log)
-      local f="${arg%% *}"; local rest="${arg#* }"; local t=20
+      local f="${arg%% *}"; local rest="${arg#* }"; local t=600
       f="${f//\$KN9T_HOME/$DEMO_HOME}"; f="${f//\$WORK/$WORK}"
       case "$rest" in
         *" "[0-9]*) t="${rest##* }"; rest="${rest% *}" ;;
       esac
       local re="$rest" k=0
       while ! grep -qE "$re" "$f" 2>/dev/null && [ "$k" -lt $((t * 4)) ]; do sleep 0.25; k=$((k + 1)); done
-      grep -qE "$re" "$f" 2>/dev/null || die "wait-log: /$re/ not in $f within ${t}s" ;;
+      grep -qE "$re" "$f" 2>/dev/null && say "   .../$re/ trouve" || say "   .../$re/ absent — on continue (non-fatal)" ;;
+    wait-idle)
+      local t="${arg:-900}" k=0 stable=0 rt=""
+      local tok; tok=$(cat "$DEMO_HOME/token" 2>/dev/null)
+      local prt; prt=$(cat "$DEMO_HOME/port" 2>/dev/null)
+      while [ $k -lt $((t * 2)) ]; do
+        rt=$(curl -s -m 2 -H "Authorization: Bearer $tok" "http://127.0.0.1:$prt/health" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('running_turns', -1))" 2>/dev/null)
+        if [ "$rt" = "0" ]; then stable=$((stable + 1)); [ $stable -ge 4 ] && break; else stable=0; fi
+        sleep 0.5; k=$((k + 1))
+      done
+      [ "$rt" = "0" ] && say "   ...kn9t est idle (running_turns=0) — le travail est fini" || say "   ...encore actif apres ${t}s — on continue (non-fatal)" ;;
   esac
 }
 for a in "${ACTIONS[@]}"; do run_action "$a"; done

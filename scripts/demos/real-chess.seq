@@ -1,0 +1,36 @@
+# ═══ proof 08 — for real: the agent builds a chess game and plays it ═══════════
+# Run: OPENCODE_API_KEY=… bash scripts/kn9t-demo-rec scripts/demos/real-chess.seq --no-policy
+# MiMo v2.6 Pro, its reasoning stream visible, the plugin-creation skill in the
+# repo. A real mission brief — explicit deliverables, no micromanaging: the
+# model decides its own steps. game.md is logged as play goes, so the film
+# always reaches the final answer.
+config opencode-go.config.toml
+
+rate 25
+pause 1.5
+say kn9t
+pause 5.0
+sh mkdir -p $WORK/.agents/skills && cp -r /home/emericclement/dev/kn9t/.agents/skills/kn9t-plugin-creation $WORK/.agents/skills/
+pause 1.5
+key ctrl+p
+pause 1.2
+type think
+pause 0.8
+send
+pause 1.5
+say Read .agents/skills/kn9t-plugin-creation/SKILL.md first — it documents the plugin protocol you need. Then build me a kn9t plugin, chess.py, to play chess against the machine: it must register a Lua TUI view drawing the 8x8 chessboard with unicode pieces and coordinates, expose a tool chess_move {move} (long algebraic, like e2e4) that validates and plays WHITE's move and answers with the resulting board, and answer every white move automatically from black with a random legal move inside the plugin. Simple piece movement rules are enough — no castling, no en passant. When it is written, hot-load it into the running server with one curl and play a short game as white. Log every move in game.md as you go, one line per ply, and finish by telling me how the game went.
+pause 55.0
+wait-file $WORK/chess.py 900
+wait-idle 900
+pause 25.0
+key F1
+pause 3.5
+key F1
+pause 1.0
+click 60 45
+pause 3.5
+click 30 30
+pause 3.5
+click 30 30
+pause 1.5
+key ctrl+q

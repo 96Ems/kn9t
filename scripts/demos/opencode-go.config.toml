@@ -1,6 +1,6 @@
-# ~/.kn9t/config.toml — for real: OpenCode Go, DeepSeek v4.1 flash.
+# ~/.kn9t/config.toml — for real: OpenCode Go, MiMo v2.6 Pro.
 # The key comes from the environment; it is never written down here.
-default_model = "deepseek-v4.1-flash"
+default_model = "mimo-v2.6-pro"
 
 [provider.opencode-go]
 kind     = "openai"
@@ -11,11 +11,11 @@ api_key  = "env:OPENCODE_API_KEY"
 usage_in_stream = true
 # Chat has no reasoning-input form: DeepSeek 400s on a replayed `thinking` part.
 thinking_replay = "strip"
-# The gateway routes by conversation id: without this header, 400 MissingSessionID.
-session_header = "x-opencode-session"
+# Capture the reasoning stream as thinking blocks (visible in the TUI).
+thinking_style = "reasoning_content"
 
-[[model]]
-provider = "opencode-go"
-id       = "deepseek-v4.1-flash"
-ctx      = 131072
-max_out  = 8192
+# The gateway routes by conversation id and 400s (MissingSessionID) without it —
+# a static header covers every call site (the session_header quirk only covers
+# the calls that remember to carry one).
+[provider.opencode-go.headers]
+x-opencode-session = "kn9t-demo"
