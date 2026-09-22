@@ -1,0 +1,21 @@
+# ~/.kn9t/config.toml — for real: OpenCode Go, DeepSeek v4.1 flash.
+# The key comes from the environment; it is never written down here.
+default_model = "deepseek-v4.1-flash"
+
+[provider.opencode-go]
+kind     = "openai"
+base_url = "https://opencode.ai/zen/go/v1"
+api_key  = "env:OPENCODE_API_KEY"
+
+[provider.opencode-go.quirks]
+usage_in_stream = true
+# Chat has no reasoning-input form: DeepSeek 400s on a replayed `thinking` part.
+thinking_replay = "strip"
+# The gateway routes by conversation id: without this header, 400 MissingSessionID.
+session_header = "x-opencode-session"
+
+[[model]]
+provider = "opencode-go"
+id       = "deepseek-v4.1-flash"
+ctx      = 131072
+max_out  = 8192

@@ -1,0 +1,25 @@
+# ═══ proof 08 — for real: a long task on a real model ═════════════════════════
+# Run: scripts/kn9t-demo-rec scripts/demos/real-task.seq --no-policy
+# No scripted model, no policy plugin: deepseek-v4-flash over opencode-go does a
+# real multi-file task with nothing in its way. Waits key off real artifacts.
+config opencode-go.config.toml
+
+rate 25
+pause 1.5
+say kn9t
+pause 5.0
+say Build me httpwatch, a small Python CLI: check a list of URLs concurrently with threads, and print a markdown report with status, latency and ok/✗ per line. Add a --timeout flag. Then write a test file with a tiny local HTTP server and run the tests until they pass.
+pause 45.0                                         # the real model works — streaming, writing
+wait-file $WORK/httpwatch.py 180
+pause 15.0
+wait-file $WORK/test_httpwatch.py 180
+pause 30.0                                         # tests run, get fixed, run again
+key F1                                             # the files are really there
+pause 4.0
+key F1
+pause 1.2
+click 30 30                                        # open a tool output (the test run)
+pause 3.0
+click 30 30
+pause 1.5
+key ctrl+q
