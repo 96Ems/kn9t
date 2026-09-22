@@ -61,7 +61,10 @@ TL="$OUT/$NAME.timeline.log"; : > "$TL"
 
 t0=$(date +%s)
 say() { local e=$(($(date +%s) - t0)); echo "[$(printf '%02d:%02d' $((e / 60)) $((e % 60)))] $*" | tee -a "$TL"; }
-die() { say "ABORT: $*"; exit 1; }
+die() { say "ABORT: $*"
+        [ -n "${FF:-}" ] && kill -INT "$FF" 2>/dev/null
+        tmux kill-session -t "$SESS" 2>/dev/null
+        exit 1; }
 
 # ── parse the sequence into env + model script + actions ──────────────────────
 ENV_LINES=""; ACTIONS=()   # actions: "verb<TAB>arg"
@@ -163,7 +166,8 @@ sleep 0.5
 
 alacritty --config-file "$OUT/alacritty.yml" --title kn9t-demo-rec \
   -e tmux -f "$OUT/tmux.conf" new-session -s "$SESS" -c "$WORK" \
-     "export PATH='$OUT/bin':\$PATH; export KN9T_HOME='$DEMO_HOME'; exec bash -i" &
+     "export PATH='$OUT/bin':\$PATH; export KN9T_HOME='$DEMO_HOME'; exec bash -i" \
+  >> "$OUT/alacritty.log" 2>&1 &
 APID=$!
 sleep 3
 WID=$(xdotool search --pid "$APID" 2>/dev/null | head -1)
@@ -260,10 +264,12 @@ run_action() {
     sh)    ( cd "$WORK" && export KN9T_HOME="$DEMO_HOME" WORK && eval "$arg" ) >>"$TL" 2>&1 ;;
     wait-file)
       local p="${arg%% *}" t="${arg#* }"; [ "$p" = "$t" ] && t=20
+      p="${p//\$KN9T_HOME/$DEMO_HOME}"; p="${p//\$WORK/$WORK}"
       local k=0; while [ ! -e "$p" ] && [ $k -lt $((t * 4)) ]; do sleep 0.25; k=$((k + 1)); done
       [ -e "$p" ] || die "wait-file: $p not created within ${t}s" ;;
     wait-log)
       local f="${arg%% *}"; local rest="${arg#* }"; local t=20
+      f="${f//\$KN9T_HOME/$DEMO_HOME}"; f="${f//\$WORK/$WORK}"
       case "$rest" in
         *" "[0-9]*) t="${rest##* }"; rest="${rest% *}" ;;
       esac

@@ -1,0 +1,35 @@
+# ═══ proof 05 — Can I change models? ══════════════════════════════════════════
+# Run: scripts/kn9t-demo-rec scripts/demos/models.seq
+# The catalog is plugin-declared + config; switching is live; adding one is a
+# config edit picked up by the watcher — nothing restarts.
+env DEMO_ASK=1
+env DEMO_PACE_MS=90
+model-script models.model.json
+
+rate 25
+pause 1.5
+say kn9t
+pause 5.0
+say Show me the model layer: the catalog, then switch models live, then add one by editing config.toml while everything runs — no restarts.
+pause 5.0                                          # T1: the catalog text streams
+type /models
+send                                               # the model picker overlay
+pause 3.5
+key Escape
+pause 1.0
+key F2                                             # next model → demo-2-flash
+pause 2.5
+sh printf '\n[[model]]\nprovider = "demo"\nid = "demo-3-mini"\nctx = 64000\nmax_out = 8192\nprice_in = 0.05\nprice_out = 0.2\n' >> $KN9T_HOME/config.toml
+wait-log $KN9T_HOME/server.log reloaded 12            # the watcher reloads config live
+pause 1.5
+type /models
+send                                               # three models now
+pause 3.5
+key Escape
+pause 0.8
+key F2
+key F2                                             # cycle onto demo-3-mini
+pause 2.0
+say And now answer as the new model.
+pause 7.5                                          # T2 streams — usage_recorded says demo-3
+key ctrl+q

@@ -21,6 +21,9 @@ use std::time::Duration;
 #[derive(Deserialize)]
 struct Script {
     model: Option<ModelDecl>,
+    /// Extra catalog entries — lets a demo switch models mid-session.
+    #[serde(default)]
+    extra_models: Vec<ModelDecl>,
     turns: Vec<Turn>,
 }
 
@@ -117,7 +120,11 @@ impl PluginProvider for DemoProvider {
     }
 
     fn models(&self) -> Vec<ModelDecl> {
-        vec![default_model()]
+        let mut models = vec![default_model()];
+        if let Ok(s) = script() {
+            models.extend(s.extra_models.iter().cloned());
+        }
+        models
     }
 
     fn complete(&self, _request: &Value, ctx: &ProviderCallCtx) -> ProviderResult {

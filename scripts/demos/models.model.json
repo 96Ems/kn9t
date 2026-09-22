@@ -1,0 +1,46 @@
+{
+ "model": {
+  "id": "demo-1",
+  "ctx_window": 200000,
+  "price": {
+   "input": 0.5,
+   "output": 1.5,
+   "cache_read": 0.05,
+   "cache_write": 0.625
+  }
+ },
+ "extra_models": [
+  {
+   "id": "demo-2-flash",
+   "ctx_window": 128000,
+   "price": {
+    "input": 0.1,
+    "output": 0.4,
+    "cache_read": 0.01,
+    "cache_write": 0.1
+   }
+  }
+ ],
+ "turns": [
+  {
+   "thinking": [
+    "the model layer is just config and declarations \u2014 ",
+    "show the catalog, switch live, add one by editing config."
+   ],
+   "text": "The catalog: demo-1 (reasoning) and demo-2-flash (fast) \u2014 both declared by the provider plugin, switchable mid-session. Go ahead: step through them. ",
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 320,
+    "output": 70
+   }
+  },
+  {
+   "text": "demo-3 is in the catalog now \u2014 added by editing config.toml while everything ran, no restart, and this sentence is being streamed through it. The model is not the architecture: it's a line of config.",
+   "stop": "STOP",
+   "usage": {
+    "input": 640,
+    "output": 88
+   }
+  }
+ ]
+}

@@ -1,0 +1,30 @@
+# ═══ proof 07 — Can it survive / replay a session? ════════════════════════════
+# Run: scripts/kn9t-demo-rec scripts/demos/replay.seq
+# The CLIENT is killed after the work is done. Relaunching and reopening the
+# session replays the whole story from the log — same cards, same diffs, same
+# order. The session is the log, not the window.
+env DEMO_ASK=1
+env DEMO_PACE_MS=90
+model-script replay.model.json
+
+rate 25
+pause 1.5
+say kn9t
+pause 5.0
+say Write progress.md with a full status report: what the log guarantees and why sessions are replayable.
+pause 5.0                                          # T1: text + write args → APPROVAL
+key y
+pause 6.0                                          # write lands, T2 closes the turn
+pause 2.0
+key ctrl+q                                         # THE CLIENT DIES HERE
+pause 2.5
+say kn9t                                           # relaunch
+pause 5.0
+key ctrl+b                                         # the session survived its client
+pause 1.5
+send                                               # open it — the log replays the story
+pause 5.5
+say cat progress.md                                # the artifact is real
+send
+pause 3.5
+key ctrl+q

@@ -1,0 +1,44 @@
+{
+ "model": {
+  "id": "demo-1",
+  "ctx_window": 200000,
+  "price": {
+   "input": 0.5,
+   "output": 1.5,
+   "cache_read": 0.05,
+   "cache_write": 0.625
+  }
+ },
+ "turns": [
+  {
+   "thinking": [
+    "a long slow turn on purpose \u2014 the client will be killed mid-stream, ",
+    "the server must keep working and the session must replay exactly."
+   ],
+   "text": "Writing the long status report now \u2014 take your time, there is a lot to say about the state of this project and its roadmap for the coming weeks. ",
+   "tools": [
+    {
+     "call_id": "w_prog",
+     "name": "write",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/progress.md",
+      "content": "# progress\n\n- the log is the truth: every durable action recorded\n- sessions replay from any cursor\n- tools, providers, policy: replaceable processes\n- the model is not the architecture\n\n(long report \u2014 written while the client was already gone)\n"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 410,
+    "output": 240
+   }
+  },
+  {
+   "text": "Report written. Everything above happened while the client was gone \u2014 kill the screen and the work doesn't stop, because the session is the log, not the window.",
+   "stop": "STOP",
+   "usage": {
+    "input": 830,
+    "output": 74
+   }
+  }
+ ]
+}
