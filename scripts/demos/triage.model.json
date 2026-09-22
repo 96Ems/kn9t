@@ -1,0 +1,101 @@
+{
+ "model": {
+  "id": "demo-1",
+  "ctx_window": 200000,
+  "price": {
+   "input": 0.5,
+   "output": 1.5,
+   "cache_read": 0.05,
+   "cache_write": 0.625
+  }
+ },
+ "turns": [
+  {
+   "thinking": [
+    "the session found three real bugs \u2014 the desk files them properly: ",
+    "file_issue \u00d73 with repro steps, then label and track."
+   ],
+   "text": "Bug desk. This session found three real kn9t bugs \u2014 I'll file them properly with repro steps, label them, and leave us a board: ",
+   "tools": [
+    {
+     "call_id": "w_tri",
+     "name": "write",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/triage.py",
+      "content": "#!/usr/bin/env python3\n\"\"\"triage.py \u2014 the bug desk: file, label and track real GitHub issues.\n\n  file_issue   {repo, title, body, label}   gh issue create (a real issue)\n  label_issue  {repo, number, label}        gh issue edit --add-label\n  list_issues  {repo}                       the tracker's open issues\n\nThe first call seats a bug board in the TUI listing the open issues.\n\"\"\"\nimport json, os, subprocess, sys, threading, time\n\nTOOLS = [\n    {\"name\": \"file_issue\",\n     \"description\": \"Create a GitHub issue (title, body) and return its URL.\",\n     \"schema\": {\"type\": \"object\",\n                \"properties\": {\"repo\": {\"type\": \"string\"}, \"title\": {\"type\": \"string\"},\n                               \"body\": {\"type\": \"string\"}, \"label\": {\"type\": \"string\"}},\n                \"required\": [\"repo\", \"title\", \"body\"]},\n     \"parallel_safe\": False, \"hidden\": False, \"effects\": [],\n     \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []}},\n    {\"name\": \"label_issue\",\n     \"description\": \"Add a label to an existing issue.\",\n     \"schema\": {\"type\": \"object\",\n                \"properties\": {\"repo\": {\"type\": \"string\"}, \"number\": {\"type\": \"integer\"},\n                               \"label\": {\"type\": \"string\"}},\n                \"required\": [\"repo\", \"number\", \"label\"]},\n     \"parallel_safe\": False, \"hidden\": False, \"effects\": [],\n     \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []}},\n    {\"name\": \"list_issues\",\n     \"description\": \"List the tracker's open issues.\",\n     \"schema\": {\"type\": \"object\", \"properties\": {\"repo\": {\"type\": \"string\"}}, \"required\": [\"repo\"]},\n     \"parallel_safe\": True, \"hidden\": False, \"effects\": [],\n     \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []}},\n]\n\nLUA = r\"\"\"\nkn9t.on_key(\"r\", function() kn9t.notify({event = \"refresh\"}); return true end)\nkn9t.on_key(\"j\", function() return true end)\nfunction render(state)\n  local rows = {\"  BUG BOARD \u25b8 \" .. ((state and state.repo) or \"\u2026\") .. \" \u00b7 r refresh\"}\n  for _, l in ipairs((state and state.issues) or {}) do\n    table.insert(rows, \"  \" .. l)\n  end\n  return {type = \"text\", content = table.concat(rows, \"\\n\")}\nend\n\"\"\"\n\ndef send(m):\n    sys.stdout.write(json.dumps(m) + \"\\n\")\n    sys.stdout.flush()\n\ndef gh(args, home=None):\n    env = {**os.environ}\n    if home or os.environ.get(\"GH_HOME\"):\n        env[\"HOME\"] = home or os.environ[\"GH_HOME\"]\n    out = subprocess.run([\"gh\"] + args, capture_output=True, text=True, timeout=25, env=env)\n    return out.returncode == 0, out.stdout.strip() or out.stderr.strip()\n\nstate = {\"sid\": \"\", \"repo\": \"\", \"issues\": []}\nboard_on = False\nlock = threading.Lock()\n\ndef issue_lines(repo):\n    ok, out = gh([\"issue\", \"list\", \"--repo\", repo, \"--state\", \"open\", \"--limit\", \"10\",\n                  \"--json\", \"number,title,labels\"])\n    if not ok:\n        return []\n    try:\n        return [\"#%-5d [%s] %s\" % (i[\"number\"],\n                                   \",\".join(l.get(\"name\", \"\") for l in i.get(\"labels\", [])) or \"-\",\n                                   i[\"title\"][:52]) for i in json.loads(out)]\n    except Exception:\n        return []\n\ndef push_board():\n    with lock:\n        payload = {\"session\": state[\"sid\"], \"state\": {\"repo\": state[\"repo\"], \"issues\": state[\"issues\"]}}\n    send({\"t\": \"request\", \"id\": 0, \"op\": \"ui_set_state\", \"payload\": payload})\n\ndef seat_board(sid, repo):\n    global board_on\n    with lock:\n        state[\"sid\"] = sid\n        state[\"repo\"] = repo\n    if not board_on:\n        board_on = True\n        send({\"t\": \"request\", \"id\": 0, \"op\": \"ui_register_lua\",\n              \"payload\": {\"session\": sid, \"source\": LUA, \"placement\": \"bottom\"}})\n    with lock:\n        state[\"issues\"] = issue_lines(repo)\n    push_board()\n\ndef done(tid, text, err=False):\n    send({\"t\": \"done\", \"id\": tid, \"is_error\": err,\n          \"content\": [{\"type\": \"text\", \"text\": text}]})\n\nfor line in sys.stdin:\n    line = line.strip()\n    if not line:\n        continue\n    m = json.loads(line)\n    t = m.get(\"t\")\n    if t == \"hello\":\n        send({\"t\": \"hello\", \"name\": \"triage\", \"capabilities\": [\"tools\", \"host_api\", \"ui_interaction\"],\n              \"hooks\": [], \"tools\": TOOLS, \"events\": [], \"provider\": None})\n    elif t == \"hook\" and m.get(\"hook\") == \"tool_call\":\n        p = m.get(\"payload\", {})\n        name = p.get(\"tool\", \"\")\n        args = p.get(\"args\", {})\n        repo = args.get(\"repo\", \"96Ems/kn9t-plugins\")\n        if name == \"file_issue\":\n            ok, out = gh([\"issue\", \"create\", \"--repo\", repo,\n                          \"--title\", args.get(\"title\", \"untitled\"),\n                          \"--body\", args.get(\"body\", \"\"),\n                          \"--label\", args.get(\"label\", \"bug\")])\n            done(m[\"id\"], out if ok else \"gh failed: \" + out, err=not ok)\n            seat_board(p.get(\"session\", \"\"), repo)\n        elif name == \"label_issue\":\n            ok, out = gh([\"issue\", \"edit\", str(args.get(\"number\", 0)), \"--repo\", repo,\n                          \"--add-label\", args.get(\"label\", \"bug\")])\n            done(m[\"id\"], \"labeled #%s -> %s\" % (args.get(\"number\"), args.get(\"label\")) if ok\n                 else \"gh failed: \" + out, err=not ok)\n        elif name == \"list_issues\":\n            seat_board(p.get(\"session\", \"\"), repo)\n            with lock:\n                lines = list(state[\"issues\"])\n            done(m[\"id\"], \"\\n\".join(lines) or \"no open issues\")\n        else:\n            done(m[\"id\"], \"unknown tool %s\" % name, err=True)\n    elif t == \"notify_plugin\":\n        if m.get(\"event\") == \"refresh\":\n            with lock:\n                repo = state[\"repo\"]\n            if repo:\n                with lock:\n                    state[\"issues\"] = issue_lines(repo)\n                push_board()\n    elif t == \"shutdown\":\n        sys.exit(0)\n"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 440,
+    "output": 620
+   }
+  },
+  {
+   "text": "Loading with my gh session: ",
+   "tools": [
+    {
+     "call_id": "b_tri",
+     "name": "bash",
+     "args": {
+      "cmd": "chmod +x triage.py && P=$(cat $KN9T_HOME/port) && T=$(cat $KN9T_HOME/token) && curl -sS -X POST http://127.0.0.1:$P/plugin/load -H \"Authorization: Bearer $T\" -H 'Content-Type: application/json' -d \"{\\\"cmd\\\": [\\\"/tmp/opencode/demo-home/work/triage.py\\\"], \\\"env\\\": {\\\"GH_HOME\\\": \\\"/home/emericclement\\\"}}\""
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 1240,
+    "output": 130
+   }
+  },
+  {
+   "text": "Filing all three now: ",
+   "tools": [
+    {
+     "call_id": "i_1",
+     "name": "file_issue",
+     "args": {
+      "repo": "96Ems/kn9t-plugins",
+      "title": "approval: \"Always\" kills a turn running on a provider plugin",
+      "body": "Repro: start a turn whose model is a `kind=\"plugin\"` provider, approve a tool with **Always**. The approval persists to `config.toml`, the config watcher reloads, and `reload_config()` reaps the old provider-plugin subprocess \u2014 the turn dies mid-prompt.\n\nFound while recording demos: the scripted provider was reaped between turns 1 and 2.\n\nExpected: a config reload should not reap a provider host still used by an in-flight turn (defer the reap, or let the cloned provider finish).",
+      "label": "bug"
+     }
+    },
+    {
+     "call_id": "i_2",
+     "name": "file_issue",
+     "args": {
+      "repo": "96Ems/kn9t-plugins",
+      "title": "non-interactive approval Deny hangs the turn forever",
+      "body": "Repro: `kn9t chat --json` (NonInteractiveApprover) with a policy plugin answering `ask` on a tool call. `Ask` maps to `Deny` \u2014 and the turn never emits `turn_ended`; the CLI waits forever.\n\nFound via the demo tooling (a scripted run hung 150s+ until killed).\n\nExpected: a denied call returns an error tool result and the loop continues/closes.",
+      "label": "bug"
+     }
+    },
+    {
+     "call_id": "i_3",
+     "name": "file_issue",
+     "args": {
+      "repo": "96Ems/kn9t-plugins",
+      "title": "a provider plugin dying mid-stream hangs the turn until the 600s call timeout",
+      "body": "Repro: let a provider plugin panic during `chunk` streaming. The host waits on the reply channel and the turn hangs (observed 4m49s) instead of surfacing `plugin disconnected`.\n\nExpected: reader EOF/panic should fail the in-flight call immediately (same contract as `wait_on_channel`: a synthetic `disconnected` error at the call site).",
+      "label": "bug"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 1680,
+    "output": 320
+   }
+  },
+  {
+   "text": "Three issues filed with repro steps. The board below tracks them \u2014 r refreshes, and they'll follow the project to the kn9t tracker once it's pushed.",
+   "stop": "STOP",
+   "usage": {
+    "input": 2150,
+    "output": 74
+   }
+  }
+ ]
+}

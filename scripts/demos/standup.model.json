@@ -1,0 +1,85 @@
+{
+ "model": {
+  "id": "demo-1",
+  "ctx_window": 200000,
+  "price": {
+   "input": 0.5,
+   "output": 1.5,
+   "cache_read": 0.05,
+   "cache_write": 0.625
+  }
+ },
+ "turns": [
+  {
+   "thinking": [
+    "standup = branch, dirty tree, commits, TODOs, PRs \u2014 ",
+    "one tool for the brief, one for the debt, plus a live board."
+   ],
+   "text": "Morning standup, automated: a standup tool for the state of the repo, find_todos for the debt, and a live board: ",
+   "tools": [
+    {
+     "call_id": "w_std",
+     "name": "write",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/standup.py",
+      "content": "#!/usr/bin/env python3\n\"\"\"standup.py \u2014 the daily standup: repo state as a tool and as a live panel.\n\n  standup    {repo}   branch, dirty tree, today's/this week's commits, PRs\n  find_todos {repo}   TODO/FIXME/HACK hits with file:line\n\nThe first call also seats a standup board in the TUI (plugin UI), r refreshes.\n\"\"\"\nimport json, os, subprocess, sys, threading, time\n\nTOOLS = [\n    {\"name\": \"standup\",\n     \"description\": \"Daily brief for a repo: branch, dirty files, recent commits, open PRs.\",\n     \"schema\": {\"type\": \"object\", \"properties\": {\"repo\": {\"type\": \"string\"}}, \"required\": [\"repo\"]},\n     \"parallel_safe\": True, \"hidden\": False, \"effects\": [],\n     \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []}},\n    {\"name\": \"find_todos\",\n     \"description\": \"Find TODO/FIXME/HACK markers in a repo's source, with file:line.\",\n     \"schema\": {\"type\": \"object\",\n                \"properties\": {\"repo\": {\"type\": \"string\"},\n                               \"pattern\": {\"type\": \"string\", \"description\": \"Regex (default TODO|FIXME|HACK)\"}},\n                \"required\": [\"repo\"]},\n     \"parallel_safe\": True, \"hidden\": False, \"effects\": [],\n     \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []}},\n]\n\nLUA = r\"\"\"\n-- standup board: the brief comes from the process; r refreshes\nkn9t.on_key(\"r\", function() kn9t.notify({event = \"refresh\"}); return true end)\nfunction render(state)\n  local rows = {\"  STANDUP \u25b8 \" .. ((state and state.repo) or \"\u2026\") .. \" \u00b7 r refresh\"}\n  for _, l in ipairs((state and state.brief) or {}) do\n    table.insert(rows, \"  \" .. l)\n  end\n  return {type = \"text\", content = table.concat(rows, \"\\n\")}\nend\n\"\"\"\n\ndef send(m):\n    sys.stdout.write(json.dumps(m) + \"\\n\")\n    sys.stdout.flush()\n\ndef sh(cmd):\n    home = os.environ.get(\"GH_HOME\") or os.environ.get(\"HOME\")\n    out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20,\n                         env={**os.environ, \"HOME\": home})\n    return out.stdout.strip()\n\ndef brief_for(repo):\n    branch = sh(\"git -C %s rev-parse --abbrev-ref HEAD 2>/dev/null\" % repo) or \"?\"\n    dirty = sh(\"git -C %s status --porcelain 2>/dev/null | head -8\" % repo).splitlines()\n    today = sh(\"git -C %s log --oneline --since=midnight 2>/dev/null | wc -l\" % repo) or \"0\"\n    week = sh(\"git -C %s log --oneline --since=1.week 2>/dev/null | wc -l\" % repo) or \"0\"\n    brief = [\"branch   %s \u00b7 %s commit(s) today \u00b7 %s this week\" % (branch, today, week)]\n    if dirty:\n        brief.append(\"dirty    %d path(s) \u2014 %s\" % (len(dirty), \" \".join(d.strip(\" M?\")[:18] for d in dirty[:3])))\n    else:\n        brief.append(\"clean    tree, nothing pending\")\n    prs = sh(\"gh pr list --limit 4 --json number,title 2>/dev/null\")\n    try:\n        for p in json.loads(prs or \"[]\"):\n            brief.append(\"pr       #%d %s\" % (p[\"number\"], p[\"title\"][:44]))\n    except Exception:\n        pass\n    return brief\n\nstate = {\"sid\": \"\", \"repo\": \"\", \"brief\": []}\nboard_on = False\nlock = threading.Lock()\n\ndef push_board():\n    with lock:\n        payload = {\"session\": state[\"sid\"], \"state\": {\"repo\": state[\"repo\"], \"brief\": state[\"brief\"]}}\n    send({\"t\": \"request\", \"id\": 0, \"op\": \"ui_set_state\", \"payload\": payload})\n\ndef seat_board(sid, repo):\n    global board_on\n    with lock:\n        state[\"sid\"] = sid\n        state[\"repo\"] = repo\n        state[\"brief\"] = brief_for(repo)\n    if not board_on:\n        board_on = True\n        send({\"t\": \"request\", \"id\": 0, \"op\": \"ui_register_lua\",\n              \"payload\": {\"session\": sid, \"source\": LUA, \"placement\": \"bottom\"}})\n    push_board()\n\ndef done(tid, text, err=False):\n    send({\"t\": \"done\", \"id\": tid, \"is_error\": err,\n          \"content\": [{\"type\": \"text\", \"text\": text}]})\n\nfor line in sys.stdin:\n    line = line.strip()\n    if not line:\n        continue\n    m = json.loads(line)\n    t = m.get(\"t\")\n    if t == \"hello\":\n        send({\"t\": \"hello\", \"name\": \"standup\", \"capabilities\": [\"tools\", \"host_api\", \"ui_interaction\"],\n              \"hooks\": [], \"tools\": TOOLS, \"events\": [], \"provider\": None})\n    elif t == \"hook\" and m.get(\"hook\") == \"tool_call\":\n        p = m.get(\"payload\", {})\n        name = p.get(\"tool\", \"\")\n        args = p.get(\"args\", {})\n        repo = args.get(\"repo\", \".\")\n        if name == \"standup\":\n            seat_board(p.get(\"session\", \"\"), repo)\n            with lock:\n                brief = list(state[\"brief\"])\n            done(m[\"id\"], \"\\n\".join(brief))\n        elif name == \"find_todos\":\n            pat = args.get(\"pattern\", \"TODO|FIXME|HACK\")\n            seat_board(p.get(\"session\", \"\"), repo)\n            hits = sh(\"grep -rnE '%s' --include='*.rs' %s 2>/dev/null | head -12\" % (pat, repo))\n            done(m[\"id\"], hits or \"no %s markers \u2014 disciplined codebase\" % pat)\n        else:\n            done(m[\"id\"], \"unknown tool %s\" % name, err=True)\n    elif t == \"notify_plugin\":\n        if m.get(\"event\") == \"refresh\":\n            with lock:\n                repo = state[\"repo\"]\n            if repo:\n                with lock:\n                    state[\"brief\"] = brief_for(repo)\n                push_board()\n    elif t == \"shutdown\":\n        sys.exit(0)\n"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 360,
+    "output": 560
+   }
+  },
+  {
+   "text": "Loading: ",
+   "tools": [
+    {
+     "call_id": "b_std",
+     "name": "bash",
+     "args": {
+      "cmd": "chmod +x standup.py && P=$(cat $KN9T_HOME/port) && T=$(cat $KN9T_HOME/token) && curl -sS -X POST http://127.0.0.1:$P/plugin/load -H \"Authorization: Bearer $T\" -H 'Content-Type: application/json' -d \"{\\\"cmd\\\": [\\\"/tmp/opencode/demo-home/work/standup.py\\\"], \\\"env\\\": {\\\"GH_HOME\\\": \\\"/home/emericclement\\\"}}\""
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 1080,
+    "output": 120
+   }
+  },
+  {
+   "text": "The brief for kn9t \u2014 and the debt: ",
+   "tools": [
+    {
+     "call_id": "t_std",
+     "name": "standup",
+     "args": {
+      "repo": "/home/emericclement/dev/kn9t"
+     }
+    },
+    {
+     "call_id": "t_todo",
+     "name": "find_todos",
+     "args": {
+      "repo": "/home/emericclement/dev/kn9t"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 1360,
+    "output": 260
+   }
+  },
+  {
+   "text": "Standup: work is on main, the tree still carries today's work untracked \u2014 that's the push cue. Board below is live, r refreshes it.",
+   "stop": "STOP",
+   "usage": {
+    "input": 1720,
+    "output": 68
+   }
+  }
+ ]
+}

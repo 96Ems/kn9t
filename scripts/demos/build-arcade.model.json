@@ -1,0 +1,165 @@
+{
+ "model": {
+  "id": "demo-1",
+  "ctx_window": 200000,
+  "price": {
+   "input": 0.5,
+   "output": 1.5,
+   "cache_read": 0.05,
+   "cache_write": 0.625
+  }
+ },
+ "turns": [
+  {
+   "thinking": [
+    "arcade = four plugins, one live theme change, one game \u2014 ",
+    "start with pm, the loader that installs the rest without curl."
+   ],
+   "text": "Arcade boot sequence. First piece: pm \u2014 a plugin that installs other plugins, so nothing here needs curl after this. ",
+   "tools": [
+    {
+     "call_id": "w_pm_py",
+     "name": "write",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/pm.py",
+      "content": "#!/usr/bin/env python3\n\"\"\"pm.py \u2014 the plugin manager: one tool, load_plugin.\n\nLoads another plugin into the RUNNING server through the `plugin_load` host-op\n(same path as POST /plugin/load, no restart, registry rebuilt live). Answers\n\"do I really need curl to install a plugin?\" with \"not once pm is in your\ntoolbelt\".\n\"\"\"\nimport json, sys\n\nTOOLS = [{\n    \"name\": \"load_plugin\",\n    \"description\": \"Hot-load a plugin binary into the running kn9t server: handshake, register its tools, rebuild the registry. No restart.\",\n    \"schema\": {\"type\": \"object\",\n               \"properties\": {\"path\": {\"type\": \"string\", \"description\": \"Path to the plugin executable.\"}},\n               \"required\": [\"path\"]},\n    \"parallel_safe\": False,\n    \"hidden\": False,\n    \"effects\": [],\n    \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\",\n               \"builtin_allow\": [], \"builtin_deny\": []},\n}]\n\ndef send(m):\n    sys.stdout.write(json.dumps(m) + \"\\n\")\n    sys.stdout.flush()\n\npending = {}          # host-api request id -> tool_call id to answer\nnext_req = [900000]   # our own id space, away from hook ids\n\nfor line in sys.stdin:\n    line = line.strip()\n    if not line:\n        continue\n    m = json.loads(line)\n    t = m.get(\"t\")\n    if t == \"hello\":\n        send({\"t\": \"hello\", \"name\": \"pm\", \"capabilities\": [\"tools\", \"host_api\"],\n              \"hooks\": [], \"tools\": TOOLS, \"events\": [], \"provider\": None})\n    elif t == \"hook\" and m.get(\"hook\") == \"tool_call\":\n        tid = m[\"id\"]\n        args = m.get(\"payload\", {}).get(\"args\", {})\n        path = args.get(\"path\", \"\")\n        rid = next_req[0]; next_req[0] += 1\n        pending[rid] = tid\n        send({\"t\": \"request\", \"id\": rid, \"op\": \"plugin_load\", \"payload\": {\"cmd\": [path]}})\n    elif t == \"api_result\":\n        tid = pending.pop(m[\"id\"], None)\n        if tid is not None:\n            ok = bool(m.get(\"ok\"))\n            body = json.dumps(m.get(\"result\")) if ok else \"load failed: %s\" % m.get(\"error\")\n            send({\"t\": \"done\", \"id\": tid, \"is_error\": not ok,\n                  \"content\": [{\"type\": \"text\", \"text\": body}]})\n    elif t == \"shutdown\":\n        sys.exit(0)\n"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 410,
+    "output": 520
+   }
+  },
+  {
+   "text": "Now the rest of the cabinet, one batch: ",
+   "tools": [
+    {
+     "call_id": "w_dice_py",
+     "name": "write",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/dice.py",
+      "content": "#!/usr/bin/env python3\n\"\"\"dice.py \u2014 a kn9t plugin in 40 lines. One tool: roll.\"\"\"\nimport json, random, sys\n\nTOOLS = [{\n    \"name\": \"roll\",\n    \"description\": \"Roll an N-sided die and return the result.\",\n    \"schema\": {\"type\": \"object\",\n               \"properties\": {\"sides\": {\"type\": \"integer\", \"description\": \"Number of sides.\"}},\n               \"required\": [\"sides\"]},\n    \"parallel_safe\": True,\n    \"hidden\": False,\n    \"effects\": [],\n    \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\",\n               \"builtin_allow\": [], \"builtin_deny\": []},\n}]\n\ndef send(msg):\n    sys.stdout.write(json.dumps(msg) + \"\\n\")\n    sys.stdout.flush()\n\ndef main():\n    for line in sys.stdin:\n        line = line.strip()\n        if not line:\n            continue\n        msg = json.loads(line)\n        t = msg.get(\"t\")\n        if t == \"hello\":\n            send({\"t\": \"hello\", \"name\": \"dice\", \"capabilities\": [\"tools\"],\n                  \"hooks\": [], \"tools\": TOOLS, \"events\": [], \"provider\": None})\n        elif t == \"hook\" and msg.get(\"hook\") == \"tool_call\":\n            args = msg.get(\"payload\", {}).get(\"args\", {})\n            sides = int(args.get(\"sides\", 6))\n            send({\"t\": \"done\", \"id\": msg[\"id\"], \"is_error\": False,\n                  \"content\": [{\"type\": \"text\",\n                               \"text\": \"rolled a d%d -> %d\" % (sides, random.randint(1, sides))}]})\n        elif t == \"shutdown\":\n            return\n\nif __name__ == \"__main__\":\n    main()\n"
+     }
+    },
+    {
+     "call_id": "w_theme_py",
+     "name": "write",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/theme.py",
+      "content": "#!/usr/bin/env python3\n\"\"\"theme.py \u2014 recolor the TUI LIVE by writing a Lua override.\n\n`recolor cyan` drops ~/.kn9t/tui/89_brand.lua; the TUI's file watcher hot-reloads\nthe whole Lua layout and the accent changes on screen \u2014 no restart, no prompt.\n`uncolor` deletes the file and the default palette comes back the same way.\n\"\"\"\nimport json, os, sys\n\nBRAND = os.path.join(os.environ.get(\"HOME\", os.path.expanduser(\"~\")), \".kn9t\", \"tui\", \"89_brand.lua\")\n\nTOOLS = [{\n    \"name\": \"recolor\",\n    \"description\": \"Recolor the kn9t TUI accent live (writes a Lua theme override that hot-reloads).\",\n    \"schema\": {\"type\": \"object\",\n               \"properties\": {\"color\": {\"type\": \"string\", \"description\": \"A Lua color: cyan, yellow, magenta, green, blue, red\u2026\"}},\n               \"required\": [\"color\"]},\n    \"parallel_safe\": False, \"hidden\": False, \"effects\": [],\n    \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []},\n}, {\n    \"name\": \"uncolor\",\n    \"description\": \"Remove the live theme override \u2014 the default palette hot-reloads back.\",\n    \"schema\": {\"type\": \"object\", \"properties\": {}, \"required\": []},\n    \"parallel_safe\": False, \"hidden\": False, \"effects\": [],\n    \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []},\n}]\n\ndef send(m):\n    sys.stdout.write(json.dumps(m) + \"\\n\")\n    sys.stdout.flush()\n\ndef done(tid, text, err=False):\n    send({\"t\": \"done\", \"id\": tid, \"is_error\": err,\n          \"content\": [{\"type\": \"text\", \"text\": text}]})\n\nfor line in sys.stdin:\n    line = line.strip()\n    if not line:\n        continue\n    m = json.loads(line)\n    t = m.get(\"t\")\n    if t == \"hello\":\n        send({\"t\": \"hello\", \"name\": \"theme\", \"capabilities\": [\"tools\"],\n              \"hooks\": [], \"tools\": TOOLS, \"events\": [], \"provider\": None})\n    elif t == \"hook\" and m.get(\"hook\") == \"tool_call\":\n        payload = m.get(\"payload\", {})\n        name = payload.get(\"tool\", \"\")\n        args = payload.get(\"args\", {})\n        if name == \"recolor\":\n            color = args.get(\"color\", \"cyan\")\n            os.makedirs(os.path.dirname(BRAND), exist_ok=True)\n            with open(BRAND, \"w\") as f:\n                f.write(\"-- theme.py: live accent override (hot-reloaded by the TUI watcher)\\n\")\n                f.write('TUI.color.accent = \"%s\"\\n' % color)\n            done(m[\"id\"], \"accent -> %s (89_brand.lua written, watcher reloads the UI now)\" % color)\n        elif name == \"uncolor\":\n            if os.path.exists(BRAND):\n                os.remove(BRAND)\n            done(m[\"id\"], \"theme override removed \u2014 default palette back\")\n        else:\n            done(m[\"id\"], \"unknown tool %s\" % name, err=True)\n    elif t == \"shutdown\":\n        sys.exit(0)\n"
+     }
+    },
+    {
+     "call_id": "w_snake_py",
+     "name": "write",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/snake.py",
+      "content": "#!/usr/bin/env python3\n\"\"\"snake.py \u2014 Snake, playable inside the kn9t TUI.\n\n`start_snake` (one tool) seats the game: it registers a plugin UI via\n`ui_register_lua` and starts a heartbeat \u2014 one `ui_set_state` tick every 220ms,\nwhich is both the game clock and the redraw trigger. The Lua view owns the whole\ngame (board, snake, food, kn9t.on_key); click the view to focus it, then play\nwith arrows or WASD.\n\"\"\"\nimport json, sys, threading, time\n\nLUA = r\"\"\"\n-- snake view: the whole game lives here; the process just heartbeats state.\nlocal W, H = 46, 15\nlocal snake = {{x=9,y=8},{x=8,y=8},{x=7,y=8}}\nlocal dir = {x=1, y=0}; local pending = nil\nlocal food = {x=32, y=5}; local score = 0; local dead = false; local ticks = 0\n\nlocal function place_food()\n  ticks = ticks + 1\n  math.randomseed(os.time() * 7 + ticks)\n  food = {x = math.random(2, W-2), y = math.random(2, H-2)}\nend\n\nlocal function turn(dx, dy)\n  return function()\n    if (dir.x + dx == 0 and dir.y + dy == 0) then return false end\n    pending = {x=dx, y=dy}\n    return true\n  end\nend\n\nfor _, k in ipairs({\"Up\",\"up\",\"<Up>\",\"w\",\"W\"}) do kn9t.on_key(k, turn(0,-1)) end\nfor _, k in ipairs({\"Down\",\"down\",\"<Down>\",\"s\",\"S\"}) do kn9t.on_key(k, turn(0,1)) end\nfor _, k in ipairs({\"Left\",\"left\",\"<Left>\",\"a\",\"A\"}) do kn9t.on_key(k, turn(-1,0)) end\nfor _, k in ipairs({\"Right\",\"right\",\"<Right>\",\"d\",\"D\"}) do kn9t.on_key(k, turn(1,0)) end\n\nlocal function step()\n  if dead then return end\n  if pending then dir = pending; pending = nil end\n  local head = {x = snake[1].x + dir.x, y = snake[1].y + dir.y}\n  if head.x < 2 or head.x > W-1 or head.y < 2 or head.y > H-1 then dead = true; return end\n  for _, s in ipairs(snake) do\n    if s.x == head.x and s.y == head.y then dead = true; return end\n  end\n  table.insert(snake, 1, head)\n  if head.x == food.x and head.y == food.y then\n    score = score + 1; place_food()\n  else\n    table.remove(snake)\n  end\nend\n\nfunction render(state)\n  step()   -- one game step per heartbeat\n  local grid = {}\n  for y = 1, H do\n    grid[y] = {}\n    for x = 1, W do grid[y][x] = \"\u00b7\" end\n  end\n  for x = 1, W do grid[1][x] = \"\u2500\"; grid[H][x] = \"\u2500\" end\n  for y = 1, H do grid[y][1] = \"\u2502\"; grid[y][W] = \"\u2502\" end\n  grid[1][1] = \"\u250c\"; grid[1][W] = \"\u2510\"; grid[H][1] = \"\u2514\"; grid[H][W] = \"\u2518\"\n  grid[food.y][food.x] = \"\u25cf\"\n  for i, s in ipairs(snake) do grid[s.y][s.x] = (i == 1 and \"\u2588\" or \"\u2593\") end\n  local rows = {}\n  for y = 1, H do rows[y] = table.concat(grid[y]) end\n  local head_line\n  if dead then\n    head_line = \"  SNAKE \u25b8 game over \u00b7 score \" .. score\n  else\n    head_line = \"  SNAKE \u25b8 score \" .. score .. \" \u00b7 arrows or WASD\"\n  end\n  table.insert(rows, 1, head_line)\n  return { type = \"text\", content = table.concat(rows, \"\\n\") }\nend\n\"\"\"\n\nTOOLS = [{\n    \"name\": \"start_snake\",\n    \"description\": \"Seat the Snake game in the TUI: registers the game view (plugin UI) and starts its clock.\",\n    \"schema\": {\"type\": \"object\", \"properties\": {}, \"required\": []},\n    \"parallel_safe\": False, \"hidden\": False, \"effects\": [],\n    \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []},\n}]\n\ndef send(m):\n    sys.stdout.write(json.dumps(m) + \"\\n\")\n    sys.stdout.flush()\n\ndef heartbeat(sid):\n    t0 = time.time()\n    while True:\n        time.sleep(0.22)\n        send({\"t\": \"request\", \"id\": 0, \"op\": \"ui_set_state\",\n              \"payload\": {\"session\": sid, \"state\": {\"tick\": int((time.time() - t0) * 1000)}}})\n\nfor line in sys.stdin:\n    line = line.strip()\n    if not line:\n        continue\n    m = json.loads(line)\n    t = m.get(\"t\")\n    if t == \"hello\":\n        send({\"t\": \"hello\", \"name\": \"snake\", \"capabilities\": [\"tools\", \"host_api\", \"ui_interaction\"],\n              \"hooks\": [], \"tools\": TOOLS, \"events\": [], \"provider\": None})\n    elif t == \"hook\" and m.get(\"hook\") == \"tool_call\":\n        sid = m.get(\"payload\", {}).get(\"session\", \"\")\n        send({\"t\": \"request\", \"id\": 0, \"op\": \"ui_register_lua\",\n              \"payload\": {\"session\": sid, \"source\": LUA, \"placement\": \"bottom\"}})\n        threading.Thread(target=heartbeat, args=(sid,), daemon=True).start()\n        send({\"t\": \"done\", \"id\": m[\"id\"], \"is_error\": False,\n              \"content\": [{\"type\": \"text\", \"text\": \"game seated in the bottom slot \u2014 click it, then arrows or WASD\"}]})\n    elif t == \"shutdown\":\n        sys.exit(0)\n"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 1310,
+    "output": 1480
+   }
+  },
+  {
+   "text": "Four sources on disk. pm gets one bootstrap call \u2014 after this, installs go through its own tool: ",
+   "tools": [
+    {
+     "call_id": "b_pm",
+     "name": "bash",
+     "args": {
+      "cmd": "chmod +x pm.py dice.py theme.py snake.py && P=$(cat $KN9T_HOME/port) && T=$(cat $KN9T_HOME/token) && curl -sS -X POST http://127.0.0.1:$P/plugin/load -H \"Authorization: Bearer $T\" -H 'Content-Type: application/json' -d \"{\\\"cmd\\\":[\\\"/tmp/opencode/demo-home/work/pm.py\\\"]}\""
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 2210,
+    "output": 150
+   }
+  },
+  {
+   "text": "pm is live. Installing the cabinet through it \u2014 three plugins, no restarts, registry rebuilds live: ",
+   "tools": [
+    {
+     "call_id": "l_dice_py",
+     "name": "load_plugin",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/dice.py"
+     }
+    },
+    {
+     "call_id": "l_theme_py",
+     "name": "load_plugin",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/theme.py"
+     }
+    },
+    {
+     "call_id": "l_snake_py",
+     "name": "load_plugin",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/snake.py"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 2740,
+    "output": 240
+   }
+  },
+  {
+   "text": "All registered. Lights on \u2014 recoloring the whole TUI through its Lua, and seating the game: ",
+   "tools": [
+    {
+     "call_id": "t_c",
+     "name": "recolor",
+     "args": {
+      "color": "cyan"
+     }
+    },
+    {
+     "call_id": "t_s",
+     "name": "start_snake",
+     "args": {}
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 3120,
+    "output": 90
+   }
+  },
+  {
+   "text": "Chrome is recolored through the file watcher's hot reload. Dice check: ",
+   "tools": [
+    {
+     "call_id": "t_r",
+     "name": "roll",
+     "args": {
+      "sides": 20
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 3380,
+    "output": 70
+   }
+  },
+  {
+   "text": "Arcade ready: pm loaded the cabinet live, theme rewrote the UI's Lua and the watcher reloaded it, and snake is on the bottom \u2014 click the game and play with the arrows.",
+   "stop": "STOP",
+   "usage": {
+    "input": 3620,
+    "output": 96
+   }
+  }
+ ]
+}

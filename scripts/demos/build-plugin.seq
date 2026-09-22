@@ -1,0 +1,68 @@
+# ═══ demo: kn9t creates a plugin, hot-loads it, and calls it ═══════════════════
+# One file = the whole recording: the typed choreography AND the model script.
+# Run: scripts/kn9t-demo-rec scripts/demos/build-plugin.seq
+#
+# Story: ask kn9t for a Python plugin with one tool (`roll`), watch it write the
+# source, hot-load it into the RUNNING server (POST /plugin/load), then call the
+# brand-new tool — live registry rebuild, no restart. Every tool call hits the
+# human approval gate (DEMO_ASK=1 → the policy plugin answers `ask`).
+
+env DEMO_ASK=1
+
+model-script <<'JSON'
+{
+  "model": { "id": "demo-1", "ctx_window": 200000,
+             "price": { "input": 0.5, "output": 1.5, "cache_read": 0.05, "cache_write": 0.625 } },
+  "turns": [
+    {
+      "thinking": ["the user wants a real plugin written, loaded live, and exercised — ", "write dice.py first, then POST /plugin/load, then call roll."],
+      "text": "A kn9t plugin is just a process speaking newline-delimited JSON on stdio. I'll write dice.py with one tool, roll — then load it into the running server and call it. ",
+      "tool": { "call_id": "call_1", "name": "write", "args": { "path": "dice.py", "content": "#!/usr/bin/env python3\n\"\"\"dice.py — a kn9t plugin in 40 lines. One tool: roll.\"\"\"\nimport json, random, sys\n\nTOOLS = [{\n    \"name\": \"roll\",\n    \"description\": \"Roll an N-sided die and return the result.\",\n    \"schema\": {\"type\": \"object\",\n               \"properties\": {\"sides\": {\"type\": \"integer\", \"description\": \"Number of sides.\"}},\n               \"required\": [\"sides\"]},\n    \"parallel_safe\": True,\n    \"hidden\": False,\n    \"effects\": [],\n    \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\",\n               \"builtin_allow\": [], \"builtin_deny\": []},\n}]\n\ndef send(msg):\n    sys.stdout.write(json.dumps(msg) + \"\\n\")\n    sys.stdout.flush()\n\ndef main():\n    for line in sys.stdin:\n        line = line.strip()\n        if not line:\n            continue\n        msg = json.loads(line)\n        t = msg.get(\"t\")\n        if t == \"hello\":\n            send({\"t\": \"hello\", \"name\": \"dice\", \"capabilities\": [\"tools\"],\n                  \"hooks\": [], \"tools\": TOOLS, \"events\": [], \"provider\": None})\n        elif t == \"hook\" and msg.get(\"hook\") == \"tool_call\":\n            args = msg.get(\"payload\", {}).get(\"args\", {})\n            sides = int(args.get(\"sides\", 6))\n            send({\"t\": \"done\", \"id\": msg[\"id\"], \"is_error\": False,\n                  \"content\": [{\"type\": \"text\",\n                               \"text\": \"rolled a d%d -> %d\" % (sides, random.randint(1, sides))}]})\n        elif t == \"shutdown\":\n            return\n\nif __name__ == \"__main__\":\n    main()\n" } },
+      "stop": "TOOL_CALL",
+      "usage": { "input": 380, "output": 412 }
+    },
+    {
+      "text": "Source written. Now hot-load it — plugins are processes, the host will handshake and rebuild the tool registry live: ",
+      "tool": { "call_id": "call_2", "name": "bash", "args": { "cmd": "chmod +x dice.py && P=$(cat $KN9T_HOME/port) && T=$(cat $KN9T_HOME/token) && curl -sS -X POST http://127.0.0.1:$P/plugin/load -H \"Authorization: Bearer $T\" -H 'Content-Type: application/json' -d \"{\\\"cmd\\\":[\\\"$PWD/dice.py\\\"]}\"" } },
+      "stop": "TOOL_CALL",
+      "usage": { "input": 1240, "output": 96 }
+    },
+    {
+      "text": "Loaded — the registry now knows roll without any restart. Let's use the brand-new tool: ",
+      "tool": { "call_id": "call_3", "name": "roll", "args": { "sides": 20 } },
+      "stop": "TOOL_CALL",
+      "usage": { "input": 1610, "output": 54 }
+    },
+    {
+      "text": "Created, hot-loaded, called. dice.py is 40 lines of plain Python speaking the plugin protocol — the host never knew it wasn't there at boot. That's the whole extension model: providers, tools, policy and compaction all come in through that same door.",
+      "stop": "STOP",
+      "usage": { "input": 1890, "output": 88 }
+    }
+  ]
+}
+JSON
+
+# ── the choreography (absolute-ish seconds on the recording) ──────────────────
+pause 2.0
+say kn9t
+pause 6.0                                          # boot + welcome screen
+say Write me a kn9t plugin in Python with one tool, roll (roll an N-sided die). Save it as dice.py, hot-load it into the running server without restarting, then call roll with 20 sides.
+pause 7.0                                          # thinking + prose + write args → APPROVAL
+key y
+pause 10.0                                         # dice.py written → plugin loaded live → roll → final
+key F1                                             # explorer: dice.py is really there
+pause 3.5
+key F1
+pause 1.0
+key ctrl+p                                         # command palette
+pause 1.5
+type tool
+pause 1.0
+send                                               # tools manager: `roll` is registered live
+pause 4.0
+key Escape
+pause 1.0
+key ctrl+q                                         # quit the TUI
+pause 2.0
+say P=$(cat $KN9T_HOME/port); T=$(cat $KN9T_HOME/token); curl -sS localhost:$P/plugin -H "Authorization: Bearer $T"
+pause 4.0                                          # end card: dice is running, tools: ["roll"]

@@ -1,0 +1,49 @@
+# ═══ demo: the kn9t arcade — four plugins, one live UI rewrite, one game ══════
+# Run: scripts/kn9t-demo-rec scripts/demos/build-arcade.seq
+# (model script built from scripts/demos/assets/*.py by build-arcade-model.py)
+#
+# Story: the agent writes four plugins — pm (loads plugins through the
+# `plugin_load` host-op, answering "do I really need curl?"), dice (a roll
+# tool), theme (recolors the TUI by writing its Lua — hot-reloaded live) and
+# snake (a playable game registered as a plugin UI). Then it installs the
+# cabinet THROUGH pm, recolors the chrome on camera, seats the game, rolls a
+# die, and the recording ends with actual gameplay.
+
+env DEMO_ASK=1
+env DEMO_PACE_MS=55
+model-script build-arcade.model.json
+
+rate 25
+pause 1.5
+say kn9t
+pause 5.0                                          # boot + welcome
+say Build me an arcade: write pm.py (a load_plugin tool that calls the plugin_load host-op), dice.py (a roll tool), theme.py (recolor/uncolor writing ~/.kn9t/tui/89_brand.lua) and snake.py (Snake as a plugin UI with ui_register_lua). Bootstrap pm with one curl, install the rest through its tool, recolor the UI cyan and seat the game.
+pause 5.0                                          # T1: write pm.py → APPROVAL
+key y                                              # Allow (not Always: that persists to
+                                                   # config.toml and the reload would reap
+                                                   # the provider plugin mid-prompt)
+pause 7.0                                          # T2: dice/theme/snake land (3 cards)
+pause 6.0                                          # T3: curl bootstraps pm
+pause 6.0                                          # T4: load_plugin ×3 — registry rebuilds
+pause 8.0                                          # T5: UI turns cyan + the board appears
+pause 5.5                                          # T6: roll d20
+pause 5.5                                          # T7: closing words
+click 60 45                                        # focus the game (bottom slot)
+pause 0.8
+key Right
+pause 0.5
+key Right
+pause 0.4
+key Down
+pause 0.5
+key Down
+pause 0.4
+key Left
+pause 0.6
+key Up
+pause 0.8
+click 30 34                                        # tool card: expand the roll output
+pause 2.5
+click 30 34                                        # collapse
+pause 1.2
+key ctrl+q                                         # quit on a high note

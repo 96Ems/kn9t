@@ -1,0 +1,13 @@
+[workspace]
+
+[package]
+name = "kn9t-demo-policy"
+version = "0.1.0"
+edition = "2021"
+
+# Demo-only policy plugin: stands in for kn9t-policy during screen recordings.
+# With DEMO_ASK set, fs writes escalate to the human (`{"action":"ask"}`).
+
+[dependencies]
+kn9t-plugin-sdk = { path = "../../crates/kn9t-plugin-sdk" }
+serde_json = "1"

@@ -1,0 +1,22 @@
+# ═══ demo: release notes from the real git log ════════════════════════════════
+# Run: scripts/kn9t-demo-rec scripts/demos/relnotes.seq
+env DEMO_ASK=1
+env DEMO_PACE_MS=55
+model-script relnotes.model.json
+
+rate 25
+pause 1.5
+say kn9t
+pause 5.0
+say Release prep: write relnotes.py with two tools — changelog {repo, since} and diffstat {repo, since} over real git history. Load it, pull the last 30 commits of /home/emericclement/dev/kn9t plus the churn, then draft RELEASE_NOTES.md from the facts.
+pause 5.0                                          # T1: write relnotes.py → APPROVAL
+key y
+pause 5.5                                          # T2: load
+pause 8.0                                          # T3: changelog + diffstat (2 calls, real history)
+pause 8.0                                          # T4: RELEASE_NOTES.md drafted
+pause 5.0                                          # T5: closing words
+key F1                                             # explorer: the draft is right there
+pause 3.5
+key F1
+pause 1.2
+key ctrl+q

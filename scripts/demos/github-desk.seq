@@ -1,0 +1,40 @@
+# ═══ demo: the GitHub desk — PRs & issues as tools and a live board ═══════════
+# Run: scripts/kn9t-demo-rec scripts/demos/github-desk.seq
+#
+# Story: the agent writes ghpanel.py — one plugin giving kn9t a GitHub desk:
+# list_prs / list_issues / pick_issue tools plus a LIVE pull-request board as a
+# plugin UI. It then uses it on real repos: ratatui/ratatui (what's landing in
+# the TUI library kn9t renders with) and 96Ems/kn9t-plugins (its own shop),
+# and picks a real issue to contribute to. The board stays live at the bottom.
+
+env DEMO_ASK=1
+env DEMO_PACE_MS=55
+model-script github-desk.model.json
+
+rate 25
+pause 1.5
+say kn9t
+pause 5.0                                          # boot + welcome
+say Give this kn9t a GitHub desk: one plugin, ghpanel.py, with tools list_prs, list_issues and pick_issue (gh under the hood), and a live PR board as a plugin UI. Load it, show me open PRs on ratatui/ratatui and 96Ems/kn9t-plugins, our open issues, then pick me one upstream issue to contribute to.
+pause 5.0                                          # T1: write ghpanel.py → APPROVAL
+key y
+pause 6.0                                          # T2: curl loads it
+pause 8.0                                          # T3: list_prs ratatui — board seats itself
+pause 6.5                                          # T4: our shop (PRs + issues, one turn)
+pause 6.5                                          # T5: pick_issue upstream
+pause 5.5                                          # T6: closing words
+click 60 45                                        # focus the PR board (bottom slot)
+pause 0.8
+key j
+pause 0.5
+key j
+pause 0.5
+key k
+pause 0.8
+key r                                              # force refresh on camera
+pause 2.0
+click 30 30                                        # tool card: expand the pick's output
+pause 2.5
+click 30 30                                        # collapse
+pause 1.2
+key ctrl+q                                         # quit

@@ -1,0 +1,105 @@
+{
+ "model": {
+  "id": "demo-1",
+  "ctx_window": 200000,
+  "price": {
+   "input": 0.5,
+   "output": 1.5,
+   "cache_read": 0.05,
+   "cache_write": 0.625
+  }
+ },
+ "turns": [
+  {
+   "thinking": [
+    "release prep = facts from git, then a draft \u2014 ",
+    "relnotes feeds the log and the churn, I write the notes."
+   ],
+   "text": "Release prep. relnotes.py gives me the raw history and the churn, I do the writing: ",
+   "tools": [
+    {
+     "call_id": "w_rel",
+     "name": "write",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/relnotes.py",
+      "content": "#!/usr/bin/env python3\n\"\"\"relnotes.py \u2014 release-notes feed: real git history as tools.\n\n  changelog {repo, since}   git log --oneline since..HEAD (the real story)\n  diffstat  {repo, since}   what actually changed: files and churn\n\nThe agent writes the notes; this plugin only feeds it facts.\n\"\"\"\nimport json, os, subprocess, sys\n\nTOOLS = [\n    {\"name\": \"changelog\",\n     \"description\": \"Oneline git log from a rev to HEAD (recent history of a repo).\",\n     \"schema\": {\"type\": \"object\",\n                \"properties\": {\"repo\": {\"type\": \"string\", \"description\": \"Path to the git repo.\"},\n                               \"since\": {\"type\": \"string\", \"description\": \"Start rev (e.g. HEAD~30, v0.1.0).\"}},\n                \"required\": [\"repo\"]},\n     \"parallel_safe\": True, \"hidden\": False, \"effects\": [],\n     \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []}},\n    {\"name\": \"diffstat\",\n     \"description\": \"Diffstat from a rev to HEAD: which files changed and how much.\",\n     \"schema\": {\"type\": \"object\",\n                \"properties\": {\"repo\": {\"type\": \"string\"},\n                               \"since\": {\"type\": \"string\"}},\n                \"required\": [\"repo\"]},\n     \"parallel_safe\": True, \"hidden\": False, \"effects\": [],\n     \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []}},\n]\n\ndef send(m):\n    sys.stdout.write(json.dumps(m) + \"\\n\")\n    sys.stdout.flush()\n\ndef git(repo, args):\n    out = subprocess.run([\"git\", \"-C\", repo] + args, capture_output=True, text=True, timeout=20)\n    return out.stdout.strip() if out.returncode == 0 else (\"git error: \" + out.stderr.strip()[:120])\n\ndef done(tid, text, err=False):\n    send({\"t\": \"done\", \"id\": tid, \"is_error\": err,\n          \"content\": [{\"type\": \"text\", \"text\": text}]})\n\nfor line in sys.stdin:\n    line = line.strip()\n    if not line:\n        continue\n    m = json.loads(line)\n    t = m.get(\"t\")\n    if t == \"hello\":\n        send({\"t\": \"hello\", \"name\": \"relnotes\", \"capabilities\": [\"tools\"],\n              \"hooks\": [], \"tools\": TOOLS, \"events\": [], \"provider\": None})\n    elif t == \"hook\" and m.get(\"hook\") == \"tool_call\":\n        p = m.get(\"payload\", {})\n        name = p.get(\"tool\", \"\")\n        args = p.get(\"args\", {})\n        repo = args.get(\"repo\", \".\")\n        since = args.get(\"since\", \"HEAD~30\")\n        if name == \"changelog\":\n            done(m[\"id\"], git(repo, [\"log\", \"--oneline\", \"--no-merges\", \"-40\", since + \"..HEAD\"]))\n        elif name == \"diffstat\":\n            done(m[\"id\"], git(repo, [\"diff\", \"--stat\", since + \"..HEAD\"]))\n        else:\n            done(m[\"id\"], \"unknown tool %s\" % name, err=True)\n    elif t == \"shutdown\":\n        sys.exit(0)\n"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 380,
+    "output": 520
+   }
+  },
+  {
+   "text": "Loading it: ",
+   "tools": [
+    {
+     "call_id": "b_rel",
+     "name": "bash",
+     "args": {
+      "cmd": "chmod +x relnotes.py && P=$(cat $KN9T_HOME/port) && T=$(cat $KN9T_HOME/token) && curl -sS -X POST http://127.0.0.1:$P/plugin/load -H \"Authorization: Bearer $T\" -H 'Content-Type: application/json' -d \"{\\\"cmd\\\": [\\\"/tmp/opencode/demo-home/work/relnotes.py\\\"], \\\"env\\\": {\\\"GH_HOME\\\": \\\"/home/emericclement\\\"}}\""
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 1040,
+    "output": 130
+   }
+  },
+  {
+   "text": "Facts please \u2014 the last 30 commits and what they churned: ",
+   "tools": [
+    {
+     "call_id": "t_log",
+     "name": "changelog",
+     "args": {
+      "repo": "/home/emericclement/dev/kn9t",
+      "since": "HEAD~30"
+     }
+    },
+    {
+     "call_id": "t_dif",
+     "name": "diffstat",
+     "args": {
+      "repo": "/home/emericclement/dev/kn9t",
+      "since": "HEAD~30"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 1420,
+    "output": 310
+   }
+  },
+  {
+   "text": "Writing the draft from that: ",
+   "tools": [
+    {
+     "call_id": "w_notes",
+     "name": "write",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/RELEASE_NOTES.md",
+      "content": "# kn9t \u2014 release notes (draft)\n\n## Highlights\n- one Event enum is the wire, the log and the truth\n- providers, tools, policy and compaction are all plugins\n- hot reload: UI Lua, plugins and config reload live\n\n## What changed (last 30 commits)\n- streamed from git: schema-first API, plugin host v2, SSE attach without gaps\n- TUI: Lua-owned layout, native transcript/input/status/explorer/viewer\n\n## Fixes\n- plugin reload contract: cancel, drain, respawn, re-handshake\n\n*(drafted by kn9t from `git log` \u2014 edit freely)*\n"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 2210,
+    "output": 240
+   }
+  },
+  {
+   "text": "RELEASE_NOTES.md is drafted from the real history \u2014 30 commits distilled into highlights, changes and fixes. Edit freely, it's a draft.",
+   "stop": "STOP",
+   "usage": {
+    "input": 2530,
+    "output": 62
+   }
+  }
+ ]
+}

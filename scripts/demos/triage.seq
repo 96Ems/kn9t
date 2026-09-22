@@ -1,0 +1,26 @@
+# ═══ demo: the bug desk — file the three real findings ════════════════════════
+# Run: scripts/kn9t-demo-rec scripts/demos/triage.seq
+# NOTE: this one creates REAL GitHub issues on 96Ems/kn9t-plugins (consented).
+env DEMO_ASK=1
+env DEMO_PACE_MS=55
+model-script triage.model.json
+
+rate 25
+pause 1.5
+say kn9t
+pause 5.0
+say Bug desk: write triage.py with file_issue {repo, title, body, label}, label_issue and list_issues over gh, plus a live bug board as a plugin UI. Load it with my gh session, then file the three bugs this session found into 96Ems/kn9t-plugins with full repro steps.
+pause 5.0                                          # T1: write triage.py → APPROVAL
+key y
+pause 5.5                                          # T2: load (GH_HOME)
+pause 9.0                                          # T3: file_issue ×3 — three REAL issues land
+pause 5.5                                          # T4: the board + closing words
+click 60 45                                        # focus the bug board
+pause 0.8
+key r                                              # refresh — the three new bugs are listed
+pause 2.5
+click 30 30                                        # expand a filing's output (the URL)
+pause 2.5
+click 30 30
+pause 1.2
+key ctrl+q

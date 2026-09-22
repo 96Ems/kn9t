@@ -1,0 +1,119 @@
+{
+ "model": {
+  "id": "demo-1",
+  "ctx_window": 200000,
+  "price": {
+   "input": 0.5,
+   "output": 1.5,
+   "cache_read": 0.05,
+   "cache_write": 0.625
+  }
+ },
+ "turns": [
+  {
+   "thinking": [
+    "a GitHub desk = three tools plus a live PR board in the UI \u2014 ",
+    "write it, load it with my gh login, then use it on real repos."
+   ],
+   "text": "One plugin, the whole desk: PR and issue tools, plus a live PR board at the bottom of the UI. ",
+   "tools": [
+    {
+     "call_id": "w_gh",
+     "name": "write",
+     "args": {
+      "path": "/tmp/opencode/demo-home/work/ghpanel.py",
+      "content": "#!/usr/bin/env python3\n\"\"\"ghpanel.py \u2014 the GitHub desk: PRs and issues as tools AND as a live TUI board.\n\nTools:\n  list_prs {repo}     open pull requests (number, title, author, +N/-M, age)\n  list_issues {repo}  open issues (number, title, labels, age)\n  pick_issue {repo}   pick the best issue to take: a good-first-issue if any,\n                      otherwise the oldest unassigned one\n\nThe first tool call also seats a live PR board in the TUI (plugin UI via\nui_register_lua): it refreshes on its own clock, `j/k` moves the selection and\n`r` forces a refresh. Uses the `gh` CLI (already signed in), curl as fallback.\n\"\"\"\nimport json, os, subprocess, sys, threading, time\n\nTOOLS = [\n    {\"name\": \"list_prs\",\n     \"description\": \"List open pull requests of a GitHub repo (owner/name).\",\n     \"schema\": {\"type\": \"object\", \"properties\": {\"repo\": {\"type\": \"string\"}}, \"required\": [\"repo\"]},\n     \"parallel_safe\": True, \"hidden\": False, \"effects\": [],\n     \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []}},\n    {\"name\": \"list_issues\",\n     \"description\": \"List open issues of a GitHub repo (owner/name).\",\n     \"schema\": {\"type\": \"object\", \"properties\": {\"repo\": {\"type\": \"string\"}}, \"required\": [\"repo\"]},\n     \"parallel_safe\": True, \"hidden\": False, \"effects\": [],\n     \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []}},\n    {\"name\": \"pick_issue\",\n     \"description\": \"Pick the best open issue to work on: good-first-issue first, else oldest unassigned.\",\n     \"schema\": {\"type\": \"object\", \"properties\": {\"repo\": {\"type\": \"string\"}}, \"required\": [\"repo\"]},\n     \"parallel_safe\": True, \"hidden\": False, \"effects\": [],\n     \"policy\": {\"pattern_field\": None, \"default_policy\": \"allow\", \"builtin_allow\": [], \"builtin_deny\": []}},\n]\n\nLUA = r\"\"\"\n-- ghpanel board: rows come from the host process (state.prs); j/k move, r refreshes\nlocal sel = 1\nlocal function move(n)\n  return function()\n    local total = #(STATE and STATE.prs or {})\n    sel = math.max(1, math.min(total, sel + n))\n    return true\n  end\nend\nkn9t.on_key(\"j\", move(1)); kn9t.on_key(\"Down\", move(1))\nkn9t.on_key(\"k\", move(-1)); kn9t.on_key(\"Up\", move(-1))\nkn9t.on_key(\"r\", function() kn9t.notify({event = \"refresh\"}); return true end)\n\nfunction render(state)\n  STATE = state\n  local rows = {}\n  local prs = (state and state.prs) or {}\n  table.insert(rows, \"  PULL REQUESTS \u25b8 \" .. ((state and state.repo) or \"\u2026\") .. \" \u00b7 j/k move \u00b7 r refresh\")\n  if #prs == 0 then\n    table.insert(rows, \"  (no open PRs)\")\n  end\n  for i, p in ipairs(prs) do\n    local mark = (i == sel) and \"\u258c \" or \"  \"\n    local line = string.format(\"%s#%-5d +%-4d -%-4d @%-12s %s\", mark, p.number, p.additions or 0,\n                               p.deletions or 0, p.author or \"?\", (p.title or \"\"):sub(1, 60))\n    table.insert(rows, line)\n  end\n  return {type = \"text\", content = table.concat(rows, \"\\n\")}\nend\n\"\"\"\n\ndef send(m):\n    sys.stdout.write(json.dumps(m) + \"\\n\")\n    sys.stdout.flush()\n\ndef gh_json(args):\n    \"\"\"gh first (authed \u2014 GH_HOME points at the real login), curl fallback for\n    public repos. Returns parsed JSON or None.\"\"\"\n    home = os.environ.get(\"GH_HOME\") or os.environ.get(\"HOME\")\n    try:\n        out = subprocess.run([\"gh\"] + args, capture_output=True, text=True, timeout=20,\n                             env={**os.environ, \"HOME\": home})\n        if out.returncode == 0 and out.stdout.strip():\n            return json.loads(out.stdout)\n    except Exception:\n        pass\n    # curl fallback: the public API (unauthenticated, fine for public repos)\n    try:\n        if args[:2] == [\"pr\", \"list\"]:\n            repo = args[args.index(\"--repo\") + 1]\n            url = \"https://api.github.com/repos/%s/pulls?state=open&per_page=10\" % repo\n        elif args[:2] == [\"issue\", \"list\"]:\n            repo = args[args.index(\"--repo\") + 1]\n            url = \"https://api.github.com/repos/%s/issues?state=open&per_page=30\" % repo\n        else:\n            return None\n        out = subprocess.run([\"curl\", \"-sf\", \"-m\", \"15\", url], capture_output=True, text=True)\n        if out.returncode != 0 or not out.stdout.strip():\n            return None\n        data = json.loads(out.stdout)\n        if args[:2] == [\"issue\", \"list\"]:\n            data = [i for i in data if \"pull_request\" not in i]   # the issues API returns PRs too\n        return data\n    except Exception:\n        return None\n\ndef pr_rows(repo):\n    data = gh_json([\"pr\", \"list\", \"--repo\", repo, \"--state\", \"open\", \"--limit\", \"10\",\n                    \"--json\", \"number,title,author,additions,deletions,updatedAt\"])\n    if data is None:\n        return []\n    rows = []\n    for p in data:\n        rows.append({\"number\": p.get(\"number\"), \"title\": p.get(\"title\"),\n                     \"author\": ((p.get(\"author\") or p.get(\"user\") or {}).get(\"login\", \"?\")),\n                     \"additions\": p.get(\"additions\", 0), \"deletions\": p.get(\"deletions\", 0),\n                     \"updated\": p.get(\"updatedAt\", \"\")})\n    return rows\n\ndef fmt_prs(repo, prs):\n    if not prs:\n        return \"no open PRs on %s\" % repo\n    return \"\\n\".join(\"#%-5d +%-5d -%-5d  @%-12s  %s\" %\n                     (p[\"number\"], p[\"additions\"], p[\"deletions\"], p[\"author\"], p[\"title\"][:64])\n                     for p in prs)\n\ndef fmt_issues(issues):\n    if not issues:\n        return \"no open issues\"\n    return \"\\n\".join(\"#%-5d  [%s]  %s\" %\n                     (i[\"number\"], \",\".join(i.get(\"labels\", [])) or \"-\", i[\"title\"][:64]) for i in issues)\n\nstate = {\"sid\": \"\", \"repo\": \"\", \"prs\": []}\nboard_on = False\nlock = threading.Lock()\n\ndef push_board():\n    with lock:\n        payload = {\"session\": state[\"sid\"], \"state\": {\"repo\": state[\"repo\"], \"prs\": state[\"prs\"]}}\n    send({\"t\": \"request\", \"id\": 0, \"op\": \"ui_set_state\", \"payload\": payload})\n\ndef seat_board(sid, repo):\n    global board_on\n    with lock:\n        state[\"sid\"] = sid\n        state[\"repo\"] = repo or \"ratatui/ratatui\"\n        state[\"prs\"] = pr_rows(state[\"repo\"])\n    if not board_on:\n        board_on = True\n        send({\"t\": \"request\", \"id\": 0, \"op\": \"ui_register_lua\",\n              \"payload\": {\"session\": sid, \"source\": LUA, \"placement\": \"bottom\"}})\n        threading.Thread(target=heartbeat, daemon=True).start()\n    push_board()\n\ndef heartbeat():\n    while True:\n        time.sleep(6)\n        with lock:\n            repo = state[\"repo\"]\n        if repo:\n            with lock:\n                state[\"prs\"] = pr_rows(repo)\n        push_board()\n\ndef done(tid, text, err=False):\n    send({\"t\": \"done\", \"id\": tid, \"is_error\": err,\n          \"content\": [{\"type\": \"text\", \"text\": text}]})\n\nfor line in sys.stdin:\n    line = line.strip()\n    if not line:\n        continue\n    m = json.loads(line)\n    t = m.get(\"t\")\n    if t == \"hello\":\n        send({\"t\": \"hello\", \"name\": \"ghpanel\", \"capabilities\": [\"tools\", \"host_api\", \"ui_interaction\"],\n              \"hooks\": [], \"tools\": TOOLS, \"events\": [], \"provider\": None})\n    elif t == \"hook\" and m.get(\"hook\") == \"tool_call\":\n        p = m.get(\"payload\", {})\n        sid = p.get(\"session\", \"\")\n        name = p.get(\"tool\", \"\")\n        args = p.get(\"args\", {})\n        repo = args.get(\"repo\", \"ratatui/ratatui\")\n        if name == \"list_prs\":\n            seat_board(sid, repo)\n            with lock:\n                prs = state[\"prs\"] if state[\"repo\"] == repo else pr_rows(repo)\n            done(m[\"id\"], fmt_prs(repo, prs))\n        elif name == \"list_issues\":\n            seat_board(sid, repo)\n            data = gh_json([\"issue\", \"list\", \"--repo\", repo, \"--state\", \"open\", \"--limit\", \"10\",\n                            \"--json\", \"number,title,labels\"]) or []\n            issues = [{\"number\": i.get(\"number\"), \"title\": i.get(\"title\"),\n                       \"labels\": [l.get(\"name\") if isinstance(l, dict) else l for l in i.get(\"labels\", [])]}\n                      for i in data]\n            done(m[\"id\"], fmt_issues(issues))\n        elif name == \"pick_issue\":\n            seat_board(sid, repo)\n            data = gh_json([\"issue\", \"list\", \"--repo\", repo, \"--state\", \"open\", \"--limit\", \"30\",\n                            \"--json\", \"number,title,labels,assignees\"]) or []\n            issues = [{\"number\": i.get(\"number\"), \"title\": i.get(\"title\"),\n                       \"labels\": [l.get(\"name\") if isinstance(l, dict) else l for l in i.get(\"labels\", [])],\n                       \"assigned\": bool(i.get(\"assignees\") or i.get(\"assignee\"))} for i in data]\n            if not issues:\n                done(m[\"id\"], \"no open issues on %s \u2014 nothing to pick\" % repo)\n            else:\n                pick = next((i for i in issues\n                             if any(g in \",\".join(i[\"labels\"]).lower()\n                                    for g in (\"good first issue\", \"help wanted\")) and not i[\"assigned\"]),\n                            None) or next((i for i in issues if not i[\"assigned\"]), issues[0])\n                done(m[\"id\"], \"picked #%d \u2014 %s [%s]\\nwhy: %s\\nhttps://github.com/%s/issues/%d\" % (\n                    pick[\"number\"], pick[\"title\"], \",\".join(pick[\"labels\"]) or \"no labels\",\n                    \"good-first-issue match\" if \"good\" in \",\".join(pick[\"labels\"]).lower()\n                    else \"oldest unassigned\", repo, pick[\"number\"]))\n        else:\n            done(m[\"id\"], \"unknown tool %s\" % name, err=True)\n    elif t == \"notify_plugin\":\n        ev = m.get(\"event\", \"\")\n        if ev == \"refresh\":\n            with lock:\n                repo = state[\"repo\"]\n            if repo:\n                with lock:\n                    state[\"prs\"] = pr_rows(repo)\n                push_board()\n    elif t == \"shutdown\":\n        sys.exit(0)\n"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 420,
+    "output": 940
+   }
+  },
+  {
+   "text": "Loading it into the running server (with my gh session so private repos show too) \u2014 the board seats itself on the first query: ",
+   "tools": [
+    {
+     "call_id": "b_load",
+     "name": "bash",
+     "args": {
+      "cmd": "chmod +x ghpanel.py && P=$(cat $KN9T_HOME/port) && T=$(cat $KN9T_HOME/token) && curl -sS -X POST http://127.0.0.1:$P/plugin/load -H \"Authorization: Bearer $T\" -H 'Content-Type: application/json' -d \"{\\\"cmd\\\": [\\\"/tmp/opencode/demo-home/work/ghpanel.py\\\"], \\\"env\\\": {\\\"GH_HOME\\\": \\\"/home/emericclement\\\"}}\""
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 1620,
+    "output": 150
+   }
+  },
+  {
+   "text": "Live. What's landing upstream in ratatui \u2014 the library drawing this very TUI: ",
+   "tools": [
+    {
+     "call_id": "t_prs",
+     "name": "list_prs",
+     "args": {
+      "repo": "ratatui/ratatui"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 2050,
+    "output": 240
+   }
+  },
+  {
+   "text": "Now our own shop \u2014 and then the pick of the week: ",
+   "tools": [
+    {
+     "call_id": "t_mine",
+     "name": "list_prs",
+     "args": {
+      "repo": "96Ems/kn9t-plugins"
+     }
+    },
+    {
+     "call_id": "t_iss",
+     "name": "list_issues",
+     "args": {
+      "repo": "96Ems/kn9t-plugins"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 2530,
+    "output": 210
+   }
+  },
+  {
+   "text": "Nothing in flight on our side \u2014 clean desk. Picking a contribution upstream: ",
+   "tools": [
+    {
+     "call_id": "t_pick",
+     "name": "pick_issue",
+     "args": {
+      "repo": "ratatui/ratatui"
+     }
+    }
+   ],
+   "stop": "TOOL_CALL",
+   "usage": {
+    "input": 2870,
+    "output": 140
+   }
+  },
+  {
+   "text": "The board at the bottom is live: j/k walks the PRs, r refreshes. Desk is open \u2014 review, pick, or ship.",
+   "stop": "STOP",
+   "usage": {
+    "input": 3090,
+    "output": 74
+   }
+  }
+ ]
+}

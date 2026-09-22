@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+# ═══ kn9t-demo-rec — sequence-driven screen recording of kn9t ══════════════════
+#
+#   scripts/kn9t-demo-rec scripts/demos/build-plugin.seq [--out DIR] [--keep-db]
+#
+# Give it ONE sequence file and it records everything: sandboxed HOME (the real
+# ~/.kn9t and your keys are never touched), deterministic terminal window,
+# ffmpeg capture CROPPED TO THE WINDOW (the desktop never appears on camera),
+# then mp4 + gif + review frames + a timeline log.
+#
+# INPUT INJECTION: keystrokes go through `tmux send-keys` (PTY level) — no X11
+# keyboard races, no focus requirements, and NOTHING can leak into your other
+# windows. The window is only the picture being filmed.
+#
+# ── sequence format (one directive per line, # comments) ──────────────────────
+#   env KEY=VALUE              env var for the recorded kn9t (and its plugins)
+#   model-script <<'JSON'      inline model script (or: model-script FILE)
+#   ...                        JSON: {"model":{...},"turns":[{text,tool,stop,
+#   JSON                         usage,thinking}]} — what the "model" streams
+#   pause N                    wait N seconds
+#   rate MS                    set the per-char typing delay (default 45; 25 = brisk)
+#   type TEXT                  type TEXT into the demo shell (literal —
+#                              everything after the first space, quotes and all)
+#   send                       press Return
+#   key SPEC                   press a key/combo (Return, F1, ctrl+p, Escape, y…)
+#   click COL ROW              mouse click at terminal cell (COL,ROW) — injected
+#                              as an SGR sequence at the pty (exact cells)
+#   say TEXT                   type TEXT + Return
+#   sh CMD                     run CMD recorder-side (side effects: hot-reload
+#                              edits, seeding files…); $KN9T_HOME/$WORK expand
+#   wait-file PATH [T]         pause until PATH exists (default timeout 20s)
+#   wait-log FILE RE [T]       pause until FILE matches regex RE (default 20s)
+#
+# Timeline (absolute seconds) is echoed live and saved to <out>/<name>.timeline.log
+set -u
+
+# ── arguments ─────────────────────────────────────────────────────────────────
+SEQ=""; OUT=""; KEEP_DB=0; NO_GIF=0
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out) OUT="$2"; shift 2 ;;
+    --keep-db) KEEP_DB=1; shift ;;
+    --no-gif) NO_GIF=1; shift ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    *) SEQ="$1"; shift ;;
+  esac
+done
+[ -n "$SEQ" ] && [ -f "$SEQ" ] || { echo "usage: kn9t-demo-rec <sequence-file> [--out DIR] [--keep-db] [--no-gif]"; exit 1; }
+
+NAME="$(basename "$SEQ" .seq)"
+OUT="${OUT:-$REPO_ROOT/demo/out/$NAME}"
+DEMO_HOME="${DEMO_HOME:-/tmp/opencode/demo-home}"
+WORK="$DEMO_HOME/work"
+BIN="${KN9T_BIN:-$REPO_ROOT/target/debug/kn9t}"
+PROVIDER_BIN="${KN9T_DEMO_PROVIDER:-$REPO_ROOT/plugins/kn9t-demo-provider/target/release/kn9t-demo-provider}"
+DISPLAY="${DISPLAY:-:1}"
+SESS="kn9tdemo"
+mkdir -p "$OUT" "$WORK"
+TL="$OUT/$NAME.timeline.log"; : > "$TL"
+
+t0=$(date +%s)
+say() { local e=$(($(date +%s) - t0)); echo "[$(printf '%02d:%02d' $((e / 60)) $((e % 60)))] $*" | tee -a "$TL"; }
+die() { say "ABORT: $*"; exit 1; }
+
+# ── parse the sequence into env + model script + actions ──────────────────────
+ENV_LINES=""; ACTIONS=()   # actions: "verb<TAB>arg"
+i=1; nlines=$(wc -l < "$SEQ")
+while [ $i -le $((nlines + 1)) ]; do
+  line="$(sed -n "${i}p" "$SEQ")"; i=$((i + 1))
+  # inline comments (" # …") and trailing blanks — never applied inside heredocs
+  line="${line%% #*}"
+  line="${line%"${line##*[! ]}"}"
+  case "$line" in
+    ''|'#'*) continue ;;
+    env\ *) ENV_LINES="$ENV_LINES
+export ${line#env }" ;;
+    model-script\ \<\<*)
+      delim="$(printf '%s' "${line#*<<}" | sed "s/'//g")"
+      body=""
+      while :; do
+        l="$(sed -n "${i}p" "$SEQ")"; i=$((i + 1))
+        [ "$l" = "$delim" ] && break
+        body="$body$l
+"
+      done
+      printf '%s' "$body" > "$OUT/$NAME.model.json" ;;
+    model-script\ *) f="${line#model-script }"; [ -f "$f" ] || f="$(dirname "$SEQ")/$f"; cp "$f" "$OUT/$NAME.model.json" ;;
+    pause\ *|rate\ *|type\ *|key\ *|click\ *|say\ *|sh\ *|wait-file\ *|wait-log\ *)
+      verb="${line%% *}"; arg="${line#* }"
+      ACTIONS+=("$verb	$arg") ;;
+    send) ACTIONS+=("key	Return") ;;
+    *) die "seq line $((i-1)): unknown directive: $line" ;;
+  esac
+done
+[ -f "$OUT/$NAME.model.json" ] || die "sequence has no model-script block"
+python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$OUT/$NAME.model.json" 2>/dev/null \
+  || die "model script is not valid JSON"
+[ -x "$BIN" ] || die "kn9t binary not found at $BIN (cargo build first)"
+[ -x "$PROVIDER_BIN" ] || die "demo provider not built: (cd plugins/kn9t-demo-provider && cargo build --release)"
+
+# ── sandbox home + config + wrapper ───────────────────────────────────────────
+say "sandbox: $DEMO_HOME (real ~/.kn9t untouched)"
+rm -f "$WORK"/*.txt "$WORK"/*.py "$WORK"/*.json "$WORK/kn9t-tui.log" 2>/dev/null
+rm -f "$DEMO_HOME/.kn9t/tui/89_brand.lua" 2>/dev/null   # theme demo resets between takes
+# plugins are processes spawned at SERVER start — never reuse a stale server
+# holding stale plugin binaries: stop it so ensure_server starts fresh below
+if [ -f "$DEMO_HOME/port" ]; then
+  P=$(cat "$DEMO_HOME/port" 2>/dev/null); T=$(cat "$DEMO_HOME/token" 2>/dev/null)
+  curl -s -m 2 -X POST "http://127.0.0.1:$P/stop" -H "Authorization: Bearer $T" >/dev/null 2>&1
+  sleep 1.5
+fi
+rm -f "$DEMO_HOME/port"
+[ $KEEP_DB -eq 1 ] || rm -f "$DEMO_HOME/.kn9t"/kn9t.db*
+mkdir -p "$DEMO_HOME/plugins" "$DEMO_HOME/.kn9t"
+for p in kn9t-tools kn9t-demo-policy; do
+  b="$REPO_ROOT/plugins/$p/target/release/$p"; [ -x "$b" ] || b="$REPO_ROOT/plugins/$p/target/debug/$p"
+  [ -x "$b" ] && cp -f "$b" "$DEMO_HOME/plugins/"
+done
+cat > "$DEMO_HOME/config.toml" <<EOF
+# generated by kn9t-demo-rec — scripted provider, no keys, no network
+default_model = "$(python3 -c "import json;print(json.load(open('$OUT/$NAME.model.json')).get('model',{}).get('id','demo-1'))")"
+
+[provider.demo]
+kind = "plugin"
+binary = "$PROVIDER_BIN"
+EOF
+mkdir -p "$OUT/bin"
+cat > "$OUT/bin/kn9t" <<EOF
+#!/bin/sh
+# generated by kn9t-demo-rec — what the recording types as \`kn9t\`
+export HOME="$DEMO_HOME"
+export KN9T_HOME="$DEMO_HOME"
+export DEMO_SCRIPT="$OUT/$NAME.model.json"
+$ENV_LINES
+exec "$BIN" "\$@"
+EOF
+chmod +x "$OUT/bin/kn9t"
+
+# ── terminal window running tmux (deterministic size) ─────────────────────────
+cat > "$OUT/alacritty.yml" <<YML
+working_directory: $WORK
+window:
+  dimensions: { columns: 184, lines: 50 }
+  position: { x: 30, y: 70 }
+  padding: { x: 8, y: 8 }
+font:
+  size: 12.5
+  normal: { family: Fira Mono }
+YML
+cat > "$OUT/tmux.conf" <<'YML'
+set -g status off
+set -g set-titles off
+set -g mouse off
+set -g history-limit 2000
+YML
+
+tmux kill-session -t "$SESS" 2>/dev/null
+for id in $(xdotool search --name "kn9t-demo" 2>/dev/null); do
+  xdotool windowclose "$id" 2>/dev/null    # sweeps stale kn9t-demo* windows (regex substring)
+done
+sleep 0.5
+
+alacritty --config-file "$OUT/alacritty.yml" --title kn9t-demo-rec \
+  -e tmux -f "$OUT/tmux.conf" new-session -s "$SESS" -c "$WORK" \
+     "export PATH='$OUT/bin':\$PATH; export KN9T_HOME='$DEMO_HOME'; exec bash -i" &
+APID=$!
+sleep 3
+WID=$(xdotool search --pid "$APID" 2>/dev/null | head -1)
+[ -n "$WID" ] || WID=$(xdotool search --name "kn9t-demo-rec" 2>/dev/null | head -1)
+[ -n "$WID" ] || die "no terminal window"
+tmux has-session -t "$SESS" 2>/dev/null || die "tmux session did not start"
+# deterministic geometry: force size+position, settle, THEN measure (alacritty's
+# own sizing is not deterministic across runs — the capture must not chase it)
+xdotool windowsize "$WID" 1560 940 2>/dev/null
+xdotool windowmove "$WID" 40 70 2>/dev/null
+xdotool windowraise "$WID" 2>/dev/null
+sleep 1.5
+
+WX=$(xwininfo -id "$WID" | awk '/Absolute upper-left X/{print $4}')
+WY=$(xwininfo -id "$WID" | awk '/Absolute upper-left Y/{print $4}')
+WW=$(xwininfo -id "$WID" | awk '/^  Width:/{print $2}')
+WH=$(xwininfo -id "$WID" | awk '/^  Height:/{print $2}')
+RX=$((WX + 6)); RY=$((WY + 6)); RW=$((WW - 12)); RH=$((WH - 12))
+[ $((RX + RW)) -gt 1920 ] && RW=$((1920 - RX))
+[ $((RY + RH)) -gt 1080 ] && RH=$((1080 - RY))
+RW=$((RW / 2 * 2)); RH=$((RH / 2 * 2))    # yuv420p needs even dimensions
+[ "$RW" -lt 800 ] || [ "$RH" -lt 500 ] && die "window too small: ${WW}x${WH}"
+say "window ${WW}x${WH}+${WX},${WY} → capture ${RW}x${RH}+${RX},${RY}"
+
+# ── input layer: tmux send-keys (PTY level — race-free, no focus needed) ──────
+TYPE_DELAY=45
+type_it() {   # human-paced typing, one char per send
+  local s="$1" j c
+  for ((j = 0; j < ${#s}; j++)); do
+    c="${s:$j:1}"
+    tmux send-keys -t "$SESS" -l -- "$c"
+    sleep "0.$(printf '%03d' "$TYPE_DELAY")"
+  done
+}
+key_it() {    # seq key spec → LITERAL escape bytes (the proven `-l` path: key
+              # NAMES through tmux arrive as garbage text — one stray Esc killed
+              # a turn mid-demo once). CR/ESC/arrows/ctrl are raw bytes here.
+  case "$1" in
+    Return|Enter) tmux send-keys -t "$SESS" -l -- "$(printf '\r')" ;;
+    Escape)       tmux send-keys -t "$SESS" -l -- "$(printf '\033')" ;;
+    Tab)          tmux send-keys -t "$SESS" -l -- "$(printf '\t')" ;;
+    Up)           tmux send-keys -t "$SESS" -l -- "$(printf '\033[A')" ;;
+    Down)         tmux send-keys -t "$SESS" -l -- "$(printf '\033[B')" ;;
+    Right)        tmux send-keys -t "$SESS" -l -- "$(printf '\033[C')" ;;
+    Left)         tmux send-keys -t "$SESS" -l -- "$(printf '\033[D')" ;;
+    F1)           tmux send-keys -t "$SESS" -l -- "$(printf '\033OP')" ;;
+    F2)           tmux send-keys -t "$SESS" -l -- "$(printf '\033OQ')" ;;
+    F3)           tmux send-keys -t "$SESS" -l -- "$(printf '\033OR')" ;;
+    F4)           tmux send-keys -t "$SESS" -l -- "$(printf '\033OS')" ;;
+    ctrl+*)       local c="${1#ctrl+}" o hx
+                  printf -v o '%d' "'$c"
+                  printf -v hx '%02x' $((o & 31))
+                  tmux send-keys -t "$SESS" -l -- "$(printf '%b' '\x'"$hx")" ;;
+    *)            tmux send-keys -t "$SESS" -l -- "$1" ;;
+  esac
+}
+click_it() {  # SGR mouse press+release at cell (COL,ROW) — indistinguishable
+              # from a real terminal mouse report, and cell-exact
+  tmux send-keys -t "$SESS" -l -- "$(printf '\033[<0;%s;%sM' "$1" "$2")"
+  sleep 0.08
+  tmux send-keys -t "$SESS" -l -- "$(printf '\033[<0;%s;%sm' "$1" "$2")"
+}
+
+# ── integrity check: keystrokes must reach OUR shell before any recording ─────
+say "probing the demo shell (pty integrity)"
+rm -f "$OUT/.ready"
+type_it "echo ready > $OUT/.ready"; key_it Return
+k=0; while [ ! -f "$OUT/.ready" ] && [ $k -lt 40 ]; do sleep 0.25; k=$((k + 1)); done
+[ -f "$OUT/.ready" ] || die "keystrokes never reached the demo shell (tmux problem)"
+key_it ctrl+l     # clean the probe from the screen — recording starts on a blank prompt
+sleep 0.5
+
+# ── record (window_id capture: films THAT window wherever it is, never the
+#    desktop, never whatever is stacked on top) ─────────────────────────────────
+MP4="$OUT/$NAME.mp4"
+rm -rf "$OUT/frames"; mkdir -p "$OUT/frames"
+ffmpeg -y -f x11grab -framerate 25 -window_id "$WID" -i "${DISPLAY}.0" \
+  -vf "crop=trunc(iw/2)*2:trunc(ih/2)*2" \
+  -c:v libx264 -preset veryfast -crf 21 -pix_fmt yuv420p -movflags +faststart \
+  "$MP4" > "$OUT/ffmpeg.log" 2>&1 &
+FF=$!
+sleep 1
+
+run_action() {
+  local verb="${1%%	*}" arg="${1#*	}"
+  say "$(printf '%-9s' "$verb") $arg"
+  case "$verb" in
+    pause) sleep "$arg" ;;
+    rate)  TYPE_DELAY="$arg" ;;
+    type)  type_it "$arg" ;;
+    key)   key_it "$arg" ;;
+    click) click_it "${arg%% *}" "${arg#* }" ;;
+    say)   type_it "$arg"; sleep 0.2; key_it Return ;;
+    sh)    ( cd "$WORK" && export KN9T_HOME="$DEMO_HOME" WORK && eval "$arg" ) >>"$TL" 2>&1 ;;
+    wait-file)
+      local p="${arg%% *}" t="${arg#* }"; [ "$p" = "$t" ] && t=20
+      local k=0; while [ ! -e "$p" ] && [ $k -lt $((t * 4)) ]; do sleep 0.25; k=$((k + 1)); done
+      [ -e "$p" ] || die "wait-file: $p not created within ${t}s" ;;
+    wait-log)
+      local f="${arg%% *}"; local rest="${arg#* }"; local t=20
+      case "$rest" in
+        *" "[0-9]*) t="${rest##* }"; rest="${rest% *}" ;;
+      esac
+      local re="$rest" k=0
+      while ! grep -qE "$re" "$f" 2>/dev/null && [ "$k" -lt $((t * 4)) ]; do sleep 0.25; k=$((k + 1)); done
+      grep -qE "$re" "$f" 2>/dev/null || die "wait-log: /$re/ not in $f within ${t}s" ;;
+  esac
+}
+for a in "${ACTIONS[@]}"; do run_action "$a"; done
+say "sequence done"
+say "ground truth — work dir: $(ls "$WORK" | tr '\n' ' ')"
+say "ground truth — keys delivered to the TUI: $(grep -c 'KEY:' "$WORK/kn9t-tui.log" 2>/dev/null || echo 0)"
+
+kill -INT $FF 2>/dev/null; wait $FF 2>/dev/null
+tmux kill-session -t "$SESS" 2>/dev/null
+[ -s "$MP4" ] || { say "RECORDING FAILED — ffmpeg log:"; tail -6 "$OUT/ffmpeg.log" | tee -a "$TL"; exit 1; }
+
+# ── static-capture check: sample frames must not be byte-identical ────────────
+ffmpeg -y -v error -ss 2  -i "$MP4" -frames:v 1 "$OUT/.probe_a.png"
+ffmpeg -y -v error -ss 20 -i "$MP4" -frames:v 1 "$OUT/.probe_b.png"
+cmp -s "$OUT/.probe_a.png" "$OUT/.probe_b.png" && die "capture is STATIC — the window was not on screen (nothing usable recorded)"
+rm -f "$OUT/.probe_a.png" "$OUT/.probe_b.png"
+
+# ── deliverables: gif + review frames ─────────────────────────────────────────
+if [ $NO_GIF -eq 0 ]; then
+  ffmpeg -y -v error -i "$MP4" -vf "fps=12,scale=960:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=160[p];[s1][p]paletteuse=dither=bayer:bayer_scale=4" "$OUT/$NAME.gif"
+fi
+DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$MP4")
+mkdir -p "$OUT/frames"; k=0
+while [ "$(python3 -c "print(int($DUR*$k/6))")" -lt "${DUR%.*}" ]; do
+  t=$(python3 -c "print(int($DUR*$k/6))")
+  ffmpeg -y -v error -ss "$t" -i "$MP4" -frames:v 1 "$OUT/frames/t$t.png"; k=$((k + 1))
+done
+say "recorded ${DUR}s → $MP4 ($(du -h "$MP4" | cut -f1))$([ $NO_GIF -eq 0 ] && echo " + $NAME.gif")"
+say "review frames: $OUT/frames/ · timeline: $TL"

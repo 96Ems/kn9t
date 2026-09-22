@@ -1,0 +1,21 @@
+# ═══ demo: the daily standup, automated ═══════════════════════════════════════
+# Run: scripts/kn9t-demo-rec scripts/demos/standup.seq
+env DEMO_ASK=1
+env DEMO_PACE_MS=55
+model-script standup.model.json
+
+rate 25
+pause 1.5
+say kn9t
+pause 5.0
+say Give me my standup: write standup.py with a standup tool (branch, dirty tree, commits today and this week, open PRs) and find_todos (TODO/FIXME/HACK with file:line), plus a live standup board as a plugin UI. Load it and run my standup on /home/emericclement/dev/kn9t.
+pause 5.0                                          # T1: write standup.py → APPROVAL
+key y
+pause 5.5                                          # T2: load
+pause 8.5                                          # T3: standup + find_todos — the board seats
+pause 5.5                                          # T4: the summary
+click 60 45                                        # focus the standup board
+pause 0.8
+key r                                              # refresh it live
+pause 2.2
+key ctrl+q

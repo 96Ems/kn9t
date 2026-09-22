@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "kn9t-demo-provider"
+version = "0.1.0"
+edition = "2021"
+
+# Scripted provider plugin for recorded demos (used by scripts/kn9t-demo-rec).
+# Replays a JSON model script through the REAL plugin protocol and ReAct loop:
+# tool calls land on real tools, the event log records everything. No network,
+# no key, no cost. Set DEMO_SCRIPT=/path/to/script.json.
+
+[dependencies]
+kn9t-plugin-sdk = { path = "../../crates/kn9t-plugin-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
